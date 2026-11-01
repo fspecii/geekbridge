@@ -1268,12 +1268,8 @@ async fn consent_defaults_off_needs_a_pairing_and_ping_needs_no_consent() {
     let mut phone_link = pair_phone(&rig, &phone).await;
     let status = rig.status().await;
     assert_eq!(status.paired[0].consents.len(), Feature::ALL.len());
-    assert!(
-        status.paired[0]
-            .consents
-            .iter()
-            .all(|c| !c.enabled && c.adapter_integrated == (c.feature == Feature::Clipboard))
-    );
+    assert!(status.paired[0].consents.iter().all(|c| !c.enabled
+        && c.adapter_integrated == matches!(c.feature, Feature::Clipboard | Feature::Telephony)));
 
     rig.ok(Request::SetConsent {
         device_id: phone.id(),

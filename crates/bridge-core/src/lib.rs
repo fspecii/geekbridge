@@ -1,6 +1,8 @@
 //! Shared domain types and a bounded, read-only local discovery API.
 pub mod agenda;
 pub mod calls;
+pub mod calls_link;
+pub mod calls_view;
 pub mod clipboard;
 pub mod clipboard_wire;
 pub mod hotkey;

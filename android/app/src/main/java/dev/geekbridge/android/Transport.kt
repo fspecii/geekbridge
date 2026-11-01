@@ -80,6 +80,8 @@ data class StartOptions(
     val allowLoopback: Boolean,
     /** Negotiate the clipboard packet types (see ClipboardRuntime); null leaves clipboard out entirely. */
     val clipboard: ClipSettings? = null,
+    /** Negotiate the call-control packet types (see CallControlRuntime); null leaves them out entirely. */
+    val calls: CallLinkSettings? = null,
 )
 
 object TransportProtocol {
@@ -103,6 +105,7 @@ object TransportProtocol {
         }
         if (o.allowLoopback) r.put("allow_loopback", true)
         if (o.clipboard != null) r.put("clipboard", ClipboardProtocol.startObject(o.clipboard))
+        if (o.calls != null) r.put("calls", CallsProtocol.startObject(o.calls))
         return r.toString()
     }
 

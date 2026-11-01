@@ -44,7 +44,13 @@ class TransportController(
     /** Number of share sessions that need the link to stay up even when no screen is visible. */
     var holds = 0
         private set
+    /**
+     * True while any screen of the app is started. The per-activity flag alone is not enough: moving
+     * Home -> Diagnostics runs the new screen's onStart before the old one's onStop, which cleared the flag and
+     * made [ShareCoordinator] stop a link that had just been started (docs/e2e-findings.md, E2E-1).
+     */
     var appVisible = false
+        get() = field || ActivityTracker.startedCount > 0
 
     fun hold() { holds++ }
     fun release() { if (holds > 0) holds-- }

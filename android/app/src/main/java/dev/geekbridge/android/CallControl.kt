@@ -1,0 +1,273 @@
+package dev.geekbridge.android
+
+import org.json.JSONObject
+
+/**
+ * Kotlin side of `geekbridge.calls.*` (docs/android-calls.md): reports the phone's coarse call state to a
+ * paired computer that the user allowed, and carries out that computer's request to answer, decline or end
+ * a call. Pure: no Android types, so it runs in JVM tests. The Android binding is in `CallControlAndroid.kt`.
+ *
+ * What it can and cannot do, stated honestly:
+ * - It only ever calls `TelecomManager.acceptRingingCall()` (API 26+) and `endCall()` (API 28+), both guarded
+ *   by the `ANSWER_PHONE_CALLS` runtime permission. It never touches call audio: that stays on the phone's
+ *   own Bluetooth hands-free connection.
+ * - The caller's number needs `READ_CALL_LOG` (Android hands the number only to apps that hold it) and the
+ *   name additionally `READ_CONTACTS`. Both are optional; without them the computer shows "Unknown caller".
+ * - Nothing is sent unless the user switched this on, and each report carries only what the permissions allow.
+ */
+
+/** Opt-in: off until the user turns it on in setup. Persisted by [CallControlRuntime]. */
+data class CallLinkSettings(val enabled: Boolean = false)
+
+data class CallPermissions(
+    val readPhoneState: Boolean,
+    val answerPhoneCalls: Boolean,
+    val readCallLog: Boolean,
+    val readContacts: Boolean,
+)
+
+enum class CallAction(val wire: String) {
+    Answer("answer"),
+    Reject("reject"),
+    Hangup("hangup");
+
+    companion object {
+        fun parse(s: String): CallAction? = entries.firstOrNull { it.wire == s }
+    }
+}
+
+/** A request from a paired computer, as the native core queued it. */
+data class CallRequest(val seq: Long, val connectionId: Long, val requestId: String, val action: CallAction) {
+    override fun toString() = "CallRequest($seq, ${action.wire})"
+}
+
+data class CallWait(val requests: List<CallRequest>, val lastSeq: Long, val stopped: Boolean, val enabled: Boolean)
+
+/** What one report says. Number and name are present only if the permissions allowed reading them. */
+data class CallReport(
+    val state: CallState,
+    val number: String?,
+    val name: String?,
+    val canAnswer: Boolean,
+    val canEnd: Boolean,
+) {
+    override fun toString() = "CallReport($state, answer=$canAnswer, end=$canEnd)" // never the party
+}
+
+/** Why the phone did not do a request. Fixed vocabulary shared with the computer (`LinkFailure`). */
+enum class CallFailure(val wire: String) {
+    PermissionMissing("permission_missing"),
+    NoSuchCall("no_such_call"),
+    Failed("failed"),
+}
+
+object CallRules {
+    const val MIN_SDK_ANSWER = 26
+    const val MIN_SDK_END = 28
+    const val MAX_FIELD_BYTES = 128
+
+    /** Answering needs the permission, the call state, and API 26. */
+    fun canAnswer(sdk: Int, p: CallPermissions) = sdk >= MIN_SDK_ANSWER && p.answerPhoneCalls && p.readPhoneState
+
+    /** Declining and ending use `TelecomManager.endCall()`, which exists from API 28. */
+    fun canEnd(sdk: Int, p: CallPermissions) = sdk >= MIN_SDK_END && p.answerPhoneCalls && p.readPhoneState
+
+    /** A caller field that fits the wire limit and has no control characters; otherwise it is dropped. */
+    fun cleanField(raw: String?): String? {
+        val s = raw?.trim().orEmpty()
+        if (s.isEmpty() || s.any { Character.isISOControl(it) }) return null
+        return s.takeIf { Bounds.utf8Size(it) <= MAX_FIELD_BYTES }
+    }
+
+    fun report(state: CallState, number: String?, name: String?, sdk: Int, p: CallPermissions): CallReport {
+        val party = state != CallState.Idle
+        val n = if (party && p.readCallLog) cleanField(number) else null
+        val nm = if (party && n != null && p.readContacts) cleanField(name) else null
+        return CallReport(state, n, nm, canAnswer(sdk, p), canEnd(sdk, p))
+    }
+
+    /**
+     * Decide and perform one request; null means done, otherwise the failure to report. Everything is
+     * checked against the *current* state, so a request that raced a state change does nothing.
+     */
+    fun handle(action: CallAction, state: CallState?, sdk: Int, p: CallPermissions, telecom: TelecomPort): CallFailure? {
+        val allowed = when (action) {
+            CallAction.Answer -> canAnswer(sdk, p)
+            CallAction.Reject, CallAction.Hangup -> canEnd(sdk, p)
+        }
+        if (!allowed) return CallFailure.PermissionMissing
+        val fits = when (action) {
+            CallAction.Answer, CallAction.Reject -> state == CallState.Ringing
+            CallAction.Hangup -> state == CallState.OffHook
+        }
+        if (!fits) return CallFailure.NoSuchCall
+        return try {
+            when (action) {
+                CallAction.Answer -> {
+                    telecom.acceptRingingCall()
+                    null
+                }
+                CallAction.Reject, CallAction.Hangup -> if (telecom.endCall()) null else CallFailure.Failed
+            }
+        } catch (e: SecurityException) {
+            CallFailure.PermissionMissing
+        } catch (e: RuntimeException) {
+            CallFailure.Failed
+        }
+    }
+}
+
+/** The only two telecom operations used. Implemented over `TelecomManager` on a device. */
+interface TelecomPort {
+    /** Throws [SecurityException] without ANSWER_PHONE_CALLS. Does nothing if no call is ringing. */
+    fun acceptRingingCall()
+
+    /** Declines a ringing call or ends the current one; false if Android did not end anything. */
+    fun endCall(): Boolean
+}
+
+/** Resolves a caller's number to a contact name on this phone (needs READ_CONTACTS), or null. */
+fun interface ContactLookup {
+    fun nameFor(number: String): String?
+}
+
+object CallsProtocol {
+    const val MAX_WAIT_MS = 50_000L
+    private val idPattern = Regex("[A-Za-z0-9_-]{1,64}")
+
+    private fun base(action: String) = JSONObject().put("version", CoreProtocol.VERSION).put("action", action)
+
+    /** The `calls` object of `transport_start`: its presence makes the app declare the packet types. */
+    fun startObject(s: CallLinkSettings): JSONObject = JSONObject().put("enabled", s.enabled)
+
+    fun configRequest(enabled: Boolean): String = base("transport_calls_config").put("enabled", enabled).toString()
+
+    fun waitRequest(since: Long, timeoutMs: Long = MAX_WAIT_MS): String =
+        base("transport_calls_wait").put("since", since).put("timeout_ms", timeoutMs.coerceIn(0, MAX_WAIT_MS)).toString()
+
+    fun reportRequest(r: CallReport): String {
+        val o = base("transport_calls_report").put("state", wire(r.state))
+        if (r.number != null) o.put("number", r.number)
+        if (r.name != null) o.put("name", r.name)
+        return o.put("can_answer", r.canAnswer).put("can_end", r.canEnd).toString()
+    }
+
+    fun resultRequest(connectionId: Long, requestId: String, failure: CallFailure?): String {
+        val o = base("transport_calls_result").put("connection_id", connectionId).put("request_id", requestId)
+        if (failure != null) o.put("failure", failure.wire)
+        return o.toString()
+    }
+
+    fun wire(s: CallState): String = when (s) {
+        CallState.Idle -> "idle"
+        CallState.Ringing -> "ringing"
+        CallState.OffHook -> "offhook"
+    }
+
+    /** Strictly parses a `transport_calls_wait` result; null if it is not what the core documents. */
+    fun parseWait(result: Any?): CallWait? {
+        val o = result as? JSONObject ?: return null
+        val arr = o.optJSONArray("events") ?: return null
+        if (arr.length() > 16) return null
+        val out = ArrayList<CallRequest>(arr.length())
+        for (i in 0 until arr.length()) {
+            val e = arr.optJSONObject(i) ?: continue
+            if (e.optString("kind") != "request") continue
+            val seq = (e.opt("seq") as? Number)?.toLong() ?: continue
+            val conn = (e.opt("connection_id") as? Number)?.toLong() ?: continue
+            val id = e.optString("request_id", "")
+            val action = CallAction.parse(e.optString("action", "")) ?: continue
+            if (!idPattern.matches(id)) continue
+            out += CallRequest(seq, conn, id, action)
+        }
+        return CallWait(out, o.optLong("last_seq", 0), o.optBoolean("stopped", false), o.optBoolean("enabled", false))
+    }
+}
+
+/**
+ * Glue between telephony, the native core and [CallRules]. All methods are synchronized and must run off
+ * the main thread (they call the core).
+ */
+class CallControlEngine(
+    private val core: (String) -> CoreOutcome,
+    private val telecom: TelecomPort,
+    private val permissions: () -> CallPermissions,
+    private val settings: () -> CallLinkSettings,
+    private val lookup: ContactLookup,
+    private val sdk: Int,
+) {
+    private var state: CallState? = null
+    private var number: String? = null
+    private var name: String? = null
+    private var lastSent: CallReport? = null
+
+    /** The coarse state changed. [number] is whatever Android supplied, if anything. */
+    @Synchronized
+    fun onState(newState: CallState, number: String? = null) {
+        state = newState
+        if (newState == CallState.Idle) {
+            this.number = null
+            name = null
+        } else if (number != null) {
+            setNumber(number)
+        }
+        send()
+    }
+
+    /** The incoming number arrived after the state (Android delivers them separately). */
+    @Synchronized
+    fun onNumber(number: String) {
+        if (state == null || state == CallState.Idle) return
+        setNumber(number)
+        send()
+    }
+
+    /** A permission was granted or revoked: report the new capabilities. */
+    @Synchronized
+    fun permissionsChanged() {
+        lastSent = null
+        send()
+    }
+
+    /** Forget everything (link stopped, feature turned off). */
+    @Synchronized
+    fun reset() {
+        state = null
+        number = null
+        name = null
+        lastSent = null
+    }
+
+    @Synchronized
+    fun onRequests(requests: List<CallRequest>) {
+        if (!settings().enabled) return
+        for (r in requests) {
+            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom)
+            core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
+        }
+    }
+
+    private fun setNumber(n: String) {
+        if (n == number) return
+        number = n
+        name = if (permissions().readContacts) {
+            try {
+                lookup.nameFor(n)
+            } catch (e: RuntimeException) {
+                null
+            }
+        } else {
+            null
+        }
+    }
+
+    private fun send() {
+        val s = state ?: return
+        if (!settings().enabled) return
+        val report = CallRules.report(s, number, name, sdk, permissions())
+        if (report == lastSent) return
+        val outcome = core(CallsProtocol.reportRequest(report))
+        // Only remember what the core accepted; a not-yet-running core is retried on the next change.
+        if (outcome is CoreOutcome.Ok) lastSent = report
+    }
+}

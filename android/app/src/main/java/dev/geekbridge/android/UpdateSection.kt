@@ -29,7 +29,7 @@ class UpdateSection(
     private val activity: Activity,
     private val ui: Ui,
     root: LinearLayout,
-    private val checker: UpdateChecker = UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
+    private val checker: UpdateChecker = UpdateChecker.forBuild(activity),
 ) {
     private val main = Handler(Looper.getMainLooper())
     private val prefs = activity.getSharedPreferences("updates", Context.MODE_PRIVATE)

@@ -15,6 +15,42 @@ Review only; the other agents' files were not edited. Nothing was committed.
 | F5 | The workflow silently published a debug-signed APK for stable tags. That APK cannot be updated over, or replaced by, the real key. Stable tags now fail without the keystore secrets. Prereleases still fall back. | `release.yml` Android job |
 | F6 | `gh release create` published the release first and attached assets afterwards. `releases/latest` could briefly show a release with no `SHA256SUMS` or APK. It now creates a draft with `--verify-tag`, then un-drafts. A completeness check on the five artifacts runs before `SHA256SUMS` is written. | `release.yml` publish job |
 
+## Remediation status (second pass)
+
+| # | Status | Notes |
+|---|--------|-------|
+| 1 | Fixed (earlier) + regression test | `share.rs` `temp_path_survives_multibyte_at_truncation_boundary` (`"a".repeat(63)+"é"`) |
+| 2 | Fixed | temp name is `.gb-<pid>-<counter>-<nanos>-<short>.part`; test `temp_paths_differ_for_names_sharing_a_long_prefix` |
+| 3 | Fixed | `ShareIntentLogic.isBlockedAuthority` (own package, contacts, calendar, call_log, sms, mms) applied in `ShareActivity.parse`; the confirmation lists resolved display names (first 5). Tests `ShareAuthorityTest`. The `getLaunchedFromUid` grant check was not added (needs API 34+ handling). |
+| 4 | Fixed | `accept_peer` drops connections from any IP other than the paired peer (IPv4-mapped normalised) before spawning a handshake; default handshake timeout 10 s to 4 s. Test `only_the_paired_host_gets_a_handshake_slot`. Binding to the link interface address was not done. |
+| 5 | Fixed | default download root is per-user state dir (`$XDG_STATE_HOME`/`~/.local/state`, `%LOCALAPPDATA%`, macOS Application Support) `/geekbridge/updates`, created 0700; `geekbridge-update-*` dirs older than 1 h swept in `Updater::new`; `Updater::verified_installer()` re-hashes before use. Tests `sweep_removes_only_old_update_dirs`, `verified_installer_rehashes_before_use`. Not done: Windows DACL; wiring `verified_installer` into a future installer launcher (nothing opens the file today; UI only reveals it). |
+| 6 | Fixed | exact hosts (`github.com`, `api.github.com`, `objects.`/`release-assets.`/`github-releases.githubusercontent.com`), port 443 on Android too. Tests in `http.rs` and `UpdateModelTest`. Not done: requiring the first hop to be github.com/api.github.com. |
+| 7 | Mostly fixed | all `uses:` pinned by SHA (verified via `gh api`; `dtolnay/rust-toolchain` pins the `stable` branch head and sets `toolchain: stable`); Gradle test/build step has no secrets, a separate signing step holds them, keystore written with `umask 077` and removed in an `if: always()` step; version job requires the tag commit to be an ancestor of `origin/main`. Skipped (needs a repo owner decision): tag-protection rule or `production` environment with reviewers, Dependabot config for actions, and a detached desktop signature (item 4 below). |
+| 4 (orig.) | Open | needs a signing-key decision |
+| 8-17 | Open | not in scope of this pass |
+
+Not verified: the workflow itself was not run on GitHub (YAML parses). `actions/checkout@v7` exists and resolved to the SHA above.
+
+## Call control from the computer (added after this review; not part of its scope)
+
+New surface, listed so the next review does not miss it. Details: [call-control.md](call-control.md).
+
+- **Authority.** A paired computer can make the phone answer, decline or end a call. Gates: per-device `Telephony` consent on
+  the computer (off by default), the phone's opt-in switch (off by default), the `ANSWER_PHONE_CALLS` runtime permission, and
+  a call-state precondition on both ends. A malicious paired peer that the user already allowed "Calls" for can hang up or
+  answer calls (answering routes no audio to it); it cannot dial.
+- **Privacy.** Caller number/name cross the link only with `READ_CALL_LOG` / `READ_CONTACTS` and the opt-in. They live in memory
+  on both sides, never in logs (`Debug` is redacted), and the control channel that serves them (`Request::Calls`) is the
+  existing token-authenticated loopback port. `geekbridge-ctl calls` masks numbers unless `--reveal`. The Linux
+  notification shows the caller label on the desktop's notification daemon (any local notification listener can read it).
+- **Input handling.** `geekbridge.calls.*` bodies are strictly parsed and bounded (128-byte fields, control characters
+  rejected, 64-character request ids); malformed or unsolicited packets count against the link's misbehaviour budget; a
+  payload on these packets is refused; pending requests are capped (4 per phone, 20 s TTL).
+- **Stale decisions.** `CallHub::act` only runs a target that is in the *current* view, so a click on a call that just ended
+  or changed cannot hit another call.
+- **Open:** no replay protection beyond request-id matching and the call-state precondition; the macOS helper path trusts
+  the helper binary found next to the service; `READ_CALL_LOG` is Play-restricted (sideload distribution only).
+
 ## Open findings (not fixed), by priority
 
 ### High

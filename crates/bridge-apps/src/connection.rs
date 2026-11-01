@@ -171,7 +171,7 @@ impl Worker {
                     }
                     state.busy = false;
                     publish(&state, &mut previous);
-                    match rx.recv_timeout(Duration::from_secs(1)) {
+                    match rx.recv_timeout(crate::pace::scaled(Duration::from_secs(1))) {
                         Ok(Command::Request(command)) if !quitting.load(Ordering::Acquire) => {
                             state.busy = true;
                             publish(&state, &mut previous);

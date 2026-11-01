@@ -1,0 +1,15 @@
+[Unit]
+Description=GeekBridge background service (phone pairing, clipboard, file share)
+Documentation=https://github.com/fspecii/geekbridge
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/geekbridge-service
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

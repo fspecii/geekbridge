@@ -89,7 +89,9 @@ pub struct Config {
     pub platform: Platform,
     /// Where settings, the ETag and the last answer persist. `None` keeps everything in memory.
     pub state_file: Option<PathBuf>,
-    /// Parent of the private per-download directory. Defaults to the OS temp directory.
+    /// Parent of the private per-download directory. Defaults to a per-user state directory
+    /// (`$XDG_STATE_HOME/geekbridge/updates`, `%LOCALAPPDATA%`, `~/Library/Application Support`),
+    /// never the shared OS temp directory unless no user directory can be found.
     pub download_root: Option<PathBuf>,
     pub io_timeout: Duration,
     pub check_timeout: Duration,
@@ -172,6 +174,7 @@ struct Downloaded {
     dir: PathBuf,
     file: PathBuf,
     version: String,
+    sha256: String,
 }
 
 #[derive(Default)]
@@ -183,6 +186,8 @@ struct Runtime {
     downloaded: Option<Downloaded>,
     progress: (u64, u64),
     backoff_until: Option<u64>,
+    /// When the scheduler last gave up on a check (not persisted; see `scheduler_tick`).
+    last_attempt_unix: Option<u64>,
 }
 
 enum Fetch {
@@ -223,6 +228,9 @@ impl Updater {
             policy,
             cfg.io_timeout,
         )?;
+        // Leftovers of crashed or abandoned downloads (up to 512 MiB each). Recent ones may belong
+        // to another running instance, so only old directories go.
+        sweep_stale_downloads(&download_root(&cfg), STALE_DOWNLOAD_AGE);
         let persisted = cfg
             .state_file
             .as_deref()
@@ -567,6 +575,7 @@ impl Updater {
                     dir,
                     file: file.clone(),
                     version: cached.version,
+                    sha256: sha,
                 });
                 Ok(file)
             }
@@ -583,11 +592,7 @@ impl Updater {
         asset: &Asset,
         expected: &str,
     ) -> Result<(PathBuf, PathBuf), Error> {
-        let root = self
-            .cfg
-            .download_root
-            .clone()
-            .unwrap_or_else(std::env::temp_dir);
+        let root = download_root(&self.cfg);
         let dir = make_private_dir(&root)?;
         let outcome = (|| {
             let file_path = dir.join(&asset.name);
@@ -641,6 +646,65 @@ impl Updater {
         }
     }
 
+    /// Re-hash the downloaded installer right now and return its path only if it still matches
+    /// the published SHA-256. Anything that opens or launches the file must go through this: the
+    /// path was shown to the user, who may have moved or edited the file since the download.
+    pub fn verified_installer(&self) -> Result<PathBuf, Error> {
+        let (file, expected) = {
+            let rt = self.lock();
+            let d = rt
+                .downloaded
+                .as_ref()
+                .ok_or(Error::NothingToDownload("no installer has been downloaded"))?;
+            (d.file.clone(), d.sha256.clone())
+        };
+        let mut f = std::fs::File::open(&file).map_err(|e| Error::Io(e.to_string()))?;
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0_u8; 64 * 1024];
+        loop {
+            let n = f.read(&mut buf).map_err(|e| Error::Io(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        if bridge_core::ipc::encode_hex(&hasher.finalize()) == expected.to_ascii_lowercase() {
+            Ok(file)
+        } else {
+            Err(Error::HashMismatch)
+        }
+    }
+
+    /// Is an automatic check due? `first` is the startup check (shorter gap).
+    fn check_due(&self, first: bool) -> bool {
+        let rt = self.lock();
+        let gap = if first {
+            self.cfg.min_gap
+        } else {
+            self.cfg.interval
+        };
+        let last = rt
+            .persisted
+            .last_checked_unix
+            .into_iter()
+            .chain(rt.last_attempt_unix)
+            .max();
+        rt.persisted.enabled && last.is_none_or(|t| now_unix().saturating_sub(t) >= gap.as_secs())
+    }
+
+    fn scheduler_tick(&self, first: bool) {
+        if self.check_due(first) {
+            let _ = self.check(false);
+            // A failed check retries at the next interval, not on every tick. This is remembered
+            // apart from `last_checked_unix`, which only a successful answer may set: otherwise a
+            // failure would make the status read "up to date".
+            let mut rt = self.lock();
+            if rt.error.is_some() {
+                rt.last_attempt_unix = Some(now_unix());
+            }
+        }
+    }
+
     /// Background schedule: one check shortly after start (unless one just happened), then every
     /// `interval`. Stops by itself once the last `Arc` is gone.
     pub fn spawn_scheduler(self: &Arc<Self>) {
@@ -652,27 +716,7 @@ impl Updater {
             let mut first = true;
             loop {
                 let Some(this) = weak.upgrade() else { return };
-                let due = {
-                    let rt = this.lock();
-                    let gap = if first {
-                        this.cfg.min_gap
-                    } else {
-                        this.cfg.interval
-                    };
-                    rt.persisted.enabled
-                        && rt
-                            .persisted
-                            .last_checked_unix
-                            .is_none_or(|t| now_unix().saturating_sub(t) >= gap.as_secs())
-                };
-                if due {
-                    let _ = this.check(false);
-                    // A failed check retries at the next interval, not on every tick.
-                    let mut rt = this.lock();
-                    if rt.error.is_some() {
-                        rt.persisted.last_checked_unix = Some(now_unix());
-                    }
-                }
+                this.scheduler_tick(first);
                 first = false;
                 drop(this);
                 std::thread::sleep(tick);
@@ -691,12 +735,73 @@ fn load_persisted(path: &Path) -> Option<Persisted> {
     serde_json::from_slice(&bytes).ok()
 }
 
+const DIR_PREFIX: &str = "geekbridge-update-";
+const STALE_DOWNLOAD_AGE: Duration = Duration::from_secs(3600);
+
+fn download_root(cfg: &Config) -> PathBuf {
+    cfg.download_root
+        .clone()
+        .or_else(user_state_dir)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+fn user_state_dir() -> Option<PathBuf> {
+    let env = |k: &str| {
+        std::env::var_os(k)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let base = if cfg!(windows) {
+        env("LOCALAPPDATA")?
+    } else if cfg!(target_os = "macos") {
+        env("HOME")?.join("Library/Application Support")
+    } else {
+        env("XDG_STATE_HOME").or_else(|| env("HOME").map(|h| h.join(".local/state")))?
+    };
+    Some(base.join("geekbridge").join("updates"))
+}
+
+/// Remove `geekbridge-update-*` directories under `root` last modified more than `min_age` ago.
+fn sweep_stale_downloads(root: &Path, min_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(DIR_PREFIX) {
+            continue;
+        }
+        // `symlink_metadata`: never follow a link out of the root.
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if !meta.is_dir() {
+            continue;
+        }
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn make_private_dir(root: &Path) -> Result<PathBuf, Error> {
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(root).map_err(|e| Error::Io(e.to_string()))?;
+    }
     for _ in 0..8 {
         let mut random = [0_u8; 8];
         getrandom::fill(&mut random).map_err(|_| Error::Io("no random source".into()))?;
         let dir = root.join(format!(
-            "geekbridge-update-{}",
+            "{DIR_PREFIX}{}",
             bridge_core::ipc::encode_hex(&random)
         ));
         let mut builder = std::fs::DirBuilder::new();
@@ -711,4 +816,53 @@ fn make_private_dir(root: &Path) -> Result<PathBuf, Error> {
     Err(Error::Io(
         "cannot create a private download directory".into(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sweep_removes_only_old_update_dirs() {
+        let root = tempfile::tempdir().unwrap();
+        let stale = root.path().join("geekbridge-update-deadbeef");
+        let other = root.path().join("keep-me");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("installer.bin"), b"x").unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+
+        // Fresh directories survive a one-hour threshold.
+        sweep_stale_downloads(root.path(), Duration::from_secs(3600));
+        assert!(stale.exists());
+
+        sweep_stale_downloads(root.path(), Duration::ZERO);
+        assert!(!stale.exists());
+        assert!(other.exists(), "unrelated directories are never touched");
+    }
+
+    #[test]
+    fn a_failed_scheduled_check_does_not_claim_up_to_date() {
+        let mut cfg = Config::github("0.1.0");
+        cfg.base_url = "http://127.0.0.1:1".into(); // loopback, nothing listening
+        cfg.io_timeout = Duration::from_millis(200);
+        cfg.check_timeout = Duration::from_millis(200);
+        let up = Updater::new(cfg).unwrap();
+        up.scheduler_tick(true);
+        let st = up.status();
+        assert!(st.error.is_some(), "the failure is reported");
+        assert_ne!(st.state, UpdateState::UpToDate);
+        assert!(st.last_checked_unix.is_none());
+        // ... and it is not retried on every tick.
+        assert!(!up.check_due(false));
+    }
+
+    #[test]
+    fn default_download_root_is_not_the_shared_temp_dir() {
+        let cfg = Config::github("0.1.0");
+        let root = download_root(&cfg);
+        if let Some(dir) = user_state_dir() {
+            assert_eq!(root, dir);
+        }
+        assert!(root.is_absolute());
+    }
 }

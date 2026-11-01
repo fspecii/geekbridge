@@ -13,25 +13,32 @@ pub use bridge_core::clipboard_wire::{
     PULL as CLIPBOARD_PULL,
 };
 
+pub use bridge_core::calls_link::{
+    REQUEST as CALLS_REQUEST, RESULT as CALLS_RESULT, STATE as CALLS_STATE,
+};
+
 pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 6] = [
+pub const LOCAL_INCOMING: [&str; 8] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_ITEM,
     CLIPBOARD_NONE,
     SHARE_REQUEST,
+    CALLS_STATE,
+    CALLS_RESULT,
 ];
-pub const LOCAL_OUTGOING: [&str; 6] = [
+pub const LOCAL_OUTGOING: [&str; 7] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_PULL,
     CLIPBOARD_ITEM,
     SHARE_REQUEST,
+    CALLS_REQUEST,
 ];
 
 /// Packet types the peer may send us: its outgoing list intersected with what we declared.
@@ -57,6 +64,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::clipboard_wire::is_pull_protocol_kind(kind) {
         return Some(Feature::Clipboard);
     }
+    if bridge_core::calls_link::is_calls_kind(kind) {
+        return Some(Feature::Telephony);
+    }
     let ns = kind.strip_prefix("kdeconnect.")?;
     let head = ns.split('.').next()?;
     Some(match head {
@@ -71,7 +81,7 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
 
 /// Whether the service has a protocol adapter that handles `feature` packets.
 pub fn adapter_integrated(feature: Feature) -> bool {
-    matches!(feature, Feature::Clipboard)
+    matches!(feature, Feature::Clipboard | Feature::Telephony)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -79,6 +89,8 @@ pub enum Incoming {
     Ping,
     /// A clipboard packet. Whether it is acted on still depends on the per-device consent.
     Clipboard,
+    /// A `geekbridge.calls.*` packet from the phone. Acted on only for devices with Telephony consent.
+    Calls,
     Reject,
 }
 
@@ -88,6 +100,8 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::Ping
     } else if feature_of(kind) == Some(Feature::Clipboard) && negotiated.iter().any(|k| k == kind) {
         Incoming::Clipboard
+    } else if matches!(kind, CALLS_STATE | CALLS_RESULT) && negotiated.iter().any(|k| k == kind) {
+        Incoming::Calls
     } else {
         Incoming::Reject
     }

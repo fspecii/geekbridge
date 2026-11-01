@@ -30,11 +30,20 @@ use tokio::time::{Instant, sleep, timeout};
 
 use bridge_kde::share::{SHARE_REQUEST, SHARE_REQUEST_UPDATE};
 
+mod calls;
 mod clipboard;
 mod share;
 
 pub(super) use clipboard::SendArgs as ClipboardSend;
 
+pub(super) use calls::ReportArgs as CallsReport;
+
+pub(super) fn calls_incoming_types() -> Vec<String> {
+    calls::incoming_types()
+}
+pub(super) fn calls_outgoing_types() -> Vec<String> {
+    calls::outgoing_types()
+}
 pub(super) fn clipboard_incoming_types() -> Vec<String> {
     clipboard::incoming_types()
 }
@@ -103,6 +112,7 @@ enum Ctl {
     SendFile(Box<share::SendJob>),
     SendText(share::TextJob),
     Clip(Box<clipboard::Out>),
+    Calls(calls::Out),
 }
 
 struct ConnEntry {
@@ -218,6 +228,7 @@ pub(super) struct Core {
     state: Mutex<State>,
     shares: Mutex<share::Book>,
     clip: clipboard::Hub,
+    calls: calls::Hub,
 }
 
 pub(super) struct Decision {
@@ -255,6 +266,7 @@ impl Core {
             }),
             shares: Mutex::new(share::Book::default()),
             clip: clipboard::Hub::default(),
+            calls: calls::Hub::default(),
         }
     }
 
@@ -271,6 +283,7 @@ impl Core {
     /// waiting approver resolve to a rejection; the runtime shutdown that follows ends the tasks.
     pub(super) fn shutdown(&self) {
         self.clip.shutdown();
+        self.calls.shutdown();
         self.shares
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -916,6 +929,13 @@ async fn run_trusted(
     mut ctl_rx: mpsc::Receiver<Ctl>,
     close: Arc<Notify>,
 ) {
+    // A computer that connects while a call is already ringing must hear about it.
+    if let Some(body) = core.calls().current()
+        && !calls::send(&mut link, calls::Out::State(body)).await
+    {
+        core.remove_conn(id, Some(("link_closed", Some("io_error"))));
+        return;
+    }
     let exit: Option<(&'static str, Option<&'static str>)> = loop {
         tokio::select! {
             biased;
@@ -946,6 +966,11 @@ async fn run_trusted(
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
+                Some(Ctl::Calls(out)) => {
+                    if !calls::send(&mut link, out).await {
+                        break Some(("link_closed", Some("io_error")));
+                    }
+                }
                 Some(Ctl::Pair(_)) => {}
                 None => break None,
             },
@@ -955,6 +980,8 @@ async fn run_trusted(
                     let is_ping = p.kind == PING;
                     let acted = if p.kind == SHARE_REQUEST || p.kind == SHARE_REQUEST_UPDATE {
                         core.incoming_share(id, link.payload_context(), &p)
+                    } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
+                        core.incoming_calls(id, &p)
                     } else if bridge_core::clipboard_wire::is_clipboard_kind(&p.kind)
                         || bridge_core::clipboard_wire::is_pull_protocol_kind(&p.kind)
                     {
@@ -976,6 +1003,11 @@ async fn run_trusted(
             },
         }
     };
+    // Files queued behind the failure will never be announced; fail them instead of leaving them waiting.
+    ctl_rx.close();
+    while let Ok(queued) = ctl_rx.try_recv() {
+        core.drop_queued(queued);
+    }
     core.remove_conn(id, exit);
 }
 

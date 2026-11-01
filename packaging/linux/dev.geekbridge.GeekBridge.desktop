@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge
+GenericName=Phone bridge
+Comment=Pair your phone, sync the clipboard and send files
+Exec=geekbridge %F
+Icon=dev.geekbridge.GeekBridge
+Terminal=false
+Categories=Network;
+Keywords=phone;android;clipboard;share;pair;
+StartupWMClass=dev.geekbridge.GeekBridge

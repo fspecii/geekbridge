@@ -44,21 +44,21 @@ class OfferDialogs(private val activity: Activity, private val coordinator: Shar
     private fun showOffer(t: Transfer) {
         val size = t.size?.let { " (${ProgressText.bytes(it)})" } ?: ""
         dialog = AlertDialog.Builder(activity)
-            .setTitle("${t.peerName.ifEmpty { "A computer" }} wants to send a file")
-            .setMessage("${t.name}$size\n\nIt is saved to Downloads/GeekBridge only if you accept.")
+            .setTitle(activity.getString(R.string.offer_wants_file, t.peerName.ifEmpty { activity.getString(R.string.offer_a_computer) }))
+            .setMessage("${t.name}$size\n\n" + activity.getString(R.string.offer_saved_note))
             .setCancelable(false)
-            .setPositiveButton("Accept") { _, _ -> coordinator.answer(t.id, true) }
-            .setNegativeButton("Decline") { _, _ -> coordinator.answer(t.id, false) }
+            .setPositiveButton(R.string.offer_accept) { _, _ -> coordinator.answer(t.id, true) }
+            .setNegativeButton(R.string.offer_decline) { _, _ -> coordinator.answer(t.id, false) }
             .show()
     }
 
     private fun showText(t: ReceivedText) {
         val b = AlertDialog.Builder(activity)
-            .setTitle(if (t.kind == TransferKind.Url) "Link from ${t.from.ifEmpty { "computer" }}" else "Text from ${t.from.ifEmpty { "computer" }}")
+            .setTitle(activity.getString(if (t.kind == TransferKind.Url) R.string.offer_link_from else R.string.offer_text_from, t.from.ifEmpty { activity.getString(R.string.offer_computer) }))
             .setMessage(Bounds.clip(t.text, 1000))
-            .setNegativeButton("Close") { _, _ -> dismissedText += t.id }
+            .setNegativeButton(R.string.offer_close) { _, _ -> dismissedText += t.id }
         if (t.kind == TransferKind.Url && ShareIntentLogic.isWebUrl(t.text)) {
-            b.setPositiveButton("Open") { _, _ ->
+            b.setPositiveButton(R.string.offer_open) { _, _ ->
                 dismissedText += t.id
                 try {
                     activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(t.text.trim())))
@@ -66,7 +66,7 @@ class OfferDialogs(private val activity: Activity, private val coordinator: Shar
                 }
             }
         } else {
-            b.setPositiveButton("Copy") { _, _ ->
+            b.setPositiveButton(R.string.offer_copy) { _, _ ->
                 dismissedText += t.id
                 coordinator.copyText(t.id)
             }

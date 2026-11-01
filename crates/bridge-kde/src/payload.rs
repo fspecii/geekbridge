@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -132,7 +132,7 @@ impl Default for PayloadConfig {
             any_port: false,
             accept_timeout: Duration::from_secs(120),
             connect_timeout: Duration::from_secs(10),
-            handshake_timeout: Duration::from_secs(10),
+            handshake_timeout: Duration::from_secs(4),
             idle_timeout: Duration::from_secs(30),
         }
     }
@@ -147,6 +147,10 @@ pub struct PayloadContext {
     pub(crate) peer_id: DeviceId,
     pub(crate) peer_cert: CertInfo,
     pub(crate) peer_ip: IpAddr,
+    /// Local IP of the control connection, when known. A dialing receiver binds its payload
+    /// socket to it so the sender (which accepts only the paired peer's IP) sees the same
+    /// address as on the control link, even on multi-homed hosts.
+    pub(crate) local_ip: Option<IpAddr>,
     pub(crate) versions: TlsVersions,
     pub(crate) config: PayloadConfig,
 }
@@ -232,7 +236,7 @@ impl PayloadContext {
         let c = &self.config;
         let work = async {
             let addr = SocketAddr::new(self.peer_ip, port);
-            let tcp = timeout(c.connect_timeout, TcpStream::connect(addr))
+            let tcp = timeout(c.connect_timeout, dial(addr, self.local_ip))
                 .await
                 .map_err(|_| PayloadError::Timeout("payload connect"))??;
             tcp.set_nodelay(true)?;
@@ -299,8 +303,11 @@ impl PayloadListener {
         loop {
             tokio::select! {
                 accepted = timeout_at(deadline, self.listener.accept()) => {
-                    let (tcp, _) = accepted
+                    let (tcp, from) = accepted
                         .map_err(|_| PayloadError::Timeout("waiting for the receiver"))??;
+                    if !same_host(from.ip(), self.ctx.peer_ip) {
+                        continue; // not the paired device: never spend a handshake slot on it
+                    }
                     if pending >= MAX_PENDING_HANDSHAKES {
                         continue; // dropped unread
                     }
@@ -339,6 +346,35 @@ async fn handshake_server(
     .await
     .map_err(|_| PayloadError::Timeout("payload TLS handshake"))?
     .map_err(|e| PayloadError::Link(KdeError::Tls(e.to_string())))
+}
+
+/// Dial `addr`, with the source bound to `local` (port chosen by the OS) when it is known and of
+/// the same family. If binding fails the plain OS-chosen route is used.
+async fn dial(addr: SocketAddr, local: Option<IpAddr>) -> std::io::Result<TcpStream> {
+    if let Some(ip) = local
+        && ip.is_ipv4() == addr.is_ipv4()
+    {
+        let socket = if addr.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        if socket.bind(SocketAddr::new(ip, 0)).is_ok() {
+            return socket.connect(addr).await;
+        }
+    }
+    TcpStream::connect(addr).await
+}
+
+/// True when `a` and `b` are the same host, treating `::ffff:a.b.c.d` as `a.b.c.d`.
+fn same_host(a: IpAddr, b: IpAddr) -> bool {
+    fn canon(ip: IpAddr) -> IpAddr {
+        match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            v4 => v4,
+        }
+    }
+    canon(a) == canon(b)
 }
 
 fn is_mapped(ip: IpAddr) -> bool {

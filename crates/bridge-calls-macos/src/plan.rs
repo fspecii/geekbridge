@@ -65,7 +65,11 @@ impl MacCommand {
     pub fn from_core(command: &CallCommand) -> Result<Self, Refusal> {
         Ok(match command {
             CallCommand::Answer { call } => Self::Answer { call: call.clone() },
-            CallCommand::Hangup { call } => Self::Hangup { call: call.clone() },
+            // IOBluetooth's `endCall` both hangs up and rejects; the planner decides from the
+            // call's phase. The core already restricted `Reject` to ringing calls.
+            CallCommand::Hangup { call } | CallCommand::Reject { call } => {
+                Self::Hangup { call: call.clone() }
+            }
             CallCommand::Dial { number } => Self::Dial {
                 number: number.clone(),
             },

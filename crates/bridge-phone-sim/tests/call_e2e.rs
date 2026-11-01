@@ -116,6 +116,11 @@ fn s7_link_loss() {
     run_one("S7");
 }
 
+#[test]
+fn s8_service_hub() {
+    run_one("S8");
+}
+
 /// All scenarios back to back on one simulator: each must leave the stack clean for the next,
 /// and call-object paths the simulator reuses must not confuse the session.
 #[test]

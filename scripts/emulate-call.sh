@@ -8,10 +8,11 @@
 # What it does: builds geekbridge-phone-sim and geekbridge-call-e2e (cargo --locked) and runs
 # everything under `dbus-run-session`, so no real session bus is ever touched.
 #   fake:     geekbridge-call-e2e --fake. The harness is self-contained: it starts its own private
-#             dbus-daemon and an in-process simulator over an in-memory modem (runs S1-S7).
+#             dbus-daemon and an in-process simulator over an in-memory modem (runs S1-S8).
 #   emulator: starts geekbridge-phone-sim (a fake org.pipewire.Telephony service backed by the
 #             Android emulator modem through adb) on the private bus, then runs the harness
-#             against it with the real bridge-calls Session (S1-S6; S7 is skipped).
+#             against it with the real bridge-calls Session (S1-S6 and S8; S7 is skipped unless
+#             --spawn-sim is given).
 # The exit status is the harness's: 0 pass, 1 scenario failure, 2 usage/setup error.
 #
 # Only simulated cellular call signalling is exercised. Bluetooth pairing, HFP AT commands, SCO
@@ -19,6 +20,10 @@
 #
 # Options:
 #   --only S1,S4        run only these scenarios
+#   --spawn-sim         emulator mode only: let the harness run the simulator in-process on its own
+#                       private bus instead of a separate geekbridge-phone-sim process. This is
+#                       the only way to run S7 (service loss) against the emulator. Default numbers
+#                       differ per mode (fake 5551234, emulator 5557701); both are fictional.
 #   --json              ask the harness for JSON output
 #   --interval-ms N     simulator modem poll interval (emulator mode; default 300)
 #   --release           build and run release binaries
@@ -49,6 +54,7 @@ MODE=""
 INNER=0
 ONLY=""
 JSON=0
+SPAWN_SIM=0
 INTERVAL=""
 PROFILE=debug
 BUILD=1
@@ -65,6 +71,7 @@ while [ $# -gt 0 ]; do
         --inner) INNER=1 ;;
         --only) [ $# -ge 2 ] || die "--only needs a value"; ONLY="$2"; shift ;;
         --json) JSON=1 ;;
+        --spawn-sim) SPAWN_SIM=1 ;;
         --interval-ms) [ $# -ge 2 ] || die "--interval-ms needs a value"; INTERVAL="$2"; shift ;;
         --release) PROFILE=release ;;
         --no-build) BUILD=0 ;;
@@ -75,6 +82,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$MODE" ] || { usage >&2; exit 2; }
+[ "$SPAWN_SIM" -eq 0 ] || [ "$MODE" = emulator ] || die "--spawn-sim applies to emulator mode only (fake mode is already self-contained)"
 
 # Validate user-supplied values before they reach any command line.
 ONLY="${ONLY^^}"
@@ -151,6 +159,29 @@ cleanup() {
     exit "$rc"
 }
 
+start_simulator() {
+    local bus="$1"; shift
+    if [ "$(name_owned_on address "$bus")" = yes ]; then
+        die "$WELL_KNOWN_NAME already has an owner on the private bus; refusing to start"
+    fi
+    log "starting simulator (emulator modem); log: $LOG_DIR/simulator.log"
+    "$SIM_BIN" "$@" </dev/null >"$LOG_DIR/simulator.log" 2>&1 &
+    sim_pid=$!
+
+    local i owned="unknown"
+    for i in $(seq 1 100); do
+        kill -0 "$sim_pid" 2>/dev/null || { tail -n 20 "$LOG_DIR/simulator.log" >&2 || true; die "simulator exited early"; }
+        owned="$(name_owned_on address "$bus")"
+        [ "$owned" = no ] || break
+        sleep 0.2
+    done
+    case "$owned" in
+        yes) log "simulator owns $WELL_KNOWN_NAME" ;;
+        unknown) log "cannot query the bus (no dbus-send?); giving the simulator 2s"; sleep 2 ;;
+        *) tail -n 20 "$LOG_DIR/simulator.log" >&2 || true; die "simulator did not claim $WELL_KNOWN_NAME within 20s" ;;
+    esac
+}
+
 run_inner() {
     [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || die "inner phase must run under dbus-run-session"
     [ -n "$LOG_DIR" ] || die "inner phase needs a log dir"
@@ -165,29 +196,16 @@ run_inner() {
         e2e_args+=(--fake)
     else
         local extra=(--adb "$ADB_BIN" --serial "$SERIAL" --adb-port "$ADB_PORT")
-        local sim_args=(--bus "$bus" "${extra[@]}")
-        [ -z "$INTERVAL" ] || sim_args+=(--interval-ms "$INTERVAL")
-        e2e_args+=(--bus "$bus" "${extra[@]}")
-
-        if [ "$(name_owned_on address "$bus")" = yes ]; then
-            die "$WELL_KNOWN_NAME already has an owner on the private bus; refusing to start"
+        if [ "$SPAWN_SIM" -eq 1 ]; then
+            # The harness owns the simulator (in-process, own private dbus-daemon); S7 can run.
+            e2e_args+=("${extra[@]}" --spawn-sim)
+            [ -z "$INTERVAL" ] || e2e_args+=(--interval-ms "$INTERVAL")
+        else
+            local sim_args=(--bus "$bus" "${extra[@]}")
+            [ -z "$INTERVAL" ] || sim_args+=(--interval-ms "$INTERVAL")
+            e2e_args+=(--bus "$bus" "${extra[@]}")
+            start_simulator "$bus" "${sim_args[@]}"
         fi
-        log "starting simulator (emulator modem); log: $LOG_DIR/simulator.log"
-        "$SIM_BIN" "${sim_args[@]}" </dev/null >"$LOG_DIR/simulator.log" 2>&1 &
-        sim_pid=$!
-
-        local i owned="unknown"
-        for i in $(seq 1 100); do
-            kill -0 "$sim_pid" 2>/dev/null || { tail -n 20 "$LOG_DIR/simulator.log" >&2 || true; die "simulator exited early"; }
-            owned="$(name_owned_on address "$bus")"
-            [ "$owned" = no ] || break
-            sleep 0.2
-        done
-        case "$owned" in
-            yes) log "simulator owns $WELL_KNOWN_NAME" ;;
-            unknown) log "cannot query the bus (no dbus-send?); giving the simulator 2s"; sleep 2 ;;
-            *) tail -n 20 "$LOG_DIR/simulator.log" >&2 || true; die "simulator did not claim $WELL_KNOWN_NAME within 20s" ;;
-        esac
     fi
     [ -z "$ONLY" ] || e2e_args+=(--only "$ONLY")
     [ "$JSON" -eq 0 ] || e2e_args+=(--json)
@@ -237,7 +255,7 @@ if [ "$MODE" = emulator ]; then
 fi
 
 [ "$BUILD" -eq 0 ] || build
-if [ "$MODE" = emulator ]; then
+if [ "$MODE" = emulator ] && [ "$SPAWN_SIM" -eq 0 ]; then
     [ -x "$SIM_BIN" ] || die "missing $SIM_BIN (build failed or --no-build without a build)"
 fi
 [ -x "$E2E_BIN" ] || die "missing $E2E_BIN (build failed or --no-build without a build)"
@@ -260,6 +278,7 @@ inner_args=("$MODE" --inner --log-dir "$LOG_DIR" --no-build)
 [ "$PROFILE" = release ] && inner_args+=(--release)
 [ -z "$ONLY" ] || inner_args+=(--only "$ONLY")
 [ -z "$INTERVAL" ] || inner_args+=(--interval-ms "$INTERVAL")
+[ "$SPAWN_SIM" -eq 0 ] || inner_args+=(--spawn-sim)
 [ "$JSON" -eq 0 ] || inner_args+=(--json)
 
 # Run in the background and `wait`, so a signal reaches our trap immediately and is forwarded to

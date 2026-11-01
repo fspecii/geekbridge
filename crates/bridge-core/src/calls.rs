@@ -77,6 +77,9 @@ pub enum CallBackend {
     KdeConnect,
     /// Bluetooth Hands-Free Profile, with this computer as the hands-free unit.
     BluetoothHfp { host: HfpHost },
+    /// GeekBridge's own call-control packets over the paired LAN link (`calls_link`). Carries state
+    /// and answer/reject/end requests only; call audio never travels on it.
+    GeekBridgeLink,
 }
 
 /// The host stack that would implement the HFP hands-free role.
@@ -359,13 +362,29 @@ pub struct HfpEvidence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CallCommand {
-    Answer { call: CallId },
-    Hangup { call: CallId },
-    Dial { number: Sensitive },
+    Answer {
+        call: CallId,
+    },
+    Hangup {
+        call: CallId,
+    },
+    /// Decline a ringing call. Needs the same support as [`CallFeature::Hangup`] (every backend
+    /// declines through its hang-up operation) but is only valid while the call is ringing, so it
+    /// can never end a call in progress.
+    Reject {
+        call: CallId,
+    },
+    Dial {
+        number: Sensitive,
+    },
     SwapCalls,
-    SendTones { tones: Sensitive },
+    SendTones {
+        tones: Sensitive,
+    },
     MuteRinger,
-    SetMicrophoneMute { muted: bool },
+    SetMicrophoneMute {
+        muted: bool,
+    },
     ConnectAudio,
     DisconnectAudio,
 }
@@ -373,7 +392,7 @@ impl CallCommand {
     pub fn feature(&self) -> CallFeature {
         match self {
             Self::Answer { .. } => CallFeature::Answer,
-            Self::Hangup { .. } => CallFeature::Hangup,
+            Self::Hangup { .. } | Self::Reject { .. } => CallFeature::Hangup,
             Self::Dial { .. } => CallFeature::Dial,
             Self::SwapCalls => CallFeature::SwapCalls,
             Self::SendTones { .. } => CallFeature::SendTones,
@@ -395,7 +414,7 @@ impl CallCommand {
             Self::SendTones { tones } if !ok(tones.expose(), "0123456789*#ABCD") => {
                 Err(CommandRejection::InvalidArgument)
             }
-            Self::Answer { call } | Self::Hangup { call }
+            Self::Answer { call } | Self::Hangup { call } | Self::Reject { call }
                 if call.as_str().is_empty() || call.as_str().len() > MAX_FIELD_LEN =>
             {
                 Err(CommandRejection::InvalidArgument)
@@ -850,6 +869,11 @@ impl CallState {
                 .contains_key(call)
                 .then_some(())
                 .ok_or(NoSuchCall),
+            CallCommand::Reject { call } => match self.calls.get(call) {
+                None => Err(NoSuchCall),
+                Some(c) if c.phase.is_ringing() => Ok(()),
+                Some(_) => Err(InvalidState),
+            },
             CallCommand::SwapCalls if !any(|c| c.phase == CallPhase::Held) => Err(InvalidState),
             CallCommand::SendTones { .. } if !any(|c| c.phase == CallPhase::Active) => {
                 Err(InvalidState)
@@ -1240,6 +1264,36 @@ mod tests {
                 }
             ),
             Err(CommandRejection::LinkDown)
+        );
+    }
+
+    #[test]
+    fn reject_needs_hangup_support_and_a_ringing_call() {
+        let mut caps = CallCapabilities::unprobed(CallBackend::GeekBridgeLink);
+        let reject = CallCommand::Reject { call: id("a") };
+        assert_eq!(reject.feature(), CallFeature::Hangup);
+        assert_eq!(caps.authorize(&reject), Err(CommandRejection::NotProbed));
+        caps.set(CallFeature::Hangup, Support::Declared);
+        let mut s = up();
+        assert_eq!(
+            s.check_command(&caps, &reject),
+            Err(CommandRejection::NoSuchCall)
+        );
+        update(&mut s, "a", CallDirection::Incoming, CallPhase::Incoming);
+        assert_eq!(s.check_command(&caps, &reject), Ok(()));
+        update(&mut s, "a", CallDirection::Unknown, CallPhase::Active);
+        // A call in progress is ended with Hangup, never with Reject.
+        assert_eq!(
+            s.check_command(&caps, &reject),
+            Err(CommandRejection::InvalidState)
+        );
+        assert_eq!(
+            s.check_command(&caps, &CallCommand::Hangup { call: id("a") }),
+            Ok(())
+        );
+        assert_eq!(
+            CallCommand::Reject { call: id("") }.validate(),
+            Err(CommandRejection::InvalidArgument)
         );
     }
 

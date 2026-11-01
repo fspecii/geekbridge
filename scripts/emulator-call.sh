@@ -2,7 +2,10 @@
 # Manage the dedicated headless Android emulator (AVD "gbcall") that provides the simulated
 # cellular modem for the GeekBridge emulated-call checks.
 #
-#   scripts/emulator-call.sh start     boot the emulator (idempotent); returns when sys.boot_completed=1
+#   scripts/emulator-call.sh create-avd [--recreate]
+#                                      create AVD "gbcall" (idempotent); --recreate replaces it
+#   scripts/emulator-call.sh start     boot the emulator (idempotent; creates the AVD if missing);
+#                                      returns when sys.boot_completed=1
 #   scripts/emulator-call.sh stop      stop the emulator this script started (idempotent)
 #   scripts/emulator-call.sh status    print STATUS; exit 0 only when ready
 #   scripts/emulator-call.sh wait      block until ready (exit 0), failed (exit 1) or timeout (exit 2)
@@ -27,6 +30,9 @@
 #   GB_EMU_STATE_DIR=.tools/gbcall  where STATUS, emulator.pid, emulator.log and the lock live
 #   GB_EMU_UNIT=gbcall-emulator  name of the transient systemd user unit (see below)
 #   GB_EMU_EXTRA=""              extra emulator flags, e.g. "-memory 2048 -cores 2"
+#
+# A clean checkout needs: scripts/bootstrap-android.sh --with-emulator (SDK, emulator and the system
+# image $GB_EMULATOR_IMAGE), then `scripts/emulator-call.sh start` (which runs create-avd if needed).
 #
 # Why a systemd user unit: a process that listens on localhost inside an agent's process tree is
 # port-probed by the host tooling (an HTTP GET from a node client). The emulator's modem listens on
@@ -158,7 +164,7 @@ launch() {
       -p KillMode=control-group -p TimeoutStopSec=20 \
       --setenv=GB_EMU_AVD --setenv=GB_EMU_PORT --setenv=GB_EMU_ADB_PORT --setenv=GB_EMU_TMPDIR \
       --setenv=GB_EMU_EXTRA="${GB_EMU_EXTRA:-}" \
-      "$ROOT/.tools/gbcall/start.sh" "${args[@]}" 9>&- || return 1
+      "$ROOT/scripts/emulator-call-launch.sh" "${args[@]}" 9>&- || return 1
     local i pid=""
     for i in $(seq 1 50); do
       pid="$(unit_pid)"
@@ -170,7 +176,7 @@ launch() {
   else
     say "warning: no systemd user session; falling back to setsid/nohup (the emulator may be killed by host port-probing, see `docs/architecture.md`)"
     : > "$LOG_FILE"
-    setsid nohup "$ROOT/.tools/gbcall/start.sh" "${args[@]}" >> "$LOG_FILE" 2>&1 < /dev/null 9>&- &
+    setsid nohup "$ROOT/scripts/emulator-call-launch.sh" "${args[@]}" >> "$LOG_FILE" 2>&1 < /dev/null 9>&- &
     printf '%s\n' "$!" > "$PID_FILE"
   fi
   return 0
@@ -203,11 +209,67 @@ wait_telephony() {
   return 1
 }
 
+avd_exists() { [ -r "${ANDROID_AVD_HOME:-/nonexistent}/$AVD.ini" ] && [ -d "${ANDROID_AVD_HOME}/$AVD.avd" ]; }
+
+# Create the AVD from the project-local SDK. Idempotent; $1 = recreate (0|1). Returns 0 on success.
+create_avd() {
+  local recreate="${1:-0}" avdm="$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager"
+  local image="${GB_EMULATOR_IMAGE:-system-images;android-36;google_apis;x86_64}"
+  local imgdir="$ANDROID_HOME/$(printf '%s' "$image" | tr ';' '/')"
+  if avd_exists && [ "$recreate" != 1 ]; then
+    say "AVD '$AVD' already exists; nothing to do (use --recreate to replace it)"
+    return 0
+  fi
+  if [ ! -x "$EMU_BIN" ] || [ ! -x "$avdm" ] || [ ! -d "$imgdir" ]; then
+    say "cannot create AVD '$AVD': missing project-local emulator, avdmanager or system image '$image'"
+    say "run: scripts/bootstrap-android.sh --with-emulator"
+    return 1
+  fi
+  if [ "$recreate" = 1 ] && our_pid_alive; then
+    say "refusing to recreate AVD '$AVD' while its emulator is running; run '$0 stop' first"
+    return 1
+  fi
+  local force=()
+  [ "$recreate" = 1 ] && force=(--force)
+  mkdir -p "$ANDROID_AVD_HOME"
+  say "creating AVD '$AVD' (image $image, device pixel_6)"
+  # `no` answers avdmanager's "custom hardware profile?" prompt.
+  if ! printf 'no\n' | JAVA_HOME="$JAVA_HOME" "$avdm" create avd -n "$AVD" -k "$image" -d pixel_6 "${force[@]}" >"$STATE_DIR/create-avd.log" 2>&1; then
+    say "avdmanager failed; see $STATE_DIR/create-avd.log"
+    tail -n 5 "$STATE_DIR/create-avd.log" >&2
+    return 1
+  fi
+  # Headless call testing: modest resources, no device frame.
+  local cfg="$ANDROID_AVD_HOME/$AVD.avd/config.ini" k v
+  if [ -w "$cfg" ]; then
+    for kv in hw.ramSize=2G hw.cpu.ncore=4 showDeviceFrame=no; do
+      k="${kv%%=*}"; v="${kv#*=}"
+      if grep -q "^$k=" "$cfg"; then sed -i "s|^$k=.*|$k=$v|" "$cfg"; else printf '%s=%s\n' "$k" "$v" >> "$cfg"; fi
+    done
+  fi
+  avd_exists || { say "avdmanager reported success but AVD '$AVD' is missing"; return 1; }
+  say "AVD '$AVD' created"
+}
+
+cmd_create_avd() {
+  local recreate=0
+  case "${1:-}" in
+    "") ;;
+    --recreate) recreate=1 ;;
+    *) say "usage: $0 create-avd [--recreate]"; return 2 ;;
+  esac
+  exec 9> "$LOCK_FILE"
+  flock -w 120 9 || { say "could not get lock $LOCK_FILE"; return 1; }
+  create_avd "$recreate"
+}
+
 preflight() {
   [ -x "$EMU_BIN" ] || { set_status "failed: emulator binary missing at $EMU_BIN (run scripts/bootstrap-android.sh)"; return 1; }
   [ -x "$ADB_BIN" ] || { set_status "failed: adb not found"; return 1; }
-  [ -r "${ANDROID_AVD_HOME:-/nonexistent}/$AVD.ini" ] \
-    || { set_status "failed: AVD '$AVD' not found in ${ANDROID_AVD_HOME:-?}"; return 1; }
+  if ! avd_exists; then
+    say "AVD '$AVD' not found; creating it"
+    create_avd 0 || { set_status "failed: AVD '$AVD' missing and could not be created (run scripts/bootstrap-android.sh --with-emulator)"; return 1; }
+  fi
   if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
     set_status "failed: /dev/kvm not accessible (hardware acceleration required; add user to the kvm group)"; return 1
   fi
@@ -422,9 +484,10 @@ cmd_state() {
 
 cmd_adb() { exec "$ADB_BIN" -s "$SERIAL" "$@"; }
 
-usage() { sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^# Only simulated/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in
+  create-avd) shift; cmd_create_avd "$@" ;;
   start)  cmd_start ;;
   stop)   cmd_stop ;;
   status) cmd_status ;;

@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.LinearLayout
+import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 
 /**
@@ -41,9 +42,20 @@ class SetupActivity : Activity() {
             intent.getBooleanExtra(EXTRA_REVIEW, false) -> steps.size
             else -> SetupModel.firstOpen(steps)?.let { f -> steps.indexOfFirst { it.id == f.id } } ?: steps.size
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
-        }
+    }
+
+    // Predictive back: on the first page the system's own back-to-home animation plays; the callback is only
+    // registered while Back means "previous page".
+    private val backCallback = OnBackInvokedCallback { goBack() }
+    private var backRegistered = false
+
+    private fun syncBackCallback() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val want = page > 0
+        if (want == backRegistered) return
+        backRegistered = want
+        if (want) onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback)
+        else onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -88,6 +100,8 @@ class SetupActivity : Activity() {
         contacts = perm(Manifest.permission.READ_CONTACTS),
         calendar = perm(Manifest.permission.READ_CALENDAR),
         phoneState = perm(Manifest.permission.READ_PHONE_STATE),
+        answerCalls = perm(Manifest.permission.ANSWER_PHONE_CALLS),
+        callLog = perm(Manifest.permission.READ_CALL_LOG),
         battery = PowerChecks.batteryState(this),
         oemAcknowledged = AppState.oemAcknowledged,
         oem = oem,
@@ -101,6 +115,7 @@ class SetupActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        CallControlRuntime.onPermissionsChanged()
         render()
     }
 
@@ -122,6 +137,11 @@ class SetupActivity : Activity() {
         root.addView(header())
         if (page >= steps.size) overview(root) else stepPage(root, steps[page])
         footer()
+        syncBackCallback()
+        screen.announcePage(
+            if (page >= steps.size) getString(R.string.setup_overview_pane)
+            else getString(R.string.setup_step_pane, page + 1, steps.size, SetupModel.title(steps[page].id)),
+        )
         screen.requestInsets()
         screen.scroll.scrollTo(0, 0)
     }
@@ -130,7 +150,7 @@ class SetupActivity : Activity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val overview = page >= steps.size
         box.addView(
-            kit.text(if (overview) "Overview" else "Step ${page + 1} of ${steps.size}", 13f, Tone.Muted, bold = true),
+            kit.text(if (overview) getString(R.string.setup_overview) else getString(R.string.setup_step_of, page + 1, steps.size), 13f, Tone.Muted, bold = true),
         )
         val bars = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         for ((i, s) in steps.withIndex()) {
@@ -162,10 +182,11 @@ class SetupActivity : Activity() {
         when (s.id) {
             StepId.Pair -> pairStep(panel)
             StepId.Sms -> {
-                kit.button(panel, "Open app settings", BtnStyle.Tonal) { PowerChecks.openAppSettings(this) }
-                panel.addView(kit.text("On Android 13 and newer, apps installed outside a store may need “Allow restricted settings” in the ⋮ menu of that page before any special access can be switched on.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Tonal) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text(getString(R.string.setup_sms_restricted), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
             }
             StepId.Battery -> batteryStep(panel, s)
+            StepId.AnswerCalls -> answerCallsStep(panel, s)
             else -> permissionStep(panel, s)
         }
     }
@@ -173,17 +194,37 @@ class SetupActivity : Activity() {
     private fun permissionStep(panel: LinearLayout, s: StepInfo) {
         val p = SetupModel.permissionFor(s.id)
         when (s.status) {
-            StepStatus.Done -> panel.addView(kit.text("All set. You can change this later in app settings.", 14f, Tone.Ok))
+            StepStatus.Done -> panel.addView(kit.text(getString(R.string.setup_all_set), 14f, Tone.Ok))
             StepStatus.Blocked -> {
-                panel.addView(kit.text("Android will not show the question again. Switch it on in app settings: Permissions › ${SetupModel.title(s.id)}.", 14f, Tone.Muted))
-                kit.button(panel, "Open app settings", BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text(getString(R.string.setup_blocked, SetupModel.title(s.id)), 14f, Tone.Muted))
+                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
             }
             else -> {
-                if (p != null) kit.button(panel, if (s.status == StepStatus.Denied) "Ask again" else "Allow", BtnStyle.Primary) { request(p) }
-                if (s.status == StepStatus.Denied) kit.button(panel, "Open app settings", BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
-                panel.addView(kit.text("Optional: GeekBridge works without it; the related feature stays off.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                if (p != null) kit.button(panel, getString(if (s.status == StepStatus.Denied) R.string.setup_ask_again else R.string.setup_allow), BtnStyle.Primary) { request(p) }
+                if (s.status == StepStatus.Denied) kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text(getString(R.string.setup_optional_note), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
             }
         }
+    }
+
+    /** The permission, plus the opt-in switch: nothing about calls leaves the phone until it is on. */
+    private fun answerCallsStep(panel: LinearLayout, s: StepInfo) {
+        permissionStep(panel, s)
+        kit.divider(panel)
+        kit.row(
+            panel, R.drawable.ic_call, getString(R.string.setup_calls_toggle),
+            getString(R.string.setup_calls_toggle_sub),
+            kit.toggle(CallControlRuntime.settings.enabled) { on ->
+                CallControlRuntime.setEnabled(on)
+                CallControlRuntime.onPermissionsChanged()
+            },
+        )
+        panel.addView(
+            kit.text(
+                getString(R.string.setup_calls_audio_note),
+                13f, Tone.Muted,
+            ).apply { setPadding(0, kit.dp(10), 0, 0) },
+        )
     }
 
     private fun pairStep(panel: LinearLayout) {
@@ -204,45 +245,45 @@ class SetupActivity : Activity() {
         val state = PowerChecks.batteryState(this)
         when (state) {
             BatteryState.Optimised -> {
-                panel.addView(kit.text("Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.", 14f, Tone.Muted))
-                kit.button(panel, "Allow unrestricted battery", BtnStyle.Primary) { PowerChecks.requestUnrestricted(this) }
+                panel.addView(kit.text(getString(R.string.setup_battery_optimised), 14f, Tone.Muted))
+                kit.button(panel, getString(R.string.setup_battery_allow), BtnStyle.Primary) { PowerChecks.requestUnrestricted(this) }
             }
             BatteryState.BackgroundRestricted -> {
-                panel.addView(kit.text("Background use is restricted for GeekBridge. In app settings open Battery and choose “Unrestricted” (or “Allow background usage”).", 14f, Tone.Muted))
-                kit.button(panel, "Open app settings", BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text(getString(R.string.setup_battery_restricted), 14f, Tone.Muted))
+                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
             }
             BatteryState.Unrestricted ->
-                panel.addView(kit.text("Android will not pause GeekBridge to save battery.", 14f, Tone.Ok))
+                panel.addView(kit.text(getString(R.string.setup_battery_ok), 14f, Tone.Ok))
         }
         if (oem != Oem.Other) {
             kit.divider(panel)
-            panel.addView(kit.text("${oem.label}: one more step", 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
-            panel.addView(kit.text("This phone’s maker adds its own switch that Android cannot read, so please check it yourself:", 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            panel.addView(kit.text(getString(R.string.setup_oem_title, oem.label), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+            panel.addView(kit.text(getString(R.string.setup_oem_intro), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
             OemGuides.steps(oem).forEachIndexed { i, line ->
                 panel.addView(kit.text("${i + 1}.  $line", 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
             }
-            kit.button(panel, "Open ${oem.label.substringBefore(' ')} settings", BtnStyle.Tonal) {
+            kit.button(panel, getString(R.string.setup_oem_open, oem.label.substringBefore(' ')), BtnStyle.Tonal) {
                 if (PowerChecks.openOemSettings(this, oem) == LaunchResult.OpenedFallback) {
-                    android.widget.Toast.makeText(this, "That screen is not on this phone; opened app settings instead.", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this, getString(R.string.setup_oem_fallback), android.widget.Toast.LENGTH_LONG).show()
                 }
             }
             if (!AppState.oemAcknowledged) {
-                kit.button(panel, "I’ve turned it on", BtnStyle.Plain) { AppState.oemAcknowledged = true; render() }
+                kit.button(panel, getString(R.string.setup_oem_done), BtnStyle.Plain) { AppState.oemAcknowledged = true; render() }
             } else {
-                panel.addView(kit.text("Marked as done. We cannot verify this one.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
-                kit.button(panel, "Not done yet", BtnStyle.Plain) { AppState.oemAcknowledged = false; render() }
+                panel.addView(kit.text(getString(R.string.setup_oem_marked), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                kit.button(panel, getString(R.string.setup_oem_undo), BtnStyle.Plain) { AppState.oemAcknowledged = false; render() }
             }
         } else if (state != BatteryState.Unrestricted) {
-            kit.button(panel, "Open app settings", BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
+            kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
         }
     }
 
     private fun overview(root: LinearLayout) {
-        root.addView(kit.heading("Your setup").apply { setPadding(0, kit.dp(24), 0, 0) })
+        root.addView(kit.heading(getString(R.string.setup_overview_title)).apply { setPadding(0, kit.dp(24), 0, 0) })
         val open = steps.count { it.required && it.status != StepStatus.Done }
         root.addView(
             kit.text(
-                if (open == 0) "Everything GeekBridge needs is in place." else "$open required ${if (open == 1) "step needs" else "steps need"} attention. Tap a row to fix it.",
+                if (open == 0) getString(R.string.setup_all_in_place) else resources.getQuantityString(R.plurals.setup_steps_need_attention, open, open),
                 15f, if (open == 0) Tone.Ok else Tone.Muted,
             ).apply { setPadding(0, kit.dp(6), 0, kit.dp(14)) },
         )
@@ -260,21 +301,21 @@ class SetupActivity : Activity() {
         val f = screen.footer
         f.removeAllViews()
         val last = page >= steps.size
-        val back = kit.pill("Back", BtnStyle.Plain) { goBack() }
+        val back = kit.pill(getString(R.string.setup_back), BtnStyle.Plain) { goBack() }
         back.visibility = if (page == 0) View.INVISIBLE else View.VISIBLE
-        f.addView(back, LinearLayout.LayoutParams(0, kit.dp(50), 1f))
+        f.addView(back, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         val s = steps.getOrNull(page)
         val done = s == null || s.status == StepStatus.Done || s.status == StepStatus.Info
         val label = when {
-            last -> "Finish"
-            page == steps.size - 1 -> "Overview"
-            done -> "Next"
-            else -> "Skip"
+            last -> getString(R.string.setup_finish)
+            page == steps.size - 1 -> getString(R.string.setup_overview)
+            done -> getString(R.string.setup_next)
+            else -> getString(R.string.setup_skip)
         }
         val next = kit.pill(label, if (last || done) BtnStyle.Primary else BtnStyle.Tonal) {
             if (last) finishSetup() else { page++; render() }
         }
-        f.addView(next, LinearLayout.LayoutParams(0, kit.dp(50), 1f).apply { marginStart = kit.dp(12) })
+        f.addView(next, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = kit.dp(12) })
     }
 
     private fun finishSetup() {
@@ -291,21 +332,23 @@ class SetupActivity : Activity() {
     }
 
     private fun chipText(s: StepInfo) = when (s.status) {
-        StepStatus.Done -> "Done"
-        StepStatus.Todo -> if (s.required) "To do" else "Optional"
-        StepStatus.Denied -> "Denied"
-        StepStatus.Blocked -> "Blocked"
-        StepStatus.Info -> "Info"
+        StepStatus.Done -> getString(R.string.chip_done)
+        StepStatus.Todo -> getString(if (s.required) R.string.chip_todo else R.string.chip_optional)
+        StepStatus.Denied -> getString(R.string.chip_denied)
+        StepStatus.Blocked -> getString(R.string.chip_blocked)
+        StepStatus.Info -> getString(R.string.chip_info)
     }
 
     private fun copy(id: StepId): Pair<Int, String> = when (id) {
-        StepId.Pair -> R.drawable.ic_computer to "Pair this phone with your computer once. After that they find each other on your network automatically, and nothing is trusted until you confirm a matching code."
-        StepId.Notifications -> R.drawable.ic_bell to "Lets GeekBridge show a quiet notice while it stays connected, and tell you about incoming files."
-        StepId.Contacts -> R.drawable.ic_person to "Lets this phone show names instead of numbers for calls and messages. Read on this phone only; nothing is uploaded."
-        StepId.Calendar -> R.drawable.ic_calendar to "Lets GeekBridge show your upcoming events in Agenda. Titles and times only, read on this phone."
-        StepId.PhoneState -> R.drawable.ic_call to "Lets GeekBridge know whether the phone is idle, ringing or in a call. It never sees phone numbers or call history."
-        StepId.Sms -> R.drawable.ic_message to "Android only lets the default messaging app read or send text messages, so GeekBridge does not ask for SMS access in this version. Nothing is read or sent."
-        StepId.Battery -> R.drawable.ic_battery to "Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late."
+        StepId.Pair -> R.drawable.ic_computer to getString(R.string.setup_why_pair)
+        StepId.Notifications -> R.drawable.ic_bell to getString(R.string.setup_why_notifications)
+        StepId.Contacts -> R.drawable.ic_person to getString(R.string.setup_why_contacts)
+        StepId.Calendar -> R.drawable.ic_calendar to getString(R.string.setup_why_calendar)
+        StepId.PhoneState -> R.drawable.ic_call to getString(R.string.setup_why_phone_state)
+        StepId.AnswerCalls -> R.drawable.ic_call to getString(R.string.setup_why_answer)
+        StepId.CallerNumber -> R.drawable.ic_person to getString(R.string.setup_why_caller)
+        StepId.Sms -> R.drawable.ic_message to getString(R.string.setup_why_sms)
+        StepId.Battery -> R.drawable.ic_battery to getString(R.string.setup_why_battery)
     }
 
     companion object {

@@ -323,6 +323,15 @@ class ClipboardEngineTest {
         assertTrue(sent.isEmpty())
     }
 
+    @Test fun aTapAnsweringAPullDoesNotHandBackTextTheComputerJustSent() {
+        engine.onEvents(listOf(ClipEvent.Incoming(1, "d", ClipKind.Text, "from pc", null, null, null)))
+        engine.onEvents(listOf(pull()))
+        assertEquals(1, host.asks)
+        val r = engine.onGesture(snap("from pc"))
+        assertFalse(r.sent)
+        assertEquals("empty", sent.single().getString("none"))
+    }
+
     @Test fun lockedWhileTheUserTapsStillRefuses() {
         engine.onEvents(listOf(pull()))
         host.locked = true

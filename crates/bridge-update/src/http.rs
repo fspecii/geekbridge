@@ -104,7 +104,14 @@ impl Url {
 
 /// Hosts a release is ever allowed to point us at, over https only.
 pub fn is_github_host(host: &str) -> bool {
-    host == "github.com" || host == "api.github.com" || host.ends_with(".githubusercontent.com")
+    matches!(
+        host,
+        "github.com"
+            | "api.github.com"
+            | "objects.githubusercontent.com"
+            | "release-assets.githubusercontent.com"
+            | "github-releases.githubusercontent.com"
+    )
 }
 
 /// What the client may talk to: GitHub over https, plus (for tests) one explicitly configured
@@ -562,6 +569,12 @@ mod tests {
         let ok = |s: &str| p.allows(&Url::parse(s).unwrap());
         assert!(ok("https://github.com/x"));
         assert!(ok("https://objects.githubusercontent.com/x"));
+        assert!(ok("https://release-assets.githubusercontent.com/x"));
+        assert!(ok("https://github-releases.githubusercontent.com/x"));
+        assert!(!ok("https://raw.githubusercontent.com/x"));
+        assert!(!ok("https://gist.githubusercontent.com/x"));
+        assert!(!ok("https://user-images.githubusercontent.com/x"));
+        assert!(!ok("https://objects.githubusercontent.com:8443/x"));
         assert!(ok("http://127.0.0.1:4000/x"));
         assert!(!ok("http://github.com/x"));
         assert!(!ok("https://evilgithub.com/x"));

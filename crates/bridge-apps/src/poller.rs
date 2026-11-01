@@ -38,7 +38,7 @@ impl Poller {
                         wake();
                     }
                     // A refresh request polls early; a dropped Poller ends the thread.
-                    match command_rx.recv_timeout(interval) {
+                    match command_rx.recv_timeout(crate::pace::scaled(interval)) {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
                     }

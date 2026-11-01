@@ -16,6 +16,7 @@ path = "src/bin/geekbridge-ctl.rs"
 bridge-core.workspace = true
 bridge-kde = { path = "../bridge-kde" }
 bridge-calls = { path = "../bridge-calls" }
+bridge-calls-windows = { path = "../bridge-calls-windows" }
 bridge-update = { path = "../bridge-update" }
 serde.workspace = true
 serde_json.workspace = true

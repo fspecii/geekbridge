@@ -20,8 +20,9 @@
 //!   stops. Nothing is persisted or logged; the status carries counters, never content. Only the
 //!   freshness window, hotkey and image limit are stored.
 //! * **Platform.** Linux uses `wl-clipboard` (Wayland, needs the compositor's data-control protocol) or
-//!   `xclip` (X11); macOS uses `pbpaste`/`pbcopy`; Windows uses PowerShell. All are polled (no change
-//!   event exists in those tools). Images and HTML need `wl-clipboard`/`xclip`. See
+//!   `xclip` (X11); macOS uses `pbpaste`/`pbcopy`; Windows uses PowerShell. Wayland uses
+//!   `wl-paste --watch` and X11 uses `clipnotify` when installed as change events (a slow safety
+//!   poll remains); everything else is polled every 1.5 s. Images and HTML need `wl-clipboard`/`xclip`. See
 //!   `docs/clipboard-sync.md`.
 use crate::{now_ms, private::random_id};
 use bridge_core::{
@@ -50,8 +51,10 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-/// How often the OS clipboard is polled while sync is active.
-pub const POLL_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the OS clipboard is polled while sync is active and the platform has no change event.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(1_500);
+/// Safety-net poll while an event source is running (events can be missed after a tool restart).
+const EVENT_SAFETY_POLL: Duration = Duration::from_secs(30);
 /// Ceiling for one clipboard tool invocation.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
 /// After applying remote text, reads that still show the old clipboard are ignored for this long.
@@ -120,6 +123,53 @@ pub trait ClipboardBackend: Send + Sync {
     }
     fn write_image(&self, _image: &ClipImage) -> Result<(), BackendError> {
         Err(BackendError::Unsupported)
+    }
+    /// Start a clipboard-change event source, if the platform has one. `None` means poll.
+    fn change_events(&self) -> Option<ChangeStream> {
+        None
+    }
+}
+
+/// A running event source: one message per clipboard change. Dropping it stops the helper process.
+pub struct ChangeStream {
+    rx: mpsc::Receiver<()>,
+    child: std::process::Child,
+}
+impl ChangeStream {
+    /// Run `program args...` and treat each line of its stdout as one change.
+    fn spawn(program: &str, args: &[&str]) -> Option<Self> {
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let out = child.stdout.take()?;
+        let (tx, rx) = mpsc::channel(1);
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(out).lines() {
+                if line.is_err() {
+                    break;
+                }
+                // A full channel already holds a pending wakeup: coalesce.
+                if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(()) {
+                    break;
+                }
+            }
+        });
+        Some(Self { rx, child })
+    }
+    /// Wait for the next change; `None` when the helper exited.
+    async fn changed(&mut self) -> Option<()> {
+        self.rx.recv().await
+    }
+}
+impl Drop for ChangeStream {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
@@ -369,7 +419,29 @@ impl ToolClipboard {
     }
 }
 
+impl ToolClipboard {
+    fn has_events(&self) -> bool {
+        match self.tools {
+            Tools::WlClipboard => true,
+            // `clipnotify` blocks on XFixes selection notify; no XFixes binding is linked here.
+            Tools::Xclip => on_path("clipnotify"),
+            _ => false,
+        }
+    }
+}
+
 impl ClipboardBackend for ToolClipboard {
+    fn change_events(&self) -> Option<ChangeStream> {
+        match self.tools {
+            // Runs `echo` once per change (and once at start): one stdout line per event.
+            Tools::WlClipboard => ChangeStream::spawn("wl-paste", &["--watch", "echo"]),
+            Tools::Xclip if on_path("clipnotify") => {
+                // clipnotify exits after one change; loop it in a shell so one process serves all.
+                ChangeStream::spawn("sh", &["-c", "while clipnotify; do echo; done"])
+            }
+            _ => None,
+        }
+    }
     fn name(&self) -> &'static str {
         match self.tools {
             Tools::WlClipboard => "wl-clipboard",
@@ -382,7 +454,11 @@ impl ClipboardBackend for ToolClipboard {
         ClipboardCapabilities {
             read: ReadAccess::Background,
             write: true,
-            observe: ObserveMode::Polling,
+            observe: if self.has_events() {
+                ObserveMode::Event
+            } else {
+                ObserveMode::Polling
+            },
             reports_sensitivity: matches!(self.tools, Tools::WlClipboard | Tools::Xclip),
             can_mark_written_sensitive: false,
         }
@@ -623,6 +699,8 @@ struct Stats {
 }
 
 struct Peer {
+    /// Which `link_up` created this entry, so a displaced session cannot remove its successor.
+    generation: u64,
     sync: Option<ClipboardSync>,
     tx: mpsc::Sender<ClipOut>,
     caps: LinkCaps,
@@ -652,6 +730,7 @@ pub enum Next {
 }
 
 struct Inner {
+    next_generation: u64,
     peers: HashMap<String, Peer>,
     stats: HashMap<String, Stats>,
     pulls: HashMap<String, PendingPull>,
@@ -678,6 +757,8 @@ pub struct ClipboardService {
     local_device: String,
     started: Instant,
     poll: Duration,
+    /// Wakes the watcher when sync is switched off so it stops (and drops its event source) at once.
+    wake: tokio::sync::Notify,
     settings_path: Option<PathBuf>,
     inner: Mutex<Inner>,
 }
@@ -762,8 +843,10 @@ impl ClipboardService {
             local_device: local_device.to_owned(),
             started: Instant::now(),
             poll,
+            wake: tokio::sync::Notify::new(),
             settings_path,
             inner: Mutex::new(Inner {
+                next_generation: 0,
                 peers: HashMap::new(),
                 stats: HashMap::new(),
                 pulls: HashMap::new(),
@@ -859,12 +942,27 @@ impl ClipboardService {
         caps: LinkCaps,
         enabled: bool,
     ) -> mpsc::Receiver<ClipOut> {
+        self.link_up_generation(device_id, name, caps, enabled).0
+    }
+
+    /// [`Self::link_up`], also returning the generation to pass to [`Self::link_down_generation`].
+    pub fn link_up_generation(
+        self: &Arc<Self>,
+        device_id: &str,
+        name: &str,
+        caps: LinkCaps,
+        enabled: bool,
+    ) -> (mpsc::Receiver<ClipOut>, u64) {
         let (tx, rx) = mpsc::channel(OUTBOX_DEPTH);
+        let generation;
         {
             let mut g = self.lock();
+            g.next_generation += 1;
+            generation = g.next_generation;
             g.peers.insert(
                 device_id.to_owned(),
                 Peer {
+                    generation,
                     sync: None,
                     tx,
                     caps,
@@ -877,11 +975,26 @@ impl ClipboardService {
             g.stats.entry(device_id.to_owned()).or_default();
         }
         self.set_enabled(device_id, enabled);
-        rx
+        (rx, generation)
+    }
+
+    /// Remove `device_id` only if it is still the link `generation` created. A session displaced by a
+    /// reconnect ends after its successor registered, and must leave the successor alone.
+    pub fn link_down_generation(&self, device_id: &str, generation: u64) {
+        self.remove_peer(device_id, Some(generation));
     }
 
     pub fn link_down(&self, device_id: &str) {
+        self.remove_peer(device_id, None);
+    }
+
+    fn remove_peer(&self, device_id: &str, only_generation: Option<u64>) {
         let mut g = self.lock();
+        if let (Some(want), Some(p)) = (only_generation, g.peers.get(device_id))
+            && p.generation != want
+        {
+            return;
+        }
         g.peers.remove(device_id);
         g.pulls.retain(|_, p| p.device_id != device_id);
         Self::forget_text_if_idle(&mut g);
@@ -945,6 +1058,9 @@ impl ClipboardService {
                 kind: CLIPBOARD_CONNECT,
                 body: clipboard_wire::connect_body(&text, stamp),
             });
+        }
+        if !enabled {
+            self.wake.notify_one();
         }
         if start_watcher {
             let me = self.clone();
@@ -1388,8 +1504,28 @@ impl ClipboardService {
     }
 
     async fn watch(self: Arc<Self>) {
+        let backend = self.backend.clone();
+        let mut events = tokio::task::spawn_blocking(move || backend.change_events())
+            .await
+            .ok()
+            .flatten();
         loop {
-            tokio::time::sleep(self.poll).await;
+            let interval = if events.is_some() {
+                EVENT_SAFETY_POLL.max(self.poll)
+            } else {
+                self.poll
+            };
+            let mut stream_ended = false;
+            tokio::select! {
+                _ = tokio::time::sleep(interval) => {}
+                _ = self.wake.notified() => {}
+                ev = async { events.as_mut().unwrap().changed().await }, if events.is_some() => {
+                    stream_ended = ev.is_none();
+                }
+            }
+            if stream_ended {
+                events = None; // helper died: fall back to polling
+            }
             {
                 let mut g = self.lock();
                 if !g.peers.values().any(|p| p.sync.is_some()) {
@@ -1706,6 +1842,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_displaced_session_does_not_remove_its_successor() {
+        let (_mem, svc) = rig();
+        let (_old_rx, old) = svc.link_up_generation(PHONE, "Phone", FULL, true);
+        // The phone reconnects: the new session registers before the old one is torn down.
+        let (_new_rx, _new) = svc.link_up_generation(PHONE, "Phone", FULL, true);
+        svc.link_down_generation(PHONE, old);
+        assert!(svc.any_enabled(), "the new link must still be registered");
+        assert_eq!(svc.pull(Some(PHONE)).map(|_| ()), Ok(()));
+    }
+
+    #[tokio::test]
     async fn copy_on_computer_reaches_enabled_phone_only() {
         let (mem, svc) = rig();
         mem.user_copy("before opt-in", false);
@@ -1848,6 +1995,14 @@ mod tests {
         assert!(body["timestamp"].as_i64().unwrap() > 0);
         settle().await;
         assert!(drain(&mut late).is_empty());
+    }
+
+    #[tokio::test]
+    async fn change_stream_reports_a_change_and_ends_with_the_helper() {
+        let mut ev = ChangeStream::spawn("sh", &["-c", "echo; sleep 0.1"]).expect("sh");
+        assert!(ev.changed().await.is_some());
+        assert!(ev.changed().await.is_none(), "helper exited");
+        assert!(ChangeStream::spawn("geekbridge-no-such-tool", &[]).is_none());
     }
 
     #[tokio::test]

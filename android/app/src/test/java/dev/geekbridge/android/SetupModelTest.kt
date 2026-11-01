@@ -17,7 +17,9 @@ class SetupModelTest {
         oemAck: Boolean = false,
         oem: Oem = Oem.Other,
         wasDone: Set<StepId> = emptySet(),
-    ) = SetupInputs(sdk, paired, notifications, contacts, calendar, phone, battery, oemAck, oem, wasDone)
+        answerCalls: PermissionStatus = PermissionStatus.NotAsked,
+        callLog: PermissionStatus = PermissionStatus.NotAsked,
+    ) = SetupInputs(sdk, paired, notifications, contacts, calendar, phone, battery, oemAck, oem, wasDone, answerCalls, callLog)
 
     private fun status(i: SetupInputs, id: StepId) = SetupModel.steps(i).first { it.id == id }.status
 
@@ -30,7 +32,7 @@ class SetupModelTest {
 
     @Test fun stepOrderIsStable() {
         assertEquals(
-            listOf(StepId.Pair, StepId.Notifications, StepId.Contacts, StepId.Calendar, StepId.PhoneState, StepId.Sms, StepId.Battery),
+            listOf(StepId.Pair, StepId.Notifications, StepId.Contacts, StepId.Calendar, StepId.PhoneState, StepId.AnswerCalls, StepId.CallerNumber, StepId.Sms, StepId.Battery),
             SetupModel.steps(inputs()).map { it.id },
         )
     }
@@ -73,6 +75,7 @@ class SetupModelTest {
             inputs(
                 paired = 1, notifications = PermissionStatus.Granted, contacts = PermissionStatus.Granted,
                 calendar = PermissionStatus.Granted, phone = PermissionStatus.Granted, battery = BatteryState.Unrestricted,
+                answerCalls = PermissionStatus.Granted, callLog = PermissionStatus.Granted,
             ),
         )
         assertNull(SetupModel.firstOpen(done))

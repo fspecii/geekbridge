@@ -98,7 +98,7 @@ impl ClipLink {
                         *output.lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
                         wake();
                     }
-                    match rx.recv_timeout(Duration::from_secs(1)) {
+                    match rx.recv_timeout(crate::pace::scaled(Duration::from_secs(1))) {
                         Ok(action) if !quitting.load(Ordering::Acquire) => {
                             state.notice = Some(match config.request(&action.request()) {
                                 Ok(_) => action_notice(&action).into(),

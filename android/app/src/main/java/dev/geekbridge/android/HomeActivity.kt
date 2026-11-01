@@ -101,6 +101,8 @@ class HomeActivity : Activity() {
         contacts = status(Manifest.permission.READ_CONTACTS),
         calendar = status(Manifest.permission.READ_CALENDAR),
         phoneState = status(Manifest.permission.READ_PHONE_STATE),
+        answerCalls = status(Manifest.permission.ANSWER_PHONE_CALLS),
+        callLog = status(Manifest.permission.READ_CALL_LOG),
         battery = PowerChecks.batteryState(this),
         oemAcknowledged = AppState.oemAcknowledged,
         oem = OemDetector.detect(Build.MANUFACTURER, Build.BRAND),
@@ -115,7 +117,7 @@ class HomeActivity : Activity() {
     private fun render() {
         prompt.sync()
         val s = controller.snapshot
-        val connected = s?.connections.orEmpty().filter { it.trusted }.map { it.peer.name.ifEmpty { "Computer" } }
+        val connected = s?.connections.orEmpty().filter { it.trusted }.map { it.peer.name.ifEmpty { getString(R.string.home_computer) } }
         val inp = inputs()
         val steps = SetupModel.steps(inp)
         AppState.rememberDone(steps)
@@ -136,11 +138,12 @@ class HomeActivity : Activity() {
 
         // Header
         val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
-        header.addView(kit.heading("GeekBridge", 32f), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
+        header.addView(kit.heading(getString(R.string.app_name), 32f), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         val gear = kit.icon(R.drawable.ic_settings, 24, kit.color(R.color.gb_muted)).apply {
-            contentDescription = "Setup and permissions"
+            contentDescription = getString(R.string.home_cd_setup)
             isClickable = true
             isFocusable = true
+            kit.asButton(this)
             setPadding(kit.dp(10), kit.dp(10), kit.dp(10), kit.dp(10))
             setOnClickListener { startActivity(SetupActivity.intent(this@HomeActivity, review = true)) }
             layoutParams = LinearLayout.LayoutParams(kit.dp(48), kit.dp(48))
@@ -153,9 +156,9 @@ class HomeActivity : Activity() {
             val w = kit.panel(root, 14, kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x1F), kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x66))
             (w.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12)
             val first = warnings.firstOrNull()
-            w.addView(kit.text(first?.text ?: "Finish setting up GeekBridge so it can stay connected.", 14f, Tone.Warn, bold = true))
-            if (warnings.size > 1) w.addView(kit.text("+${warnings.size - 1} more to check.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
-            kit.button(w, if (first != null) "Fix" else "Continue setup", BtnStyle.Primary) {
+            w.addView(kit.text(first?.text ?: getString(R.string.home_finish_setup), 14f, Tone.Warn, bold = true))
+            if (warnings.size > 1) w.addView(kit.text(resources.getQuantityString(R.plurals.home_more_to_check, warnings.size - 1, warnings.size - 1), 13f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            kit.button(w, getString(if (first != null) R.string.home_fix else R.string.home_continue_setup), BtnStyle.Primary) {
                 startActivity(SetupActivity.intent(this, step = first?.step))
             }
         }
@@ -171,41 +174,47 @@ class HomeActivity : Activity() {
         top.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = kit.dp(14) })
         heroPanel.addView(top)
         if (hero.action == HeroAction.Pair) {
-            kit.button(heroPanel, "Pair a computer", BtnStyle.Primary) {
+            kit.button(heroPanel, getString(R.string.home_pair_computer), BtnStyle.Primary) {
                 startActivity(SetupActivity.intent(this, step = StepId.Pair))
             }
         } else if (AppState.pairedNames.isNotEmpty()) {
             heroPanel.addView(
-                kit.text("Paired: " + AppState.pairedNames.joinToString(", "), 13f, Tone.Muted).apply { setPadding(0, kit.dp(12), 0, 0) },
+                kit.text(getString(R.string.home_paired_list, AppState.pairedNames.joinToString(", ")), 13f, Tone.Muted).apply { setPadding(0, kit.dp(12), 0, 0) },
             )
         }
 
         // Quick actions
-        kit.label(root, "Quick actions")
+        kit.label(root, getString(R.string.home_section_quick))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         val paired = AppState.pairedCount
         val sub = HomeModel.tileSubtitle(paired, connected)
-        kit.tile(row, R.drawable.ic_file, "Send file", sub, paired > 0) { sendFile() }
+        kit.tile(row, R.drawable.ic_file, getString(R.string.home_send_file), sub, paired > 0) { if (paired > 0) sendFile() else needPairing() }
         val clipHook = QuickActions.sendClipboard
-        kit.tile(row, R.drawable.ic_clipboard, "Send clipboard", if (clipHook == null && paired > 0) "Opens clipboard tools" else sub, paired > 0) { sendClipboard() }
+        kit.tile(row, R.drawable.ic_clipboard, getString(R.string.home_send_clipboard), if (clipHook == null && paired > 0) getString(R.string.home_opens_clipboard_tools) else sub, paired > 0) { if (paired > 0) sendClipboard() else needPairing() }
 
         // Feature status
-        kit.label(root, "On this phone")
+        kit.label(root, getString(R.string.home_section_phone))
         val feats = kit.panel(root, 8)
-        featureRow(feats, R.drawable.ic_call, "Calls", status(StepId.PhoneState), "Phone state allowed", "Allow phone state to show ringing and in-call", StepId.PhoneState)
+        featureRow(feats, R.drawable.ic_call, R.string.home_feature_calls, status(StepId.PhoneState), R.string.home_calls_ok, R.string.home_calls_todo, StepId.PhoneState)
+        kit.divider(feats)
+        featureRow(
+            feats, R.drawable.ic_call, R.string.home_answer,
+            if (CallControlRuntime.settings.enabled) status(StepId.AnswerCalls) else StepStatus.Todo,
+            R.string.home_answer_ok, R.string.home_answer_todo, StepId.AnswerCalls,
+        )
         kit.divider(feats)
         kit.row(
-            feats, R.drawable.ic_message, "Messages", "Android restricts SMS access", kit.chip("Not available", Tone.Muted), null,
+            feats, R.drawable.ic_message, getString(R.string.home_messages), getString(R.string.home_messages_sub), kit.chip(getString(R.string.home_chip_unavailable), Tone.Muted), null,
         ) { startActivity(SetupActivity.intent(this, step = StepId.Sms)) }
         kit.divider(feats)
-        featureRow(feats, R.drawable.ic_calendar, "Agenda", status(StepId.Calendar), "Calendar access allowed", "Allow calendar access to show your events", StepId.Calendar)
+        featureRow(feats, R.drawable.ic_calendar, R.string.home_agenda, status(StepId.Calendar), R.string.home_agenda_ok, R.string.home_agenda_todo, StepId.Calendar)
 
         // Settings
-        kit.label(root, "Settings")
+        kit.label(root, getString(R.string.home_section_settings))
         val set = kit.panel(root, 8)
         kit.row(
-            set, R.drawable.ic_computer, "Stay connected", "Keep reachable while the app is closed",
+            set, R.drawable.ic_computer, getString(R.string.home_stay_connected), getString(R.string.home_stay_connected_sub),
             kit.toggle(AppState.keepConnected) { on ->
                 AppState.keepConnected = on
                 LinkService.sync(this)
@@ -215,18 +224,18 @@ class HomeActivity : Activity() {
         )
         ClipboardSettingsUi.addRows(this, kit, set) { lastSig = ""; render() }
         kit.divider(set)
-        kit.row(set, R.drawable.ic_check, "Setup & permissions", "Review every step", null) { startActivity(SetupActivity.intent(this, review = true)) }
+        kit.row(set, R.drawable.ic_check, getString(R.string.home_setup_row), getString(R.string.home_setup_row_sub), null) { startActivity(SetupActivity.intent(this, review = true)) }
         kit.divider(set)
-        kit.row(set, R.drawable.ic_settings, "Diagnostics & about", "Version ${BuildConfig.VERSION_NAME}, updates, technical details", null) {
+        kit.row(set, R.drawable.ic_settings, getString(R.string.home_diag_row), getString(R.string.home_diag_row_sub, BuildConfig.VERSION_NAME), null) {
             startActivity(Intent(this, MainActivity::class.java))
         }
     }
 
-    private fun featureRow(parent: LinearLayout, icon: Int, title: String, st: StepStatus, okText: String, todoText: String, step: StepId) {
+    private fun featureRow(parent: LinearLayout, icon: Int, title: Int, st: StepStatus, okText: Int, todoText: Int, step: StepId) {
         val ok = st == StepStatus.Done
         kit.row(
-            parent, icon, title, if (ok) okText else todoText,
-            kit.chip(if (ok) "Ready" else "Allow", if (ok) Tone.Ok else Tone.Warn), if (ok) Tone.Ok else null,
+            parent, icon, getString(title), getString(if (ok) okText else todoText),
+            kit.chip(getString(if (ok) R.string.home_chip_ready else R.string.home_chip_allow), if (ok) Tone.Ok else Tone.Warn), if (ok) Tone.Ok else null,
         ) { startActivity(SetupActivity.intent(this, step = step)) }
     }
 
@@ -235,7 +244,7 @@ class HomeActivity : Activity() {
     private fun sendClipboard() {
         val hook = QuickActions.sendClipboard
         if (hook != null) {
-            if (hook.isAvailable(this)) hook.launch(this) else toast(hook.unavailableReason(this) ?: "Not available right now.")
+            if (hook.isAvailable(this)) hook.launch(this) else toast(hook.unavailableReason(this) ?: getString(R.string.home_not_available_now))
         } else {
             startActivity(Intent(this, MainActivity::class.java)) // clipboard tools live in Diagnostics for now
         }
@@ -244,7 +253,7 @@ class HomeActivity : Activity() {
     private fun sendFile() {
         val hook = QuickActions.sendFile
         if (hook != null) {
-            if (hook.isAvailable(this)) hook.launch(this) else toast(hook.unavailableReason(this) ?: "Not available right now.")
+            if (hook.isAvailable(this)) hook.launch(this) else toast(hook.unavailableReason(this) ?: getString(R.string.home_not_available_now))
             return
         }
         // Same flow as the system Share sheet: pick documents, then ShareActivity sends them.
@@ -254,7 +263,7 @@ class HomeActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(pick, REQ_PICK)
         } catch (_: ActivityNotFoundException) {
-            toast("No file picker is available.")
+            toast(getString(R.string.home_no_file_picker))
         }
     }
 
@@ -268,6 +277,12 @@ class HomeActivity : Activity() {
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         if (clip != null) send.clipData = clip else data.data?.let { send.clipData = ClipData.newRawUri("files", it) }
         startActivity(send)
+    }
+
+    /** The tiles look dimmed without a computer; tapping one explains why and goes straight to pairing. */
+    private fun needPairing() {
+        toast(getString(R.string.home_pair_first_toast))
+        startActivity(SetupActivity.intent(this, step = StepId.Pair))
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()

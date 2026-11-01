@@ -30,6 +30,7 @@ fn ctx(me: &Arc<DeviceCredentials>, peer: &Arc<DeviceCredentials>) -> PayloadCon
         peer_id: peer.device_id().clone(),
         peer_cert: peer.cert().clone(),
         peer_ip: Ipv4Addr::LOCALHOST.into(),
+        local_ip: None,
         versions: TlsVersions::Tls12And13,
         config: cfg(),
     }
@@ -318,4 +319,68 @@ async fn receive_file_is_safe_and_atomic() {
     assert!(e.is_err());
     let after = std::fs::read_dir(dir.path()).unwrap().count();
     assert_eq!(before, after);
+}
+
+#[test]
+fn only_the_paired_host_gets_a_handshake_slot() {
+    let peer: IpAddr = "192.168.1.20".parse().unwrap();
+    assert!(same_host(peer, peer));
+    assert!(same_host("::ffff:192.168.1.20".parse().unwrap(), peer));
+    assert!(!same_host("192.168.1.21".parse().unwrap(), peer));
+    assert!(!same_host("fe80::1".parse().unwrap(), peer));
+    assert!(PayloadConfig::default().handshake_timeout <= Duration::from_secs(5));
+}
+
+/// The sender only accepts the paired peer's IP. A receiver that knows its control-link address
+/// binds to it, so it is accepted even when the OS would route the dial from another source.
+#[tokio::test]
+async fn receiver_binds_its_control_link_address() {
+    let (a, b) = (creds('a'), creds('b'));
+    // `a` believes `b` is 127.0.0.2; `b` reaches `a` at 127.0.0.1 (OS would pick source 127.0.0.1).
+    let mut sender = ctx(&a, &b);
+    sender.peer_ip = Ipv4Addr::new(127, 0, 0, 2).into();
+    let mut receiver = ctx(&b, &a);
+    receiver.local_ip = Some(Ipv4Addr::new(127, 0, 0, 2).into());
+    let listener = sender.listen().await.unwrap();
+    let port = listener.port();
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(data(5000)), 5000, &mut |_| {}, &c2)
+            .await
+    });
+    let mut out = Vec::new();
+    let n = receiver
+        .receive(port, Some(5000), 1 << 20, &mut out, &mut |_| {}, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(n, 5000);
+    assert_eq!(send.await.unwrap().unwrap(), 5000);
+
+    // Without the bound address the sender discards the connection (the receiver sees an EOF).
+    let mut sender = ctx(&a, &b);
+    sender.peer_ip = Ipv4Addr::new(127, 0, 0, 2).into();
+    sender.config.accept_timeout = Duration::from_millis(600);
+    let listener = sender.listen().await.unwrap();
+    let port = listener.port();
+    let c3 = cancel.clone();
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(data(10)), 10, &mut |_| {}, &c3)
+            .await
+    });
+    let unbound = ctx(&b, &a);
+    let r = unbound
+        .receive(
+            port,
+            Some(10),
+            1 << 20,
+            &mut Vec::new(),
+            &mut |_| {},
+            &cancel,
+        )
+        .await;
+    assert!(r.is_err());
+    let _ = send.await;
 }

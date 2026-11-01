@@ -98,6 +98,18 @@ class ShareLogicTest {
         assertTrue(Bounds.utf8Size(long) <= 120); assertTrue(long.endsWith(".jpeg"))
     }
 
+    @Test fun truncationNeverSplitsASurrogatePair() {
+        for (name in listOf("😀".repeat(40), "😀".repeat(40) + ".png", "a" + "😀".repeat(40) + ".png")) {
+            val clean = NameRules.sanitize(name)
+            assertTrue(Bounds.utf8Size(clean) <= 120)
+            for (i in clean.indices) {
+                val c = clean[i]
+                if (Character.isHighSurrogate(c)) assertTrue(i + 1 < clean.length && Character.isLowSurrogate(clean[i + 1]))
+                if (Character.isLowSurrogate(c)) assertTrue(i > 0 && Character.isHighSurrogate(clean[i - 1]))
+            }
+        }
+    }
+
     @Test fun uniqueNames() {
         val taken = setOf("a.txt", "a (1).txt", "noext")
         assertEquals("a (2).txt", NameRules.unique("a.txt") { it in taken })
@@ -171,5 +183,24 @@ class ShareLogicTest {
         val failed = ShareProtocol.parseTransfers(JSONArray().put(transfer(state = "failed").put("code", "timeout")))[0]
         assertEquals("report.pdf — failed (timeout)", ProgressText.line(failed))
         assertTrue(failed.state.finished); assertFalse(TransferState.Active.finished)
+    }
+}
+
+class ShareAuthorityTest {
+    private val own = "dev.geekbridge.android"
+
+    @Test fun blocksOwnAndSensitiveSystemProviders() {
+        for (a in listOf(
+            "dev.geekbridge.android.updates", "dev.geekbridge.android", "com.android.contacts", "com.android.calendar",
+            "call_log", "sms", "mms", "COM.ANDROID.CONTACTS", "7@com.android.contacts", null, "",
+        )) {
+            assertTrue("$a", ShareIntentLogic.isBlockedAuthority(a, own))
+        }
+    }
+
+    @Test fun allowsOrdinaryProviders() {
+        for (a in listOf("com.android.providers.media.documents", "media", "com.example.files", "dev.geekbridgeevil.files")) {
+            assertFalse("$a", ShareIntentLogic.isBlockedAuthority(a, own))
+        }
     }
 }

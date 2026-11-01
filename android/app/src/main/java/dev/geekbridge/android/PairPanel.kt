@@ -109,34 +109,33 @@ class PairPanel(
         val names = AppState.pairedNames
         if (names.isNotEmpty()) {
             for (n in names) {
-                kit.row(container, R.drawable.ic_computer, n, "Paired and trusted", kit.chip("Paired", Tone.Ok), Tone.Ok)
+                kit.row(container, R.drawable.ic_computer, n, activity.getString(R.string.pair_paired_and_trusted), kit.chip(activity.getString(R.string.pair_chip_paired), Tone.Ok), Tone.Ok)
             }
         }
         when (phase) {
             LinkPhase.Stopped -> {
                 container.addView(
                     kit.text(
-                        if (names.isEmpty()) "Open GeekBridge or KDE Connect on your computer, on the same Wi-Fi network as this phone, then look for it."
-                        else "To add another computer, open GeekBridge on it, on the same Wi-Fi network, then look for it.",
+                        activity.getString(if (names.isEmpty()) R.string.pair_intro_first else R.string.pair_intro_more),
                         14f, Tone.Muted,
                     ).apply { setPadding(0, kit.dp(8), 0, 0) },
                 )
-                kit.button(container, "Look for computers", BtnStyle.Primary) { start() }
+                kit.button(container, activity.getString(R.string.pair_look), BtnStyle.Primary) { start() }
             }
             LinkPhase.Starting, LinkPhase.Stopping ->
-                container.addView(kit.text("Working…", 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+                container.addView(kit.text(activity.getString(R.string.pair_working), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
             LinkPhase.Running -> {
                 val found = s?.discovered.orEmpty().filter { !it.paired }
                 val conns = s?.connections.orEmpty().filter { !it.trusted }
                 if (found.isEmpty() && conns.isEmpty()) {
-                    container.addView(kit.text("Looking for computers on this network… keep GeekBridge open on the computer.", 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+                    container.addView(kit.text(activity.getString(R.string.pair_looking), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
                 }
                 for (d in found) {
                     if (conns.any { it.peer.deviceId == d.deviceId }) continue
                     val busy = pendingDevice == d.deviceId
                     kit.row(
-                        container, R.drawable.ic_computer, d.name.ifEmpty { "Computer" }, d.ip,
-                        kit.pill(if (busy) "Connecting…" else "Pair", BtnStyle.Tonal, !busy) {
+                        container, R.drawable.ic_computer, d.name.ifEmpty { activity.getString(R.string.home_computer) }, d.ip,
+                        kit.pill(activity.getString(if (busy) R.string.pair_connecting else R.string.pair_action), BtnStyle.Tonal, !busy) {
                             pendingDevice = d.deviceId
                             controller.connect(d.ip, d.tcpPort, d.deviceId)
                             render()
@@ -144,20 +143,20 @@ class PairPanel(
                     )
                 }
                 for (c in conns) {
-                    val name = c.peer.name.ifEmpty { "Computer" }
+                    val name = c.peer.name.ifEmpty { activity.getString(R.string.home_computer) }
                     val text = when (c.phase) {
-                        "parked" -> "Connected. Not paired yet."
-                        "pairing_request" -> "Waiting for the computer to answer…"
-                        "pairing_await" -> "Waiting for the computer to ask to pair…"
-                        else -> "Working…"
+                        "parked" -> activity.getString(R.string.pair_phase_parked)
+                        "pairing_request" -> activity.getString(R.string.pair_phase_request)
+                        "pairing_await" -> activity.getString(R.string.pair_phase_await)
+                        else -> activity.getString(R.string.pair_working)
                     }
                     kit.row(container, R.drawable.ic_computer, name, text, null)
                     if (c.phase == "parked") {
-                        kit.button(container, "Pair with $name", BtnStyle.Primary) { controller.pairRequest(c.id, await = false) }
-                        kit.button(container, "Wait for $name to ask", BtnStyle.Tonal) { controller.pairRequest(c.id, await = true) }
+                        kit.button(container, activity.getString(R.string.pair_with, name), BtnStyle.Primary) { controller.pairRequest(c.id, await = false) }
+                        kit.button(container, activity.getString(R.string.pair_wait_for, name), BtnStyle.Tonal) { controller.pairRequest(c.id, await = true) }
                     }
                 }
-                kit.button(container, "Stop looking", BtnStyle.Plain) { controller.stop() }
+                kit.button(container, activity.getString(R.string.pair_stop_looking), BtnStyle.Plain) { controller.stop() }
             }
         }
         val n = controller.notice

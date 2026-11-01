@@ -15,10 +15,16 @@ object AppState {
     private const val NAME_CHARS = 48
 
     @Volatile private var prefs: SharedPreferences? = null
+    @Volatile private var appContext: Context? = null
 
     fun init(ctx: Context) {
         if (prefs == null) synchronized(this) {
-            if (prefs == null) prefs = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            if (prefs == null) {
+                appContext = ctx.applicationContext
+                prefs = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                // Call control reads its own opt-in here so StartOptions can negotiate it on every start path.
+                CallControlRuntime.init(ctx.applicationContext)
+            }
         }
     }
 
@@ -46,7 +52,10 @@ object AppState {
     fun recordPaired(paired: List<PairedPeer>, readable: Boolean) {
         if (!readable) return
         val names = paired.take(MAX_NAMES).map { it.name.ifEmpty { "Computer" }.replace('\n', ' ').take(NAME_CHARS) }
+        val before = pairedCount
         p()?.edit()?.putInt("paired_count", paired.size)?.putString("paired_names", names.joinToString("\n"))?.apply()
+        // Starting or stopping the background connection follows the paired count (event-driven, no polling).
+        if ((before > 0) != (paired.isNotEmpty())) appContext?.let { LinkService.sync(it) }
     }
 
     fun wasAsked(permission: String): Boolean = p()?.getBoolean("asked:$permission", false) ?: false

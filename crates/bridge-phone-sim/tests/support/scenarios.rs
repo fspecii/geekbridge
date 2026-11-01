@@ -577,6 +577,8 @@ impl World<'_> {
 
 pub struct Harness {
     session: Session,
+    /// Where the simulator's bus is, so a second consumer (the service call hub) can join it.
+    pub bus: BusTarget,
     pub phone: Arc<dyn Phone>,
     pub step_timeout: Duration,
     pub number: String,
@@ -606,12 +608,13 @@ fn modem_err(e: impl std::fmt::Display) -> String {
 impl Harness {
     pub fn connect(bus: BusTarget, phone: Arc<dyn Phone>, opts: Options) -> Result<Self, String> {
         let backend = PipeWireBackend::connect(PipeWireConfig {
-            bus,
+            bus: bus.clone(),
             method_timeout: Duration::from_secs(10),
         })
         .map_err(|e| e.to_string())?;
         Ok(Self {
             session: Session::new(Box::new(backend)),
+            bus,
             phone,
             step_timeout: opts.step_timeout,
             number: opts.number,
@@ -1255,6 +1258,12 @@ pub const SCENARIOS: &[Scenario] = &[
         needs_service_control: true,
         run: s7_link_loss,
     },
+    Scenario {
+        id: "S8",
+        title: "service call hub: decline, answer and hang up through the UI-facing view",
+        needs_service_control: false,
+        run: s8_service_hub,
+    },
 ];
 
 pub fn scenario_ids() -> Vec<&'static str> {
@@ -1724,4 +1733,146 @@ pub fn run_selected(h: &mut Harness, only: &[String]) -> Vec<ScenarioReport> {
         .collect();
     chosen.sort_by_key(|s| s.needs_service_control);
     chosen.into_iter().map(|s| run_scenario(h, s)).collect()
+}
+
+// ------------------------------------------------------------------ S8: the service call hub
+
+/// The same Bluetooth path the Calls window uses: `bridge_service::call_control::CallHub` over its own
+/// `Session` on the simulator bus. The harness's own session keeps observing, so a disagreement
+/// between the two shows up as a failed wait. Only signalling: the audio link here is the
+/// simulator's declared one.
+fn s8_service_hub(h: &mut Harness) -> Run {
+    use bridge_core::calls_view::{ActionTarget, AudioRoute, ControlPath};
+    use bridge_core::ipc::CallAction;
+    use bridge_service::call_control::{CallHub, linux::LinuxHfp};
+
+    h.reset()?;
+    let hub = h.step(
+        "call hub starts on the simulator bus (Bluetooth hands-free source)",
+        |h| {
+            let backend = PipeWireBackend::connect(PipeWireConfig {
+                bus: h.bus.clone(),
+                method_timeout: Duration::from_secs(10),
+            })
+            .map_err(|e| e.to_string())?;
+            let hub = CallHub::new();
+            hub.start_host(Box::new(LinuxHfp::new(Session::new(Box::new(backend)))));
+            Ok(hub)
+        },
+    )?;
+
+    // 1. Decline from the hub.
+    let n = h.number.clone();
+    h.step("remote party rings", |h| {
+        h.phone.ring(&n).map_err(modem_err)
+    })?;
+    let reject: ActionTarget = h.step_noted(
+        "hub offers Answer and Decline over Bluetooth for the ringing call",
+        |h| {
+            let hub = hub.clone();
+            let (answer, reject) = h.wait("the hub to show the ringing call", |_| {
+                Ok(hub
+                    .view()
+                    .ringing()
+                    .and_then(|r| Some((r.answer.clone()?, r.reject.clone()?))))
+            })?;
+            if answer.path != ControlPath::Hfp || reject.path != ControlPath::Hfp {
+                return Err("controls are not on the Bluetooth path".to_string());
+            }
+            Ok((
+                reject,
+                Some("caller shown without exposing the number".to_string()),
+            ))
+        },
+    )?;
+    let before = h.commands_sent();
+    h.step("hub Decline reaches the modem", |h| {
+        hub.act(&reject, CallAction::Reject)
+            .map_err(|e| format!("Decline refused: {}", e.message))?;
+        h.wait_modem_resending(
+            "modem Idle",
+            &|_| hub.act(&reject, CallAction::Reject).map_err(|e| e.message),
+            |w| Ok(matches!(w.modem()?, ModemState::Idle)),
+        )
+        .map(|_| ())
+    })?;
+    h.step("hub view has no calls after the decline", |h| {
+        h.wait("an empty hub view", |_| {
+            Ok(hub.view().rows.is_empty().then_some(()))
+        })
+    })?;
+
+    // 2. A stale target does nothing.
+    h.step(
+        "a decision on the ended call is refused and sends nothing",
+        |h| match hub.act(&reject, CallAction::Reject) {
+            Err(_) if matches!(h.phone.state().map_err(modem_err)?, ModemState::Idle) => Ok(()),
+            Err(_) => Err("the modem left Idle".to_string()),
+            Ok(()) => Err("a stale target was accepted".to_string()),
+        },
+    )?;
+
+    // 3. Answer, check the route, hang up.
+    h.step("remote party rings again", |h| {
+        let n = h.number.clone();
+        h.phone.ring(&n).map_err(modem_err)
+    })?;
+    let answer = h.step("hub offers Answer again", |h| {
+        h.wait("the hub to show the second ringing call", |_| {
+            Ok(hub.view().ringing().and_then(|r| r.answer.clone()))
+        })
+    })?;
+    h.step_noted("hub Answer makes the modem Active", |h| {
+        hub.act(&answer, CallAction::Answer)
+            .map_err(|e| format!("Answer refused: {}", e.message))?;
+        let resent = h.wait_modem_resending(
+            "modem Active",
+            &|_| hub.act(&answer, CallAction::Answer).map_err(|e| e.message),
+            |w| Ok(matches!(w.modem()?, ModemState::Active { .. })),
+        )?;
+        Ok((
+            (),
+            (resent > 0).then(|| format!("Answer re-sent {resent} time(s)")),
+        ))
+    })?;
+    let hangup = h.step_noted(
+        "hub shows a live call with Hang up and the audio route",
+        |h| {
+            h.wait("a live call with its audio on this computer", |_| {
+                let v = hub.view();
+                Ok(match (v.live(), v.audio.route) {
+                    (Some(r), AudioRoute::Computer { .. }) => {
+                        r.hangup.clone().map(|t| (t, v.mute.is_some()))
+                    }
+                    _ => None,
+                })
+            })
+            .map(|(t, mute)| {
+                (
+                    t,
+                    Some(format!(
+                        "mute offered: {mute} (Linux has no microphone mute API)"
+                    )),
+                )
+            })
+        },
+    )?;
+    h.step("hub Hang up ends the call", |h| {
+        hub.act(&hangup, CallAction::Hangup)
+            .map_err(|e| format!("Hang up refused: {}", e.message))?;
+        h.modem_is("modem Idle", |m| matches!(m, ModemState::Idle))?;
+        h.wait("an empty hub view", |_| {
+            Ok(hub.view().rows.is_empty().then_some(()))
+        })
+    })?;
+    h.step(
+        "exactly the hub's decisions were sent (the harness sent none)",
+        |h| {
+            if h.commands_sent() == before {
+                Ok(())
+            } else {
+                Err("the harness session sent commands".to_string())
+            }
+        },
+    )
 }

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Started at login by the XDG autostart entry. Prefers the systemd user unit (restart on failure,
+# journal logging); runs the service directly on sessions without a systemd user manager.
+if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 \
+   && systemctl --user cat geekbridge-service.service >/dev/null 2>&1; then
+    exec systemctl --user start geekbridge-service.service
+fi
+exec geekbridge-service

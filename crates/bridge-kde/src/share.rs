@@ -270,7 +270,16 @@ fn temp_path(final_path: &Path) -> PathBuf {
         end -= 1;
     }
     short.truncate(end);
-    final_path.with_file_name(format!(".gb-{short}.part"))
+    // The truncated name alone is not unique (two long names can share a 64-byte prefix), so a
+    // per-process counter plus pid and clock make every temp path distinct.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let token = format!("{:x}-{seq:x}-{nanos:x}", std::process::id());
+    final_path.with_file_name(format!(".gb-{token}-{short}.part"))
 }
 
 /// Download one offered file into `dir` and return its final path.
@@ -414,6 +423,38 @@ mod tests {
         let long = format!("{}.jpeg", "é".repeat(300));
         let out = sanitize_filename(&long);
         assert!(out.len() <= MAX_FILENAME_BYTES && out.ends_with(".jpeg"));
+    }
+
+    #[test]
+    fn temp_path_survives_multibyte_at_truncation_boundary() {
+        // Byte 64 falls inside the two-byte `é`; this used to panic in String::truncate.
+        let name = format!("{}é.bin", "a".repeat(63));
+        let tmp = temp_path(Path::new("/tmp").join(&name).as_path());
+        let n = tmp.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(n.starts_with(".gb-") && n.ends_with(".part"), "{n}");
+        assert!(n.len() < 255);
+    }
+
+    #[test]
+    fn temp_paths_differ_for_names_sharing_a_long_prefix() {
+        let prefix = "p".repeat(100);
+        let a = temp_path(
+            Path::new("/tmp")
+                .join(format!("{prefix}-one.bin"))
+                .as_path(),
+        );
+        let b = temp_path(
+            Path::new("/tmp")
+                .join(format!("{prefix}-two.bin"))
+                .as_path(),
+        );
+        let a2 = temp_path(
+            Path::new("/tmp")
+                .join(format!("{prefix}-one.bin"))
+                .as_path(),
+        );
+        assert_ne!(a, b);
+        assert_ne!(a, a2);
     }
 
     #[test]

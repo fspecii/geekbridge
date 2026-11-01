@@ -321,6 +321,30 @@ fn newer_release_is_offered_downloaded_and_verified() {
 }
 
 #[test]
+fn verified_installer_rehashes_before_use() {
+    let rig = Rig::new();
+    let payload = vec![9_u8; 4096];
+    rig.publish(
+        "v0.2.0",
+        &payload,
+        Some(format!("{}  {ASSET}\n", sha_hex(&payload))),
+    );
+    let up = rig.updater("0.1.0");
+    assert!(up.verified_installer().is_err(), "nothing downloaded yet");
+    up.check(true).unwrap();
+    let path = up.download().unwrap();
+    assert_eq!(up.verified_installer().unwrap(), path);
+
+    // The user (or anything else) swaps the file after the download.
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&path, perms).unwrap();
+    std::fs::write(&path, b"tampered").unwrap();
+    assert_eq!(up.verified_installer(), Err(Error::HashMismatch));
+}
+
+#[test]
 fn hash_mismatch_is_rejected_and_nothing_is_left_behind() {
     let rig = Rig::new();
     let payload = vec![1_u8; 5000];

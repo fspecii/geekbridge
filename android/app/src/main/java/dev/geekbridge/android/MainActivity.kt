@@ -106,6 +106,7 @@ class MainActivity : Activity() {
             addView(bottomScrim, android.widget.FrameLayout.LayoutParams(Ui.MATCH, 0, android.view.Gravity.BOTTOM))
         }
         setContentView(frame)
+        SystemBars.setup(this)
 
         buildHeader(root)
         buildStatusCard(root)

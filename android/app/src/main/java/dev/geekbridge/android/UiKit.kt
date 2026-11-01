@@ -2,6 +2,8 @@ package dev.geekbridge.android
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.Configuration
+import android.graphics.Color
 import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -11,6 +13,9 @@ import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -47,7 +52,7 @@ class UiKit(private val ctx: Context, val ui: Ui) {
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             letterSpacing = 0.08f
             setTextColor(color(R.color.gb_muted))
-            setPadding(dp(8), 0, 0, 0)
+            setPaddingRelative(dp(8), 0, 0, 0)
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }
         parent.addView(v, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(24); bottomMargin = dp(8) })
@@ -111,7 +116,7 @@ class UiKit(private val ctx: Context, val ui: Ui) {
 
     fun button(parent: LinearLayout, label: String, style: BtnStyle = BtnStyle.Tonal, enabled: Boolean = true, onClick: () -> Unit): TextView {
         val v = pill(label, style, enabled, onClick)
-        parent.addView(v, LinearLayout.LayoutParams(Ui.MATCH, dp(50)).apply { topMargin = dp(10) })
+        parent.addView(v, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(10) })
         return v
     }
 
@@ -126,6 +131,42 @@ class UiKit(private val ctx: Context, val ui: Ui) {
         isFocusable = true
         applyStyle(this, style, enabled)
         setOnClickListener { if (isEnabled) onClick() }
+        asButton(this)
+    }
+
+    /** Announce a clickable custom view as a button ("Button" in TalkBack) instead of plain text. */
+    fun asButton(v: View): View = v.apply {
+        accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.className = Button::class.java.name
+            }
+        }
+    }
+
+    /**
+     * Make the whole [row] the switch: one big target, one TalkBack stop that reads title, summary, "Switch" and
+     * its state. The inner [Switch] only draws.
+     */
+    private fun asSwitchRow(row: LinearLayout, sw: Switch) {
+        sw.isClickable = false
+        sw.isFocusable = false
+        sw.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        row.background = ripple(shape(0, 12))
+        row.isClickable = true
+        row.isFocusable = true
+        row.setOnClickListener {
+            sw.toggle()
+            row.sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        }
+        row.accessibilityDelegate = object : View.AccessibilityDelegate() {
+            override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                super.onInitializeAccessibilityNodeInfo(host, info)
+                info.className = Switch::class.java.name
+                info.isCheckable = true
+                info.isChecked = sw.isChecked
+            }
+        }
     }
 
     fun applyStyle(v: TextView, style: BtnStyle, enabled: Boolean) {
@@ -163,8 +204,14 @@ class UiKit(private val ctx: Context, val ui: Ui) {
         val col = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         col.addView(text(title, 15f, bold = true))
         sub?.let { col.addView(it) }
+        // At large font sizes a status chip beside the text leaves it a sliver of width: stack it underneath.
+        val stackChip = trailing is TextView && trailing !is android.widget.CompoundButton && ctx.resources.configuration.fontScale >= 1.5f
+        if (stackChip && trailing != null) {
+            col.addView(trailing, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = dp(6) })
+        }
         row.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(14); marginEnd = dp(8) })
-        trailing?.let { row.addView(it) }
+        if (!stackChip) trailing?.let { row.addView(it) }
+        if (onClick == null && trailing is Switch) asSwitchRow(row, trailing) else if (onClick != null) asButton(row)
         parent.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         return row
     }
@@ -190,6 +237,7 @@ class UiKit(private val ctx: Context, val ui: Ui) {
             isFocusable = true
             alpha = if (enabled) 1f else 0.6f
             setOnClickListener { onClick() }
+            asButton(this)
         }
         box.addView(badge(iconRes, if (enabled) null else Tone.Muted, 44))
         box.addView(text(title, 16f, bold = true).apply { setPadding(0, dp(12), 0, 0) })
@@ -235,6 +283,7 @@ class Screen(private val activity: Activity, private val kit: UiKit) {
             addView(bottomScrim, FrameLayout.LayoutParams(Ui.MATCH, 0, Gravity.BOTTOM))
         }
         activity.setContentView(frame)
+        SystemBars.setup(activity) // after setContentView: the decor view (insets controller) exists only then
     }
 
     @Suppress("DEPRECATION")
@@ -243,7 +292,8 @@ class Screen(private val activity: Activity, private val kit: UiKit) {
         val l: Int; val t: Int; val r: Int; val b: Int; val nav: Int
         if (Build.VERSION.SDK_INT >= 30) {
             val i = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            l = i.left; t = i.top; r = i.right; b = i.bottom
+            val ime = insets.getInsets(WindowInsets.Type.ime()).bottom
+            l = i.left; t = i.top; r = i.right; b = maxOf(i.bottom, ime)
             nav = insets.getInsets(WindowInsets.Type.navigationBars()).bottom
         } else {
             l = insets.systemWindowInsetLeft; t = insets.systemWindowInsetTop
@@ -253,9 +303,10 @@ class Screen(private val activity: Activity, private val kit: UiKit) {
         topScrim.layoutParams.height = t
         bottomScrim.layoutParams.height = nav
         topScrim.requestLayout(); bottomScrim.requestLayout()
-        footer.setPadding(base + l, kit.dp(8), base + r, nav + kit.dp(8))
         val avail = activity.resources.displayMetrics.widthPixels - l - r - 2 * base
         val extra = maxOf(0, (avail - kit.dp(MAX_CONTENT_DP)) / 2)
+        // The footer keeps the same readable column as the content on tablets and in landscape.
+        footer.setPadding(base + l + extra, kit.dp(8), base + r + extra, b + kit.dp(8))
         // With a footer the nav-bar inset belongs to the footer; without one it belongs to the scroll content.
         val bottomPad = if (footer.visibility == View.VISIBLE) base else base + b
         v.setPadding(base + l + extra, base + t, base + r + extra, bottomPad)
@@ -264,5 +315,46 @@ class Screen(private val activity: Activity, private val kit: UiKit) {
 
     fun requestInsets() { scroll.requestApplyInsets() }
 
+    /** Name the page for TalkBack; a changed pane title is announced, so wizard steps are spoken on change. */
+    fun announcePage(title: String) {
+        if (Build.VERSION.SDK_INT >= 28) root.accessibilityPaneTitle = title
+    }
+
     companion object { const val MAX_CONTENT_DP = 560 }
+}
+
+/**
+ * Edge-to-edge window setup shared by every screen. Android 15+ enforces it for targetSdk 35+; this makes older
+ * releases behave the same, lets content use display cutouts in landscape, and picks dark or light system-bar
+ * icons from the current night mode so the clock and gesture handle stay legible in both themes.
+ */
+object SystemBars {
+    @Suppress("DEPRECATION")
+    fun setup(activity: Activity) {
+        val w = activity.window
+        val night = (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        if (Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false)
+            val mask = android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            w.insetsController?.setSystemBarsAppearance(if (night) 0 else mask, mask)
+        } else {
+            var f = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            if (!night) {
+                f = f or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+            w.decorView.systemUiVisibility = f
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            w.attributes = w.attributes.also {
+                it.layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        }
+        w.statusBarColor = Color.TRANSPARENT
+        w.navigationBarColor = Color.TRANSPARENT
+    }
 }

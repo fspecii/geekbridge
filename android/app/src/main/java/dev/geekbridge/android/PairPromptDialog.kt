@@ -31,7 +31,8 @@ class PairPromptDialog(
 
     private fun show(p: PairPrompt) {
         val outgoing = p.direction == "outgoing"
-        val name = p.peerName.ifEmpty { "this computer" }
+        val name = p.peerName.ifEmpty { activity.getString(R.string.pair_this_computer) }
+        val secs = (p.expiresInMs / 1000).coerceAtLeast(0).toInt()
         val pad = ui.dp(20)
         val body = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -39,26 +40,24 @@ class PairPromptDialog(
         }
         body.addView(
             ui.text(
-                if (outgoing) "You asked $name to pair. It shows a code too; check that both codes are the same:"
-                else "$name wants to pair. It shows a code too; check that both codes are the same:",
+                activity.getString(if (outgoing) R.string.pair_dlg_outgoing else R.string.pair_dlg_incoming, name),
             ),
         )
         body.addView(ui.mono(p.code, 30f, bold = true).apply { letterSpacing = 0.12f })
-        body.addView(ui.text("Computer’s certificate (SHA-256), shown the same on both screens", Tone.Muted, 12f))
+        body.addView(ui.text(activity.getString(R.string.pair_dlg_cert), Tone.Muted, 12f))
         body.addView(ui.mono(TransportText.group(p.peerCertSha256), 12f))
         body.addView(
             ui.text(
-                "Pair only if the code and certificate match. Pairing also needs the computer to accept. " +
-                    "This request expires in about ${(p.expiresInMs / 1000).coerceAtLeast(0)} seconds.",
+                activity.resources.getQuantityString(R.plurals.pair_dlg_warning, secs, secs),
                 Tone.Muted,
             ),
         )
         val d = AlertDialog.Builder(activity)
-            .setTitle(if (outgoing) "Pair with $name?" else "Pairing request")
+            .setTitle(if (outgoing) activity.getString(R.string.pair_dlg_title_outgoing, name) else activity.getString(R.string.pair_dlg_title_incoming))
             .setView(ScrollView(activity).apply { addView(body) })
             .setCancelable(false)
-            .setPositiveButton("Pair") { _, _ -> finish(p, true) }
-            .setNegativeButton("Decline") { _, _ -> finish(p, false) }
+            .setPositiveButton(R.string.pair_dlg_pair) { _, _ -> finish(p, true) }
+            .setNegativeButton(R.string.pair_dlg_decline) { _, _ -> finish(p, false) }
             .create()
         dialog = d
         shownId = p.requestId

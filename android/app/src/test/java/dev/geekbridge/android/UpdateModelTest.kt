@@ -60,6 +60,11 @@ class UpdateModelTest {
     fun urlPolicy() {
         assertTrue(UpdateModel.urlAllowed("https://github.com/fspecii/geekbridge/releases/download/v1/a.apk"))
         assertTrue(UpdateModel.urlAllowed("https://objects.githubusercontent.com/x"))
+        assertTrue(UpdateModel.urlAllowed("https://release-assets.githubusercontent.com/x"))
+        assertTrue(UpdateModel.urlAllowed("https://github.com:443/x"))
+        assertFalse(UpdateModel.urlAllowed("https://github.com:8443/x"))
+        assertFalse(UpdateModel.urlAllowed("https://raw.githubusercontent.com/x"))
+        assertFalse(UpdateModel.urlAllowed("https://gist.githubusercontent.com/x"))
         assertFalse(UpdateModel.urlAllowed("http://github.com/x"))
         assertFalse(UpdateModel.urlAllowed("https://evilgithub.com/x"))
         assertFalse(UpdateModel.urlAllowed("https://github.com.evil.example/x"))

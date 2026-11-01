@@ -1,6 +1,8 @@
 //! Calls: a dialer in the style of the macOS phone keypad. The number is local text only;
 //! placing a call stays blocked until a call backend is authorized for a paired phone.
 use crate::{
+    call_feed::{CallFeed, FeedState},
+    call_ui::{self, CallPanel},
     icons::{self, Icon},
     input,
     shell::{AppView, Env, central},
@@ -22,6 +24,10 @@ pub struct Calls {
     /// The 0 key was held long enough to enter "+"; the release must not also add a "0".
     zero_long_press_done: bool,
     focus_display: bool,
+    /// Live call view from the service; started on the first frame.
+    feed: Option<CallFeed>,
+    panel: CallPanel,
+    sources: FeedState,
 }
 
 const KEYS: [[(char, &str); 3]; 4] = [
@@ -266,6 +272,7 @@ impl Calls {
 
     fn recents(&mut self, ui: &mut egui::Ui, env: &Env) {
         let pal = env.pal;
+        let sources = self.sources.clone();
         ui.add_space(6.0);
         ui.label(theme::semibold("Recent Calls", 20.0));
         ui.add_space(14.0);
@@ -289,12 +296,19 @@ impl Calls {
                 .wrap(),
             );
         });
+        ui.add_space(24.0);
+        call_ui::sources(ui, pal, &sources);
     }
 }
 
 impl AppView for Calls {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        let feed = self.feed.take().unwrap_or_else(|| {
+            let wake = ctx.clone();
+            CallFeed::spawn(move || wake.request_repaint())
+        });
+        self.sources = feed.state();
         theme::toolbar(ctx, pal, 46.0, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(10.0);
@@ -306,9 +320,12 @@ impl AppView for Calls {
                 );
             });
         });
+        self.panel.top(ctx, pal, &feed);
         central(ctx, pal, Margin::symmetric(16, 10), |ui| match self.tab {
             Tab::Keypad => self.keypad(ui, env),
             Tab::Recents => self.recents(ui, env),
         });
+        self.panel.popup(ctx, pal, &feed);
+        self.feed = Some(feed);
     }
 }

@@ -205,6 +205,15 @@ pub enum Handshake {
 }
 
 impl Handshake {
+    /// Record the local IP of the TCP connection for later payload dials.
+    fn with_local_ip(mut self, ip: Option<IpAddr>) -> Self {
+        match &mut self {
+            Self::Trusted(l) => l.conn.payload.local_ip = ip,
+            Self::Pending(l) => l.conn.payload.local_ip = ip,
+        }
+        self
+    }
+
     pub fn info(&self) -> &LinkInfo {
         match self {
             Self::Trusted(l) => l.info(),
@@ -412,7 +421,10 @@ impl Endpoint {
             .await
             .map_err(|_| KdeError::Timeout("TCP connect"))??;
         configure_tcp(&stream)?;
-        self.initiate(stream, addr.ip(), target).await
+        let local = stream.local_addr().ok().map(|a| a.ip());
+        self.initiate(stream, addr.ip(), target)
+            .await
+            .map(|h| h.with_local_ip(local))
     }
 
     /// Handle an accepted TCP connection as TLS client. The address policy is
@@ -421,7 +433,10 @@ impl Endpoint {
         let ip = stream.peer_addr()?.ip();
         self.config.address_policy.check(ip)?;
         configure_tcp(&stream)?;
-        self.accept_io(stream, ip).await
+        let local = stream.local_addr().ok().map(|a| a.ip());
+        self.accept_io(stream, ip)
+            .await
+            .map(|h| h.with_local_ip(local))
     }
 
     /// TCP-initiator side over any byte stream.
@@ -641,6 +656,7 @@ impl Endpoint {
                 peer_id: info_peer_id,
                 peer_cert: info_peer_cert,
                 peer_ip,
+                local_ip: None,
                 versions: self.config.tls_versions,
                 config: self.config.payload.clone(),
             },

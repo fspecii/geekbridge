@@ -30,7 +30,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 18] = [
+pub(crate) const ACTIONS: [&str; 22] = [
     "transport_start",
     "transport_status",
     "transport_stop",
@@ -49,6 +49,10 @@ pub(crate) const ACTIONS: [&str; 18] = [
     "transport_clipboard_config",
     "transport_clipboard_wait",
     "transport_clipboard_send",
+    "transport_calls_config",
+    "transport_calls_wait",
+    "transport_calls_report",
+    "transport_calls_result",
 ];
 
 const DEFAULT_KDE_PORT: u16 = 1716;
@@ -281,6 +285,8 @@ struct StartArgs {
     allow_loopback: bool,
     /// `Some((enabled, max_image_bytes))` when the app wants clipboard packets negotiated.
     clipboard: Option<(bool, u64)>,
+    /// `Some(enabled)` when the app wants call-control packets negotiated.
+    calls: Option<bool>,
 }
 
 struct DiscoveryArgs {
@@ -368,6 +374,14 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
             Some((enabled, max))
         }
     };
+    let calls = match f.take_opt_object("calls")? {
+        None => None,
+        Some(mut o) => {
+            let enabled = o.take_opt_bool("enabled")?.unwrap_or(false);
+            o.finish()?;
+            Some(enabled)
+        }
+    };
     f.finish()?;
 
     if discovery.announce && listen.is_none() {
@@ -386,6 +400,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         discovery,
         allow_loopback,
         clipboard,
+        calls,
     })
 }
 
@@ -557,6 +572,44 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                 age_ms,
             })
         }
+        "transport_calls_config" => {
+            let enabled = f.take_bool("enabled")?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.calls().configure(enabled);
+            Ok(json!({ "ok": true }))
+        }
+        "transport_calls_wait" => {
+            let since = f.take_opt_u64("since")?.unwrap_or(0);
+            let timeout_ms = f.take_opt_u64("timeout_ms")?.unwrap_or(30_000);
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.calls().wait(since, Duration::from_millis(timeout_ms)))
+        }
+        "transport_calls_report" => {
+            let state = f.take_string("state")?;
+            let number = f.take_opt_string("number")?;
+            let name = f.take_opt_string("name")?;
+            let can_answer = f.take_opt_bool("can_answer")?.unwrap_or(false);
+            let can_end = f.take_opt_bool("can_end")?.unwrap_or(false);
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.calls_report(engine::CallsReport {
+                state,
+                number,
+                name,
+                can_answer,
+                can_end,
+            })
+        }
+        "transport_calls_result" => {
+            let connection_id = f.take_u64("connection_id")?;
+            let request_id = f.take_string("request_id")?;
+            let failure = token(&mut f, "failure")?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.calls_result(connection_id, &request_id, failure.as_deref())
+        }
         "transport_unpair" => {
             let device = f.take_string("device_id")?;
             f.finish()?;
@@ -613,18 +666,23 @@ fn announce_target(args: &DiscoveryArgs, policy: &AddressPolicy) -> Result<Socke
 const CLIPBOARD_SUBDIR: &str = "clipboard-cache";
 
 /// Packet types declared in the identity packet.
-fn capabilities(clipboard: bool) -> (Vec<String>, Vec<String>) {
+fn capabilities(clipboard: bool, calls: bool) -> (Vec<String>, Vec<String>) {
     let mut incoming = vec![PING.to_owned(), SHARE_REQUEST.to_owned()];
     let mut outgoing = incoming.clone();
     if clipboard {
         incoming.extend(engine::clipboard_incoming_types());
         outgoing.extend(engine::clipboard_outgoing_types());
     }
+    if calls {
+        incoming.extend(engine::calls_incoming_types());
+        outgoing.extend(engine::calls_outgoing_types());
+    }
     (incoming, outgoing)
 }
 
 fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), ApiError> {
     let clipboard_on = args.clipboard.is_some();
+    let calls_on = args.calls.is_some();
     let policy = AddressPolicy {
         local_networks: true,
         loopback: args.allow_loopback,
@@ -660,8 +718,8 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         Arc::new(creds),
         &args.device_name,
         DeviceType::Phone,
-        capabilities(args.clipboard.is_some()).0,
-        capabilities(args.clipboard.is_some()).1,
+        capabilities(args.clipboard.is_some(), args.calls.is_some()).0,
+        capabilities(args.clipboard.is_some(), args.calls.is_some()).1,
         store_dyn,
         config,
     )
@@ -747,6 +805,10 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
             .init(args.state_dir.join(CLIPBOARD_SUBDIR), enabled, max_image);
     }
 
+    if let Some(enabled) = args.calls {
+        core.calls().configure(enabled);
+    }
+
     // The TCP listener is bound and listening before any task (or announcement) exists.
     if let Some(listener) = tcp {
         rt.spawn(accept_loop(core.clone(), listener));
@@ -766,7 +828,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         "identity_created": created,
         "listen": core.info.listen.map(|a| json!({ "host": a.ip().to_string(), "port": a.port() })),
         "discovery": core.info.discovery.to_json(),
-        "capabilities": { "incoming": capabilities(clipboard_on).0, "outgoing": capabilities(clipboard_on).1 },
+        "capabilities": { "incoming": capabilities(clipboard_on, calls_on).0, "outgoing": capabilities(clipboard_on, calls_on).1 },
     });
     drop(enter);
     Ok((Running { core, rt }, result))

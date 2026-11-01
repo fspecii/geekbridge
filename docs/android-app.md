@@ -5,6 +5,15 @@ Project: `android/` (Gradle, single `:app` module, package `dev.geekbridge.andro
 SDK 36, min SDK 26. UI uses platform widgets only (no AndroidX, no Compose); the only dependencies are
 JUnit and `org.json` for JVM tests.
 
+## Screens and background connection
+
+The launcher is `HomeActivity` (paired-computer status, quick actions, settings); the former single page is
+`MainActivity`, opened from Home as **Diagnostics & about**. `SetupActivity` is the first-run wizard and permission
+master (including the battery-optimisation exemption and vendor autostart guidance). A foreground service
+(`LinkService`, type `connectedDevice`) keeps the link reachable while a computer is paired and restarts after boot.
+Design, size and power numbers, and what is not verified: [android-power.md](android-power.md). The paragraphs below
+describe the Diagnostics screen and may still say "development" where that is literally true.
+
 ## What works today
 
 Confirmed by running the JVM tests, lint and `assembleDebug` against the `.tools` toolchain (see Validation):
@@ -78,19 +87,64 @@ policy, target choice), `ShareCoordinator.kt` / `ShareActivity.kt` / `OfferDialo
 Not tested: the share Android glue on a device or emulator, the real JNI share actions (depend on the Rust side),
 MediaStore behaviour on real devices, notification permission flows, and interoperability with stock KDE Connect.
 
+## UI polish pass (accessibility, layout, startup, size)
+
+Measured on the `gbhome` emulator (Android 16 / API 36, x86_64, 1080x2400 @ 420 dpi, software GPU, host shared with
+other jobs), debug APK, Home as the launch screen, `am start -W` after `force-stop`: **TotalTime 925-1114 ms over
+6 cold starts (median about 950 ms)**. These are emulator numbers, not a phone; treat them as a regression
+baseline only. Package size (`assembleDebug` / `assembleRelease`, `isMinifyEnabled = false`): **debug 9.9 MB, release
+(unsigned) 6.7 MB**; the two native libraries are 2.7 MB (arm64-v8a) and 3.1 MB (x86_64), `classes.dex` 2.7 MB
+(release) and resources are about 30 KB. Shrinking with R8 is the obvious next size lever; not enabled here.
+
+What changed and how it was checked (screenshots: `dist/screenshots/android/polish-*.png`):
+
+- **Dark mode.** The Share sheet theme had no night variant, so it kept a light parent under dark colours; it now has one.
+  Filled buttons were white on `#2E8BFF` (3.4:1); night blue is now `#4DA3FF` with dark label text. System-bar icon
+  colour follows night mode on every screen (`SystemBars`). Light/dark pairs: `01/02` Setup, `03` Home, `12` Share,
+  `13/14` Diagnostics.
+- **TalkBack.** Custom clickable views announce as buttons; toggle rows are one focus stop that reads title, summary,
+  "Switch" and state, and the whole row toggles (large target); the setup wizard sets an accessibility pane title
+  ("Step 3 of 9: ...") so each page change is spoken; headings are marked; decorative icons are hidden. Focus order is
+  the visual order (content, then the wizard footer). Not verified with a real TalkBack session; verified by code
+  and view-hierarchy inspection only.
+- **Touch targets.** Buttons, pills, rows and the gear are at least 48 dp; wizard and button heights are no longer
+  fixed (they were 50 dp, which clipped at large font sizes).
+- **Font scale 1.3x / 2.0x** (`05`, `06`, `07`): no clipped text; at 1.5x and above status chips stack under the row
+  text instead of squeezing it.
+- **Landscape and tablet** (`08`, `09`, `10`): content keeps a 560 dp column, now including the wizard footer;
+  display cutouts are used in landscape.
+- **RTL** (`11`, forced with a per-app Arabic locale; strings stay English): layout mirrors correctly (badges, chips,
+  switches, back/next). Label padding now uses start/end.
+- **Edge-to-edge and insets.** Applied explicitly (not only through the Android 15 default) so API 26-34 behave the
+  same; IME insets are included in the bottom padding. Checked on API 36 only; API 26-34 paths compile and follow the
+  documented flags but were not run.
+- **Predictive back.** `enableOnBackInvokedCallback` is on; the setup wizard only intercepts Back while it can go to a
+  previous page, so the system back-to-home animation plays on the first page.
+- **Empty and error states.** Dimmed quick actions explain themselves and open the pairing step instead of doing
+  nothing; the Share sheet says what to do when the link is off or no computer is paired; pairing "looking" text
+  suggests checking Wi-Fi/VPN; a missing file picker has a plain explanation.
+- **Strings.** User-facing text of Home, the setup wizard, the pairing panel and prompt, the Share sheet and the offer
+  dialogs now lives in `res/values/gb_ui.xml` (with plurals). **Still in Kotlin:** text produced by the pure models
+  (`HomeModel`, `SetupModel`: hero text, step titles/details, warnings), and the Diagnostics screen
+  (`MainActivity`, `LinkSection`, `UpdateSection`, clipboard settings). Moving those needs the models to return
+  string ids and is a separate change. Lint's `SetTextI18n` still flags `MainActivity.kt:275` for that reason.
+
 ## What does not work (by design, for now)
 
-- **No pairing, discovery, transport or sync.** The UI says so; "Pair" button is
-  disabled. Sharing files, text and links to a paired computer is described above. The `INTERNET` permission is declared (the optional computer link and the update check use it; the
-  link stops when the app leaves the foreground), but there is no service and no unauthenticated command
-  surface: the update check only makes outbound HTTPS requests to GitHub and opens no listening socket. "Paired computers" is always "none" until a real backend exists. Native validation success never
-  implies trust or call readiness.
+- **No unauthenticated surface.** Pairing, discovery and the link to a computer are done by the Rust core (setup
+  wizard step 1 or Home); trust is the pinned certificate plus a code compared on both screens. `INTERNET` is
+  declared for the computer link and the update check; the link stops when the app leaves the foreground unless
+  "Stay connected" is on (see [android-power.md](android-power.md)), and the update check only makes outbound HTTPS
+  requests to GitHub. Native validation success never implies trust or call readiness. Messages and Agenda are not
+  synced to computers yet.
 - **No SMS read/send.** `READ_SMS`/`SEND_SMS` are restricted by Android: stores generally permit them only for
   the default SMS app, and sideloaded installs on Android 13+ may need "Allow restricted settings". A runtime
   denial is final until changed in app settings. The app requests neither, and nothing is ever sent automatically.
-- **No call audio, call control or call numbers.** The app only reports Idle/Ringing/In call; it cannot answer, dial,
-  hang up or read who is calling, and it never forwards call state to a computer (the optional computer link
-  carries no call data; the card says so).
+- **No call audio, ever.** The Diagnostics card only reports Idle/Ringing/In call locally and sends nothing. The opt-in
+  **call control** feature ([call-control.md](call-control.md), off by default) can report ringing/in-call (and, with
+  `READ_CALL_LOG` / `READ_CONTACTS`, who is calling) to a paired computer and let it answer, decline or end the call via
+  `ANSWER_PHONE_CALLS`; it cannot dial and it never carries audio. Audio stays on the phone's own Bluetooth HFP link
+  ([emulated-calls.md](emulated-calls.md)); only simulated signalling is verified.
 - **No background clipboard read**, accessibility, root or ADB use. Clipboard sync (off by default) is described in [clipboard-sync.md](clipboard-sync.md): the computer pulls, and the app reads the clipboard only while it has focus after a tap.
 - No logging of contacts, calendar, SMS or clipboard contents (the app has no logging of them).
 
@@ -119,15 +173,15 @@ There is no Gradle wrapper (the toolchain provides Gradle 8.13). `gradle.propert
 
 ## Validation performed
 
-Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout:
+Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout (the `assembleDebug` bullet below is from the first build; the test and lint figures are from the merged tree):
 
-- `:app:testDebugUnitTest`: 58 tests passed when the call-state work was verified (38 earlier tests: JSON request
-  shapes, strict response parsing, bounds, error redaction, permission-state logic, formatting, `WorkRunner`
-  cancellation; plus 20 in `CallStateTest.kt`: state mapping, SDK listener-strategy selection, change tracking,
-  formatting, monitor lifecycle with a fake registrar, executor bounds). Transport, share, update and setup tests
-  were added afterwards and this count has not been refreshed; re-run the command in "Build and test" for the
-  current total.
-- `:app:lintDebug`: no errors; one informational `NewerVersionAvailable`.
+- `:app:testDebugUnitTest`: 192 tests, 0 failures, on the merged tree (2026-11-01, per
+  [android-calls.md](android-calls.md)). They cover JSON request shapes, strict response parsing, bounds, error
+  redaction, permission-state logic, formatting, `WorkRunner` cancellation, transport, share, update and setup
+  logic, and 20 tests in `CallStateTest.kt` (state mapping, SDK listener-strategy selection, change tracking,
+  formatting, monitor lifecycle with a fake registrar, executor bounds).
+- `:app:lintDebug`: 0 errors, 9 warnings (merged tree, 2026-11-01; the earlier build had one informational
+  `NewerVersionAvailable`).
 - `:app:assembleDebug` with the Rust libraries built by the native agent: APK contains both ABIs, package
   `dev.geekbridge.android`, target SDK 36. That first build declared only `READ_CONTACTS` and `READ_CALENDAR`; the
   manifest now declares the runtime permissions `READ_CONTACTS`, `READ_CALENDAR` and `READ_PHONE_STATE`, plus
@@ -137,10 +191,9 @@ Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout:
   with the message above.
 
 - **Emulator, Calls card only (2026-11-01).** On AVD `gbcall` (`emulator-5584`, API 36, x86_64, dedicated adb server
-  on port 16037) the debug APK showed "not allowed yet" with the permission revoked, then the system dialog, then
-  Idle -> "Ringing (incoming call)" -> "In call" -> Idle driven by the emulator's simulated GSM signalling
+  on port 16037) the debug APK (the Calls card now sits under Home > Diagnostics & about) showed Idle -> "Ringing (incoming call)" -> "In call" -> Idle driven by the emulator's simulated GSM signalling
   (`adb emu gsm call/cancel`, `KEYCODE_CALL`); `dumpsys telephony.registry` showed the app's call-state listener
-  registered on start and removed on stop. Screenshots and uiautomator dumps are in `dist/android/logs/`
+  registered while the card is shown and removed after leaving it. The permission walk-through (revoked -> "not allowed yet" -> system dialog -> allowed) was checked on an earlier build, not the merged one. Screenshots and uiautomator dumps are in `dist/android/logs/`
   (`calls-*`). This is simulated cellular signalling only: no Bluetooth HFP link and no call audio. Only the API 31+
   listener path ran (API 36); the API 29-30 and 26-28 `PhoneStateListener` paths are covered by selection tests only
   and were not run on a device. See [android-calls.md](android-calls.md).

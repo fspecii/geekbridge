@@ -1,5 +1,7 @@
 //! Shared implementation for the four separate GeekBridge app executables.
 pub mod apps;
+pub mod call_feed;
+pub mod call_ui;
 pub mod cli;
 pub mod clipboard_link;
 pub mod connection;
@@ -9,6 +11,7 @@ pub mod icons;
 pub mod identity;
 pub mod input;
 pub mod localtime;
+pub mod pace;
 pub mod poller;
 pub mod share_app;
 pub mod shell;

@@ -166,6 +166,9 @@ impl Session {
             CallCommand::Hangup { call } => Action::Hangup {
                 call: call_ref(call)?,
             },
+            CallCommand::Reject { call } => Action::Reject {
+                call: call_ref(call)?,
+            },
             CallCommand::Dial { number } => Action::Dial {
                 device: device.clone(),
                 number: number.clone(),

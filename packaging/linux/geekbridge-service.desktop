@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Service
+Comment=Background service for phone pairing, clipboard and file sharing
+Exec=geekbridge-service-launch
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

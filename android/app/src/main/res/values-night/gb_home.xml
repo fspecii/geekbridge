@@ -1,5 +1,6 @@
 <resources>
-    <color name="gb_blue">#2E8BFF</color>
-    <color name="gb_on_blue">#FFFFFF</color>
+    <!-- Lighter blue with dark label text: white on #2E8BFF was only 3.4:1 on filled buttons. -->
+    <color name="gb_blue">#4DA3FF</color>
+    <color name="gb_on_blue">#00162E</color>
     <color name="gb_panel">#1C1C1E</color>
 </resources>

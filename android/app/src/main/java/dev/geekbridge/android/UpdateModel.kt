@@ -120,6 +120,15 @@ object UpdateModel {
 
     fun isHex64(s: String) = s.length == 64 && s.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
+    /** Exact hosts a release asset may be served from; `raw.`/`gist.` etc. host user content. */
+    private val RELEASE_HOSTS = setOf(
+        "github.com",
+        "api.github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "github-releases.githubusercontent.com",
+    )
+
     /** Only https GitHub hosts are ever contacted (loopback http only when [allowLoopback], for tests). */
     fun urlAllowed(url: String, allowLoopback: Boolean = false): Boolean {
         val uri = try {
@@ -130,7 +139,7 @@ object UpdateModel {
         val host = uri.host?.lowercase(Locale.ROOT) ?: return false
         if (uri.userInfo != null) return false
         if (uri.scheme == "https") {
-            return host == "github.com" || host == "api.github.com" || host.endsWith(".githubusercontent.com")
+            return (uri.port == -1 || uri.port == 443) && host in RELEASE_HOSTS
         }
         return allowLoopback && uri.scheme == "http" && (host == "127.0.0.1" || host == "localhost")
     }

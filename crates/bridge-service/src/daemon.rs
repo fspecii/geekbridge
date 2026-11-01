@@ -18,6 +18,7 @@ use crate::share::{
 };
 use crate::{
     SharedState,
+    call_control::{CallHub, CallNotifier, HostCalls},
     calling::CallingProbe,
     clipboard::{self, ClipOut, ClipboardBackend, ClipboardService, LinkCaps, Next},
     gate::{self, Incoming, Outgoing},
@@ -80,6 +81,11 @@ pub struct DaemonOptions {
     pub share: ShareOptions,
     /// Desktop notification for incoming file offers. `None` shows none (tests); `run` installs one.
     pub share_notifier: Option<Arc<dyn ShareNotifier>>,
+    /// Bluetooth hands-free backend for answering calls from this computer. `None` (tests, and
+    /// platforms without an adapter) leaves only the phone link.
+    pub call_host: Mutex<Option<Box<dyn HostCalls>>>,
+    /// Desktop notification with Answer/Decline for a ringing call. `None` shows none.
+    pub call_notifier: Option<Arc<dyn CallNotifier>>,
 }
 
 impl DaemonOptions {
@@ -102,6 +108,8 @@ impl DaemonOptions {
             .expect("built-in update configuration is valid"),
             share: ShareOptions::default(),
             share_notifier: None,
+            call_host: Mutex::new(None),
+            call_notifier: None,
         }
     }
 }
@@ -172,6 +180,7 @@ pub struct Daemon {
     /// The hotkey currently registered with the binder, if any.
     bound_hotkey: Mutex<Option<String>>,
     share: Arc<ShareManager>,
+    calls: Arc<CallHub>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -234,6 +243,18 @@ impl Daemon {
             store.clone(),
             options.transport.clone(),
         )?;
+        let calls = CallHub::new();
+        if let Some(n) = options.call_notifier.take() {
+            calls.set_notifier(n);
+        }
+        if let Some(host) = options
+            .call_host
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            calls.start_host(host);
+        }
         let share = ShareManager::new(options.share.clone());
         if let Some(n) = options.share_notifier.take() {
             share.set_notifier(n);
@@ -250,6 +271,7 @@ impl Daemon {
             clipboard,
             bound_hotkey: Mutex::new(None),
             share,
+            calls,
         });
         let weak = Arc::downgrade(&daemon);
         daemon.share.set_event_sink(Arc::new(move |device, kind| {
@@ -390,6 +412,19 @@ impl Daemon {
                 .map(|()| Response::Ack),
             Request::Ping { device_id } => self.ping(&device_id).map(|()| Response::Ack),
             Request::CallingStatus => self.calling_status().await.map(Response::CallingStatus),
+            Request::Calls => Ok(Response::Calls(Box::new(self.calls.status()))),
+            Request::CallAction { target, action } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.act(&target, action)).await
+            }
+            Request::CallMute { source, muted } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.mute(&source, muted)).await
+            }
+            Request::CallAudio { source } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.connect_audio(&source)).await
+            }
             Request::ClipboardStatus => self
                 .clipboard_status()
                 .map(|s| Response::ClipboardStatus(Box::new(s))),
@@ -808,6 +843,9 @@ impl Daemon {
         {
             clip.set_enabled(device_id, enabled);
             self.sync_hotkey();
+        }
+        if feature == Feature::Telephony {
+            self.calls.set_enabled(device_id, enabled);
         }
         self.core().emit(
             Some(device_id),
@@ -1251,6 +1289,7 @@ async fn trusted_loop(
     let negotiated_in = gate::negotiated_incoming(&link.info().peer);
     let share_name = link.info().peer.device_name.clone();
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
+    let (mut call_rx, _call_guard) = calls_link(d, id, &link);
     let loss = loop {
         tokio::select! {
             incoming = link.recv() => match incoming {
@@ -1273,6 +1312,15 @@ async fn trusted_loop(
                     if route_clipboard(d, id, &packet, &negotiated_in, &link) {
                         continue;
                     }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Calls {
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        if (!clean || !d.calls.on_packet(id, &packet.kind, &packet.body))
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
                     if !on_packet(d, id, attempt, &packet, &negotiated_in) {
                         break "too many packets outside the negotiated set".to_owned();
                     }
@@ -1287,6 +1335,15 @@ async fn trusted_loop(
             },
             Some(out) = clip_rx.recv() => {
                 if let Err(e) = send_clip(&mut link, out).await {
+                    break reason(&e);
+                }
+            },
+            Some(request) = call_rx.recv() => {
+                let packet = kde::Packet::new(
+                    gate::CALLS_REQUEST,
+                    bridge_core::calls_link::request_body(&request.request_id, request.action),
+                );
+                if let Err(e) = link.send(&packet).await {
                     break reason(&e);
                 }
             },
@@ -1316,6 +1373,13 @@ async fn trusted_loop(
             },
         }
     };
+    // Jobs queued behind the failure will never run: fail them so they stop holding transfer slots.
+    rx.close();
+    while let Ok(cmd) = rx.try_recv() {
+        if let LinkCmd::Share(job) = cmd {
+            d.share.drop_job(job);
+        }
+    }
     d.finish(id, attempt, EventKind::LinkLost { reason: loss });
 }
 
@@ -1354,18 +1418,69 @@ fn clipboard_link(
         &gate::negotiated_incoming(peer),
     );
     let enabled = d.consents().is_enabled(id, Feature::Clipboard);
-    let rx = clip.link_up(id, &peer.device_name, caps, enabled);
+    let (rx, generation) = clip.link_up_generation(id, &peer.device_name, caps, enabled);
     d.sync_hotkey();
-    (rx, ClipboardLinkGuard(Some((d.clone(), id.to_owned()))))
+    (
+        rx,
+        ClipboardLinkGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
 }
 
-struct ClipboardLinkGuard(Option<(Arc<Daemon>, String)>);
+/// Registers a trusted link with the call hub. Requests are only sent if the phone declared it
+/// accepts `geekbridge.calls.request`; otherwise the hub never offers a link control for it.
+fn calls_link(
+    d: &Arc<Daemon>,
+    id: &str,
+    link: &kde::TrustedLink,
+) -> (
+    mpsc::Receiver<crate::call_control::LinkRequest>,
+    CallsLinkGuard,
+) {
+    let peer = &link.info().peer;
+    let speaks = gate::negotiated_outgoing(peer)
+        .iter()
+        .any(|k| k == gate::CALLS_REQUEST)
+        && gate::negotiated_incoming(peer)
+            .iter()
+            .any(|k| k == gate::CALLS_STATE);
+    if !speaks {
+        return (mpsc::channel(1).1, CallsLinkGuard(None));
+    }
+    let enabled = d.consents().is_enabled(id, Feature::Telephony);
+    let (rx, generation) = d.calls.link_up_generation(id, &peer.device_name, enabled);
+    (
+        rx,
+        CallsLinkGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
+}
+
+struct CallsLinkGuard(Option<(Arc<Daemon>, String, u64)>);
+impl Drop for CallsLinkGuard {
+    fn drop(&mut self) {
+        if let Some((d, id, generation)) = self.0.take() {
+            d.calls.link_down_generation(&id, generation);
+        }
+    }
+}
+
+/// Run blocking hub work off the async runtime and turn the result into a reply.
+async fn blocking(
+    f: impl FnOnce() -> Result<(), ErrorBody> + Send + 'static,
+) -> Result<Response, ErrorBody> {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(())) => Ok(Response::Ack),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(err(ErrorCode::Failed, "the call request was interrupted")),
+    }
+}
+
+struct ClipboardLinkGuard(Option<(Arc<Daemon>, String, u64)>);
 impl Drop for ClipboardLinkGuard {
     fn drop(&mut self) {
-        if let Some((d, id)) = self.0.take()
+        if let Some((d, id, generation)) = self.0.take()
             && let Some(clip) = &d.clipboard
         {
-            clip.link_down(&id);
+            clip.link_down_generation(&id, generation);
             d.sync_hotkey();
         }
     }
@@ -1474,7 +1589,7 @@ fn on_packet(
         }
         // Clipboard packets are routed by `route_clipboard` before this function runs; one that
         // reaches here carried a payload it must not have, so it is treated as misbehaviour.
-        Incoming::Clipboard | Incoming::Reject => {
+        Incoming::Clipboard | Incoming::Calls | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {
                 events.push_back(event(id, EventKind::PacketRejected));

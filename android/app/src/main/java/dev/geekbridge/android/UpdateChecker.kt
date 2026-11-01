@@ -178,5 +178,21 @@ class UpdateChecker(
         const val MAX_SUMS_BYTES = 64 * 1024
         const val MAX_REDIRECTS = 5
         const val UPDATE_FILE_NAME = "geekbridge-update.apk"
+
+        /**
+         * Debug builds only: the "updates" preference `debug_base_url` (an `http://127.0.0.1:PORT` mock release
+         * server, set with `adb shell run-as`) replaces api.github.com so the update flow can be tested offline.
+         * Release builds ignore it, and [allowLoopback] still refuses any non-loopback http URL.
+         */
+        fun forBuild(context: android.content.Context): UpdateChecker {
+            val base = if (BuildConfig.DEBUG) {
+                context.getSharedPreferences("updates", android.content.Context.MODE_PRIVATE).getString("debug_base_url", null)
+            } else null
+            return if (base != null && base.startsWith("http://127.0.0.1")) {
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, baseUrl = base, allowLoopback = true)
+            } else {
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+            }
+        }
     }
 }

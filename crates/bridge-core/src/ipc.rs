@@ -336,6 +336,24 @@ pub enum Request {
     },
     /// Read-only probe of the host's Bluetooth calling backend (counts only, no numbers).
     CallingStatus,
+    /// The merged call view: ringing and live calls with caller, the controls that really exist
+    /// and the audio route. Carries phone numbers and names, so it is only served on this
+    /// authenticated control channel and the apps must keep it out of logs.
+    Calls,
+    /// Answer, decline or end a call. `target` must be one the latest `Calls` view offered.
+    CallAction {
+        target: crate::calls_view::ActionTarget,
+        action: CallAction,
+    },
+    /// Mute or unmute the computer's microphone for the live call (only where offered).
+    CallMute {
+        source: String,
+        muted: bool,
+    },
+    /// Ask a source to move the live call's audio to this computer (only where offered).
+    CallAudio {
+        source: String,
+    },
     /// Update-check state (never contacts the network by itself).
     UpdateStatus,
     /// Start a check of the latest GitHub Release now; poll `UpdateStatus` for the result.
@@ -539,6 +557,25 @@ pub struct UpdateStatus {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallAction {
+    Answer,
+    Reject,
+    Hangup,
+}
+
+/// Answer to [`Request::Calls`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallsStatus {
+    pub view: crate::calls_view::CallsView,
+    /// The latest thing the user should know about a control request ("The phone has not allowed
+    /// GeekBridge to answer calls."). Cleared by the next successful action or a new call.
+    pub notice: Option<String>,
+    /// One line per call source saying why it is or is not usable, without numbers or addresses.
+    pub sources: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallingStatus {
     pub platform: String,
@@ -717,6 +754,7 @@ pub enum Response {
     Status(Box<Status>),
     Events(EventPage),
     CallingStatus(CallingStatus),
+    Calls(Box<CallsStatus>),
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
     Share(Box<ShareStatus>),

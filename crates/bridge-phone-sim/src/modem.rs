@@ -330,6 +330,16 @@ impl RegistryEntry {
     }
 }
 
+impl RegistryEntry {
+    /// Offhook, incoming call accepted, foreground call not yet active.
+    fn answer_in_flight(&self) -> bool {
+        self.call_state == 2
+            && self.foreground.is_some()
+            && self.ringing == Some(5)
+            && self.foreground.unwrap_or(0) <= 0
+    }
+}
+
 /// Offhook: map the foreground/background precise states. Alerting (remote is ringing) is
 /// reported as `Dialing`, the nearest state a [`ModemState`] has.
 fn foreground_state(fg: i32, bg: i32, number: String) -> ModemState {
@@ -363,6 +373,12 @@ fn rank(s: &ModemState) -> u8 {
 /// represented by a single-call modem. `F` 7/8 (disconnecting) is idle. The number is only
 /// reported by Android while ringing and is dropped (empty) unless it is a plausible number.
 pub fn parse_registry_call_state(dumpsys_output: &str) -> Result<ModemState, ModemError> {
+    parse_registry_detail(dumpsys_output).map(|(s, _)| s)
+}
+
+/// [`parse_registry_call_state`] plus whether an answer is in flight (the incoming call was
+/// accepted but the foreground call is not active yet; reported as `Ringing`).
+fn parse_registry_detail(dumpsys_output: &str) -> Result<(ModemState, bool), ModemError> {
     let mut entries: Vec<RegistryEntry> = Vec::new();
     let mut group = 0;
     for line in dumpsys_output.lines() {
@@ -426,9 +442,9 @@ pub fn parse_registry_call_state(dumpsys_output: &str) -> Result<ModemState, Mod
     }
     Ok(entries
         .iter()
-        .map(RegistryEntry::state)
-        .max_by_key(rank)
-        .unwrap_or(ModemState::Idle))
+        .map(|e| (e.state(), e.answer_in_flight()))
+        .max_by_key(|(s, _)| rank(s))
+        .unwrap_or((ModemState::Idle, false)))
 }
 
 // ------------------------------------------------------------------------------------ AdbModem
@@ -458,6 +474,33 @@ pub struct AdbModem {
     server_port: Option<u16>,
     /// The call we know about; the registry reports a number only while ringing.
     track: Mutex<Track>,
+    timing: KeyTiming,
+}
+
+/// How hard [`AdbModem::answer`] / [`AdbModem::hangup`] try. Telecom silently drops a key sent
+/// within about two seconds of a call appearing (measured), so a key is only trusted once the
+/// registry shows the effect. The overall cap plus one 10 s adb timeout stays under the 30 s
+/// D-Bus method timeout.
+#[derive(Clone, Copy)]
+struct KeyTiming {
+    attempts: u32,
+    poll: Duration,
+    /// How long the first attempt waits for an effect; each retry waits `step` longer.
+    first_window: Duration,
+    step: Duration,
+    overall: Duration,
+}
+
+impl Default for KeyTiming {
+    fn default() -> Self {
+        Self {
+            attempts: 3,
+            poll: Duration::from_millis(250),
+            first_window: Duration::from_millis(2500),
+            step: Duration::from_millis(1000),
+            overall: Duration::from_secs(15),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -477,6 +520,7 @@ impl AdbModem {
             serial,
             server_port,
             track: Mutex::new(Track::default()),
+            timing: KeyTiming::default(),
         }
     }
 
@@ -491,9 +535,24 @@ impl AdbModem {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ModemError::Adb(format!("cannot run {}: {e}", self.adb.display())))?;
+        // ETXTBSY ("Text file busy") is transient when another thread has just written the
+        // executable (a forked child briefly inherits that write handle); retry a few times.
+        let mut attempts = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(c) => break c,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 5 => {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(20 * attempts));
+                }
+                Err(e) => {
+                    return Err(ModemError::Adb(format!(
+                        "cannot run {}: {e}",
+                        self.adb.display()
+                    )));
+                }
+            }
+        };
         fn capture(mut r: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
             std::thread::spawn(move || {
                 let mut buf = Vec::new();
@@ -556,13 +615,62 @@ impl AdbModem {
     }
 }
 
-impl Modem for AdbModem {
-    fn state(&self) -> Result<ModemState, ModemError> {
+impl AdbModem {
+    /// Press `key` and wait until the registry shows that `reacted` holds for the observed
+    /// state (`(state, answer_in_flight)`), re-sending the key only while the state is still
+    /// the one seen before the first press. Never returns `Ok` without an observed effect.
+    fn press_until(
+        &self,
+        key: &str,
+        what: &str,
+        before: &ModemState,
+        start: Instant,
+        reacted: impl Fn(&ModemState, bool) -> Result<bool, ModemError>,
+    ) -> Result<(), ModemError> {
+        let t = self.timing;
+        let out_of_time =
+            || ModemError::Adb(format!("{what}: no effect within {}s", t.overall.as_secs()));
+        let same = |a: &ModemState| std::mem::discriminant(a) == std::mem::discriminant(before);
+        let mut window = t.first_window;
+        for _attempt in 1..=t.attempts {
+            if start.elapsed() >= t.overall {
+                return Err(out_of_time());
+            }
+            self.keyevent(key)?;
+            let attempt_end = Instant::now() + window;
+            loop {
+                std::thread::sleep(t.poll);
+                if start.elapsed() >= t.overall {
+                    return Err(out_of_time());
+                }
+                let (now, in_flight) = self.observe()?;
+                if reacted(&now, in_flight)? {
+                    return Ok(());
+                }
+                if !same(&now) {
+                    // Something changed but not what we wanted: do not press again, just wait.
+                    continue;
+                }
+                if Instant::now() >= attempt_end {
+                    break;
+                }
+            }
+            window += t.step;
+        }
+        Err(ModemError::Adb(format!(
+            "{what}: no effect after {} attempts",
+            t.attempts
+        )))
+    }
+
+    /// One registry read, folded into the tracked call number. Returns the state and whether an
+    /// answer is in flight.
+    fn observe(&self) -> Result<(ModemState, bool), ModemError> {
         let dump = self.run(&["shell", REGISTRY_CMD])?;
-        let parsed = parse_registry_call_state(&dump)?;
+        let (parsed, in_flight) = parse_registry_detail(&dump)?;
         let dialing = matches!(parsed, ModemState::Dialing { .. });
         let mut t = lock(&self.track);
-        Ok(match parsed {
+        let state = match parsed {
             ModemState::Idle => {
                 let dial_pending = t.outbound
                     && !t.seen_offhook
@@ -593,15 +701,54 @@ impl Modem for AdbModem {
                     ModemState::Active { number }
                 }
             }
-        })
+        };
+        Ok((state, in_flight))
+    }
+}
+
+impl Modem for AdbModem {
+    fn state(&self) -> Result<ModemState, ModemError> {
+        self.observe().map(|(s, _)| s)
     }
 
+    /// Only valid while ringing (`KEYCODE_CALL` in any other state opens the dialer). Returns
+    /// `Ok` once the registry shows the call accepted (answer in flight, or active).
     fn answer(&self) -> Result<(), ModemError> {
-        self.keyevent("KEYCODE_CALL")
+        let start = Instant::now();
+        let (before, in_flight) = self.observe()?;
+        if !matches!(before, ModemState::Ringing { .. }) || in_flight {
+            return Err(ModemError::State(if in_flight {
+                "the call is already being answered".into()
+            } else {
+                "cannot answer: no call is ringing".into()
+            }));
+        }
+        self.press_until(
+            "KEYCODE_CALL",
+            "answer",
+            &before,
+            start,
+            |now, in_flight| match now {
+                ModemState::Active { .. } => Ok(true),
+                ModemState::Ringing { .. } => Ok(in_flight),
+                ModemState::Idle => Err(ModemError::State(
+                    "the call ended before it could be answered".into(),
+                )),
+                ModemState::Dialing { .. } => Ok(false),
+            },
+        )
     }
 
+    /// Reject, cancel or end the call; `Ok` once the registry is idle.
     fn hangup(&self) -> Result<(), ModemError> {
-        self.keyevent("KEYCODE_ENDCALL")
+        let start = Instant::now();
+        let (before, _) = self.observe()?;
+        if before == ModemState::Idle {
+            return Err(ModemError::State("cannot hang up: there is no call".into()));
+        }
+        self.press_until("KEYCODE_ENDCALL", "hangup", &before, start, |now, _| {
+            Ok(*now == ModemState::Idle)
+        })
     }
 
     fn dial(&self, number: &str) -> Result<(), ModemError> {
@@ -1117,8 +1264,8 @@ Phone Id=1
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let m = AdbModem::new(script, "emulator-5584".into(), Some(16037));
         assert_eq!(m.state().unwrap(), num("5550100"));
-        m.answer().unwrap();
-        m.hangup().unwrap();
+        m.keyevent("KEYCODE_CALL").unwrap();
+        m.keyevent("KEYCODE_ENDCALL").unwrap();
         m.ring("5550100").unwrap();
         m.remote_accept("5550100").unwrap();
         m.remote_hangup("5550100").unwrap();
@@ -1154,6 +1301,149 @@ Phone Id=1
                 "shell",
                 "am start -a android.intent.action.CALL -d 'tel:%2A123%23'"
             ]
+        );
+    }
+    /// A stub `adb` whose registry output switches from `before` to `after` once `needed` key
+    /// events have been received (`needed` = 0 reacts immediately, a huge value never).
+    #[cfg(unix)]
+    struct KeyStub {
+        dir: tempfile::TempDir,
+        modem: AdbModem,
+    }
+
+    #[cfg(unix)]
+    impl KeyStub {
+        fn new(needed: u32, before: String, after: String) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let d = dir.path().display().to_string();
+            std::fs::write(dir.path().join("before.txt"), before).unwrap();
+            std::fs::write(dir.path().join("after.txt"), after).unwrap();
+            let script = dir.path().join("fake-adb");
+            std::fs::write(
+                &script,
+                format!(
+                    "#!/bin/sh\nD='{d}'\nn=$(cat \"$D/n\" 2>/dev/null || echo 0)\n\
+                     case \"$*\" in\n\
+                     *KEYCODE_*) echo $((n+1)) > \"$D/n\"; echo \"$*\" >> \"$D/keys\";;\n\
+                     *telephony.registry*) if [ \"$n\" -ge {needed} ]; then cat \"$D/after.txt\"; else cat \"$D/before.txt\"; fi;;\n\
+                     esac\n"
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut modem = AdbModem::new(script, "emulator-5584".into(), None);
+            modem.timing = KeyTiming {
+                attempts: 3,
+                poll: Duration::from_millis(5),
+                first_window: Duration::from_millis(80),
+                step: Duration::from_millis(20),
+                overall: Duration::from_secs(5),
+            };
+            Self { dir, modem }
+        }
+
+        fn keys(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.path().join("keys"))
+                .unwrap_or_default()
+                .lines()
+                .map(|l| l.rsplit(' ').next().unwrap().to_string())
+                .collect()
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn answer_resends_once_when_the_first_key_is_ignored() {
+        // Telecom not ready: the first KEYCODE_CALL does nothing, the second works.
+        let s = KeyStub::new(2, reg(1, 5, 0, 0, "5559001"), reg(2, 0, 1, 0, ""));
+        s.modem.answer().unwrap();
+        assert_eq!(s.keys(), ["KEYCODE_CALL", "KEYCODE_CALL"]);
+        assert_eq!(s.modem.state().unwrap(), act("5559001"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn answer_sends_one_key_when_it_works_and_never_when_in_flight() {
+        let s = KeyStub::new(1, reg(1, 5, 0, 0, "5559001"), reg(2, 0, 1, 0, ""));
+        s.modem.answer().unwrap();
+        assert_eq!(s.keys(), ["KEYCODE_CALL"]);
+        // Accepted but not yet active (answer in flight) counts as taken effect: no resend.
+        let s = KeyStub::new(1, reg(1, 5, 0, 0, "5559001"), reg(2, 5, 0, 0, ""));
+        s.modem.answer().unwrap();
+        assert_eq!(s.keys(), ["KEYCODE_CALL"]);
+        // And answering while an answer is in flight sends nothing.
+        assert!(matches!(s.modem.answer(), Err(ModemError::State(_))));
+        assert_eq!(s.keys().len(), 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn answer_that_never_takes_effect_is_an_error_after_three_attempts() {
+        let s = KeyStub::new(99, reg(1, 5, 0, 0, "5559001"), reg(2, 0, 1, 0, ""));
+        let err = s.modem.answer().unwrap_err();
+        assert!(matches!(err, ModemError::Adb(_)), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("no effect after 3 attempts"), "{msg}");
+        assert!(!msg.contains("5559001"), "number leaked: {msg}");
+        assert_eq!(s.keys(), ["KEYCODE_CALL"; 3]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn answer_requires_ringing_and_never_sends_call_otherwise() {
+        for state in [
+            reg(0, 0, 0, 0, ""),
+            reg(2, 0, 1, 0, ""),
+            reg(2, 0, 3, 0, ""),
+        ] {
+            let s = KeyStub::new(0, state.clone(), state);
+            assert!(matches!(s.modem.answer(), Err(ModemError::State(_))));
+            assert!(s.keys().is_empty(), "KEYCODE_CALL would open the dialer");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn answer_reports_a_caller_who_gave_up() {
+        // The call disappears after the key: not an answer.
+        let s = KeyStub::new(1, reg(1, 5, 0, 0, "5559001"), reg(0, 0, 7, 0, ""));
+        assert!(matches!(s.modem.answer(), Err(ModemError::State(_))));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hangup_resends_only_while_unchanged_and_requires_a_call() {
+        let s = KeyStub::new(2, reg(2, 0, 1, 0, ""), reg(0, 0, 7, 0, ""));
+        s.modem.hangup().unwrap();
+        assert_eq!(s.keys(), ["KEYCODE_ENDCALL", "KEYCODE_ENDCALL"]);
+
+        // Reject while ringing.
+        let s = KeyStub::new(1, reg(1, 5, 0, 0, "5559001"), reg(0, 0, 8, 0, ""));
+        s.modem.hangup().unwrap();
+        assert_eq!(s.keys(), ["KEYCODE_ENDCALL"]);
+
+        let s = KeyStub::new(99, reg(2, 0, 1, 0, ""), reg(0, 0, 7, 0, ""));
+        let err = s.modem.hangup().unwrap_err();
+        assert!(
+            err.to_string().contains("no effect after 3 attempts"),
+            "{err}"
+        );
+        assert_eq!(s.keys().len(), 3);
+
+        let s = KeyStub::new(0, reg(0, 0, 7, 0, ""), reg(0, 0, 7, 0, ""));
+        assert!(matches!(s.modem.hangup(), Err(ModemError::State(_))));
+        assert!(s.keys().is_empty());
+    }
+
+    #[test]
+    fn adb_error_text_never_carries_numbers() {
+        // Everything surfaced to D-Bus goes through redact_numbers.
+        let e = ModemError::Adb("adb shell failed (exit status: 1): no such call 5559001".into());
+        assert!(!redact_numbers(&e.to_string()).contains("5559001"));
+        assert_eq!(
+            redact_numbers("answer: no effect after 3 attempts"),
+            "answer: no effect after 3 attempts"
         );
     }
 }

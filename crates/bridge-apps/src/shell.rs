@@ -184,6 +184,7 @@ impl eframe::App for Shell {
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }
+        crate::pace::observe(ctx, &self.model);
         self.connections.update();
         let pal = theme::current(ctx, self.app);
         self.connection_panel(ctx, &pal);

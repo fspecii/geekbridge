@@ -307,6 +307,16 @@ pub fn plan_core_command(
                 },
             }
         }
+        CallCommand::Reject { call } => {
+            let c = find(call)?;
+            if !c.status.is_ringing() {
+                return Err(PlanError::Rejected(CommandRejection::InvalidState));
+            }
+            PlannedAction::Call {
+                id: c.id.clone(),
+                op: CallOp::Reject,
+            }
+        }
         CallCommand::Dial { number } => PlannedAction::Dial {
             number: number.expose().to_owned(),
         },

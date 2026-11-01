@@ -119,6 +119,31 @@ impl Book {
         true
     }
 
+    /// Record how a transfer task ended. A transfer that is no longer live keeps its state.
+    fn finish(&mut self, id: u64, result: Result<(), &'static str>) {
+        if let Some(t) = self.get_mut(id)
+            && t.state.is_live()
+        {
+            match result {
+                Ok(()) => {
+                    if let Some(n) = t.size {
+                        t.bytes.store(n, Ordering::Relaxed);
+                    }
+                    t.state = St::Done;
+                }
+                Err(code) => {
+                    t.state = if code == "cancelled" {
+                        St::Cancelled
+                    } else {
+                        St::Failed
+                    };
+                    t.code = Some(code);
+                }
+            }
+            t.finished = Some(Instant::now());
+        }
+    }
+
     pub(super) fn cancel_all(&mut self) {
         for t in &self.items {
             t.cancel.cancel();
@@ -345,27 +370,14 @@ impl Core {
 
     /// Record how a transfer task ended. A cancelled entry keeps its state.
     pub(super) fn finish_transfer(&self, id: u64, result: Result<(), &'static str>) {
-        let mut book = self.shares();
-        if let Some(t) = book.get_mut(id)
-            && t.state.is_live()
-        {
-            match result {
-                Ok(()) => {
-                    if let Some(n) = t.size {
-                        t.bytes.store(n, Ordering::Relaxed);
-                    }
-                    t.state = St::Done;
-                }
-                Err(code) => {
-                    t.state = if code == "cancelled" {
-                        St::Cancelled
-                    } else {
-                        St::Failed
-                    };
-                    t.code = Some(code);
-                }
-            }
-            t.finished = Some(Instant::now());
+        self.shares().finish(id, result);
+    }
+
+    /// The connection ended with `ctl` still queued: it will never run, so a queued file must not
+    /// stay `Waiting` (it would hold a transfer slot and keep the link wanted forever).
+    pub(super) fn drop_queued(&self, ctl: Ctl) {
+        if let Ctl::SendFile(job) = ctl {
+            self.finish_transfer(job.transfer_id, Err("link_lost"));
         }
     }
 
@@ -549,4 +561,47 @@ pub(super) async fn send_text(link: &mut bridge_kde::TrustedLink, job: TextJob) 
         share::text_packet(&job.text)
     };
     link.send(&packet).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn waiting(id: u64) -> Transfer {
+        Transfer {
+            id,
+            connection_id: 1,
+            device_id: "d".into(),
+            peer_name: "pc".into(),
+            dir: Dir::Outgoing,
+            kind: Kind::File,
+            name: "a.bin".into(),
+            size: Some(10),
+            bytes: Arc::new(AtomicU64::new(0)),
+            state: St::Waiting,
+            code: None,
+            text: None,
+            offer: None,
+            cancel: CancelToken::new(),
+            created: Instant::now(),
+            finished: None,
+        }
+    }
+
+    #[test]
+    fn a_queued_file_failed_with_its_connection_frees_its_slot() {
+        let mut book = Book::default();
+        for id in 1..=MAX_ACTIVE as u64 {
+            book.items.push(waiting(id));
+        }
+        assert_eq!(book.active(), MAX_ACTIVE);
+        book.finish(1, Err("link_lost"));
+        assert_eq!(book.active(), MAX_ACTIVE - 1);
+        let t = book.get_mut(1).unwrap();
+        assert_eq!(t.state, St::Failed);
+        assert_eq!(t.code, Some("link_lost"));
+        // A transfer that already ended is left alone.
+        book.finish(1, Ok(()));
+        assert_eq!(book.get_mut(1).unwrap().state, St::Failed);
+    }
 }

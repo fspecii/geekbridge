@@ -18,6 +18,7 @@ object LinkRuntime {
             observing = true
             c.observers += {
                 ClipboardRuntime.onLinkChanged(c.phase == LinkPhase.Running)
+                CallControlRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 val s = c.snapshot
                 if (s != null && s.isRunning) AppState.recordPaired(s.paired, readable = !s.pairedError)
             }
@@ -34,5 +35,6 @@ object LinkRuntime {
         discoveryAnnounce = announce,
         allowLoopback = false,
         clipboard = ClipboardRuntime.settings,
+        calls = CallControlRuntime.settings,
     )
 }

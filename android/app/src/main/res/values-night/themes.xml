@@ -7,4 +7,11 @@
         <item name="android:textColorHint">@color/gb_muted</item>
         <item name="android:windowBackground">@color/gb_surface</item>
     </style>
+    <!-- Without this the dialog kept its light parent in dark mode: light buttons and dividers under dark text. -->
+    <style name="Theme.GeekBridge.Share" parent="android:Theme.DeviceDefault.Dialog">
+        <item name="android:colorAccent">@color/gb_accent</item>
+        <item name="android:textColorPrimary">@color/gb_text</item>
+        <item name="android:textColorSecondary">@color/gb_muted</item>
+        <item name="android:windowBackground">@color/gb_surface</item>
+    </style>
 </resources>

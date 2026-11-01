@@ -2,7 +2,7 @@ package dev.geekbridge.android
 
 import android.os.Build
 
-enum class StepId { Pair, Notifications, Contacts, Calendar, PhoneState, Sms, Battery }
+enum class StepId { Pair, Notifications, Contacts, Calendar, PhoneState, AnswerCalls, CallerNumber, Sms, Battery }
 
 /** What the user (and Android) have done about one runtime permission. */
 enum class PermissionStatus { Granted, NotAsked, Denied, Blocked }
@@ -52,6 +52,10 @@ data class SetupInputs(
     val oem: Oem,
     /** Steps that were Done at least once before (so a later regression is a revocation, not a first run). */
     val wasDone: Set<StepId> = emptySet(),
+    /** ANSWER_PHONE_CALLS: lets a paired computer answer, decline or end calls (API 26+). */
+    val answerCalls: PermissionStatus = PermissionStatus.NotAsked,
+    /** READ_CALL_LOG: the only way Android hands this app the caller's number. */
+    val callLog: PermissionStatus = PermissionStatus.NotAsked,
 )
 
 object SetupModel {
@@ -71,6 +75,8 @@ object SetupModel {
         out += permissionStep(StepId.Contacts, i.contacts, required = false)
         out += permissionStep(StepId.Calendar, i.calendar, required = false)
         out += permissionStep(StepId.PhoneState, i.phoneState, required = false)
+        out += permissionStep(StepId.AnswerCalls, i.answerCalls, required = false)
+        out += permissionStep(StepId.CallerNumber, i.callLog, required = false)
         out += StepInfo(
             StepId.Sms, StepStatus.Info, required = false,
             detail = "Not requested: Android only lets the default messaging app read or send SMS",
@@ -127,7 +133,8 @@ object SetupModel {
                 revoked && s.id != StepId.Pair -> out += Warning(s.id, "${title(s.id)} access was turned off. Related features are paused.")
             }
         }
-        return out
+        // Most impactful first: the battery exemption decides whether the connection survives at all.
+        return out.sortedBy { if (it.step == StepId.Battery) 0 else 1 }
     }
 
     fun title(id: StepId): String = when (id) {
@@ -136,6 +143,8 @@ object SetupModel {
         StepId.Contacts -> "Contacts"
         StepId.Calendar -> "Calendar"
         StepId.PhoneState -> "Phone state"
+        StepId.AnswerCalls -> "Answer calls"
+        StepId.CallerNumber -> "Caller number"
         StepId.Sms -> "SMS"
         StepId.Battery -> "Battery"
     }
@@ -145,6 +154,8 @@ object SetupModel {
         StepId.Contacts -> "android.permission.READ_CONTACTS"
         StepId.Calendar -> "android.permission.READ_CALENDAR"
         StepId.PhoneState -> "android.permission.READ_PHONE_STATE"
+        StepId.AnswerCalls -> "android.permission.ANSWER_PHONE_CALLS"
+        StepId.CallerNumber -> "android.permission.READ_CALL_LOG"
         else -> null
     }
 }

@@ -19,6 +19,7 @@ serde.workspace = true
 serde_json.workspace = true
 bridge-core.workspace = true
 bridge-calls = { path = "../bridge-calls" }
+bridge-service = { path = "../bridge-service" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"

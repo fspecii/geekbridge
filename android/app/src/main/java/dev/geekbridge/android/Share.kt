@@ -126,11 +126,15 @@ object NameRules {
         if (s.isEmpty()) s = "file"
         while (Bounds.utf8Size(s) > MAX_BYTES) {
             val dot = s.lastIndexOf('.')
-            s = if (dot > 0 && s.length - dot <= 12) s.substring(0, dot - 1) + s.substring(dot) else s.dropLast(1)
+            s = if (dot > 0 && s.length - dot <= 12) dropLastCodePoint(s.substring(0, dot)) + s.substring(dot) else dropLastCodePoint(s)
             if (s.isEmpty()) return "file"
         }
         return s
     }
+
+    /** Removes the last character, both halves of a surrogate pair together (a lone half is not valid UTF-8). */
+    private fun dropLastCodePoint(t: String): String =
+        if (t.length >= 2 && Character.isLowSurrogate(t[t.length - 1]) && Character.isHighSurrogate(t[t.length - 2])) t.dropLast(2) else t.dropLast(1)
 
     /** [name] if free, else "stem (1).ext", "stem (2).ext", ... [taken] answers for existing names. */
     fun unique(name: String, taken: (String) -> Boolean): String {
@@ -164,6 +168,20 @@ sealed interface ShareRequest {
 }
 
 object ShareIntentLogic {
+    private val BLOCKED_AUTHORITIES = setOf(
+        "com.android.contacts", "contacts", "com.android.calendar", "calendar",
+        "call_log", "sms", "mms", "mms-sms", "telephony", "com.android.voicemail",
+    )
+
+    /**
+     * ShareActivity is exported, so any app can hand it any content:// Uri, which it would read with this
+     * app's own identity. Refuse this app's own providers and the system providers it holds permissions for.
+     */
+    fun isBlockedAuthority(authority: String?, ownPackage: String): Boolean {
+        val a = authority?.lowercase()?.substringAfterLast('@') ?: return true // "user@authority" form too
+        return a.isEmpty() || a == ownPackage.lowercase() || a.startsWith("$ownPackage.".lowercase()) || a in BLOCKED_AUTHORITIES
+    }
+
     fun isWebUrl(s: String): Boolean {
         val t = s.trim()
         val lower = t.lowercase()

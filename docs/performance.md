@@ -19,7 +19,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | `geekbridge-ctl` size | 1 555 944 B | 719 192 B | 800 000 B |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
 | UI idle RSS (`--ui`) | 67-68 MB | 65.7 MB | 90 MB |
-| UI wakeups (`--ui`) | ~4-6/s | ~4/s | 12/s |
+| UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
 
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
@@ -44,15 +44,33 @@ budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
 \*wall clock on a loaded 24-core machine, only a rough guide. Release CI builds are slower than before.
 Idle RSS: 6.2 MB (opt 3 + LTO) vs 5.6 MB (opt "s" + LTO).
 
-## Findings in code owned by others (not edited)
+## Findings in code owned by others (addressed 2026-11-01)
 
-* `bridge-service/src/clipboard.rs` `watch()`: polls the OS clipboard every 500 ms via
-  `spawn_blocking` for as long as any peer has sync enabled. Fine while idle (it stops when no peer
-  syncs), but it is the largest steady wakeup source when sync is on. Prefer a compositor/X event
-  source (wl-clipboard `--watch`, XFixes) with polling as fallback.
-* `bridge-apps` UI workers poll the service: control worker every 1 s, discovery every 2 s, update
-  status every 4 s. They only repaint on change, so idle CPU is ~0, but this is ~4 wakeups/s per open
-  app window; lengthen the intervals when the window is unfocused/minimised.
+* **Clipboard watcher** (`bridge-service/src/clipboard.rs`): was a 500 ms `spawn_blocking` tool spawn
+  (2 process spawns/s) while any peer had sync enabled. Now `ClipboardBackend::change_events()` starts
+  `wl-paste --watch echo` on Wayland, or a `clipnotify` loop on X11 when that tool is installed; the
+  watcher then reads only on a change, with a 30 s safety poll. Without an event source it polls every
+  1.5 s (was 0.5 s): reads/s 2.0 -> 0.67 (X11 without `clipnotify`, this host) or ~0.03 plus one read per
+  real copy (event source). The watcher and its helper process stop immediately when the last device
+  disables sync (`Notify` wake), and a dead helper falls back to polling. Idle-lock detection was not
+  added: no portable signal exists without a D-Bus dependency; the existing "no peer syncs" stop covers
+  the unpaired case. No XFixes crate is linked, hence `clipnotify` rather than an in-process listener.
+  Covered by a `ChangeStream` unit test; the service-level perf-check has no phone, so its numbers
+  are unaffected (3 threads, 12 fds, 0 CPU ticks, RSS 5.7 MB).
+* **UI workers** (`bridge-apps/src/pace.rs`): the service IPC is request/response with no pushed events,
+  so polling stays. Control (1 s), clipboard link (1 s), discovery (2 s), update status (4 s, not while
+  busy), share (500 ms) and the periodic repaints now stretch x4 when the window is unfocused or
+  minimised and x2 when the service is reachable but no phone is paired (x8 both). User commands still
+  wake a worker at once. `--ui` wakeups 4/s -> 2/s with the unfocused test window.
+* **Dead-link ping** (`bridge-kde`): not added. TCP keepalive (30 s + 3 x 10 s) plus
+  `TCP_USER_TIMEOUT` 60 s already bounds a half-open link to ~60 s; an app-level ping would force a
+  radio wake-up on the phone every interval for little gain and changes protocol traffic.
+* **Android**: `ClipboardAndroid.kt` has no timers or polling (clipboard is read on demand from a
+  focused activity); the only `postDelayed` pollers (`LinkSection`, `PairPanel`, `ShareCoordinator`)
+  are UI-only and stopped in `onStop`/`onPause`. Nothing to remove.
+
+## Remaining findings
+
 * UI RSS is 65 MB, of which ~46 MB is file-backed (GL/Mesa and Wayland/X libraries mapped by
   `glow`); anonymous memory is ~20 MB.
 * `bridge-update` scheduler uses a dedicated OS thread that sleeps; harmless, costs one thread.

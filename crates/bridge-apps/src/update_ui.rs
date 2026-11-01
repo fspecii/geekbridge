@@ -74,11 +74,11 @@ impl Updates {
                 let mut previous: Published = None;
                 let mut busy = false;
                 while !quitting.load(Ordering::Acquire) {
-                    let next = match rx.recv_timeout(Duration::from_millis(if busy {
-                        700
+                    let next = match rx.recv_timeout(if busy {
+                        Duration::from_millis(700)
                     } else {
-                        4000
-                    })) {
+                        crate::pace::scaled(Duration::from_millis(4000))
+                    }) {
                         Ok(Command::Check) => call(&Request::UpdateCheck),
                         Ok(Command::Download) => call(&Request::UpdateDownload),
                         Ok(Command::Skip(version)) => call(&Request::UpdateSkip { version }),

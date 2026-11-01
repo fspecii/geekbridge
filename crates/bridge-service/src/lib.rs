@@ -3,6 +3,8 @@
 //! * Public, read-only discovery API ([`serve_api`]): untrusted announcement metadata only.
 //! * Authenticated control API ([`control::serve_control`]): pairing and link lifecycle for
 //!   explicitly chosen phones, backed by `bridge-kde`. See `docs/service-integration.md`.
+pub mod call_cli;
+pub mod call_control;
 pub mod calling;
 pub mod clipboard;
 pub mod config;
@@ -11,8 +13,10 @@ pub mod daemon;
 pub mod discovery;
 pub mod gate;
 pub mod hotkey_bind;
+pub mod macos_host;
 pub mod private;
 pub mod share;
+pub mod windows_host;
 use bridge_core::{MAX_API_BYTES, MAX_DEVICES, Snapshot, api_address};
 use std::{
     io,
@@ -306,6 +310,35 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         options.share_notifier = Some(Arc::new(share::NotifySend));
+        options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
+        if config.calling_probe {
+            let session = bridge_calls::Session::new(bridge_calls::default_backend());
+            options.call_host =
+                std::sync::Mutex::new(Some(Box::new(call_control::linux::LinuxHfp::new(session))));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if config.calling_probe
+            && let Ok(service) = bridge_calls_windows::spawn_default(Default::default())
+            && let Ok(host) = windows_host::WindowsHost::new(service)
+        {
+            options.call_host = std::sync::Mutex::new(Some(Box::new(host)));
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if config.calling_probe
+            && let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            // The user's explicit phone choice; without it the helper is started but never connects.
+            let phone = std::env::var("GEEKBRIDGE_MAC_PHONE").ok();
+            let helper = dir.join("geekbridge-macos-calls");
+            if let Ok(host) = macos_host::MacHelperHost::spawn(&helper, phone.as_deref()) {
+                options.call_host = std::sync::Mutex::new(Some(Box::new(host)));
+            }
+        }
     }
     let control = Arc::new(prepare_control(&config.state_dir, state.clone(), options));
     let inbound = match (&*control, config.inbound) {

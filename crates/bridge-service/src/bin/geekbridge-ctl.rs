@@ -24,6 +24,10 @@ Commands:
   consent DEVICE_ID FEATURE on|off    sms, contacts, clipboard, notifications, telephony
   ping DEVICE_ID                      interoperability check on a paired link
   calling                             read-only host calling backend summary
+  calls [--reveal]                    ringing and live calls, the controls that really exist,
+                                      the audio route and why a control is missing (numbers masked)
+  call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
+  call mute on|off | call audio       mute the computer microphone / move the audio here (only where offered)
   clipboard status                    clipboard bridge: backend, per-device counters, hotkey, window
   clipboard paste-from-phone [DEVICE_ID] [--notify]
                                       pull the phone's latest eligible item (copied within the
@@ -106,6 +110,13 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "clipboard" {
         return clipboard_command(&args[1..], port, &state_dir);
+    }
+    if matches!(command.as_str(), "calls" | "call") {
+        let words: Vec<String> = args
+            .iter()
+            .filter_map(|a| a.to_str().map(str::to_owned))
+            .collect();
+        return bridge_service::call_cli::run(&words, port, &load_token(&state_dir)?);
     }
     let arg = |i: usize, what: &str| text(args.get(i), what);
     let request = match command.as_str() {

@@ -95,7 +95,9 @@ class ClipboardEngine(
         host.dismissTapRequest()
         cache = snapshot
         if (waiting != null) {
-            val v = PullGate.decide(s.enabled, host.isLocked(), snapshot, true, clock(), s.windowMs, waiting.maxAgeMs)
+            // Same rule as [capture]: text the computer itself put here is not the user's copy to hand back.
+            val own = snapshot?.text != null && snapshot.text == lastApplied
+            val v = PullGate.decide(s.enabled, host.isLocked(), if (own) null else snapshot, true, clock(), s.windowMs, waiting.maxAgeMs)
             return when (v) {
                 is Verdict.Send -> SendResult(answer(waiting, v.snapshot), null)
                 is Verdict.Refuse -> {

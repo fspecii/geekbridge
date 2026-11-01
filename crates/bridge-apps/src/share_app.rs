@@ -369,7 +369,7 @@ impl Worker {
                         *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(view.clone());
                         wake();
                     }
-                    match rx.recv_timeout(Duration::from_millis(500)) {
+                    match rx.recv_timeout(crate::pace::scaled(Duration::from_millis(500))) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Ok(Cmd::Call(req)) => {
                             view.notice = Some(match token().map(|t| ipc::call(port, &t, &req)) {
@@ -458,6 +458,7 @@ impl ShareApp {
 
 impl eframe::App for ShareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::pace::observe_focus(ctx);
         if let Some(v) = self.worker.latest() {
             self.view = v;
         }
@@ -512,7 +513,7 @@ impl eframe::App for ShareApp {
                         self.settings_section(ui, &pal, &list);
                     });
             });
-        ctx.request_repaint_after(Duration::from_millis(500));
+        ctx.request_repaint_after(crate::pace::scaled(Duration::from_millis(500)));
     }
 }
 

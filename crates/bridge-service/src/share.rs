@@ -36,7 +36,7 @@ pub const MAX_TRANSFERS: usize = 64;
 pub const MAX_ACTIVE: usize = 3;
 pub const MAX_ACTIVE_PER_DEVICE: usize = 2;
 pub const MAX_OFFERED: usize = 8;
-pub const MAX_RECEIVED_TEXT: usize = 32 * 1024;
+pub const MAX_RECEIVED_TEXT: usize = kshare::MAX_TEXT_BYTES;
 pub const SETTINGS_FILE: &str = "share.json";
 const MAX_SETTINGS_DEVICES: usize = 1024;
 
@@ -922,6 +922,22 @@ impl ShareManager {
         Ok(id)
     }
 
+    /// The link task ended with `job` still queued: it will never run, so fail it instead of leaving
+    /// a `Waiting` entry that holds a transfer slot forever.
+    pub fn drop_job(&self, job: ShareJob) {
+        if let ShareJob::File { transfer_id, .. } = job {
+            let device = self
+                .inner()
+                .items
+                .iter()
+                .find(|t| t.info.transfer_id == transfer_id)
+                .map(|t| t.info.device_id.clone());
+            if let Some(device) = device {
+                self.finish(transfer_id, &device, Err("link_lost"));
+            }
+        }
+    }
+
     /// A job could not be queued after `begin_send_file`.
     pub fn abandon(&self, transfer_id: u64) {
         self.inner()
@@ -1065,6 +1081,48 @@ mod tests {
         assert!(ShareManager::validate_text(ShareTextKind::Text, "").is_err());
         let big = "x".repeat(MAX_SEND_TEXT_BYTES + 1);
         assert!(ShareManager::validate_text(ShareTextKind::Text, &big).is_err());
+    }
+
+    #[test]
+    fn text_the_phone_may_send_is_not_refused_as_misbehaviour() {
+        // The phone's own limit is 48 KiB (`kshare::MAX_TEXT_BYTES`); the desktop must hold that much,
+        // or each long share counts against the link's rejected-packet budget.
+        let m = ShareManager::new(ShareOptions::default());
+        let text = "x".repeat(kshare::MAX_TEXT_BYTES);
+        assert!(matches!(
+            m.store_text("d", "Phone", TransferKind::Text, text),
+            Disposition::Handled
+        ));
+    }
+
+    #[test]
+    fn a_queued_job_dropped_with_its_link_frees_the_slot() {
+        let m = ShareManager::new(ShareOptions::default());
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        std::fs::write(&f, b"hi").unwrap();
+        let path = f.display().to_string();
+        let a = m.begin_send_file("d", "Phone", &path).unwrap();
+        let b = m.begin_send_file("d", "Phone", &path).unwrap();
+        assert!(m.begin_send_file("d", "Phone", &path).is_err());
+        // The link task ended before it ran these jobs.
+        for id in [a, b] {
+            m.drop_job(ShareJob::File {
+                transfer_id: id,
+                path: f.clone(),
+            });
+        }
+        m.drop_job(ShareJob::Text {
+            kind: ShareTextKind::Text,
+            text: "x".into(),
+        });
+        assert!(m.begin_send_file("d", "Phone", &path).is_ok());
+        let st = m.status(&["d".to_owned()]);
+        assert!(
+            st.transfers
+                .iter()
+                .any(|t| t.transfer_id == a && t.state == TransferState::Failed)
+        );
     }
 
     #[test]

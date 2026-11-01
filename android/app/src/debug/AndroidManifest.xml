@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: lets the update check talk plain http to a local mock release server (see
+     UpdateChecker.forBuild and scripts/e2e-android.sh). Release builds keep Android's default of no cleartext. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/debug_network_security" />
+</manifest>

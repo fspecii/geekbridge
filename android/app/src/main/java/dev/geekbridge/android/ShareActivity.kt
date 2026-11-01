@@ -25,7 +25,7 @@ class ShareActivity : Activity() {
     private lateinit var ui: Ui
     private lateinit var coordinator: ShareCoordinator
     private lateinit var box: LinearLayout
-    private var request: ShareRequest = ShareRequest.Invalid("There is nothing to send.")
+    private var request: ShareRequest = ShareRequest.Invalid("")
     private var uris: List<Uri> = emptyList()
     private val connectTried = HashSet<String>()
     private var asked = false
@@ -83,13 +83,32 @@ class ShareActivity : Activity() {
         }
         i.clipData?.let { cd -> for (n in 0 until minOf(cd.itemCount, 200)) cd.getItemAt(n).uri?.let { streams += it } }
         // Only content:// Uris: a file:// Uri from another app could name this app's own private files.
-        uris = streams.filter { it.scheme == "content" }.distinct()
+        uris = streams.filter { it.scheme == "content" && !ShareIntentLogic.isBlockedAuthority(it.authority, packageName) }.distinct()
         request = if (i.action != Intent.ACTION_SEND && i.action != Intent.ACTION_SEND_MULTIPLE) {
-            ShareRequest.Invalid("Nothing was shared.")
+            ShareRequest.Invalid(getString(R.string.share_nothing_shared))
         } else {
             ShareIntentLogic.classify(uris.map { it.toString() }, i.getCharSequenceExtra(Intent.EXTRA_TEXT))
         }
         if (request is ShareRequest.Files) uris = uris.take(ShareLimits.MAX_FILES)
+    }
+
+    /** What is about to be sent, by the names the provider reports (first few), not just a count. */
+    private fun fileSummary(count: Int): String {
+        val names = uris.take(5).map { displayName(it) }
+        val more = if (count > names.size) "\n" + resources.getQuantityString(R.plurals.share_files_more, count - names.size, count - names.size) else ""
+        return resources.getQuantityString(R.plurals.share_files_header, count, count) + "\n" + names.joinToString("\n") + more
+    }
+
+    private fun displayName(uri: Uri): String {
+        val raw = try {
+            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+        val name = (raw ?: uri.lastPathSegment ?: getString(R.string.share_unnamed_file)).filter { !Character.isISOControl(it) }
+        return Bounds.clip(name, 80)
     }
 
     private fun startLinkIfNeeded() {
@@ -119,18 +138,18 @@ class ShareActivity : Activity() {
 
     private fun render() {
         box.removeAllViews()
-        box.addView(ui.text("Send to computer", sizeSp = 22f, bold = true))
+        // The dialog window already shows "Send to computer" as its title (and TalkBack reads it); no second heading.
         val req = request
         if (req is ShareRequest.Invalid) {
-            box.addView(ui.text(req.reason, Tone.Warn))
-            ui.button(box, "Close") { finish() }
+            box.addView(ui.text(req.reason.ifEmpty { getString(R.string.share_nothing) }, Tone.Warn))
+            ui.button(box, getString(R.string.share_close)) { finish() }
             return
         }
         box.addView(
             ui.text(
                 when (req) {
-                    is ShareRequest.Files -> "${req.uris.size} file(s)" + if (req.truncated) " (only the first ${ShareLimits.MAX_FILES} are sent)" else ""
-                    is ShareRequest.Text -> if (req.kind == TransferKind.Url) "A link: " + Bounds.clip(req.text, 80) else "Text: " + Bounds.clip(req.text, 80)
+                    is ShareRequest.Files -> fileSummary(req.uris.size) + if (req.truncated) resources.getQuantityString(R.plurals.share_first_only, ShareLimits.MAX_FILES, ShareLimits.MAX_FILES) else ""
+                    is ShareRequest.Text -> getString(if (req.kind == TransferKind.Url) R.string.share_link_prefix else R.string.share_text_prefix, Bounds.clip(req.text, 80))
                     else -> ""
                 },
                 Tone.Muted,
@@ -142,10 +161,10 @@ class ShareActivity : Activity() {
         val targets = TargetPicker.targets(c.snapshot)
         when {
             c.phase == LinkPhase.Starting || c.snapshot == null && c.phase == LinkPhase.Running ->
-                box.addView(ui.text("Starting the link…", Tone.Muted))
+                box.addView(ui.text(getString(R.string.share_starting), Tone.Muted))
             c.phase != LinkPhase.Running -> {
-                box.addView(ui.text("The link is not running.", Tone.Warn))
-                ui.button(box, "Start link", emphasis = Emphasis.Primary) { startLinkIfNeeded() }
+                box.addView(ui.text(getString(R.string.share_link_off), Tone.Warn))
+                ui.button(box, getString(R.string.share_start_link), emphasis = Emphasis.Primary) { startLinkIfNeeded() }
             }
             targets.isEmpty() -> noComputer()
             else -> {
@@ -154,23 +173,23 @@ class ShareActivity : Activity() {
                     send(choice)
                     return
                 }
-                box.addView(ui.text("Choose a paired computer:", Tone.Muted))
+                box.addView(ui.text(getString(R.string.share_choose), Tone.Muted))
                 for (t in targets) {
                     val ready = t.connectionId != null
-                    val label = t.name.ifEmpty { "(no name)" } +
-                        if (ready) "" else if (t.reachableAt != null) " — connecting…" else " — not found on this network"
+                    val label = t.name.ifEmpty { getString(R.string.share_no_name) } +
+                        if (ready) "" else getString(if (t.reachableAt != null) R.string.share_connecting_suffix else R.string.share_not_found_suffix)
                     ui.button(box, label, enabled = ready) { send(t) }
                 }
-                ui.body(box, "A computer that is not listed as connected must be on the same Wi-Fi with GeekBridge running.", Tone.Muted)
-                ui.button(box, "Open GeekBridge", emphasis = Emphasis.Quiet) { openMain() }
+                ui.body(box, getString(R.string.share_not_listed_help), Tone.Muted)
+                ui.button(box, getString(R.string.share_open_app), emphasis = Emphasis.Quiet) { openMain() }
             }
         }
-        ui.button(box, "Cancel", emphasis = Emphasis.Quiet) { finish() }
+        ui.button(box, getString(R.string.share_cancel), emphasis = Emphasis.Quiet) { finish() }
     }
 
     private fun noComputer() {
-        box.addView(ui.text("No paired computer yet. Open GeekBridge, connect to your computer and pair it, then share again.", Tone.Warn))
-        ui.button(box, "Open GeekBridge", emphasis = Emphasis.Primary) { openMain() }
+        box.addView(ui.text(getString(R.string.share_no_computer), Tone.Warn))
+        ui.button(box, getString(R.string.share_open_app), emphasis = Emphasis.Primary) { openMain() }
     }
 
     private fun openMain() {
@@ -196,10 +215,10 @@ class ShareActivity : Activity() {
         }
         val active = coordinator.controller.snapshot?.transfers.orEmpty().filter { it.direction == TransferDirection.Outgoing && !it.state.finished }
         if (coordinator.sessionActive) {
-            box.addView(ui.text("Keep going in the background; progress is also in the notification.", Tone.Muted))
-            if (active.isNotEmpty()) ui.button(box, "Cancel transfers", emphasis = Emphasis.Quiet) { active.forEach { coordinator.cancel(it.id) } }
+            box.addView(ui.text(getString(R.string.share_background_note), Tone.Muted))
+            if (active.isNotEmpty()) ui.button(box, getString(R.string.share_cancel_transfers), emphasis = Emphasis.Quiet) { active.forEach { coordinator.cancel(it.id) } }
         }
-        ui.button(box, if (coordinator.sessionActive) "Hide" else "Done", emphasis = Emphasis.Primary) { finish() }
+        ui.button(box, getString(if (coordinator.sessionActive) R.string.share_hide else R.string.share_done), emphasis = Emphasis.Primary) { finish() }
     }
 
     private fun askNotificationPermission() {
