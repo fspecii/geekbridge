@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Clipboard
+Comment=Android clipboard bridge
+Exec=geekbridge-clipboard
+Icon=dev.geekbridge.Clipboard
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.geekbridge.Clipboard

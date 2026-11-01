@@ -1,0 +1,321 @@
+package dev.geekbridge.android
+
+import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.view.View
+import android.widget.LinearLayout
+import android.window.OnBackInvokedDispatcher
+
+/**
+ * Setup wizard and permission master. One step per page (pair, notifications, contacts, calendar, phone
+ * state, SMS, battery) with a clear state, a primary action and recovery links, and an overview page that
+ * lists every step. Everything is recomputed on every resume, so a permission or battery exemption that is
+ * revoked later shows up here and as a warning on the home screen.
+ */
+class SetupActivity : Activity() {
+    private lateinit var kit: UiKit
+    private lateinit var screen: Screen
+    private var steps: List<StepInfo> = emptyList()
+    private var page = 0
+    private val oem = OemDetector.detect(Build.MANUFACTURER, Build.BRAND)
+    private var pairPanel: PairPanel? = null
+    private var pairBox: LinearLayout? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        AppState.init(this)
+        ActivityTracker.install(this)
+        kit = UiKit(this, Ui(this))
+        screen = Screen(this, kit).also { it.install() }
+        screen.footer.visibility = View.VISIBLE
+        steps = SetupModel.steps(inputs())
+        page = when {
+            savedInstanceState != null -> savedInstanceState.getInt(KEY_PAGE, 0)
+            intent.getStringExtra(EXTRA_STEP) != null ->
+                steps.indexOfFirst { it.id.name == intent.getStringExtra(EXTRA_STEP) }.coerceAtLeast(0)
+            intent.getBooleanExtra(EXTRA_REVIEW, false) -> steps.size
+            else -> SetupModel.firstOpen(steps)?.let { f -> steps.indexOfFirst { it.id == f.id } } ?: steps.size
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { goBack() }
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(KEY_PAGE, page)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        render()
+    }
+
+    override fun onStop() {
+        pairPanel?.detach(stopLink = ActivityTracker.leavingApp(this))
+        super.onStop()
+    }
+
+    // Android 13+ delivers Back through the callback registered in onCreate; this serves older versions.
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        @Suppress("DEPRECATION")
+        if (Build.VERSION.SDK_INT >= 33) super.onBackPressed() else goBack()
+    }
+
+    private fun goBack() {
+        if (page > 0) { page--; render() } else finish()
+    }
+
+    // ------------------------------------------------------------------ state
+
+    private fun perm(p: String): PermissionStatus = PermissionStatusLogic.compute(
+        granted = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED,
+        askedBefore = AppState.wasAsked(p),
+        shouldShowRationale = shouldShowRequestPermissionRationale(p),
+    )
+
+    private fun inputs() = SetupInputs(
+        sdk = Build.VERSION.SDK_INT,
+        pairedCount = AppState.pairedCount,
+        notifications = if (Build.VERSION.SDK_INT >= 33) perm(Manifest.permission.POST_NOTIFICATIONS) else PermissionStatus.Granted,
+        contacts = perm(Manifest.permission.READ_CONTACTS),
+        calendar = perm(Manifest.permission.READ_CALENDAR),
+        phoneState = perm(Manifest.permission.READ_PHONE_STATE),
+        battery = PowerChecks.batteryState(this),
+        oemAcknowledged = AppState.oemAcknowledged,
+        oem = oem,
+        wasDone = AppState.wasDone(),
+    )
+
+    private fun refresh() {
+        steps = SetupModel.steps(inputs())
+        AppState.rememberDone(steps)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        render()
+    }
+
+    private fun request(p: String) {
+        AppState.markAsked(p)
+        requestPermissions(arrayOf(p), page)
+    }
+
+    // ------------------------------------------------------------------ rendering
+
+    private fun render() {
+        refresh()
+        // Re-render keeps the pairing panel alive while it stays on the pair page.
+        val onPair = page < steps.size && steps[page].id == StepId.Pair
+        if (!onPair) { pairPanel?.detach(stopLink = false); pairPanel = null; pairBox = null }
+
+        val root = screen.root
+        root.removeAllViews()
+        root.addView(header())
+        if (page >= steps.size) overview(root) else stepPage(root, steps[page])
+        footer()
+        screen.requestInsets()
+        screen.scroll.scrollTo(0, 0)
+    }
+
+    private fun header(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val overview = page >= steps.size
+        box.addView(
+            kit.text(if (overview) "Overview" else "Step ${page + 1} of ${steps.size}", 13f, Tone.Muted, bold = true),
+        )
+        val bars = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for ((i, s) in steps.withIndex()) {
+            val c = when {
+                i == page -> kit.blue
+                s.status == StepStatus.Done -> getColor(R.color.gb_ok)
+                else -> getColor(R.color.gb_line)
+            }
+            val bar = View(this).apply { background = kit.shape(c, 3) }
+            bars.addView(bar, LinearLayout.LayoutParams(0, kit.dp(5), 1f).apply { if (i > 0) marginStart = kit.dp(4) })
+        }
+        box.addView(bars, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8) })
+        return box
+    }
+
+    private fun stepPage(root: LinearLayout, s: StepInfo) {
+        val (icon, why) = copy(s.id)
+        val title = SetupModel.title(s.id)
+        val head = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.START }
+        head.addView(kit.badge(icon, tone(s.status), 64).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(24) })
+        head.addView(kit.heading(title, 28f).apply { setPadding(0, kit.dp(16), 0, 0) })
+        val chip = kit.chip(chipText(s), tone(s.status))
+        head.addView(chip, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = kit.dp(10) })
+        root.addView(head)
+        root.addView(kit.text(why, 15.5f, Tone.Muted).apply { setPadding(0, kit.dp(14), 0, 0) })
+        root.addView(kit.text(s.detail, 14f, tone(s.status).takeIf { it != Tone.Muted } ?: Tone.Normal, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+
+        val panel = kit.panel(root, 16).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(18) }
+        when (s.id) {
+            StepId.Pair -> pairStep(panel)
+            StepId.Sms -> {
+                kit.button(panel, "Open app settings", BtnStyle.Tonal) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text("On Android 13 and newer, apps installed outside a store may need “Allow restricted settings” in the ⋮ menu of that page before any special access can be switched on.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+            }
+            StepId.Battery -> batteryStep(panel, s)
+            else -> permissionStep(panel, s)
+        }
+    }
+
+    private fun permissionStep(panel: LinearLayout, s: StepInfo) {
+        val p = SetupModel.permissionFor(s.id)
+        when (s.status) {
+            StepStatus.Done -> panel.addView(kit.text("All set. You can change this later in app settings.", 14f, Tone.Ok))
+            StepStatus.Blocked -> {
+                panel.addView(kit.text("Android will not show the question again. Switch it on in app settings: Permissions › ${SetupModel.title(s.id)}.", 14f, Tone.Muted))
+                kit.button(panel, "Open app settings", BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
+            }
+            else -> {
+                if (p != null) kit.button(panel, if (s.status == StepStatus.Denied) "Ask again" else "Allow", BtnStyle.Primary) { request(p) }
+                if (s.status == StepStatus.Denied) kit.button(panel, "Open app settings", BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
+                panel.addView(kit.text("Optional: GeekBridge works without it; the related feature stays off.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+            }
+        }
+    }
+
+    private fun pairStep(panel: LinearLayout) {
+        val controller = LinkRuntime.controller()
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        panel.addView(box, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        pairBox = box
+        val existing = pairPanel
+        if (existing == null) {
+            pairPanel = PairPanel(this, kit, controller, box) { LinkService.sync(this); render() }.also { it.attach() }
+        } else {
+            existing.attach()
+            existing.rebind(box)
+        }
+    }
+
+    private fun batteryStep(panel: LinearLayout, s: StepInfo) {
+        val state = PowerChecks.batteryState(this)
+        when (state) {
+            BatteryState.Optimised -> {
+                panel.addView(kit.text("Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.", 14f, Tone.Muted))
+                kit.button(panel, "Allow unrestricted battery", BtnStyle.Primary) { PowerChecks.requestUnrestricted(this) }
+            }
+            BatteryState.BackgroundRestricted -> {
+                panel.addView(kit.text("Background use is restricted for GeekBridge. In app settings open Battery and choose “Unrestricted” (or “Allow background usage”).", 14f, Tone.Muted))
+                kit.button(panel, "Open app settings", BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
+            }
+            BatteryState.Unrestricted ->
+                panel.addView(kit.text("Android will not pause GeekBridge to save battery.", 14f, Tone.Ok))
+        }
+        if (oem != Oem.Other) {
+            kit.divider(panel)
+            panel.addView(kit.text("${oem.label}: one more step", 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+            panel.addView(kit.text("This phone’s maker adds its own switch that Android cannot read, so please check it yourself:", 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            OemGuides.steps(oem).forEachIndexed { i, line ->
+                panel.addView(kit.text("${i + 1}.  $line", 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
+            }
+            kit.button(panel, "Open ${oem.label.substringBefore(' ')} settings", BtnStyle.Tonal) {
+                if (PowerChecks.openOemSettings(this, oem) == LaunchResult.OpenedFallback) {
+                    android.widget.Toast.makeText(this, "That screen is not on this phone; opened app settings instead.", android.widget.Toast.LENGTH_LONG).show()
+                }
+            }
+            if (!AppState.oemAcknowledged) {
+                kit.button(panel, "I’ve turned it on", BtnStyle.Plain) { AppState.oemAcknowledged = true; render() }
+            } else {
+                panel.addView(kit.text("Marked as done. We cannot verify this one.", 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                kit.button(panel, "Not done yet", BtnStyle.Plain) { AppState.oemAcknowledged = false; render() }
+            }
+        } else if (state != BatteryState.Unrestricted) {
+            kit.button(panel, "Open app settings", BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
+        }
+    }
+
+    private fun overview(root: LinearLayout) {
+        root.addView(kit.heading("Your setup").apply { setPadding(0, kit.dp(24), 0, 0) })
+        val open = steps.count { it.required && it.status != StepStatus.Done }
+        root.addView(
+            kit.text(
+                if (open == 0) "Everything GeekBridge needs is in place." else "$open required ${if (open == 1) "step needs" else "steps need"} attention. Tap a row to fix it.",
+                15f, if (open == 0) Tone.Ok else Tone.Muted,
+            ).apply { setPadding(0, kit.dp(6), 0, kit.dp(14)) },
+        )
+        val panel = kit.panel(root, 8)
+        steps.forEachIndexed { i, s ->
+            if (i > 0) kit.divider(panel)
+            kit.row(
+                panel, copy(s.id).first, SetupModel.title(s.id), s.detail,
+                kit.chip(chipText(s), tone(s.status)), tone(s.status),
+            ) { page = i; render() }
+        }
+    }
+
+    private fun footer() {
+        val f = screen.footer
+        f.removeAllViews()
+        val last = page >= steps.size
+        val back = kit.pill("Back", BtnStyle.Plain) { goBack() }
+        back.visibility = if (page == 0) View.INVISIBLE else View.VISIBLE
+        f.addView(back, LinearLayout.LayoutParams(0, kit.dp(50), 1f))
+        val s = steps.getOrNull(page)
+        val done = s == null || s.status == StepStatus.Done || s.status == StepStatus.Info
+        val label = when {
+            last -> "Finish"
+            page == steps.size - 1 -> "Overview"
+            done -> "Next"
+            else -> "Skip"
+        }
+        val next = kit.pill(label, if (last || done) BtnStyle.Primary else BtnStyle.Tonal) {
+            if (last) finishSetup() else { page++; render() }
+        }
+        f.addView(next, LinearLayout.LayoutParams(0, kit.dp(50), 1f).apply { marginStart = kit.dp(12) })
+    }
+
+    private fun finishSetup() {
+        AppState.setupFinished = true
+        LinkService.sync(this)
+        finish()
+    }
+
+    private fun tone(s: StepStatus) = when (s) {
+        StepStatus.Done -> Tone.Ok
+        StepStatus.Todo, StepStatus.Info -> Tone.Muted
+        StepStatus.Denied -> Tone.Warn
+        StepStatus.Blocked -> Tone.Bad
+    }
+
+    private fun chipText(s: StepInfo) = when (s.status) {
+        StepStatus.Done -> "Done"
+        StepStatus.Todo -> if (s.required) "To do" else "Optional"
+        StepStatus.Denied -> "Denied"
+        StepStatus.Blocked -> "Blocked"
+        StepStatus.Info -> "Info"
+    }
+
+    private fun copy(id: StepId): Pair<Int, String> = when (id) {
+        StepId.Pair -> R.drawable.ic_computer to "Pair this phone with your computer once. After that they find each other on your network automatically, and nothing is trusted until you confirm a matching code."
+        StepId.Notifications -> R.drawable.ic_bell to "Lets GeekBridge show a quiet notice while it stays connected, and tell you about incoming files."
+        StepId.Contacts -> R.drawable.ic_person to "Lets this phone show names instead of numbers for calls and messages. Read on this phone only; nothing is uploaded."
+        StepId.Calendar -> R.drawable.ic_calendar to "Lets GeekBridge show your upcoming events in Agenda. Titles and times only, read on this phone."
+        StepId.PhoneState -> R.drawable.ic_call to "Lets GeekBridge know whether the phone is idle, ringing or in a call. It never sees phone numbers or call history."
+        StepId.Sms -> R.drawable.ic_message to "Android only lets the default messaging app read or send text messages, so GeekBridge does not ask for SMS access in this version. Nothing is read or sent."
+        StepId.Battery -> R.drawable.ic_battery to "Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late."
+    }
+
+    companion object {
+        private const val KEY_PAGE = "page"
+        const val EXTRA_REVIEW = "review"
+        const val EXTRA_STEP = "step"
+
+        fun intent(ctx: Context, review: Boolean = false, step: StepId? = null): Intent =
+            Intent(ctx, SetupActivity::class.java)
+                .putExtra(EXTRA_REVIEW, review)
+                .also { i -> step?.let { i.putExtra(EXTRA_STEP, it.name) } }
+    }
+}

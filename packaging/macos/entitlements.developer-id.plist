@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for a Developer ID build with the Hardened Runtime and NO App Sandbox.
+  audio-input is the Hardened Runtime resource-access entitlement for microphone capture; without
+  it a hardened process cannot use the microphone even after the user grants permission.
+  Bluetooth needs no entitlement outside the sandbox; the usage string in Info.plist is required.
+  This template has not been signed, notarized or run (no Mac/Xcode available when written).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

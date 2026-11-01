@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  GeekBridge Calls helper bundle: Info.plist TEMPLATE.
+  Placeholders: @BUNDLE_ID@  @VERSION@  @BUILD@  (filled by assemble-app.sh).
+  The bundle, not the bare executable, is meant to be the identity macOS shows in its Bluetooth and
+  Microphone permission prompts. Whether a helper spawned by another process is attributed to this
+  bundle or to its parent is NOT verified (no Mac available); see `docs/architecture.md`.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>geekbridge-macos-calls</string>
+	<key>CFBundleIdentifier</key>
+	<string>@BUNDLE_ID@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>GeekBridge Calls</string>
+	<key>CFBundleDisplayName</key>
+	<string>GeekBridge Calls</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@BUILD@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<!-- No Dock icon or menu bar: this is a background helper. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>GeekBridge Calls uses Bluetooth to connect to the phone you choose, so you can see, place and answer that phone's calls on this Mac.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>GeekBridge Calls uses the microphone to send your voice to the phone during a call that you place or answer on this Mac.</string>
+</dict>
+</plist>

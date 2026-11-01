@@ -1,0 +1,48 @@
+name: Cross-platform Rust checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Linux graphics and private D-Bus test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
+      - name: Formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests on Linux (mock bus is required)
+        if: runner.os == 'Linux'
+        env:
+          GEEKBRIDGE_REQUIRE_DBUS: '1'
+        run: cargo test --workspace --locked
+      - name: Emulated call end-to-end (fake modem, private D-Bus; signalling only)
+        if: runner.os == 'Linux'
+        env:
+          GEEKBRIDGE_REQUIRE_DBUS: '1'
+        run: scripts/emulate-call.sh fake
+      - name: Tests on Windows and macOS
+        if: runner.os != 'Linux'
+        run: cargo test --workspace --locked
+      - name: Build desktop executables
+        run: cargo build --release --locked -p bridge-apps -p bridge-service -p bridge-kde -p bridge-calls

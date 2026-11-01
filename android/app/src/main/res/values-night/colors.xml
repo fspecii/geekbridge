@@ -1,0 +1,15 @@
+<resources>
+    <color name="gb_surface">#000000</color>
+    <color name="gb_card">#1C1C1E</color>
+    <color name="gb_stripe">#242426</color>
+    <color name="gb_line">#3A3A3C</color>
+    <color name="gb_fill">#2C2C2E</color>
+    <color name="gb_text">#F5F5F7</color>
+    <color name="gb_muted">#A1A1A6</color>
+    <color name="gb_accent">#F5F5F7</color>
+    <color name="gb_on_accent">#1D1D1F</color>
+    <color name="gb_red">#FF453A</color>
+    <color name="gb_ok">#32D74B</color>
+    <color name="gb_warn">#FFB340</color>
+    <color name="gb_bad">#FF6961</color>
+</resources>

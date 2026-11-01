@@ -1,0 +1,40 @@
+[workspace]
+members = ["crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bridge-core = { path = "crates/bridge-core" }
+
+[profile.dev]
+debug = 1
+
+# Desktop release builds (geekbridge-service, geekbridge-ctl and the egui apps). Measured on
+# bridge-service + bridge-apps, x86_64 Linux (docs/performance.md has the table): the defaults gave a
+# 10.7 MB service binary; fat LTO + one codegen unit + stripped symbols + opt-level "s" gives 4.3 MB
+# and a lower idle RSS, at the cost of a slower release build. The work is I/O bound (sockets, small
+# JSON frames, TLS via ring's assembly), so opt-level "s" costs nothing measurable.
+# panic stays "unwind" on purpose: tokio contains a panic in one link or request task, while
+# panic = "abort" would let one bad packet that trips a bug kill the whole service.
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+# Size-optimised profile for the Android shared library (scripts/build-android.sh uses it). panic stays
+# "unwind": the JNI boundary (jni_export.rs, dispatch.rs) catches panics and turns them into error replies;
+# with panic=abort one bad request would kill the whole app process instead.
+[profile.android]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+debug = false

@@ -1,0 +1,27 @@
+[package]
+name = "bridge-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "geekbridge-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "geekbridge-ctl"
+path = "src/bin/geekbridge-ctl.rs"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-kde = { path = "../bridge-kde" }
+bridge-calls = { path = "../bridge-calls" }
+bridge-update = { path = "../bridge-update" }
+serde.workspace = true
+serde_json.workspace = true
+getrandom = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }

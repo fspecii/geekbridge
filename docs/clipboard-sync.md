@@ -1,0 +1,151 @@
+# Clipboard sync (desktop service + Android app)
+
+Status: implemented and tested against generated peers on this host. **Nothing here has been run on a real
+phone, on ART, or against a real compositor's hotkey/clipboard session** (see [Verified vs. untested](#verified-vs-untested)).
+What stock KDE Connect does with clipboard packets is summarised below and in [kdeconnect-interop.md](kdeconnect-interop.md).
+
+## What it does
+
+| Direction | How | Automatic? |
+| --- | --- | --- |
+| Computer → phone | The service watches the OS clipboard and sends each change as a stock `kdeconnect.clipboard` packet (text and URLs) to every paired phone whose **per-device opt-in** is on. The phone writes it to the Android clipboard (writes are allowed in the background). | Yes, for opted-in phones |
+| Phone → computer | The computer **pulls**: hotkey / `geekbridge-ctl clipboard paste-from-phone` / the "Paste from phone" button asks the phone for its latest item. | No. On demand only |
+| Either direction, rich items | HTML (with plain-text fallback), URLs, and PNG/JPEG images (streamed as a KDE payload, never inline JSON). Computer → phone images/HTML are sent with `clipboard push-to-phone` / "Send clipboard to phone". | On request |
+
+The phone **never sends its clipboard on its own**. It answers a pull only with an item that
+
+1. was copied within the **freshness window** (default 30 s; 5 s to 10 min; a setting on both devices, the phone's
+   setting and the computer's request are combined and the shorter wins),
+2. while the phone is **unlocked** (`KeyguardManager.isKeyguardLocked/isDeviceLocked` and screen on; checked before
+   anything else, and a locked phone answers `locked` without ever looking at the clipboard),
+3. is not marked **sensitive** (`android.content.extra.IS_SENSITIVE`), and fits the size limits.
+
+Items older than the window are never offered. The computer enforces the window again on what arrives.
+
+### What Android actually permits (and the UI says so)
+
+Android 10+ lets an app read the clipboard only while it has window focus (or is the default keyboard). No
+root, ADB, accessibility service or `READ_LOGS` is used. So on the phone, GeekBridge looks at the clipboard only:
+
+* when its own window is focused (Home screen): the content is **remembered in memory for 10 s** and *not sent*;
+* via the **Quick Settings tile** "Send clipboard", the home screen's "Send clipboard" button, or the
+  **"tap to send" notification** shown when the computer asks and nothing recent is known. These start the invisible
+  `ClipboardFloatingActivity`, which takes focus for a moment, reads once, answers, and closes;
+* via **"Send to computer"** in the text selection menu (`ACTION_PROCESS_TEXT`): the system hands over the selected text,
+  no clipboard read at all. (Files, images and shared text from other apps use the Share sheet.)
+
+So the real flow is: copy on the phone → press the hotkey on the computer → *either* the phone had you in
+GeekBridge a moment ago and answers at once, *or* a notification asks you to tap once. The computer shows which.
+This is the best a legitimate app can do; a seamless background read does not exist on current Android.
+
+## Desktop
+
+* **Where it lives:** `crates/bridge-service/src/clipboard.rs` (service, backends), driven by `daemon.rs`
+  (per-link wiring), `gate.rs` (packet negotiation), `hotkey_bind.rs`. Policy/loop suppression is the existing
+  `bridge_core::clipboard::ClipboardSync` reducer, one per opted-in phone.
+* **Per-device opt-in:** the `Clipboard` consent (`geekbridge-ctl consent DEVICE clipboard on`, or the checkbox in the
+  clipboard app). Off by default. **Nothing is read from the OS clipboard until at least one phone is opted in and
+  connected**, and the watcher stops when the last one goes. Text on the clipboard before a phone was enabled is never
+  sent (the reducer baseline is primed with it).
+* **OS clipboard backends** (polled every 500 ms while active; the tools have no change event):
+
+  | Platform | Tool | Text | Sensitive hint | HTML / images |
+  | --- | --- | --- | --- | --- |
+  | Linux Wayland | `wl-paste`/`wl-copy` (needs the compositor's data-control protocol: Hyprland, Sway, KDE ≥ 5.27, …; not stock GNOME) | yes | `x-kde-passwordManagerHint` | yes |
+  | Linux X11 | `xclip` | yes | `x-kde-passwordManagerHint` | yes |
+  | macOS | `pbpaste`/`pbcopy` | yes | none | no |
+  | Windows | PowerShell `Get-Clipboard`/`Set-Clipboard` | yes | none | no |
+
+  macOS and Windows build (the code is target-independent: no new crates) but **have not been run there**. Without a
+  tool/session the clipboard app says what to install. `GEEKBRIDGE_CLIPBOARD=off|memory` overrides detection.
+* **Limits:** text/HTML 64 KiB each; images PNG/JPEG only (magic bytes decide, not the declared MIME), default 8 MiB,
+  setting 256 KiB to 32 MiB; at most 4 outstanding pulls; a pull times out after 90 s.
+* **No history.** The current clipboard text is held in RAM only while sync is active; status carries counters, never
+  content. Stored on disk: `clipboard-settings.json` (window, hotkey, image limit) in the service state directory.
+* **Loops:** echo of applied text is suppressed by the reducer (including across several phones: text from phone A is
+  not relayed to phone B); the `.connect` announcement follows the stock timestamp rule and only announces text copied
+  since sync started.
+
+### Paste from phone: hotkey and fallbacks
+
+Default shortcut **Ctrl+Shift+V**, changeable in the clipboard app, with `geekbridge-ctl clipboard hotkey "Ctrl+Alt+P"`,
+or `ClipboardSettings` over the control API. It must include a modifier.
+
+* **Hyprland:** the service binds it system-wide at runtime with `hyprctl keyword bind` while at least one phone is
+  opted in, and unbinds it when none is (the binding lives only in the running compositor; nothing in your config
+  files is changed). Note Ctrl+Shift+V is also "paste" in most terminals: rebind if that bothers you.
+* **Everywhere else the service cannot grab keys** (Wayland deliberately forbids it; X11/Windows/macOS global hooks
+  are not implemented). The status then says `unsupported` and the clipboard app shows the command to bind:
+
+  ```sh
+  geekbridge-ctl clipboard paste-from-phone --notify
+  ```
+
+  GNOME: Settings → Keyboard → Custom Shortcuts. KDE Plasma: System Settings → Shortcuts → Add Command. Sway:
+  `bindsym Ctrl+Shift+v exec geekbridge-ctl clipboard paste-from-phone --notify`. X11: `xbindkeys`. Windows: an
+  AutoHotkey or shortcut-key `.lnk`. macOS: a Shortcuts/Automator action. The shortcut also works as a plain key
+  while the clipboard app window is focused.
+* `--notify` shows the result with `notify-send` if present. The command waits up to 60 s (the phone may need a tap) and
+  exits non-zero when nothing was pasted.
+
+### `geekbridge-ctl clipboard …`
+
+`status`, `paste-from-phone [DEVICE_ID] [--notify]`, `push-to-phone [DEVICE_ID]`, `window SECONDS`,
+`hotkey [COMBO]`, `image-limit MIB`. Over the control API: `ClipboardStatus`, `ClipboardPull`, `ClipboardPush`,
+`ClipboardSettings` (`docs/service-integration.md`).
+
+## Wire protocol
+
+Stock peers: `kdeconnect.clipboard {content}` and `kdeconnect.clipboard.connect {content, timestamp}` (both directions
+supported; the phone app advertises them so the computer's live copies reach it). GeekBridge peers add (only used when
+the peer advertised them):
+
+```
+computer -> phone  geekbridge.clipboard.pull   {request_id, max_age_ms}
+phone -> computer  geekbridge.clipboard.item   {request_id?, kind: text|url|html|image, text?, html?, mime?, size?, age_ms}
+                   (images: payloadSize + payloadTransferInfo.port; bytes follow on a pinned-certificate TLS payload socket)
+phone -> computer  geekbridge.clipboard.none   {request_id, reason: locked|expired|empty|needs_gesture|disabled|too_large|unsupported|sensitive}
+computer -> phone  geekbridge.clipboard.item   same shape, unsolicited (push)
+```
+
+Parsing is strict and bounded before copying (`bridge_core::clipboard_wire`); an answer must match a request the
+receiver made, from the device it asked; an item with no `request_id` is an explicit send by the user and is accepted
+only from an opted-in device. Packet lines may be up to 1 MiB (two 64 KiB fields, JSON-escaped); anything larger travels
+as a payload. Files are **not** carried by clipboard sync (use Share).
+
+## Android
+
+* **Rust transport** (`crates/bridge-android/src/transport/engine/clipboard.rs`): `transport_start` takes
+  `clipboard: {enabled, max_image_bytes}` to negotiate the packet types; `transport_clipboard_config`,
+  `transport_clipboard_wait`, `transport_clipboard_send` (`docs/android-transport.md`). There are **no polling loops**:
+  `transport_clipboard_wait` parks one thread inside the core on a condition variable until the computer sends something
+  (or ~50 s pass, or the transport stops). Acknowledged events are released; received images are spooled to a private
+  `clipboard-cache/` directory (0700), sniffed for PNG/JPEG, kept only until the next item, and wiped on start/stop.
+* **Kotlin** (`ClipboardPolicy.kt`, `ClipboardProtocol.kt`, `ClipboardEngine.kt` are pure and JVM-tested; `ClipboardAndroid.kt`,
+  `ClipboardRuntime.kt`, `ClipboardFloatingActivity.kt`, `ClipboardTileService.kt`, `SendToComputerActivity.kt`,
+  `SendClipboardAction.kt`, `ClipImageProvider.kt`, `ClipboardSettingsUi.kt` are the Android glue). Settings (Home →
+  Settings → Clipboard sync): off by default, time window, and a plain statement of what Android allows.
+* It rides the existing `LinkService` foreground service (no new service, no wake lock, no timers). When the setting is off
+  the wait thread never starts and pulls get `disabled`.
+* Memory: at most one remembered clipboard snapshot (≤ 128 KiB of text, dropped after 10 s, when used, and when the link
+  stops) and the pending pull question (≤ 80 s).
+
+## Verified vs. untested
+
+Verified here (host tests, `cargo clippy -D warnings`, Gradle):
+
+* `bridge-core`: reducer additions (on-focus mode, baseline, cross-peer echo), wire codec, hotkey parser, IPC types.
+* `bridge-service`: 24 unit + 9 end-to-end tests with a real `Daemon`, TLS loopback "phones", in-memory clipboard and a fake
+  hotkey binder: opt-in gating, echo/loop suppression, sensitive/oversize skip, pull answered / refused / expired /
+  spoofed, image payload both ways with magic-byte validation, hotkey bound/rebound/unbound, status never contains text.
+* `bridge-android`: 10 integration tests (events, acknowledgement, blocked wait wakes on stop, pull → answer, image fd
+  and spool, strict validation) plus the existing suites; `cargo check --target aarch64-linux-android`.
+* Android: 31 new JVM tests (freshness/lock/sensitivity gate, protocol parsing, engine flows); `lintDebug` and
+  `assembleDebug` pass (the APK in this checkout still contains whatever `libgeekbridge_android.so` was last built; run
+  `scripts/build-android.sh` to rebuild it with this work).
+
+**Not tested on real hardware or real sessions:** an actual Android device or emulator (focus-gated clipboard reads,
+`ClipDescription.getTimestamp`, the sensitive extra, Quick Settings tile, notification tap, `PROCESS_TEXT`, content-URI image
+paste, battery/Doze behaviour, OEM restrictions), interoperability with stock KDE Connect apps, the real `wl-clipboard` /
+`xclip` backends against live compositors (only the process runner is unit-tested), the Hyprland binding, and anything on
+macOS or Windows. Password-manager detection depends on the manager setting the hint.

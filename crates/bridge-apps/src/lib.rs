@@ -1,0 +1,52 @@
+//! Shared implementation for the four separate GeekBridge app executables.
+pub mod apps;
+pub mod cli;
+pub mod clipboard_link;
+pub mod connection;
+pub mod dotmatrix;
+pub mod home_app;
+pub mod icons;
+pub mod identity;
+pub mod input;
+pub mod localtime;
+pub mod poller;
+pub mod share_app;
+pub mod shell;
+pub mod state;
+pub mod theme;
+pub mod update_ui;
+
+use bridge_core::{AppKind, fetch_snapshot};
+use std::process::ExitCode;
+
+/// Entry point used by each binary: parses its own arguments, then shows one window.
+pub fn main_for(app: AppKind) -> ExitCode {
+    match cli::parse_args(std::env::args().skip(1)) {
+        Err(message) => {
+            eprintln!(
+                "{}: {message}\nTry '{} --help'.",
+                identity::binary_name(app),
+                identity::binary_name(app)
+            );
+            ExitCode::from(2)
+        }
+        Ok(cli::Command::Help) => {
+            print!("{}", cli::help_text(app));
+            ExitCode::SUCCESS
+        }
+        Ok(cli::Command::Status { api_port }) => {
+            let model = state::DiscoveryModel::from_fetch(app, fetch_snapshot(api_port));
+            print!("{}", cli::status_report(app, api_port, &model));
+            ExitCode::from(cli::status_exit_code(&model) as u8)
+        }
+        Ok(cli::Command::Run { api_port, theme }) => {
+            match shell::run(app, api_port, theme, apps::view_for(app)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("{}: cannot open window: {err}", identity::binary_name(app));
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}

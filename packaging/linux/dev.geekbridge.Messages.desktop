@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Messages
+Comment=Android messages bridge
+Exec=geekbridge-messages
+Icon=dev.geekbridge.Messages
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.geekbridge.Messages

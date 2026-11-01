@@ -1,0 +1,30 @@
+[package]
+name = "bridge-calls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Bluetooth HFP call-control backends (Linux: PipeWire org.pipewire.Telephony; other platforms: explicit unavailable backend)"
+
+[[bin]]
+name = "geekbridge-call-probe"
+path = "src/bin/geekbridge-call-probe.rs"
+
+[dependencies]
+bridge-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+
+# The D-Bus adapter is Linux-only. Windows/macOS build the explicit unavailable backend and
+# never link a D-Bus stack or spawn Linux commands.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+zbus_xml = "5"
+async-io = "2"
+futures-lite = "2"
+# Native PulseAudio/pipewire-pulse client for call-audio routing (links libpulse; CI has
+# libpulse-dev). Windows/macOS use the explicit unsupported audio adapter instead.
+libpulse-binding = "2"
+
+[dev-dependencies]
+tempfile = "3"

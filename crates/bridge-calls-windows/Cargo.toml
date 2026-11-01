@@ -1,0 +1,41 @@
+[package]
+name = "bridge-calls-windows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Windows 11 Bluetooth HFP calling adapter over the public Windows.ApplicationModel.Calls phone-line APIs"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "geekbridge-calls-windows"
+path = "src/bin/geekbridge-calls-windows.rs"
+
+[dependencies]
+bridge-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Native bindings. Pure Rust (no C toolchain), so `cargo check --target x86_64-pc-windows-msvc`
+# type-checks the native module from Linux. Only this target pulls the crates in.
+# `windows` 0.62 keeps the WinRT async and collection types in separate crates.
+[target.'cfg(windows)'.dependencies]
+windows-future = "0.3"
+windows-collections = "0.3"
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "ApplicationModel_Calls",
+    "Devices_Enumeration",
+    "Foundation",
+    "Foundation_Collections",
+    "Foundation_Metadata",
+    "Security_Authorization_AppCapabilityAccess",
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_SystemInformation",
+    "Win32_System_WinRT",
+]

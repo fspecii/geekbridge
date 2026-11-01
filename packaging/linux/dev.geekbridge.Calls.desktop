@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Calls
+Comment=Android calls bridge
+Exec=geekbridge-calls
+Icon=dev.geekbridge.Calls
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.geekbridge.Calls

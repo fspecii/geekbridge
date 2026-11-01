@@ -1,0 +1,25 @@
+[package]
+name = "bridge-android"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "geekbridge_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+bridge-core.workspace = true
+bridge-kde = { path = "../bridge-kde" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs", "io-util"] }
+# Already in the tree via tokio; used only for TCP keepalive socket options.
+socket2 = { version = "0.6", features = ["all"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# The JNI glue only exists in Android builds, so host `cargo test` never needs a JVM.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.22"

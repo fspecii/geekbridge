@@ -1,0 +1,16 @@
+<resources>
+    <!-- Monochrome base with one red accent (used sparingly: Messages section, status dots). -->
+    <color name="gb_surface">#F5F5F7</color>
+    <color name="gb_card">#FFFFFF</color>
+    <color name="gb_stripe">#F7F7F9</color>
+    <color name="gb_line">#D2D2D7</color>
+    <color name="gb_fill">#EBEBF0</color>
+    <color name="gb_text">#1D1D1F</color>
+    <color name="gb_muted">#6B6B70</color>
+    <color name="gb_accent">#1D1D1F</color>
+    <color name="gb_on_accent">#FFFFFF</color>
+    <color name="gb_red">#D71921</color>
+    <color name="gb_ok">#1E7B3A</color>
+    <color name="gb_warn">#8F5400</color>
+    <color name="gb_bad">#C4161C</color>
+</resources>

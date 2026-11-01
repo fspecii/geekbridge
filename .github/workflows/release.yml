@@ -1,0 +1,204 @@
+name: Release
+
+# Runs when a version tag is pushed (git tag vX.Y.Z && git push origin vX.Y.Z). The tag must equal
+# [workspace.package] version in Cargo.toml (the single version source; see docs/builds.md).
+# Artifact names are what the in-app update checkers look for:
+#   geekbridge-<linux|windows|macos>-<x86_64|aarch64>.<tar.gz|zip>, geekbridge-android.apk, SHA256SUMS
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Check tag against Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          cargo_version="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' Cargo.toml)"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "tag '$tag' is not vMAJOR.MINOR.PATCH[-pre]"; exit 1; }
+          [[ "v$cargo_version" == "$tag" ]] || { echo "tag $tag does not match Cargo.toml version $cargo_version"; exit 1; }
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          if [[ "$cargo_version" == *-* ]]; then echo "prerelease=true" >> "$GITHUB_OUTPUT"; else echo "prerelease=false" >> "$GITHUB_OUTPUT"; fi
+
+  desktop:
+    name: Desktop / ${{ matrix.name }}
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, archive: tar.gz }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, archive: zip }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, archive: zip }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p bridge-apps -p bridge-service
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="stage/geekbridge-${{ matrix.name }}"
+          mkdir -p "$out" dist
+          ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
+          for bin in geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda; do
+            cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
+          done
+          cp README.md "$out/" || true
+          name="geekbridge-${{ matrix.name }}.${{ matrix.archive }}"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              pwsh -Command "Compress-Archive -Path 'stage/geekbridge-${{ matrix.name }}' -DestinationPath 'dist/$name'"
+            else
+              (cd stage && zip -r -q "../dist/$name" "geekbridge-${{ matrix.name }}")
+            fi
+          else
+            tar -czf "dist/$name" -C stage "geekbridge-${{ matrix.name }}"
+          fi
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  android:
+    name: Android APK
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Install Gradle 8.13
+        run: |
+          curl -fsSL -o gradle.zip https://services.gradle.org/distributions/gradle-8.13-bin.zip
+          echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  gradle.zip" | sha256sum -c -
+          unzip -q gradle.zip -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
+      - name: Install SDK packages and NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.16248370"
+      - name: Build native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk="$ANDROID_HOME/ndk/30.0.16248370"
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android26-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android26-clang"
+          export CC_aarch64_linux_android="$bin/aarch64-linux-android26-clang"
+          export CC_x86_64_linux_android="$bin/x86_64-linux-android26-clang"
+          export AR_aarch64_linux_android="$bin/llvm-ar" AR_x86_64_linux_android="$bin/llvm-ar"
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+          cargo build --release --locked -p bridge-android --target aarch64-linux-android --target x86_64-linux-android
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
+          cp target/aarch64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
+          cp target/x86_64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
+          "$bin/llvm-strip" android/app/src/main/jniLibs/*/libgeekbridge_android.so
+      - name: Build APK (signed with the release keystore if the secrets exist, else debug-signed)
+        shell: bash
+        env:
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          mkdir -p dist
+          cd android
+          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" ]]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            gradle --no-daemon :app:assembleRelease
+            unsigned="$(ls app/build/outputs/apk/release/*.apk | head -n1)"
+            "$ANDROID_HOME/build-tools/36.0.0/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$RUNNER_TEMP/release.jks" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --key-pass env:ANDROID_KEY_PASSWORD --out ../dist/geekbridge-android.apk "$RUNNER_TEMP/aligned.apk"
+            echo "Signed with the release keystore."
+          else
+            if [[ "$PRERELEASE" != "true" ]]; then
+              echo "::error::A stable release needs the release keystore secrets; refusing to publish a debug-signed APK that phones cannot update from or to."
+              exit 1
+            fi
+            cp app/build/outputs/apk/debug/app-debug.apk ../dist/geekbridge-android.apk
+            echo "::warning::No release keystore secrets: the APK is DEBUG-signed. Phones cannot update it over an APK signed with a different key."
+          fi
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs ../dist/geekbridge-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/geekbridge-android.apk
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [version, desktop, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          ls -l
+          for f in geekbridge-linux-x86_64.tar.gz geekbridge-windows-x86_64.zip geekbridge-macos-aarch64.zip \
+                   geekbridge-macos-x86_64.zip geekbridge-android.apk; do
+            [[ -s "$f" ]] || { echo "missing or empty artifact: $f"; exit 1; }
+          done
+          sha256sum -- geekbridge-* | tee SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=()
+          [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+          # Draft first, publish once every asset is attached: the in-app updaters read
+          # releases/latest and must never see a release that has no SHA256SUMS yet.
+          gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag \
+            --repo "$GITHUB_REPOSITORY" --title "GeekBridge ${GITHUB_REF_NAME#v}" --generate-notes "${flags[@]}"
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false

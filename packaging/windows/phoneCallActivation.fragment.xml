@@ -1,0 +1,16 @@
+<!--
+  Optional <Extensions> block for AppxManifest.template.xml, inserted by
+  `register-dev.ps1 -DeclarePhoneCallActivation`.
+
+  uap13:Extension Category="windows.phoneCallActivation" lets Windows activate the app for phone-call
+  events (see PhoneCallActivatedEventArgs). It needs Windows 11 21H2 (build 22000) or later per the
+  schema page, which is the adapter's minimum anyway.
+
+  It is OFF by default because the `geekbridge-calls-windows` developer CLI does not handle
+  activations; declaring it could make Windows route phone-call activations to a program that
+  ignores them. The daemon that will own the adapter should enable it once it handles activation.
+  Not verified with MakeAppx or on a device.
+-->
+      <Extensions>
+        <uap13:Extension Category="windows.phoneCallActivation" Executable="@EXECUTABLE@" />
+      </Extensions>

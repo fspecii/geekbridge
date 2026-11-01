@@ -1,0 +1,29 @@
+[package]
+name = "bridge-phone-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Simulated phone for end-to-end call testing: serves org.pipewire.Telephony on D-Bus and drives an Android emulator modem (no Bluetooth)"
+
+[[bin]]
+name = "geekbridge-phone-sim"
+path = "src/bin/geekbridge-phone-sim.rs"
+
+[[bin]]
+name = "geekbridge-call-e2e"
+path = "src/bin/geekbridge-call-e2e.rs"
+
+[dependencies]
+thiserror = "2"
+serde.workspace = true
+serde_json.workspace = true
+bridge-core.workspace = true
+bridge-calls = { path = "../bridge-calls" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+blocking = "1"
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

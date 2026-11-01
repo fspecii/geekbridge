@@ -1,0 +1,10 @@
+/references/
+/downloads/
+/target/
+.tools/
+/dist/
+/android/.gradle/
+/android/local.properties
+/android/**/build/
+/android/app/src/main/jniLibs/**/*.so
+/android/.kotlin/

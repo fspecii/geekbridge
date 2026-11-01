@@ -1,0 +1,10 @@
+<resources>
+    <string name="channel_clipboard">Clipboard requests</string>
+    <string name="channel_clipboard_desc">Asks you to tap when your computer wants the clipboard. Android only lets GeekBridge read it after a tap.</string>
+    <string name="clip_tap_title">Your computer wants your clipboard</string>
+    <string name="clip_tap_text">Tap to send what you just copied.</string>
+    <string name="tile_label">Send clipboard</string>
+    <string name="tile_on">To your computer</string>
+    <string name="tile_off">Turn on in GeekBridge</string>
+    <string name="process_text_label">Send to computer</string>
+</resources>

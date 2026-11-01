@@ -1,0 +1,14 @@
+<resources>
+    <!-- Home / setup screens: system-blue accent like the desktop apps; tints are alpha-composited at runtime. -->
+    <color name="gb_blue">#0A6CF0</color>
+    <color name="gb_on_blue">#FFFFFF</color>
+    <color name="gb_panel">#FFFFFF</color>
+
+    <string name="setup_label">Setup</string>
+    <string name="diagnostics_label">Diagnostics</string>
+    <string name="channel_link">Background connection</string>
+    <string name="channel_link_desc">Quiet notice shown while GeekBridge stays reachable from your paired computers.</string>
+    <string name="notif_ready">Ready for your computer · %1$d paired</string>
+    <string name="notif_battery">Battery optimisation is on</string>
+    <string name="notif_stop">Stop</string>
+</resources>

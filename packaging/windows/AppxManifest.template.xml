@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  GeekBridge Calls: DEVELOPMENT sparse-package manifest template.
+
+  This declares GeekBridge's own development identity so a non-packaged executable can run with
+  package identity and the capabilities the Windows phone-line APIs document:
+    - phoneCall                      (general capability, Windows.ApplicationModel.Calls)
+    - phoneLineTransportManagement   (RESTRICTED capability: RequestAccessAsync / RegisterApp /
+                                      ConnectAsync on PhoneLineTransportDevice)
+
+  It makes NO production claim: the identity and publisher are development placeholders, nothing
+  here is signed, Microsoft has not approved any restricted capability for GeekBridge, and this
+  template has not been run through MakeAppx or installed on a Windows machine (it was authored on
+  Linux). Windows may still deny access; see `docs/architecture.md`.
+
+  Placeholders (@NAME@) are filled by register-dev.ps1. No Limited Access Feature key or
+  attestation is used or needed for Windows 11; Windows 10 is unsupported.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:uap13="http://schemas.microsoft.com/appx/manifest/uap/windows10/13"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 uap13 rescap">
+
+  <Identity
+    Name="@IDENTITY_NAME@"
+    Publisher="@PUBLISHER@"
+    Version="@VERSION@"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>GeekBridge Calls (development)</DisplayName>
+    <PublisherDisplayName>GeekBridge development</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <!-- Sparse package: the executable stays outside the package, at the external location. -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <!-- Windows 11 (build 22000) and later. Windows 10 is unsupported by the adapter. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <uap:Capability Name="phoneCall" />
+    <rescap:Capability Name="phoneLineTransportManagement" />
+  </Capabilities>
+
+  <Applications>
+    <Application
+      Id="GeekBridgeCalls"
+      Executable="@EXECUTABLE@"
+      uap10:TrustLevel="mediumIL"
+      uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        DisplayName="GeekBridge Calls (development)"
+        Description="GeekBridge phone calling over Bluetooth HFP, development build"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        AppListEntry="none" />
+@EXTENSIONS@
+    </Application>
+  </Applications>
+</Package>

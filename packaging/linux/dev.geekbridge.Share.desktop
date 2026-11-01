@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Share
+Comment=Send files, links and text to your phone and receive from it
+Exec=geekbridge-share %F
+Icon=dev.geekbridge.Share
+Terminal=false
+Categories=Network;FileTransfer;
+StartupWMClass=dev.geekbridge.Share

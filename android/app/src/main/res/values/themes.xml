@@ -1,0 +1,17 @@
+<resources>
+    <style name="Theme.GeekBridge" parent="android:Theme.DeviceDefault.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/gb_accent</item>
+        <item name="android:colorAccent">@color/gb_accent</item>
+        <item name="android:textColorPrimary">@color/gb_text</item>
+        <item name="android:textColorSecondary">@color/gb_muted</item>
+        <item name="android:textColorHint">@color/gb_muted</item>
+        <item name="android:windowBackground">@color/gb_surface</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+    <style name="Theme.GeekBridge.Share" parent="android:Theme.DeviceDefault.Light.Dialog">
+        <item name="android:colorAccent">@color/gb_accent</item>
+        <item name="android:textColorPrimary">@color/gb_text</item>
+        <item name="android:textColorSecondary">@color/gb_muted</item>
+        <item name="android:windowBackground">@color/gb_surface</item>
+    </style>
+</resources>

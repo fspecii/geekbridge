@@ -1,0 +1,18 @@
+[package]
+name = "bridge-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Update check, download and SHA-256 verification against the latest GitHub Release"
+
+[dependencies]
+bridge-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+getrandom = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+tempfile = "3"

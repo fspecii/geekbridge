@@ -1,0 +1,182 @@
+package dev.geekbridge.android
+
+import java.io.File
+import java.io.IOException
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
+
+/**
+ * Talks to GitHub (`/repos/<repo>/releases/latest`) with [HttpURLConnection] (https; plain http only to
+ * loopback, for tests). One bounded request per check, a `User-Agent`, timeouts, a size cap, `If-None-Match`
+ * with the stored ETag, no cookies, no identifiers. It only opens outbound connections: nothing listens.
+ *
+ * All methods block; call them off the main thread.
+ */
+class UpdateChecker(
+    private val currentName: String,
+    private val currentCode: Int,
+    private val baseUrl: String = "https://api.github.com",
+    private val repo: String = "fspecii/geekbridge",
+    private val allowLoopback: Boolean = false,
+    private val connectTimeoutMs: Int = 10_000,
+    private val readTimeoutMs: Int = 15_000,
+) {
+    class Cache(val etag: String, val body: String)
+
+    /** Raised for every failure; the message is safe to show. */
+    class UpdateException(message: String) : Exception(message)
+
+    /**
+     * Fetches the latest release. [cache] is the previous 200 body with its ETag; on 304 it is reused.
+     * [onFresh] receives a new (etag, body) pair to persist.
+     */
+    fun check(cache: Cache?, onFresh: (Cache) -> Unit = {}): UpdateCheckResult = try {
+        val url = "${baseUrl.trimEnd('/')}/repos/$repo/releases/latest"
+        val response = get(url, "application/vnd.github+json", MAX_API_BYTES, cache?.etag)
+        val body = when (response.status) {
+            200 -> {
+                val text = String(response.body, Charsets.UTF_8)
+                response.etag?.let { onFresh(Cache(it, text)) }
+                text
+            }
+            304 -> cache?.body ?: throw UpdateException("GitHub answered 'not modified' without a cached copy.")
+            404 -> return UpdateCheckResult.UpToDate(null)
+            403, 429 -> throw UpdateException("GitHub is rate limiting requests. Try again later.")
+            else -> throw UpdateException("GitHub answered HTTP ${response.status}.")
+        }
+        val release = try {
+            UpdateModel.parseRelease(body)
+        } catch (e: IllegalArgumentException) {
+            throw UpdateException(e.message ?: "The release information is not understood.")
+        }
+        UpdateModel.evaluate(release, currentName, currentCode, { name -> fetchSums(release, name) }, allowLoopback)
+    } catch (e: UpdateException) {
+        UpdateCheckResult.Failed(e.message ?: "Update check failed.")
+    } catch (e: IOException) {
+        UpdateCheckResult.Failed("Couldn't reach GitHub: ${Bounds.clip(e.javaClass.simpleName, 40)}.")
+    }
+
+    private fun fetchSums(release: UpdateModel.Release, apkName: String): String? {
+        val sums = release.assets.firstOrNull { it.first.equals("SHA256SUMS", true) || it.first.equals("SHA256SUMS.txt", true) }
+            ?: return null
+        if (!UpdateModel.urlAllowed(sums.second, allowLoopback)) return null
+        val r = get(sums.second, "application/octet-stream", MAX_SUMS_BYTES, null)
+        if (r.status != 200) return null
+        return UpdateModel.findChecksum(String(r.body, Charsets.UTF_8), apkName)
+    }
+
+    class Response(val status: Int, val etag: String?, val body: ByteArray)
+
+    private fun get(startUrl: String, accept: String, maxBytes: Int, etag: String?): Response {
+        val out = java.io.ByteArrayOutputStream()
+        val head = request(startUrl, accept, etag, maxBytes.toLong()) { stream -> readBounded(stream, maxBytes.toLong()) { b, off, len -> out.write(b, off, len) } }
+        return Response(head.first, head.second, out.toByteArray())
+    }
+
+    /**
+     * Downloads the offer's APK into [dir] (created if needed), hashing while writing. Deletes the file and
+     * throws unless the byte count and SHA-256 both match the release. Returns the verified file.
+     */
+    fun download(offer: UpdateOffer, dir: File, onProgress: (Long, Long) -> Unit = { _, _ -> }): File {
+        val expected = offer.sha256?.lowercase() ?: throw UpdateException("This release publishes no SHA-256 for the app, so it won't be downloaded.")
+        if (!UpdateModel.isHex64(expected) || !UpdateModel.safeFileName(offer.apkName)) throw UpdateException("The release description is not usable.")
+        if (offer.apkSize !in 1..UpdateModel.MAX_APK_BYTES) throw UpdateException("The package size is not acceptable.")
+        if (!dir.isDirectory && !dir.mkdirs()) throw UpdateException("Couldn't create the download folder.")
+        dir.listFiles()?.forEach { it.delete() } // one pending update at a time
+        val file = File(dir, UPDATE_FILE_NAME)
+        val digest = MessageDigest.getInstance("SHA-256")
+        var written = 0L
+        try {
+            file.outputStream().use { sink ->
+                val head = request(offer.apkUrl, "application/octet-stream", null, offer.apkSize) { stream ->
+                    readBounded(stream, offer.apkSize) { b, off, len ->
+                        digest.update(b, off, len)
+                        sink.write(b, off, len)
+                        written += len
+                        onProgress(written, offer.apkSize)
+                    }
+                }
+                if (head.first != 200) throw UpdateException("GitHub answered HTTP ${head.first} for the download.")
+            }
+            if (written != offer.apkSize) throw UpdateException("The download has the wrong size; it was deleted.")
+            val actual = digest.digest().joinToString("") { "%02x".format(it) }
+            if (actual != expected) throw UpdateException("The download does not match the published SHA-256; it was deleted.")
+            return file
+        } catch (e: Exception) {
+            file.delete()
+            throw if (e is UpdateException) e else UpdateException(if (e is IOException) "The download was interrupted." else "The download failed.")
+        }
+    }
+
+    /**
+     * One GET with manual, host-checked redirects. [consume] reads the body of a 200; other bodies are
+     * ignored. Returns (status, etag).
+     */
+    private fun request(
+        startUrl: String,
+        accept: String,
+        etag: String?,
+        maxBytes: Long,
+        consume: (InputStream) -> Unit,
+    ): Pair<Int, String?> {
+        var url = startUrl
+        repeat(MAX_REDIRECTS + 1) {
+            if (!UpdateModel.urlAllowed(url, allowLoopback)) throw UpdateException("Refusing to contact an untrusted address.")
+            val conn = URL(url).openConnection() as HttpURLConnection
+            try {
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = connectTimeoutMs
+                conn.readTimeout = readTimeoutMs
+                conn.useCaches = false
+                conn.requestMethod = "GET"
+                conn.setRequestProperty("User-Agent", "geekbridge-android-updater/$currentName")
+                conn.setRequestProperty("Accept", accept)
+                conn.setRequestProperty("Accept-Encoding", "identity")
+                conn.setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                if (etag != null) conn.setRequestProperty("If-None-Match", etag)
+                val status = conn.responseCode
+                if (status in 301..308 && status != 304 && status != 305 && status != 306) {
+                    val location = conn.getHeaderField("Location") ?: throw UpdateException("The server redirected without a location.")
+                    url = try {
+                        URL(URL(url), location).toString() // absolute or same-origin relative; re-checked on the next hop
+                    } catch (_: java.net.MalformedURLException) {
+                        throw UpdateException("The server sent an unusable redirect.")
+                    }
+                    return@repeat
+                }
+                if (status == 200) {
+                    val declared = conn.contentLengthLong
+                    if (declared > maxBytes) throw UpdateException("The response is larger than allowed.")
+                    val enc = conn.contentEncoding
+                    if (enc != null && !enc.equals("identity", true)) throw UpdateException("Unexpected content encoding.")
+                    conn.inputStream.use(consume)
+                }
+                return status to conn.getHeaderField("ETag")?.takeIf { it.length <= 256 && it.all { c -> c in ' '..'~' } }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw UpdateException("Too many redirects.")
+    }
+
+    private fun readBounded(input: InputStream, max: Long, sink: (ByteArray, Int, Int) -> Unit) {
+        val buf = ByteArray(32 * 1024)
+        var total = 0L
+        while (true) {
+            val n = input.read(buf)
+            if (n < 0) return
+            total += n
+            if (total > max) throw UpdateException("The response is larger than allowed.")
+            sink(buf, 0, n)
+        }
+    }
+
+    companion object {
+        const val MAX_API_BYTES = 1024 * 1024
+        const val MAX_SUMS_BYTES = 64 * 1024
+        const val MAX_REDIRECTS = 5
+        const val UPDATE_FILE_NAME = "geekbridge-update.apk"
+    }
+}

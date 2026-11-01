@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Agenda
+Comment=Android agenda bridge
+Exec=geekbridge-agenda
+Icon=dev.geekbridge.Agenda
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.geekbridge.Agenda

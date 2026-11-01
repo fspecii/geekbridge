@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stylised "G" drawn as an arc plus a bar, inside the 66dp safe zone. -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M68,42 A18,18 0 1 0 72,54 L54,54"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="7" />
+</vector>

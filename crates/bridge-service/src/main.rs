@@ -1,0 +1,28 @@
+use bridge_service::config::{self, Parsed};
+
+/// Workers for the async runtime. The service is I/O bound (a handful of sockets and small JSON
+/// frames), so one worker per core only costs threads, stacks and idle wakeups. Blocking work uses
+/// tokio's separate, lazily grown blocking pool.
+const WORKER_THREADS: usize = 2;
+
+fn main() -> std::io::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> std::io::Result<()> {
+    match config::parse(std::env::args_os().skip(1)).map_err(std::io::Error::other)? {
+        Parsed::Help => {
+            println!("{}", config::USAGE);
+            Ok(())
+        }
+        Parsed::PrintTokenPath(path) => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        Parsed::Run(config) => bridge_service::run(config).await,
+    }
+}

@@ -1,0 +1,35 @@
+[package]
+name = "bridge-calls-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "macOS Bluetooth HFP hands-free call adapter (IOBluetoothHandsFreeDevice) with an explicit-unsupported host build"
+
+[lib]
+name = "bridge_calls_macos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "geekbridge-macos-calls"
+path = "src/bin/geekbridge-macos-calls.rs"
+
+[features]
+# Exposes the scripted native/audio ports used by this crate's own tests so the daemon can
+# reuse them in its integration tests. Never enabled in a shipped build.
+mock = []
+
+[dependencies]
+bridge-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# Native Apple bindings: generated objc2 crates (type-checked against bundled declarations, so
+# `cargo check --target *-apple-darwin` needs no Apple SDK). Compiled only for macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-io-bluetooth = "0.3"
+objc2-core-audio = "0.3"
+objc2-core-audio-types = "0.3"
+objc2-core-bluetooth = { version = "0.3", default-features = false, features = ["std", "CBManager"] }
