@@ -94,7 +94,7 @@ other jobs), debug APK, Home as the launch screen, `am start -W` after `force-st
 6 cold starts (median about 950 ms)**. These are emulator numbers, not a phone; treat them as a regression
 baseline only. Package size (`assembleDebug` / `assembleRelease`, `isMinifyEnabled = false`): **debug 9.9 MB, release
 (unsigned) 6.7 MB**; the two native libraries are 2.7 MB (arm64-v8a) and 3.1 MB (x86_64), `classes.dex` 2.7 MB
-(release) and resources are about 30 KB. Shrinking with R8 is the obvious next size lever; not enabled here.
+(release) and resources are about 30 KB. R8 and resource shrinking are now on for release builds; current numbers and budgets: [android-perf.md](android-perf.md).
 
 What changed and how it was checked (screenshots: `dist/screenshots/android/polish-*.png`):
 
@@ -202,3 +202,31 @@ Not tested: installing or running on a physical device, anything on an emulator 
 the real JNI call, the contacts/calendar permission dialogs and provider reads, share and update flows are
 unexercised there), release builds, and TalkBack/accessibility behaviour. Call state on a real phone with a real
 carrier has not been observed.
+
+## Dot-matrix visual language ("Nothing"-inspired)
+
+The whole app uses one token layer and a small set of code-drawn dot-matrix components. Nothing is bundled: no font,
+logo or glyph artwork; the 5x7 dot font is original (`DotFont.kt`) and drawn from code, so the APK grows only by
+a few KB of code and vector line icons.
+
+* **Tokens.** Colours: `res/values/colors.xml` (light: off-white `#F5F5F5`, white cards, ink `#0B0B0B`) and
+  `values-night/colors.xml` (true black `#000000` OLED surface, `#121212` cards, white dots); a single red accent
+  `#D71921` (dark `#E8242C`) for the live dot, "today", warnings and the stepper's current step. "Ok" is ink, not green:
+  state is always carried by words plus a filled-vs-hollow dot. Legacy names (`gb_blue` = ink) keep older screens on the
+  same palette. Shapes, spacing, type scale and dot pitches: `Tokens.kt` (`Tok`); `Motion.enabled()` honours the system
+  "remove animations" setting.
+* **Components.** `DotText` (any text in dot-matrix, wraps and shrinks its pitch to fit, speaks its real text to TalkBack),
+  `DotProgress` (dotted progress/link strip with a range value), `DotStepper` (setup dots), `heroTile`, `widgetTile`,
+  `dotHeader`, `iconButton` (`DotKit.kt`, `DotComponents.kt`); pill buttons, chips with a state dot, pill toggles and
+  28 dp cards come from `Ui.kt`/`UiKit.kt`. `DotMatrixView` (the old banner) now shares `DotFont`.
+* **Calendar/Contacts.** `DotCalendar` (month grid: grey dot = no events, ink = events, red = today, ring = selected;
+  each day is a 48 dp focus stop read as the full date plus event count), `monthCard`, `agendaCard` (red first dot, dotted
+  timeline, "Add event" pill) in `DotCalendar.kt`, with the pure `MonthLayout` unit-tested. Home tiles open the screens through
+  the `ContactsAction` / `CalendarAction` hooks in `QuickActions.kt` (setup step until those classes exist).
+* **Motion.** None runs continuously. Dot text can `reveal()` once with a short column wipe (skipped when animations are
+  removed); progress and the link strip just redraw on state change. Everything is static between updates.
+* **Accessibility.** Targets are 48 dp, text and tiles scale to font scale 2.0 (dot text caps its growth at 1.4x and wraps),
+  dark/light follow the system, RTL aligns dot text to the start edge, decorative dot art is hidden from TalkBack.
+* **Design gallery (debug builds only).** `DesignGalleryActivity` shows every component with synthetic data:
+  `adb shell am start -n dev.geekbridge.android/.DesignGalleryActivity --es page status|calendar|controls`.
+* **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/nothing-*.png`.

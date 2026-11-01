@@ -304,6 +304,11 @@ impl Calls {
 impl AppView for Calls {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        if self.number.is_empty()
+            && let Some(n) = crate::prefill::take_dial()
+        {
+            self.number = input::sanitize_dial(&n);
+        }
         let feed = self.feed.take().unwrap_or_else(|| {
             let wake = ctx.clone();
             CallFeed::spawn(move || wake.request_repaint())

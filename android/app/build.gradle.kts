@@ -23,6 +23,10 @@ val workspaceVersionCode: Int = run {
     major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
 }
 
+val packagedAbis: List<String> =
+    (findProperty("gb.abis") as String?)?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+        ?: listOf("arm64-v8a", "x86_64")
+
 android {
     namespace = "dev.geekbridge.android"
     compileSdk = 36
@@ -34,7 +38,8 @@ android {
         versionCode = workspaceVersionCode
         versionName = workspaceVersion
         // Contract: phone and emulator only.
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        // -Pgb.abis=arm64-v8a builds a phone-only APK (about half the size); default is phone + emulator.
+        ndk { abiFilters += packagedAbis }
     }
 
     buildTypes {
@@ -74,7 +79,7 @@ dependencies {
 // every validation would report "unavailable". Fail packaging instead, with an actionable message.
 // Unit tests and lint do not need the libraries and do not depend on this task.
 // ---------------------------------------------------------------------------------------------
-val nativeAbis = mapOf("arm64-v8a" to 183, "x86_64" to 62) // ELF e_machine values
+val nativeAbis = mapOf("arm64-v8a" to 183, "x86_64" to 62).filterKeys { it in packagedAbis } // ELF e_machine values
 val nativeLibName = "libgeekbridge_android.so"
 val jniSymbol = "Java_dev_geekbridge_android_NativeBridge_nativeRequest"
 val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")

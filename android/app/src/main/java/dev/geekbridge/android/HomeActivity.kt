@@ -125,61 +125,70 @@ class HomeActivity : Activity() {
         val hero = HomeModel.hero(
             AppState.pairedNames, AppState.pairedCount, controller.phase, connected, AppState.keepConnected, LinkService.isRunning,
         )
-        val sig = listOf(hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null).joinToString("|")
+        val glance = TransferGlanceModel.of(s?.transfers.orEmpty())
+        val sig = listOf(hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, PhoneDataRuntime.active().sms).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
-        build(hero, connected, warnings, steps)
+        build(hero, connected, warnings, steps, glance)
     }
 
-    private fun build(hero: HeroState, connected: List<String>, warnings: List<SetupModel.Warning>, steps: List<StepInfo>) {
+    private fun build(hero: HeroState, connected: List<String>, warnings: List<SetupModel.Warning>, steps: List<StepInfo>, glance: TransferGlance?) {
         val root = screen.root
         root.removeAllViews()
         fun status(id: StepId) = steps.first { it.id == id }.status
 
-        // Header
-        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
-        header.addView(kit.heading(getString(R.string.app_name), 32f), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-        val gear = kit.icon(R.drawable.ic_settings, 24, kit.color(R.color.gb_muted)).apply {
-            contentDescription = getString(R.string.home_cd_setup)
-            isClickable = true
-            isFocusable = true
-            kit.asButton(this)
-            setPadding(kit.dp(10), kit.dp(10), kit.dp(10), kit.dp(10))
-            setOnClickListener { startActivity(SetupActivity.intent(this@HomeActivity, review = true)) }
-            layoutParams = LinearLayout.LayoutParams(kit.dp(48), kit.dp(48))
+        // Header: dot-matrix wordmark + settings
+        val gear = kit.iconButton(R.drawable.ic_settings, getString(R.string.home_cd_setup)) {
+            startActivity(SetupActivity.intent(this@HomeActivity, review = true))
         }
-        header.addView(gear)
-        root.addView(header, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(4) })
+        root.addView(kit.dotHeader(getString(R.string.app_name), gear), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(4) })
 
         // Warning / unfinished setup
         if (warnings.isNotEmpty() || !AppState.setupFinished) {
-            val w = kit.panel(root, 14, kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x1F), kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x66))
+            val w = kit.panel(root, 16, kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x1A), kit.withAlpha(kit.ui.toneColor(Tone.Warn), 0x55))
             (w.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12)
             val first = warnings.firstOrNull()
-            w.addView(kit.text(first?.text ?: getString(R.string.home_finish_setup), 14f, Tone.Warn, bold = true))
+            val msg = first?.text ?: getString(R.string.home_finish_setup)
+            w.addView(kit.text(msg, 14f, Tone.Warn, bold = true).apply { contentDescription = getString(R.string.home_cd_warning, msg) })
             if (warnings.size > 1) w.addView(kit.text(resources.getQuantityString(R.plurals.home_more_to_check, warnings.size - 1, warnings.size - 1), 13f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
             kit.button(w, getString(if (first != null) R.string.home_fix else R.string.home_continue_setup), BtnStyle.Primary) {
                 startActivity(SetupActivity.intent(this, step = first?.step))
             }
         }
 
-        // Hero: paired device status
-        val heroPanel = kit.panel(root, 18, kit.withAlpha(kit.blue, 0x14), kit.withAlpha(kit.blue, 0x40))
-        (heroPanel.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(16)
-        val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
-        top.addView(kit.badge(R.drawable.ic_computer, if (hero.tone == Tone.Normal || hero.tone == Tone.Muted) null else hero.tone, 56))
-        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        col.addView(kit.text(hero.title, 20f, bold = true))
-        col.addView(kit.text(hero.subtitle, 14f, Tone.Muted).apply { setPadding(0, kit.dp(2), 0, 0) })
-        top.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = kit.dp(14) })
-        heroPanel.addView(top)
-        if (hero.action == HeroAction.Pair) {
-            kit.button(heroPanel, getString(R.string.home_pair_computer), BtnStyle.Primary) {
-                startActivity(SetupActivity.intent(this, step = StepId.Pair))
+        // Hero: the link as a big dotted tile (state word, link dots, sentence, live transfer progress)
+        val word = HomeModel.word(AppState.pairedCount, controller.phase, connected, AppState.keepConnected, LinkService.isRunning)
+        val wordText = getString(
+            when (word) {
+                LinkWord.Online -> R.string.word_online
+                LinkWord.Waiting -> R.string.word_waiting
+                LinkWord.Linking -> R.string.word_linking
+                LinkWord.Offline -> R.string.word_offline
+                LinkWord.Unpaired -> R.string.word_unpaired
+            },
+        )
+        val tLabel = glance?.let { g ->
+            when {
+                g.percent == null -> getString(R.string.hero_sending_plain, g.count)
+                g.outgoing == g.count -> getString(R.string.hero_sending, g.count, g.count, g.percent)
+                g.outgoing == 0 -> getString(R.string.hero_receiving, g.count, g.percent)
+                else -> getString(R.string.hero_sending_plain, g.count)
             }
+        }
+        val heroHolder = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(heroHolder, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(12) })
+        val tile = kit.heroTile(
+            heroHolder,
+            HeroView(wordText, word.level, hero.title, hero.subtitle, word == LinkWord.Online, tLabel, glance?.percent?.let { it / 100f }),
+        )
+        if (hero.action == HeroAction.Pair) {
+            kit.button(tile, getString(R.string.home_pair_computer), BtnStyle.Plain) { startActivity(SetupActivity.intent(this, step = StepId.Pair)) }
+                .apply { setTextColor(getColor(R.color.gb_on_hero)); background = kit.shape(0, Tok.R_PILL, getColor(R.color.gb_on_hero)) }
         } else if (AppState.pairedNames.isNotEmpty()) {
-            heroPanel.addView(
-                kit.text(getString(R.string.home_paired_list, AppState.pairedNames.joinToString(", ")), 13f, Tone.Muted).apply { setPadding(0, kit.dp(12), 0, 0) },
+            tile.addView(
+                kit.text(getString(R.string.home_paired_list, AppState.pairedNames.joinToString(", ")), 13f, Tone.Muted).apply {
+                    setTextColor(getColor(R.color.gb_hero_muted)); setPadding(0, kit.dp(12), 0, 0)
+                },
             )
         }
 
@@ -193,22 +202,34 @@ class HomeActivity : Activity() {
         val clipHook = QuickActions.sendClipboard
         kit.tile(row, R.drawable.ic_clipboard, getString(R.string.home_send_clipboard), if (clipHook == null && paired > 0) getString(R.string.home_opens_clipboard_tools) else sub, paired > 0) { if (paired > 0) sendClipboard() else needPairing() }
 
-        // Feature status
+        // Widget tiles for what this phone shares
         kit.label(root, getString(R.string.home_section_phone))
-        val feats = kit.panel(root, 8)
-        featureRow(feats, R.drawable.ic_call, R.string.home_feature_calls, status(StepId.PhoneState), R.string.home_calls_ok, R.string.home_calls_todo, StepId.PhoneState)
-        kit.divider(feats)
+        val calls = status(StepId.PhoneState) == StepStatus.Done
+        val sms = PhoneDataRuntime.active().sms
+        val contactsOk = status(StepId.Contacts) == StepStatus.Done
+        val calOk = status(StepId.Calendar) == StepStatus.Done
+        val grid1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(grid1, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        kit.widgetTile(grid1, R.drawable.ic_call, getString(R.string.home_feature_calls), getString(if (calls) R.string.word_ready else R.string.word_allow), calls) {
+            startActivity(SetupActivity.intent(this, step = StepId.PhoneState))
+        }
+        kit.widgetTile(grid1, R.drawable.ic_message, getString(R.string.home_messages), getString(if (sms) R.string.word_on else R.string.word_off), sms) {
+            startActivity(SetupActivity.intent(this, step = StepId.Sms))
+        }
+        val grid2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        root.addView(grid2, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(12) })
+        kit.widgetTile(grid2, R.drawable.ic_person, getString(R.string.home_contacts), getString(if (contactsOk) R.string.word_ready else R.string.word_allow), contactsOk) {
+            openFeature(QuickActions.contacts, StepId.Contacts, contactsOk)
+        }
+        kit.widgetTile(grid2, R.drawable.ic_calendar, getString(R.string.home_agenda), getString(if (calOk) R.string.word_ready else R.string.word_allow), calOk) {
+            openFeature(QuickActions.calendar, StepId.Calendar, calOk)
+        }
+        val ans = kit.panel(root, 8).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12) }
         featureRow(
-            feats, R.drawable.ic_call, R.string.home_answer,
+            ans, R.drawable.ic_call, R.string.home_answer,
             if (CallControlRuntime.settings.enabled) status(StepId.AnswerCalls) else StepStatus.Todo,
             R.string.home_answer_ok, R.string.home_answer_todo, StepId.AnswerCalls,
         )
-        kit.divider(feats)
-        kit.row(
-            feats, R.drawable.ic_message, getString(R.string.home_messages), getString(R.string.pd_home_row_sub), kit.chip(getString(if (PhoneDataRuntime.active().sms) R.string.pd_state_on else R.string.pd_state_off), if (PhoneDataRuntime.active().sms) Tone.Ok else Tone.Muted), null,
-        ) { startActivity(SetupActivity.intent(this, step = StepId.Sms)) }
-        kit.divider(feats)
-        featureRow(feats, R.drawable.ic_calendar, R.string.home_agenda, status(StepId.Calendar), R.string.home_agenda_ok, R.string.home_agenda_todo, StepId.Calendar)
 
         // Settings
         kit.label(root, getString(R.string.home_section_settings))
@@ -229,6 +250,12 @@ class HomeActivity : Activity() {
         kit.row(set, R.drawable.ic_settings, getString(R.string.home_diag_row), getString(R.string.home_diag_row_sub, BuildConfig.VERSION_NAME), null) {
             startActivity(Intent(this, MainActivity::class.java))
         }
+    }
+
+    /** Opens a feature screen when it exists; otherwise (or while its permission is missing) the setup step for it. */
+    private fun openFeature(hook: QuickActionHandler?, step: StepId, granted: Boolean) {
+        if (hook != null && granted && hook.isAvailable(this)) hook.launch(this)
+        else startActivity(SetupActivity.intent(this, step = step))
     }
 
     private fun featureRow(parent: LinearLayout, icon: Int, title: Int, st: StepStatus, okText: Int, todoText: Int, step: StepId) {

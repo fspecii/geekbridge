@@ -3,9 +3,12 @@
     <string name="pd_title">Contacts, calendar and messages</string>
     <string name="pd_intro">Optional, off by default. Each switch lets a computer you paired and allowed on its side ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
     <string name="pd_contacts">Share contacts</string>
-    <string name="pd_contacts_sub">Read-only: names, numbers, emails. Photos are never sent.</string>
+    <string name="pd_contacts_sub">Read-only: names, numbers, emails for the Contacts app on your computer. Photos are never sent.</string>
     <string name="pd_calendar">Share calendar</string>
-    <string name="pd_calendar_sub">Read-only: events from the calendars you tick, from 7 days back to 90 days ahead. Nothing is written.</string>
+    <string name="pd_calendar_sub">Read-only by default: events (with calendar, reminders and attendee names) from the calendars you tick, from 7 days back to 90 days ahead. Includes Google Calendar accounts that sync on this phone.</string>
+    <string name="pd_calendar_edit">Let the computer edit my calendar</string>
+    <string name="pd_calendar_edit_sub">Off by default. Lets a paired computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
+    <string name="pd_calendar_google">GeekBridge never signs in to Google. Edits are written to this phone\'s calendar and Google Calendar receives them through the phone\'s own sync. Remove the permission here or in Android settings to stop it at any time.</string>
     <string name="pd_calendar_pick">Choose calendars…</string>
     <string name="pd_calendar_picked">%1$d calendar(s) shared</string>
     <string name="pd_calendar_none">No calendar ticked: nothing is shared yet</string>

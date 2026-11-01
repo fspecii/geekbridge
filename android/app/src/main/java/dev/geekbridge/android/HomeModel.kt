@@ -4,8 +4,28 @@ enum class HeroAction { Pair, None }
 
 data class HeroState(val title: String, val subtitle: String, val tone: Tone, val action: HeroAction)
 
+/** The one-word link state shown in dot-matrix on the Home tile, with how many of the link dots light up (0..1). */
+enum class LinkWord(val level: Float) { Online(1f), Waiting(0.5f), Linking(0.25f), Offline(0f), Unpaired(0f) }
+
 /** What the home screen says about the computer link. Pure, so every state is unit-tested. */
 object HomeModel {
+    /** Same inputs as [hero]; the dot-matrix word and link level that go with it. */
+    fun word(
+        pairedCount: Int,
+        phase: LinkPhase,
+        connectedNames: List<String>,
+        keepConnected: Boolean,
+        serviceRunning: Boolean,
+    ): LinkWord = when {
+        pairedCount <= 0 -> LinkWord.Unpaired
+        connectedNames.isNotEmpty() -> LinkWord.Online
+        phase == LinkPhase.Running -> LinkWord.Waiting
+        phase == LinkPhase.Starting || phase == LinkPhase.Stopping -> LinkWord.Linking
+        keepConnected && serviceRunning -> LinkWord.Linking
+        else -> LinkWord.Offline
+    }
+
+
     fun hero(
         pairedNames: List<String>,
         pairedCount: Int,
@@ -54,5 +74,21 @@ object HomeModel {
         pairedCount <= 0 -> "Pair a computer first"
         connectedNames.isNotEmpty() -> "To ${connectedNames.first()}"
         else -> "Computer not connected"
+    }
+}
+
+/** What is moving right now, for the Home tile: how many transfers, how many outgoing and the combined progress. */
+data class TransferGlance(val count: Int, val outgoing: Int, val percent: Int?)
+
+object TransferGlanceModel {
+    /** Null when nothing is in flight. [percent] is bucketed to 5% so the screen is not rebuilt on every byte. */
+    fun of(transfers: List<Transfer>): TransferGlance? {
+        val live = transfers.filter { !it.state.finished && (it.kind == TransferKind.File) }
+        if (live.isEmpty()) return null
+        val sized = live.filter { (it.size ?: 0L) > 0 }
+        val total = sized.sumOf { it.size ?: 0L }
+        val done = sized.sumOf { it.bytes.coerceAtMost(it.size ?: 0L) }
+        val pct = if (total > 0) ((done * 100 / total).toInt() / 5) * 5 else null
+        return TransferGlance(live.size, live.count { it.direction == TransferDirection.Outgoing }, pct)
     }
 }

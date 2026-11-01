@@ -3,6 +3,7 @@
 //! * Public, read-only discovery API ([`serve_api`]): untrusted announcement metadata only.
 //! * Authenticated control API ([`control::serve_control`]): pairing and link lifecycle for
 //!   explicitly chosen phones, backed by `bridge-kde`. See `docs/service-integration.md`.
+pub mod calendar_edit;
 pub mod call_cli;
 pub mod call_control;
 pub mod calling;
@@ -53,12 +54,24 @@ pub fn record_device(state: &mut Snapshot, device: bridge_core::Device) {
         .sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
 }
 
-/// Passive only: do not advertise a TCP endpoint before TLS/pairing is implemented.
+static OWN_DEVICE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Ignore announcements from this device id (our own, heard back on the broadcast port).
+pub fn ignore_own_announcements(device_id: &str) {
+    let _ = OWN_DEVICE_ID.set(device_id.to_owned());
+}
+
+/// Listens for phones' announcements. Hearing one only lists the phone; it never dials or trusts.
+/// This socket never sends; this computer's own announcement is `Daemon::announce_loop`.
 pub async fn listen_discovery(socket: UdpSocket, state: SharedState) -> io::Result<()> {
     let mut bytes = vec![0; discovery::MAX_IDENTITY_BYTES + 1];
     loop {
         let (size, source) = socket.recv_from(&mut bytes).await?;
         if let Ok(device) = discovery::parse_identity(&bytes[..size], source.ip(), now_ms()) {
+            // Our own announcement comes back on the shared broadcast port.
+            if OWN_DEVICE_ID.get().is_some_and(|own| *own == device.id) {
+                continue;
+            }
             record_device(&mut *state.write().await, device);
         }
     }
@@ -252,6 +265,13 @@ fn shutdown_signal() -> io::Result<impl std::future::Future<Output = io::Result<
 fn update_service(state_dir: &std::path::Path) -> Arc<bridge_update::Updater> {
     let mut cfg = bridge_update::Config::github(env!("CARGO_PKG_VERSION"));
     cfg.state_file = Some(state_dir.join("update-state.json"));
+    // Test hook (scripts/e2e/update-install.sh): a mock release server. Only a loopback `http://` URL is
+    // honoured, and the updater itself never contacts another http host.
+    if let Ok(base) = std::env::var("GEEKBRIDGE_UPDATE_BASE_URL")
+        && (base.starts_with("http://127.0.0.1:") || base.starts_with("http://localhost:"))
+    {
+        cfg.base_url = base;
+    }
     match bridge_update::Updater::new(cfg) {
         Ok(updater) => {
             if std::env::var_os("GEEKBRIDGE_NO_UPDATE_CHECK").is_none() {
@@ -265,6 +285,24 @@ fn update_service(state_dir: &std::path::Path) -> Arc<bridge_update::Updater> {
                 .expect("built-in update configuration is valid")
         }
     }
+}
+
+/// Bind the inbound listener. The built-in default walks 1716..=1764 when its port is taken; an
+/// explicit address is bound as given.
+async fn bind_inbound(addr: SocketAddr, walk: bool) -> io::Result<TcpListener> {
+    let mut last = None;
+    let ports = if walk {
+        addr.port()..=1764
+    } else {
+        addr.port()..=addr.port()
+    };
+    for port in ports {
+        match TcpListener::bind(SocketAddr::new(addr.ip(), port)).await {
+            Ok(l) => return Ok(l),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("no port to listen on")))
 }
 
 pub async fn run(config: config::Config) -> io::Result<()> {
@@ -340,11 +378,42 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         }
     }
     let control = Arc::new(prepare_control(&config.state_dir, state.clone(), options));
+    let mut announce = None;
+    let alerts = match &*control {
+        control::Control::Ready { daemon, .. } => {
+            let data = daemon.phone_data().clone();
+            Some(tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+                loop {
+                    tick.tick().await;
+                    let data = data.clone();
+                    let _ = tokio::task::spawn_blocking(move || data.tick_alerts()).await;
+                }
+            }))
+        }
+        control::Control::Unavailable(_) => None,
+    };
     let inbound = match (&*control, config.inbound) {
         (control::Control::Ready { daemon, .. }, Some(addr)) => {
-            let listener = TcpListener::bind(addr).await?;
-            daemon.set_inbound_listener(listener.local_addr()?);
-            Some(tokio::spawn(serve_inbound(listener, daemon.clone())))
+            match bind_inbound(addr, config.inbound_auto).await {
+                Ok(listener) => {
+                    daemon.set_inbound_listener(listener.local_addr()?);
+                    ignore_own_announcements(
+                        &daemon.status().map(|s| s.device_id).unwrap_or_default(),
+                    );
+                    if config.announce {
+                        announce = Some(tokio::spawn(daemon.clone().announce_loop(discovery_port)));
+                    }
+                    Some(tokio::spawn(serve_inbound(listener, daemon.clone())))
+                }
+                Err(err) if config.inbound_auto => {
+                    // The default listener is a convenience: another program on 1716-1764 (usually
+                    // KDE Connect) must not stop the service from starting.
+                    eprintln!("GeekBridge service: not accepting phone connections: {err}");
+                    None
+                }
+                Err(err) => return Err(err),
+            }
         }
         _ => None,
     };
@@ -364,6 +433,12 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     };
     discovery.abort();
     expiry.abort();
+    if let Some(alerts) = alerts {
+        alerts.abort();
+    }
+    if let Some(announce) = announce {
+        announce.abort();
+    }
     if let Some(inbound) = inbound {
         inbound.abort();
     }

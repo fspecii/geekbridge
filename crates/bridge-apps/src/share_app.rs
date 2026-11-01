@@ -532,7 +532,7 @@ impl ShareApp {
             None => {
                 ui.add(egui::Label::new(theme::secondary(
                     pal,
-                    "No phone is paired yet. Pair one from any GeekBridge app's connection details.",
+                    "No phone is paired yet. Open the GeekBridge window and choose Pair with QR code.",
                 )).wrap());
             }
             Some(t) => {
@@ -610,7 +610,7 @@ impl ShareApp {
                 });
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(14.0);
         ui.label(theme::overline(pal, "Link or text"));
         ui.horizontal(|ui| {
             ui.add(
@@ -852,7 +852,7 @@ impl ShareApp {
                 if theme::tool_button(
                     ui,
                     pal,
-                    Icon::Refresh,
+                    Icon::Folder,
                     Some("Open folder"),
                     true,
                     "Open the save folder",

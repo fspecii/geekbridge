@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ContentResolver
 import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -91,7 +92,19 @@ class AndroidContactsPort(context: Context) : ContactsPort {
         )?.use { if (it.moveToFirst()) it.getLong(0).toString() else null }
         val uri = Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_VCARD_URI, Uri.encode(uid))
         val text = if (ts == null) null else resolver.openAssetFileDescriptor(uri, "r")?.use { fd ->
-            fd.createInputStream().use { s -> String(s.readNBytes(MAX_RAW_VCARD), Charsets.UTF_8) }
+            // InputStream.readNBytes needs API 33; minSdk is 26.
+            fd.createInputStream().use { s ->
+                val out = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                var left = MAX_RAW_VCARD
+                while (left > 0) {
+                    val n = s.read(chunk, 0, minOf(chunk.size, left))
+                    if (n < 0) break
+                    out.write(chunk, 0, n)
+                    left -= n
+                }
+                String(out.toByteArray(), Charsets.UTF_8)
+            }
         }
         if (text == null || ts == null) null else text to ts
     } catch (_: SecurityException) {
@@ -114,13 +127,20 @@ class AndroidCalendarPort(context: Context) : CalendarPort {
             CalendarContract.Calendars.CONTENT_URI,
             arrayOf(
                 CalendarContract.Calendars._ID, CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
-                CalendarContract.Calendars.ACCOUNT_NAME,
+                CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.ACCOUNT_TYPE,
+                CalendarContract.Calendars.CALENDAR_COLOR, CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
             ),
             null, null, "${CalendarContract.Calendars._ID} ASC",
         )?.use { c ->
             while (c.moveToNext() && out.size < PhoneDataLimits.MAX_CALENDARS * 4) {
-                val name = c.getString(1).orEmpty().ifBlank { c.getString(2).orEmpty() }
-                out += CalendarInfo(c.getLong(0).toString(), name)
+                val account = c.getString(2).orEmpty()
+                val name = c.getString(1).orEmpty().ifBlank { account }
+                out += CalendarInfo(
+                    id = c.getLong(0).toString(), name = name, account = account.ifBlank { null },
+                    accountType = c.getString(3)?.ifBlank { null },
+                    color = if (c.isNull(4)) null else c.getInt(4),
+                    writable = c.getInt(5) >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR,
+                )
             }
         }
         out
@@ -144,22 +164,151 @@ class AndroidCalendarPort(context: Context) : CalendarPort {
                     CalendarContract.Instances.TITLE, CalendarContract.Instances.ALL_DAY,
                     CalendarContract.Instances.EVENT_TIMEZONE, CalendarContract.Instances.EVENT_LOCATION,
                     CalendarContract.Instances.DESCRIPTION, CalendarContract.Instances.CALENDAR_ID,
+                    CalendarContract.Events.RRULE, CalendarContract.Events.RDATE, CalendarContract.Events.ORIGINAL_ID,
                 ),
                 "${CalendarContract.Instances.CALENDAR_ID} IN ($placeholders)", ids.toTypedArray(),
                 "${CalendarContract.Instances.BEGIN} ASC",
             )?.use { c ->
                 while (c.moveToNext() && out.size < max) {
+                    val recurring = !c.getString(9).isNullOrBlank() || !c.getString(10).isNullOrBlank() || !c.isNull(11)
                     out += CalInstance(
                         eventId = c.getLong(0).toString(), begin = c.getLong(1), end = c.getLong(2),
                         title = c.getString(3), allDay = c.getInt(4) == 1, timeZone = c.getString(5),
                         location = c.getString(6), description = c.getString(7), calendarId = c.getLong(8).toString(),
+                        recurring = recurring,
                     )
                 }
             } ?: return null
-            out
+            withDetails(out)
         } catch (_: SecurityException) {
             null
         }
+    }
+
+    /** Adds reminders and attendees with one bounded query per [PhoneDataLimits.DETAIL_BATCH] distinct events. */
+    private fun withDetails(list: List<CalInstance>): List<CalInstance> {
+        val ids = list.map { it.eventId }.distinct()
+        val reminders = HashMap<String, MutableList<Int>>()
+        val counts = HashMap<String, Int>()
+        val names = HashMap<String, MutableList<String>>()
+        for (batch in ids.chunked(PhoneDataLimits.DETAIL_BATCH)) {
+            val marks = batch.joinToString(",") { "?" }
+            val args = batch.toTypedArray()
+            try {
+                resolver.query(
+                    CalendarContract.Reminders.CONTENT_URI,
+                    arrayOf(CalendarContract.Reminders.EVENT_ID, CalendarContract.Reminders.MINUTES, CalendarContract.Reminders.METHOD),
+                    "${CalendarContract.Reminders.EVENT_ID} IN ($marks)", args, null,
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        // -1 (MINUTES_DEFAULT) means "the calendar's default"; it carries no time of its own.
+                        val m = c.getInt(1)
+                        if (m >= 0 && c.getInt(2) != CalendarContract.Reminders.METHOD_EMAIL) {
+                            reminders.getOrPut(c.getLong(0).toString()) { ArrayList() } += m
+                        }
+                    }
+                }
+                resolver.query(
+                    CalendarContract.Attendees.CONTENT_URI,
+                    arrayOf(CalendarContract.Attendees.EVENT_ID, CalendarContract.Attendees.ATTENDEE_NAME, CalendarContract.Attendees.ATTENDEE_EMAIL),
+                    "${CalendarContract.Attendees.EVENT_ID} IN ($marks)", args, null,
+                )?.use { c ->
+                    while (c.moveToNext()) {
+                        val id = c.getLong(0).toString()
+                        counts[id] = (counts[id] ?: 0) + 1
+                        val list2 = names.getOrPut(id) { ArrayList() }
+                        val who = c.getString(1).orEmpty().ifBlank { c.getString(2).orEmpty() }
+                        if (who.isNotBlank() && list2.size < PhoneDataLimits.MAX_ATTENDEE_NAMES) list2 += who
+                    }
+                }
+            } catch (_: SecurityException) {
+                // Details are optional; the events themselves were readable.
+            }
+        }
+        return list.map {
+            it.copy(
+                reminders = reminders[it.eventId].orEmpty(),
+                attendeeCount = counts[it.eventId] ?: 0,
+                attendees = names[it.eventId].orEmpty(),
+            )
+        }
+    }
+}
+
+/** Writes through the Calendar Provider as an ordinary app (not a sync adapter); the phone's own sync then uploads. */
+class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
+    private val resolver: ContentResolver = context.applicationContext.contentResolver
+
+    override fun calendar(id: String): CalendarAccess? {
+        val cid = id.toLongOrNull() ?: return null
+        return resolver.query(
+            ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, cid),
+            arrayOf(CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL), null, null, null,
+        )?.use { if (it.moveToFirst()) CalendarAccess(it.getInt(0) >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) else null }
+    }
+
+    override fun event(id: String): ExistingEvent? {
+        val eid = id.toLongOrNull() ?: return null
+        return resolver.query(
+            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eid),
+            arrayOf(
+                CalendarContract.Events.CALENDAR_ID, CalendarContract.Events.RRULE, CalendarContract.Events.RDATE,
+                CalendarContract.Events.ORIGINAL_ID, CalendarContract.Events.DELETED,
+            ),
+            null, null, null,
+        )?.use {
+            if (!it.moveToFirst() || it.getInt(4) != 0) null
+            else ExistingEvent(
+                calendarId = it.getLong(0).toString(),
+                recurring = !it.getString(1).isNullOrBlank() || !it.getString(2).isNullOrBlank() || !it.isNull(3),
+            )
+        }
+    }
+
+    private fun values(d: EventDraft): ContentValues = ContentValues().apply {
+        put(CalendarContract.Events.TITLE, d.title)
+        put(CalendarContract.Events.DTSTART, d.startMs)
+        put(CalendarContract.Events.DTEND, d.endMs)
+        put(CalendarContract.Events.ALL_DAY, if (d.allDay) 1 else 0)
+        // Android's write rule: all-day events live in UTC; timed events carry the zone they were entered in.
+        put(CalendarContract.Events.EVENT_TIMEZONE, if (d.allDay) "UTC" else d.tz)
+        put(CalendarContract.Events.EVENT_LOCATION, d.location ?: "")
+        put(CalendarContract.Events.DESCRIPTION, d.description ?: "")
+        put(CalendarContract.Events.HAS_ALARM, if (d.reminderMin != null) 1 else 0)
+    }
+
+    private fun setReminder(eventId: Long, minutes: Int?) {
+        resolver.delete(CalendarContract.Reminders.CONTENT_URI, "${CalendarContract.Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()))
+        if (minutes != null) {
+            resolver.insert(
+                CalendarContract.Reminders.CONTENT_URI,
+                ContentValues().apply {
+                    put(CalendarContract.Reminders.EVENT_ID, eventId)
+                    put(CalendarContract.Reminders.MINUTES, minutes)
+                    put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                },
+            )
+        }
+    }
+
+    override fun insert(calendarId: String, draft: EventDraft): String? {
+        val v = values(draft).apply { put(CalendarContract.Events.CALENDAR_ID, calendarId.toLong()) }
+        val uri = resolver.insert(CalendarContract.Events.CONTENT_URI, v) ?: return null
+        val id = ContentUris.parseId(uri)
+        if (draft.reminderMin != null) setReminder(id, draft.reminderMin)
+        return id.toString()
+    }
+
+    override fun update(eventId: String, draft: EventDraft): Boolean {
+        val id = eventId.toLongOrNull() ?: return false
+        val n = resolver.update(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id), values(draft), null, null)
+        if (n > 0) setReminder(id, draft.reminderMin)
+        return n > 0
+    }
+
+    override fun delete(eventId: String): Boolean {
+        val id = eventId.toLongOrNull() ?: return false
+        return resolver.delete(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id), null, null) > 0
     }
 }
 
@@ -304,6 +453,7 @@ object PhoneDataRuntime {
             calendar = p.getBoolean("calendar", false),
             sms = p.getBoolean("sms", false),
             calendarIds = p.getStringSet("calendar_ids", emptySet()).orEmpty().toSet(),
+            calendarEdit = p.getBoolean("calendar_edit", false),
         )
         val sms = AndroidSmsPort(a)
         smsPort = sms
@@ -315,6 +465,15 @@ object PhoneDataRuntime {
             calendar = AndroidCalendarPort(a),
             sms = sms,
             sender = AndroidSmsSender(a),
+            calendarWriter = CalendarWriter(
+                AndroidCalendarWriteStore(a),
+                OpLedger(object : BlobStore {
+                    override fun read() = p.getString("calendar_ops", "") ?: ""
+                    override fun write(text: String) {
+                        p.edit().putString("calendar_ops", text).apply()
+                    }
+                }),
+            ) { settings.calendarIds },
         )
     }
 
@@ -326,6 +485,7 @@ object PhoneDataRuntime {
             readSms = has(Manifest.permission.READ_SMS),
             sendSms = has(Manifest.permission.SEND_SMS),
             receiveSms = has(Manifest.permission.RECEIVE_SMS),
+            writeCalendar = has(Manifest.permission.WRITE_CALENDAR),
         )
     }
 
@@ -339,6 +499,7 @@ object PhoneDataRuntime {
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
     fun setCalendar(on: Boolean) = update { it.copy(calendar = on) }
+    fun setCalendarEdit(on: Boolean) = update { it.copy(calendarEdit = on) }
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
     fun setCalendarIds(ids: Set<String>) {
         update { it.copy(calendarIds = ids.take(PhoneDataLimits.MAX_CALENDARS).toSet()) }
@@ -349,7 +510,7 @@ object PhoneDataRuntime {
         settings = change(settings)
         prefs?.edit()
             ?.putBoolean("contacts", settings.contacts)?.putBoolean("calendar", settings.calendar)
-            ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.apply()
+            ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)?.apply()
         resync()
     }
 

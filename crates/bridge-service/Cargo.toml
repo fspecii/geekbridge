@@ -35,4 +35,8 @@ features = [
 
 [dev-dependencies]
 tempfile = "3"
+bridge-chaos = { path = "../bridge-chaos" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

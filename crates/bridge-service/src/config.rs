@@ -17,7 +17,10 @@ Options:
                            or $GEEKBRIDGE_CONTROL_PORT)
   --discovery-port PORT    UDP port for passive discovery (default 1716)
   --name NAME              device name shown to phones (default GeekBridge)
-  --listen-inbound ADDR    also accept TCP connections from phones (default: off), e.g. 0.0.0.0:1716
+  --listen-inbound ADDR    accept TCP connections from phones on ADDR (default 0.0.0.0:1716; when that
+                           port is busy the next free one up to 1764 is used)
+  --no-listen-inbound      do not accept connections from phones (outbound dialling only)
+  --no-announce            do not announce this computer on the LAN (phones then cannot find it)
   --no-calling-probe       never touch the system bus for the calling status request
   --dev-loopback           developer only: allow loopback peers and any TCP port
   --print-token-path       print where the control token lives (never the token) and exit
@@ -35,6 +38,10 @@ pub struct Config {
     pub state_dir: PathBuf,
     pub device_name: String,
     pub inbound: Option<SocketAddr>,
+    /// `inbound` is the built-in default, so a busy port may fall back to the next one.
+    pub inbound_auto: bool,
+    /// Broadcast this computer's identity so phones list it by name.
+    pub announce: bool,
     pub calling_probe: bool,
     pub dev_loopback: bool,
 }
@@ -62,6 +69,8 @@ impl PartialEq for Config {
             && self.state_dir == other.state_dir
             && self.device_name == other.device_name
             && self.inbound == other.inbound
+            && self.inbound_auto == other.inbound_auto
+            && self.announce == other.announce
             && self.calling_probe == other.calling_probe
             && self.dev_loopback == other.dev_loopback
     }
@@ -74,7 +83,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     let mut control_port = ipc::control_port_from_env();
     let mut state_dir = None;
     let mut device_name = "GeekBridge".to_owned();
-    let mut inbound = None;
+    let mut inbound = Some(SocketAddr::from(([0, 0, 0, 0], 1716)));
+    let mut inbound_auto = true;
+    let mut announce = true;
     let mut calling_probe = true;
     let mut dev_loopback = false;
     let mut print_token = false;
@@ -99,7 +110,13 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
                     .filter(|v| !v.trim().is_empty())
                     .ok_or("--name expects a non-empty name")?;
             }
+            "--no-listen-inbound" => {
+                inbound = None;
+                inbound_auto = false;
+            }
+            "--no-announce" => announce = false,
             "--listen-inbound" => {
+                inbound_auto = false;
                 inbound = Some(
                     args.next()
                         .and_then(|v| v.into_string().ok())
@@ -129,6 +146,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
         state_dir,
         device_name,
         inbound,
+        inbound_auto,
+        announce,
         calling_probe,
         dev_loopback,
     }))
@@ -169,10 +188,43 @@ mod tests {
         ] {
             assert!(parse(args(bad)).is_err(), "{bad:?}");
         }
+        assert!(!c.inbound_auto && c.announce);
         assert_eq!(parse(args(&["-h"])).unwrap(), Parsed::Help);
         assert_eq!(
             parse(args(&["--state-dir", "/tmp/gb", "--print-token-path"])).unwrap(),
             Parsed::PrintTokenPath(PathBuf::from("/tmp/gb/ipc-token"))
         );
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    fn run(list: &[&str]) -> Config {
+        let list: Vec<OsString> = list.iter().map(OsString::from).collect();
+        match parse(list).unwrap() {
+            Parsed::Run(c) => c,
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn phones_can_find_and_dial_this_computer_by_default() {
+        let c = run(&["--state-dir", "/tmp/gb"]);
+        assert_eq!(c.inbound, Some("0.0.0.0:1716".parse().unwrap()));
+        assert!(c.inbound_auto && c.announce);
+    }
+
+    #[test]
+    fn listening_and_announcing_can_be_switched_off() {
+        let c = run(&[
+            "--state-dir",
+            "/tmp/gb",
+            "--no-listen-inbound",
+            "--no-announce",
+        ]);
+        assert_eq!(c.inbound, None);
+        assert!(!c.announce);
     }
 }

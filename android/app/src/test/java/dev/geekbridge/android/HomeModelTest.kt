@@ -46,4 +46,42 @@ class HomeModelTest {
         assertEquals("To Desk", HomeModel.tileSubtitle(1, listOf("Desk")))
         assertEquals("Computer not connected", HomeModel.tileSubtitle(1, emptyList()))
     }
+
+    private fun word(
+        count: Int = 1,
+        phase: LinkPhase = LinkPhase.Stopped,
+        connected: List<String> = emptyList(),
+        keep: Boolean = true,
+        service: Boolean = false,
+    ) = HomeModel.word(count, phase, connected, keep, service)
+
+    @Test fun linkWordFollowsTheHeroStates() {
+        assertEquals(LinkWord.Unpaired, word(count = 0))
+        assertEquals(LinkWord.Online, word(phase = LinkPhase.Running, connected = listOf("Desk")))
+        assertEquals(LinkWord.Waiting, word(phase = LinkPhase.Running))
+        assertEquals(LinkWord.Linking, word(phase = LinkPhase.Starting))
+        assertEquals(LinkWord.Linking, word(keep = true, service = true))
+        assertEquals(LinkWord.Offline, word(keep = false))
+        assertEquals(LinkWord.Offline, word(keep = true, service = false))
+        assertEquals(1f, LinkWord.Online.level, 0f)
+        assertEquals(0f, LinkWord.Offline.level, 0f)
+    }
+
+    private fun transfer(dir: TransferDirection, size: Long?, bytes: Long, state: TransferState, kind: TransferKind = TransferKind.File) =
+        Transfer(1, 1, "d", "Desk", dir, kind, "a.bin", size, bytes, state, null, null)
+
+    @Test fun transferGlanceSumsLiveFilesAndBucketsPercent() {
+        assertEquals(null, TransferGlanceModel.of(emptyList()))
+        assertEquals(null, TransferGlanceModel.of(listOf(transfer(TransferDirection.Outgoing, 100, 100, TransferState.Done))))
+        val g = TransferGlanceModel.of(
+            listOf(
+                transfer(TransferDirection.Outgoing, 100, 37, TransferState.Active),
+                transfer(TransferDirection.Incoming, 100, 50, TransferState.Active),
+            ),
+        )!!
+        assertEquals(2, g.count)
+        assertEquals(1, g.outgoing)
+        assertEquals(40, g.percent) // (37+50)/200 = 43% -> 40 bucket
+        assertEquals(null, TransferGlanceModel.of(listOf(transfer(TransferDirection.Outgoing, null, 5, TransferState.Waiting)))!!.percent)
+    }
 }

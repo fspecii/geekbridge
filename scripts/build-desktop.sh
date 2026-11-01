@@ -19,6 +19,7 @@ BINARIES=(
     geekbridge-messages
     geekbridge-clipboard
     geekbridge-agenda
+    geekbridge-contacts
 )
 
 CARGO_FLAGS=()

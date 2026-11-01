@@ -2,10 +2,10 @@
 //! `Connections` panel, clipboard sync is the Clipboard app's `sync_section`, updates are
 //! `Updates`, and sending files hands them to `geekbridge-share`.
 use crate::{
-    apps::clipboard::sync_section,
+    apps::clipboard::sync_body,
     cli::ThemeChoice,
     clipboard_link::ClipLink,
-    connection::Connections,
+    connection::{Connections, NextStep},
     identity,
     poller::Poller,
     state::DiscoveryModel,
@@ -22,10 +22,11 @@ use std::{
 /// The palette family used for this window (the neutral system-blue one).
 const LOOK: AppKind = AppKind::Clipboard;
 
-const APPS: [(AppKind, &str); 4] = [
+const APPS: [(AppKind, &str); 5] = [
     (AppKind::Calls, "Calls"),
     (AppKind::Messages, "Messages"),
-    (AppKind::Agenda, "Agenda"),
+    (AppKind::Contacts, "Contacts"),
+    (AppKind::Agenda, "Calendar"),
     (AppKind::Clipboard, "Clipboard"),
 ];
 
@@ -70,6 +71,7 @@ pub struct HomeApp {
     clip: ClipLink,
     hotkey_draft: Option<String>,
     notice: Option<String>,
+    diagnostics: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl HomeApp {
@@ -86,32 +88,50 @@ impl HomeApp {
             clip: ClipLink::spawn(move || repaint.request_repaint()),
             hotkey_draft: None,
             notice: None,
+            diagnostics: None,
         }
     }
 
+    /// Run `geekbridge-ctl diagnose` off the UI thread; the redacted report lands on the clipboard.
+    fn collect_diagnostics(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = ctx.clone();
+        let port = self.api_port.to_string();
+        std::thread::spawn(move || {
+            let exe = std::env::current_exe().ok();
+            let out = Command::new(sibling("geekbridge-ctl", exe.as_deref()))
+                .args(["--control-port", &port, "diagnose"])
+                .output();
+            let _ = tx.send(match out {
+                Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+                Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_owned()),
+                Err(e) => Err(e.to_string()),
+            });
+            wake.request_repaint();
+        });
+        self.diagnostics = Some(rx);
+    }
+
     fn section(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        let ctx = ui.ctx().clone();
         ui.label(theme::overline(pal, "Pair a phone"));
         theme::group(ui, pal, |ui| {
-            ui.add(
-                egui::Label::new(theme::caption(
-                    pal,
-                    "Open GeekBridge on your phone, then connect and pair below. Pairing finishes only after you type the 8-character code shown on the phone.",
-                ))
-                .wrap(),
-            );
-            self.connections.details(ui, pal, &self.model);
+            match self.connections.pair_card(ui, pal, &self.model) {
+                Some(NextStep::Clipboard) => {
+                    self.notice = launch(identity::binary_name(AppKind::Clipboard), &[]).err();
+                }
+                Some(NextStep::Share) => self.notice = launch("geekbridge-share", &[]).err(),
+                None => {}
+            }
         });
 
         ui.add_space(10.0);
-        sync_section(ui, pal, &mut self.clip, &mut self.hotkey_draft);
-
-        ui.add_space(10.0);
-        ui.label(theme::overline(pal, "Send to phone"));
+        ui.label(theme::overline(pal, "Send files to phone"));
         theme::group(ui, pal, |ui| {
             ui.add(
                 egui::Label::new(theme::secondary(
                     pal,
-                    "Drop files anywhere on this window to send them to your phone.",
+                    "Drop files anywhere on this window to send them to your phone. Files your phone sends back wait for your OK in Share.",
                 ))
                 .wrap(),
             );
@@ -133,9 +153,41 @@ impl HomeApp {
         });
 
         ui.add_space(10.0);
+        ui.label(theme::overline(pal, "Clipboard"));
+        egui::CollapsingHeader::new(theme::semibold(
+            "Phone clipboard sync, shortcut and last item",
+            13.0,
+        ))
+        .id_salt("clip-sync")
+        .default_open(false)
+        .show(ui, |ui| {
+            sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
+        });
+
+        ui.add_space(10.0);
         ui.label(theme::overline(pal, "Settings"));
         theme::group(ui, pal, |ui| {
             self.updates.details(ui, pal);
+            ui.add_space(6.0);
+            ui.label(theme::overline(pal, "Help"));
+            ui.horizontal_wrapped(|ui| {
+                let busy = self.diagnostics.is_some();
+                let label = if busy {
+                    "Collecting…"
+                } else {
+                    "Copy diagnostics"
+                };
+                if theme::pill_button(ui, pal, label, ButtonKind::Plain, !busy).clicked() {
+                    self.collect_diagnostics(&ctx);
+                }
+            });
+            ui.add(
+                egui::Label::new(theme::caption(
+                    pal,
+                    "Copies a support report with no names, addresses, keys or content, ready to paste into a bug report.",
+                ))
+                .wrap(),
+            );
             ui.add_space(4.0);
             ui.add(
                 egui::Label::new(theme::caption(
@@ -167,7 +219,22 @@ impl eframe::App for HomeApp {
         crate::pace::observe(ctx, &self.model);
         self.connections.update();
         self.clip.update();
-        ctx.request_repaint_after(crate::pace::scaled(std::time::Duration::from_secs(1)));
+        if let Some(rx) = &self.diagnostics
+            && let Ok(result) = rx.try_recv()
+        {
+            self.diagnostics = None;
+            self.notice = Some(match result {
+                Ok(report) => {
+                    ctx.copy_text(report);
+                    "Diagnostics copied. Paste them where you ask for help.".to_owned()
+                }
+                Err(e) => format!("Could not collect diagnostics: {e}"),
+            });
+        }
+        // A hidden window does no periodic work at all: it wakes only when a worker reports news.
+        if !ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
+            ctx.request_repaint_after(crate::pace::scaled(std::time::Duration::from_secs(1)));
+        }
         let pal = theme::current(ctx, LOOK);
 
         let files = ctx.input(|i| dropped_paths(&i.raw.dropped_files));
@@ -192,6 +259,7 @@ impl eframe::App for HomeApp {
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        ui.set_max_width(ui.available_width() - 12.0);
                         ui.label(theme::semibold("GeekBridge", 20.0));
                         ui.label(theme::caption(
                             &pal,

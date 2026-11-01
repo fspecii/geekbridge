@@ -160,6 +160,10 @@ fn act_on(cfg: &Config, request: &Request) -> ActionResult {
             Request::SetConsent { .. } => {
                 Some("Turned off. What was shared has been erased.".into())
             }
+            Request::CalendarEdit { .. } => {
+                Some("Sent to the phone. Waiting for it to confirm.".into())
+            }
+            Request::CalendarEditRetry { .. } => Some("Asked the phone again.".into()),
             _ => None,
         }),
         Response::MessageQueued { .. } => Ok(Some(

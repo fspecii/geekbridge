@@ -49,6 +49,7 @@ class PhoneDataEngine(
     private val sender: SmsSender,
     private val clock: () -> Long = System::currentTimeMillis,
     private val bootId: String = java.lang.Long.toString(System.nanoTime() and 0xffffff, 36),
+    private val calendarWriter: CalendarWriter? = null,
 ) {
     // calendar sync state for the current link
     private var calToken: String? = null
@@ -87,6 +88,7 @@ class PhoneDataEngine(
             PhoneDataKinds.CONTACTS_REQ_UIDS -> if (f.contacts) contactsUids()
             PhoneDataKinds.CONTACTS_REQ_VCARDS -> if (f.contacts) contactsVcards(e.body)
             PhoneDataKinds.CALENDAR_REQ -> if (f.calendar) calendarRequest(e.body)
+            PhoneDataKinds.CALENDAR_WRITE -> if (f.calendar && f.calendarEdit) calendarWrite(e.body)
             PhoneDataKinds.SMS_REQ_CONVERSATIONS -> if (f.sms) {
                 smsRequested = true
                 pushSms(sms.latestPerThread(PhoneDataLimits.MAX_SMS_PER_PACKET * 2))
@@ -193,7 +195,13 @@ class PhoneDataEngine(
                 .put("truncated", truncated)
             if (requestId != null) o.put("requestId", requestId)
             o.put("calendars", JSONArray().also { a ->
-                chosen.forEach { c -> a.put(JSONObject().put("id", c.id).put("name", PhoneDataProtocol.clean(c.name, 128))) }
+                chosen.forEach { c ->
+                    val j = JSONObject().put("id", c.id).put("name", PhoneDataProtocol.clean(c.name, 128)).put("writable", c.writable)
+                    PhoneDataProtocol.clean(c.account, 128).takeIf { it.isNotEmpty() }?.let { j.put("account", it) }
+                    PhoneDataProtocol.clean(c.accountType, 64).takeIf { it.isNotEmpty() }?.let { j.put("accountType", it) }
+                    c.color?.let { j.put("color", it) }
+                    a.put(j)
+                }
             })
             val send = if (full) events else events.filter { calSent[it.getString("id")] != it.getString("rev") }
             o.put("events", JSONArray(send))
@@ -215,6 +223,29 @@ class PhoneDataEngine(
             calLastPush = now
         }
         return ok
+    }
+
+    // ------------------------------------------------------------------ calendar writes
+
+    /**
+     * One create / update / delete from the computer. Only runs with the edit switch on and WRITE_CALENDAR granted
+     * (the caller checked [features]); every operation id is answered, applied at most once, with the honest state.
+     */
+    private fun calendarWrite(body: JSONObject) {
+        val writer = calendarWriter
+        when (val p = CalendarWriteProtocol.parse(body)) {
+            is WriteParse.Bad -> p.opId?.let { emitResult(it, WriteOutcome("failed", p.reason), false) }
+            is WriteParse.Ok -> {
+                val (outcome, duplicate) = writer?.handle(p.request) ?: (WriteOutcome("failed", "disabled") to false)
+                emitResult(p.request.opId, outcome, duplicate)
+                // The provider changed: let the computer see it without waiting for the observer's debounce.
+                if (outcome.state == "applied" && !duplicate) pushCalendar(calToken, null)
+            }
+        }
+    }
+
+    private fun emitResult(opId: String, o: WriteOutcome, duplicate: Boolean) {
+        emit(PhoneDataKinds.CALENDAR_WRITE_RESULT, CalendarWriteProtocol.result(opId, o, duplicate))
     }
 
     // ------------------------------------------------------------------ SMS

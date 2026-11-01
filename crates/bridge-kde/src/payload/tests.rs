@@ -419,28 +419,124 @@ async fn development_listener_announces_a_port_a_strict_receiver_accepts() {
     send.await.unwrap().unwrap();
 }
 
-/// E2E-5 (second cause): a source address with no route to the peer must not stall the transfer
-/// for the whole connect timeout; the plain route is tried after the short bound attempt.
+/// E2E-14: the OS-chosen route comes first, the control link's address only after it, and a slow
+/// network still gets the full budget at the end.
+#[test]
+fn the_plain_route_is_tried_before_the_control_link_address() {
+    let addr = SocketAddr::new(Ipv4Addr::new(10, 0, 2, 2).into(), 1743);
+    let full = Duration::from_secs(10);
+    let eth0: IpAddr = Ipv4Addr::new(10, 0, 2, 15).into();
+    assert_eq!(
+        dial_plan(addr, Some(eth0), full),
+        vec![
+            (None, ROUTE_TRIAL_TIMEOUT),
+            (Some(eth0), ROUTE_TRIAL_TIMEOUT),
+            (None, full)
+        ]
+    );
+    assert_eq!(dial_plan(addr, None, full), vec![(None, full)]);
+    // A source of the other family could never connect.
+    let v6: IpAddr = Ipv6Addr::LOCALHOST.into();
+    assert_eq!(dial_plan(addr, Some(v6), full), vec![(None, full)]);
+}
+
+/// A route that connects and then goes silent or resets must not end the transfer: the receiver moves
+/// on inside its handshake budget. The "NAT" kills what comes from the bound address, as the emulator's
+/// default route does; the plain route reaches the sender.
 #[tokio::test]
-async fn a_blackholed_bound_source_falls_back_to_the_plain_route() {
-    let hang = std::future::pending::<Option<std::io::Result<u8>>>();
+async fn a_failing_route_moves_on_only_after_a_real_handshake_attempt() {
+    // The other order, plain route dead and bound source alive, is the multi-homed case.
+    let (a, b) = (creds('a'), creds('b'));
+    let mut sender = ctx(&a, &b);
+    sender.peer_ip = Ipv4Addr::new(127, 0, 0, 3).into();
+    let mut receiver = ctx(&b, &a);
+    receiver.local_ip = Some(Ipv4Addr::new(127, 0, 0, 3).into());
+    let listener = sender.listen().await.unwrap();
+    let port = listener.port();
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(data(1000)), 1000, &mut |_| {}, &c2)
+            .await
+    });
     let started = std::time::Instant::now();
-    let v = first_or_fallback(hang, Duration::from_millis(50), async { Ok(7u8) })
+    let mut out = Vec::new();
+    receiver
+        .receive(port, Some(1000), 1 << 20, &mut out, &mut |_| {}, &cancel)
         .await
         .unwrap();
-    assert_eq!(v, 7);
+    assert_eq!(out, data(1000));
+    send.await.unwrap().unwrap();
+    // The sender refused the plain route by closing, so nothing waited for a timeout.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// A pin failure is a verdict, not a routing problem: no other route is tried.
+#[tokio::test]
+async fn a_pin_mismatch_is_final_and_reported_as_such() {
+    let (a, b, evil) = (creds('a'), creds('b'), creds('e'));
+    let listener = ctx(&evil, &b).listen().await.unwrap();
+    let port = listener.port();
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    tokio::spawn(async move {
+        let _ = listener
+            .send(Cursor::new(data(10)), 10, &mut |_| {}, &c2)
+            .await;
+    });
+    let mut receiver = ctx(&b, &a);
+    receiver.local_ip = Some(Ipv4Addr::new(127, 0, 0, 1).into());
+    let started = std::time::Instant::now();
+    let e = receiver
+        .receive(port, Some(10), 100, &mut Vec::new(), &mut |_| {}, &cancel)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "pin_mismatch", "{e:?}");
     assert!(started.elapsed() < Duration::from_secs(2));
-    // A bound attempt that works is used as is; one that declines or fails falls back.
-    let ok = first_or_fallback(async { Some(Ok(1u8)) }, Duration::from_secs(1), async {
-        Ok(2u8)
-    })
-    .await
-    .unwrap();
-    assert_eq!(ok, 1);
-    for first in [None, Some(Err(std::io::Error::other("unreachable")))] {
-        let v = first_or_fallback(async { first }, Duration::from_secs(1), async { Ok(2u8) })
+    cancel.cancel();
+}
+
+/// `send` owns the listener: however it ends, the port is free again and nothing answers on it.
+#[tokio::test]
+async fn the_listener_is_closed_when_a_send_is_cancelled_or_times_out() {
+    let (a, b) = (creds('a'), creds('b'));
+    async fn closed(port: u16) -> bool {
+        tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port))
             .await
-            .unwrap();
-        assert_eq!(v, 2);
+            .is_err()
     }
+
+    let listener = ctx(&a, &b).listen().await.unwrap();
+    let port = listener.port();
+    assert!(!closed(port).await);
+    let cancel = CancelToken::new();
+    let c2 = cancel.clone();
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(data(10)), 10, &mut |_| {}, &c2)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    cancel.cancel();
+    assert!(matches!(
+        send.await.unwrap().unwrap_err(),
+        PayloadError::Cancelled
+    ));
+    assert!(closed(port).await, "cancelled: port {port} still answers");
+
+    let mut c = ctx(&a, &b);
+    c.config.accept_timeout = Duration::from_millis(100);
+    let listener = c.listen().await.unwrap();
+    let port = listener.port();
+    let e = listener
+        .send(Cursor::new(data(10)), 10, &mut |_| {}, &CancelToken::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(e, PayloadError::Timeout(_)), "{e:?}");
+    assert!(closed(port).await, "timed out: port {port} still answers");
 }

@@ -34,6 +34,7 @@ class TransportController(
     private var lastSeq = 0L
     private var epoch = 0
     private var polling = false
+    private var pollAgain = false
 
     /** Called on the main thread after any state change. */
     var listener: (() -> Unit)? = null
@@ -163,7 +164,17 @@ class TransportController(
                 else -> notice = rejected(o, "Status")
             }
             changed()
+            if (pollAgain) {
+                pollAgain = false
+                poll()
+            }
         }
+    }
+
+    /** The core has events up to [seq]. A snapshot already in flight may predate them, so one more follows it. */
+    fun eventsUpTo(seq: Long) {
+        if (seq <= lastSeq) return
+        if (polling) pollAgain = true else poll()
     }
 
     private fun apply(s: TransportSnapshot) {
@@ -180,6 +191,8 @@ class TransportController(
                 events += e
                 if (TransportText.isSecurity(e.code) || e.kind == "peer_requested_repair") {
                     say(TransportText.event(e), Tone.Bad)
+                } else if (e.kind == "peer_unpaired") {
+                    say(TransportText.event(e), Tone.Warn)
                 }
             }
         }
@@ -213,6 +226,27 @@ class TransportController(
             if (await) "Waiting for the other device to ask to pair…" else "Pairing request sent. Waiting for the code…",
             Tone.Muted,
         )
+    }
+
+    /**
+     * Pair on a parked connection with a scanned QR code. The core checks the connection's certificate against the
+     * pinned one *before* the token leaves the phone; [done] gets null on success or the core's error code.
+     */
+    fun qrPairRequest(connectionId: Long, token: String, certSha256: String, done: (String?) -> Unit) {
+        if (phase != LinkPhase.Running) return done("not_running")
+        val mine = epoch
+        run(QrProtocol.pairRequest(connectionId, token, certSha256)) { o ->
+            if (mine != epoch) return@run
+            if (o is CoreOutcome.Ok) {
+                notice = Notice("Checking the computer's identity… confirm on this phone when asked.", Tone.Muted)
+                done(null)
+            } else {
+                notice = rejected(o, "Pair")
+                done((o as? CoreOutcome.Rejected)?.code ?: "unavailable")
+            }
+            changed()
+            poll()
+        }
     }
 
     /**

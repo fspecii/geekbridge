@@ -12,6 +12,8 @@ object PhoneDataUi {
 
     val contactsPerms = arrayOf(Manifest.permission.READ_CONTACTS)
     val calendarPerms = arrayOf(Manifest.permission.READ_CALENDAR)
+    /** Asked for only when the user switches editing on; reading never needs it. */
+    val calendarEditPerms = arrayOf(Manifest.permission.WRITE_CALENDAR)
     val smsPerms = arrayOf(Manifest.permission.READ_SMS, Manifest.permission.SEND_SMS, Manifest.permission.RECEIVE_SMS)
 
     private fun granted(a: Activity, perms: Array<String>) = perms.all { a.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
@@ -57,6 +59,12 @@ object PhoneDataUi {
                 (if (n == 0) a.getString(R.string.pd_calendar_none) else a.getString(R.string.pd_calendar_picked, n)), BtnStyle.Tonal) {
                 pickCalendars(a, rerender)
             }
+            kit.divider(parent)
+            feature(
+                R.drawable.ic_calendar, R.string.pd_calendar_edit, R.string.pd_calendar_edit_sub,
+                s.calendarEdit, calendarEditPerms, PhoneDataRuntime::setCalendarEdit,
+            )
+            parent.addView(kit.text(a.getString(R.string.pd_calendar_google), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
         }
         kit.divider(parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, PhoneDataRuntime::setSms)

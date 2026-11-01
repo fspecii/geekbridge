@@ -6,12 +6,20 @@
         <item name="android:textColorSecondary">@color/gb_muted</item>
         <item name="android:textColorHint">@color/gb_muted</item>
         <item name="android:windowBackground">@color/gb_surface</item>
+        <item name="android:alertDialogTheme">@style/Theme.GeekBridge.Dialog</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
     <style name="Theme.GeekBridge.Share" parent="android:Theme.DeviceDefault.Light.Dialog">
         <item name="android:colorAccent">@color/gb_accent</item>
         <item name="android:textColorPrimary">@color/gb_text</item>
         <item name="android:textColorSecondary">@color/gb_muted</item>
-        <item name="android:windowBackground">@color/gb_surface</item>
+        <item name="android:windowBackground">@drawable/gb_dialog_bg</item>
+    </style>
+    <!-- Rounded card dialogs: same tokens as the screens, ink accent instead of the system blue. -->
+    <style name="Theme.GeekBridge.Dialog" parent="android:Theme.DeviceDefault.Light.Dialog.Alert">
+        <item name="android:colorAccent">@color/gb_accent</item>
+        <item name="android:textColorPrimary">@color/gb_text</item>
+        <item name="android:textColorSecondary">@color/gb_muted</item>
+        <item name="android:windowBackground">@drawable/gb_dialog_bg</item>
     </style>
 </resources>

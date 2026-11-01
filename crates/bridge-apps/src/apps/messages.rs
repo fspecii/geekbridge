@@ -47,6 +47,9 @@ pub struct Messages {
     /// A send was clicked; the draft is cleared only once the service accepted it.
     awaiting: bool,
     clicks: u64,
+    /// A number handed over by Contacts: open its conversation, or a new message to it.
+    open_number: Option<String>,
+    open_number_checked: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -983,7 +986,27 @@ impl AppView for Messages {
                 ));
             }
         }
-        let (view, _) = self.view();
+        let (view, state) = self.view();
+        if !self.open_number_checked {
+            self.open_number_checked = true;
+            self.open_number = crate::prefill::take_message_to();
+        }
+        if let Some(n) = self.open_number.take_if(|_| state.view.is_some()) {
+            let found = view
+                .conversations
+                .iter()
+                .find(|c| c.addresses.iter().any(|a| same_number(a, &n)));
+            match found {
+                Some(c) => {
+                    self.thread = Some((c.device_id.clone(), c.thread_id));
+                    self.section = Section::Conversations;
+                }
+                None => {
+                    self.recipient = n;
+                    self.open_compose();
+                }
+            }
+        }
         if self.thread.is_none()
             && let Some(first) = view.conversations.first()
         {

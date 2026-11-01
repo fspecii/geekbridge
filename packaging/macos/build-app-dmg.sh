@@ -5,7 +5,7 @@
 #
 # Layout: GeekBridge.app/Contents/MacOS/GeekBridge  (wrapper, see below)
 #                                     /MacOS/{geekbridge,geekbridge-service,geekbridge-ctl,geekbridge-calls,
-#                                             geekbridge-messages,geekbridge-clipboard,geekbridge-agenda,geekbridge-share}
+#                                             geekbridge-messages,geekbridge-clipboard,geekbridge-agenda,geekbridge-contacts,geekbridge-share}
 # The wrapper is the bundle executable. On every launch it (re)writes the login item
 # ~/Library/LaunchAgents/dev.geekbridge.service.plist (RunAtLoad + KeepAlive, pointing at the service inside
 # this bundle), loads it with launchctl, then execs the GeekBridge window. So the first launch
@@ -33,7 +33,7 @@ plist_version="${version%%-*}"
 [[ "$arch" == aarch64 || "$arch" == x86_64 ]] || { [[ "$arch" == arm64 ]] && arch=aarch64 || { echo "bad arch" >&2; exit 64; }; }
 [[ "$(uname -s)" == Darwin ]] || { echo "this script needs macOS (iconutil, hdiutil)" >&2; exit 69; }
 
-bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-share)
+bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share)
 app="$out/GeekBridge.app"; rm -rf "$app"; mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$out"
 for b in "${bins[@]}"; do install -m 0755 "$bindir/$b" "$app/Contents/MacOS/$b"; done
 

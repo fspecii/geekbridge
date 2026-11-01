@@ -1,15 +1,21 @@
 <resources>
+    <!-- Dark theme: true black OLED surface, white dots, same single red accent. -->
     <color name="gb_surface">#000000</color>
-    <color name="gb_card">#1C1C1E</color>
-    <color name="gb_stripe">#242426</color>
-    <color name="gb_line">#3A3A3C</color>
-    <color name="gb_fill">#2C2C2E</color>
-    <color name="gb_text">#F5F5F7</color>
-    <color name="gb_muted">#A1A1A6</color>
-    <color name="gb_accent">#F5F5F7</color>
-    <color name="gb_on_accent">#1D1D1F</color>
-    <color name="gb_red">#FF453A</color>
-    <color name="gb_ok">#32D74B</color>
-    <color name="gb_warn">#FFB340</color>
-    <color name="gb_bad">#FF6961</color>
+    <color name="gb_card">#121212</color>
+    <color name="gb_stripe">#181818</color>
+    <color name="gb_line">#2C2C2C</color>
+    <color name="gb_fill">#1F1F1F</color>
+    <color name="gb_text">#FFFFFF</color>
+    <color name="gb_muted">#9B9B9B</color>
+    <color name="gb_accent">#FFFFFF</color>
+    <color name="gb_on_accent">#000000</color>
+    <color name="gb_red">#E8242C</color>
+    <color name="gb_ok">#FFFFFF</color>
+    <color name="gb_warn">#FF5A60</color>
+    <color name="gb_bad">#FF5A60</color>
+    <color name="gb_hero">#161616</color>
+    <color name="gb_on_hero">#FFFFFF</color>
+    <color name="gb_hero_dim">#3A3A3A</color>
+    <color name="gb_hero_muted">#A0A0A0</color>
+    <color name="gb_dot_off">#2E2E2E</color>
 </resources>

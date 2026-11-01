@@ -8,6 +8,7 @@ import android.content.res.ColorStateList
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
@@ -30,6 +31,7 @@ enum class BtnStyle { Primary, Tonal, Plain }
  * res/values(-night) so dark mode follows the system. Platform widgets only.
  */
 class UiKit(private val ctx: Context, val ui: Ui) {
+    val context: Context get() = ctx
     fun dp(v: Int) = ui.dp(v)
     fun color(id: Int) = ctx.getColor(id)
     val blue get() = color(R.color.gb_blue)
@@ -59,11 +61,11 @@ class UiKit(private val ctx: Context, val ui: Ui) {
     }
 
     /** Rounded panel, no heavy border: separation comes from the surface contrast (hairline in dark mode). */
-    fun panel(parent: LinearLayout, pad: Int = 16, fill: Int = color(R.color.gb_panel), stroke: Int? = color(R.color.gb_line)): LinearLayout =
+    fun panel(parent: LinearLayout, pad: Int = 16, fill: Int = color(R.color.gb_panel), stroke: Int? = null): LinearLayout =
         LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(pad), dp(pad), dp(pad), dp(pad))
-            background = shape(fill, 20, stroke)
+            background = shape(fill, Tok.R_CARD, stroke)
         }.also { parent.addView(it, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) }
 
     fun text(s: String, sp: Float = 15f, tone: Tone = Tone.Normal, bold: Boolean = false): TextView =
@@ -89,29 +91,40 @@ class UiKit(private val ctx: Context, val ui: Ui) {
     }
 
     /** Round tinted badge holding an icon. */
-    fun badge(res: Int, tone: Tone? = null, sizeDp: Int = 44): FrameLayout {
+    fun badge(res: Int, tone: Tone? = null, sizeDp: Int = 44, solid: Boolean = false): FrameLayout {
         val tint = if (tone == null) blue else ui.toneColor(tone)
         return FrameLayout(ctx).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(withAlpha(tint, 0x26)) }
-            addView(icon(res, sizeDp / 2, tint), FrameLayout.LayoutParams(dp(sizeDp / 2), dp(sizeDp / 2), Gravity.CENTER))
+            // Solid: ink disc with an inverse glyph (widget-style); otherwise a quiet grey disc.
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(if (solid) tint else withAlpha(tint, 0x1A)) }
+            val glyph = if (solid) color(R.color.gb_on_accent) else tint
+            addView(icon(res, sizeDp / 2, glyph), FrameLayout.LayoutParams(dp(sizeDp / 2), dp(sizeDp / 2), Gravity.CENTER))
             layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
         }
     }
 
     /** Small status pill. The words carry the state; colour only reinforces it. */
     fun chip(text: String, tone: Tone): TextView = TextView(ctx).apply {
-        this.text = text
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        setTextColor(ui.toneColor(tone))
-        setPadding(dp(10), dp(4), dp(10), dp(4))
-        background = shape(withAlpha(ui.toneColor(tone), 0x22), 12)
+        setPadding(dp(12), dp(5), dp(12), dp(5))
+        compoundDrawablePadding = dp(6)
+        gravity = Gravity.CENTER_VERTICAL
+        setChip(this, text, tone)
     }
 
+    /** Pill with a leading dot: filled for done/attention states, hollow for neutral ones (not colour alone). */
     fun setChip(v: TextView, text: String, tone: Tone) {
         v.text = text
-        v.setTextColor(ui.toneColor(tone))
-        v.background = shape(withAlpha(ui.toneColor(tone), 0x22), 12)
+        val c = ui.toneColor(tone)
+        v.setTextColor(c)
+        v.background = shape(withAlpha(c, 0x1A), Tok.R_PILL)
+        val hollow = tone == Tone.Muted || tone == Tone.Normal
+        val dot = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setSize(dp(7), dp(7))
+            if (hollow) setStroke(maxOf(1, dp(1)), c) else setColor(c)
+        }
+        v.setCompoundDrawablesRelativeWithIntrinsicBounds(dot, null, null, null)
     }
 
     fun button(parent: LinearLayout, label: String, style: BtnStyle = BtnStyle.Tonal, enabled: Boolean = true, onClick: () -> Unit): TextView {
@@ -126,7 +139,7 @@ class UiKit(private val ctx: Context, val ui: Ui) {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         minHeight = dp(48)
-        setPadding(dp(16), dp(8), dp(16), dp(8))
+        setPadding(dp(20), dp(8), dp(20), dp(8))
         isClickable = true
         isFocusable = true
         applyStyle(this, style, enabled)
@@ -178,7 +191,7 @@ class UiKit(private val ctx: Context, val ui: Ui) {
             else -> 0 to blue
         }
         v.setTextColor(text)
-        v.background = ripple(shape(fill, 14))
+        v.background = ripple(shape(fill, Tok.R_PILL))
     }
 
     /** One tappable row inside a panel: badge, title + subtitle, trailing view. */
@@ -217,11 +230,26 @@ class UiKit(private val ctx: Context, val ui: Ui) {
     }
 
     fun divider(parent: LinearLayout) {
-        val v = View(ctx).apply { setBackgroundColor(withAlpha(color(R.color.gb_line), 0x99)) }
+        val v = View(ctx).apply { setBackgroundColor(withAlpha(color(R.color.gb_line), 0xB0)) }
         parent.addView(v, LinearLayout.LayoutParams(Ui.MATCH, maxOf(1, dp(1) / 2)).apply { marginStart = dp(58) })
     }
 
     fun toggle(checked: Boolean, onChange: (Boolean) -> Unit): Switch = Switch(ctx).apply {
+        // Pill toggle: ink track with an inverse thumb when on, quiet grey when off (drawn, so tint modes can't wash it out).
+        fun pill(c: Int) = GradientDrawable().apply { setColor(c); cornerRadius = dp(15).toFloat(); setSize(dp(52), dp(30)) }
+        // The thumb is a full-height disc whose 4dp ring matches the track, so it reads as inset without clipping.
+        fun disc(c: Int, ring: Int) = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL; setColor(c); setStroke(dp(4), ring); setSize(dp(30), dp(30))
+        }
+        trackDrawable = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_checked), pill(color(R.color.gb_accent)))
+            addState(intArrayOf(), pill(color(R.color.gb_line)))
+        }
+        thumbDrawable = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_checked), disc(color(R.color.gb_on_accent), color(R.color.gb_accent)))
+            addState(intArrayOf(), disc(color(R.color.gb_muted), color(R.color.gb_line)))
+        }
+        showText = false
         isChecked = checked
         isSaveEnabled = false
         setOnCheckedChangeListener { _, c -> onChange(c) }
@@ -231,15 +259,15 @@ class UiKit(private val ctx: Context, val ui: Ui) {
     fun tile(parent: LinearLayout, iconRes: Int, title: String, sub: String, enabled: Boolean, onClick: () -> Unit): TextView {
         val box = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(16), dp(16), dp(14))
-            background = ripple(shape(color(R.color.gb_panel), 20, color(R.color.gb_line)))
+            setPadding(dp(18), dp(18), dp(18), dp(16))
+            background = ripple(shape(color(R.color.gb_panel), Tok.R_TILE))
             isClickable = true
             isFocusable = true
             alpha = if (enabled) 1f else 0.6f
             setOnClickListener { onClick() }
             asButton(this)
         }
-        box.addView(badge(iconRes, if (enabled) null else Tone.Muted, 44))
+        box.addView(badge(iconRes, if (enabled) null else Tone.Muted, 48, solid = enabled))
         box.addView(text(title, 16f, bold = true).apply { setPadding(0, dp(12), 0, 0) })
         val subView = text(sub, 12.5f, Tone.Muted).apply { setPadding(0, dp(2), 0, 0) }
         box.addView(subView)

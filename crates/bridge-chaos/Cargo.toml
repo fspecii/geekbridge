@@ -1,0 +1,11 @@
+[package]
+name = "bridge-chaos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Test utility: an in-process TCP fault proxy (latency, bandwidth cap, loss, resets, half-open silence, fragmentation, slow handshakes) for failure-injection tests"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+socket2 = { version = "0.6", features = ["all"] }

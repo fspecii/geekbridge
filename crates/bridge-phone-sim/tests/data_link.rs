@@ -5,7 +5,9 @@ use bridge_core::{
     Snapshot,
     agenda::Date,
     ipc::{self, Feature, IpcError, LinkPhase, PairMode, Request, Response, Token},
-    phone_view::{AgendaView, DataState, MessagesView, SendPhase},
+    phone_view::{
+        AgendaView, CalendarEditAction, DataState, EditPhase, EventDraft, MessagesView, SendPhase,
+    },
 };
 use bridge_kde as kde;
 use bridge_phone_sim::data::{self, PhoneScript};
@@ -88,6 +90,8 @@ impl Rig {
                 query: query.into(),
                 day: day.into(),
                 utc_offset_minutes: 0,
+                days: 1,
+                people_limit: 0,
             })
             .await
         {
@@ -381,4 +385,266 @@ async fn consent_gates_every_feature_and_data_flows_end_to_end() {
     })
     .await;
     assert!(rig.agenda("", &today()).await.devices.is_empty());
+}
+
+fn draft(title: &str, start: i64) -> EventDraft {
+    EventDraft {
+        title: title.into(),
+        all_day: false,
+        start_ms: start,
+        end_ms: start + 3_600_000,
+        tz: "UTC".into(),
+        location: Some("Desk".into()),
+        description: None,
+        reminder_min: Some(10),
+    }
+}
+
+impl Rig {
+    async fn edit(
+        &self,
+        id: &str,
+        op: &str,
+        action: CalendarEditAction,
+        calendar: Option<&str>,
+        event: Option<&str>,
+        d: Option<EventDraft>,
+    ) -> Result<Response, IpcError> {
+        self.call(Request::CalendarEdit {
+            device_id: id.into(),
+            op_id: op.into(),
+            action,
+            calendar_id: calendar.map(str::to_owned),
+            event_id: event.map(str::to_owned),
+            draft: d.map(Box::new),
+        })
+        .await
+    }
+    async fn week(&self) -> AgendaView {
+        match self
+            .call(Request::AgendaView {
+                query: String::new(),
+                day: today(),
+                utc_offset_minutes: 0,
+                days: 14,
+                people_limit: 0,
+            })
+            .await
+        {
+            Ok(Response::Agenda(v)) => *v,
+            other => panic!("expected agenda, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn calendar_edits_need_explicit_consent_and_end_up_on_the_phone() {
+    let rig = Rig::start().await;
+    let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+    let id = creds.device_id().to_string();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let link = rig.pair(&creds).await;
+    let (_push, mut seen) = run_phone(link, PhoneScript::demo(now));
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Calendar,
+        enabled: true,
+    })
+    .await;
+    let v = rig
+        .until("calendars", async || {
+            let v = rig.week().await;
+            (v.calendars.len() == 2 && !v.events.is_empty()).then_some(v)
+        })
+        .await;
+    assert_eq!(v.calendars[0].account.as_deref(), Some("demo@gmail.com"));
+    assert!(v.calendars[0].writable && !v.calendars[1].writable);
+    assert!(
+        v.events
+            .iter()
+            .any(|e| e.title == "Weekly sync" && e.recurring)
+    );
+    assert!(
+        v.events
+            .iter()
+            .any(|e| e.title == "Team offsite" && e.attendee_count == 2)
+    );
+    assert_eq!(v.devices[0].calendar_edit, DataState::ConsentOff);
+
+    // Reading is allowed, writing is not: refused here, and the phone never sees a write packet.
+    let refused = rig
+        .edit(
+            &id,
+            "op-a",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(draft("Nope", now)),
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(IpcError::Service(ref e)) if e.code == ipc::ErrorCode::Unsupported),
+        "{refused:?}"
+    );
+
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::CalendarEdit,
+        enabled: true,
+    })
+    .await;
+    // Still no implicit calendar and no write into a read-only one.
+    for cal in [None, Some("2")] {
+        let r = rig
+            .edit(
+                &id,
+                "op-b",
+                CalendarEditAction::Create,
+                cal,
+                None,
+                Some(draft("Nope", now)),
+            )
+            .await;
+        assert!(
+            matches!(r, Err(IpcError::Service(ref e)) if e.code == ipc::ErrorCode::BadRequest),
+            "{r:?}"
+        );
+    }
+    // Recurring events are shown but never editable from here.
+    let weekly = v.events.iter().find(|e| e.title == "Weekly sync").unwrap();
+    let r = rig
+        .edit(
+            &id,
+            "op-c",
+            CalendarEditAction::Delete,
+            None,
+            weekly.event_id.as_deref(),
+            None,
+        )
+        .await;
+    assert!(r.is_err());
+    sleep(Duration::from_millis(300)).await;
+    while let Ok(kind) = seen.try_recv() {
+        assert_ne!(
+            kind, "geekbridge.calendar.write",
+            "a refused edit leaked to the phone"
+        );
+    }
+
+    // A valid create goes out once, the phone answers, and the event shows up.
+    let start = now + 3 * 86_400_000;
+    rig.ok_edit(
+        &id,
+        "op-d",
+        CalendarEditAction::Create,
+        Some("1"),
+        None,
+        Some(draft("Planning lunch", start)),
+    )
+    .await;
+    let v = rig
+        .until("applied", async || {
+            let v = rig.week().await;
+            (v.edits.first()?.phase == EditPhase::Applied
+                && v.events.iter().any(|e| e.title == "Planning lunch"))
+            .then_some(v)
+        })
+        .await;
+    let created = v
+        .events
+        .iter()
+        .find(|e| e.title == "Planning lunch")
+        .unwrap();
+    assert_eq!(created.location.as_deref(), Some("Desk"));
+    assert_eq!(created.reminders_min, vec![10]);
+    // Reusing the operation id is refused before it reaches the phone.
+    let again = rig
+        .edit(
+            &id,
+            "op-d",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(draft("Planning lunch", start)),
+        )
+        .await;
+    assert!(again.is_err());
+
+    // Edit, then delete, by the phone's event id.
+    let eid = created.event_id.clone().unwrap();
+    rig.ok_edit(
+        &id,
+        "op-e",
+        CalendarEditAction::Update,
+        None,
+        Some(&eid),
+        Some(draft("Planning dinner", start)),
+    )
+    .await;
+    rig.until("renamed", async || {
+        rig.week()
+            .await
+            .events
+            .iter()
+            .any(|e| e.title == "Planning dinner")
+            .then_some(())
+    })
+    .await;
+    rig.ok_edit(
+        &id,
+        "op-f",
+        CalendarEditAction::Delete,
+        None,
+        Some(&eid),
+        None,
+    )
+    .await;
+    rig.until("deleted", async || {
+        let v = rig.week().await;
+        (!v.events.iter().any(|e| e.title.starts_with("Planning "))
+            && v.edits.iter().all(|e| e.phase == EditPhase::Applied))
+        .then_some(())
+    })
+    .await;
+
+    // Turning the consent off drops the edit history and refuses again.
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::CalendarEdit,
+        enabled: false,
+    })
+    .await;
+    assert!(rig.week().await.edits.is_empty());
+    assert!(
+        rig.edit(
+            &id,
+            "op-g",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(draft("x", now))
+        )
+        .await
+        .is_err()
+    );
+}
+
+impl Rig {
+    async fn ok_edit(
+        &self,
+        id: &str,
+        op: &str,
+        action: CalendarEditAction,
+        calendar: Option<&str>,
+        event: Option<&str>,
+        d: Option<EventDraft>,
+    ) {
+        match self.edit(id, op, action, calendar, event, d).await {
+            Ok(Response::Ack) => {}
+            other => panic!("expected ack, got {other:?}"),
+        }
+    }
 }

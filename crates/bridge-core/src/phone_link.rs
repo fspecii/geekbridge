@@ -6,9 +6,10 @@
 //! (`geekbridge.calendar.*`, `geekbridge.sms.status`). SMS messages themselves are parsed by
 //! `bridge_kde::sms` with [`crate::messages`].
 use crate::agenda::{
-    AgendaError, CalendarEvent, Contact, Record, Revision, SourceId, State, Store, Validate, When,
-    vcard_rev,
+    AgendaError, CalendarEvent, Contact, EventMeta, MAX_ATTENDEE_NAMES, MAX_REMINDERS, Record,
+    Revision, SourceId, State, Store, Validate, When, vcard_rev,
 };
+use crate::phone_view::{CalendarEditAction, EventDraft};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 
@@ -18,6 +19,10 @@ pub const CONTACTS_REQUEST_VCARDS: &str = "kdeconnect.contacts.request_vcards_by
 pub const CONTACTS_VCARDS: &str = "kdeconnect.contacts.response_vcards";
 pub const CALENDAR_REQUEST: &str = "geekbridge.calendar.request";
 pub const CALENDAR_SYNC: &str = "geekbridge.calendar.sync";
+/// Desktop -> phone: create, update or delete one event (only with the per-device edit consent).
+pub const CALENDAR_WRITE: &str = "geekbridge.calendar.write";
+/// Phone -> desktop: what became of one write (`opId` echo).
+pub const CALENDAR_WRITE_RESULT: &str = "geekbridge.calendar.write_result";
 pub const SMS_STATUS: &str = "geekbridge.sms.status";
 
 pub const MAX_CONTACT_UIDS: usize = 5000;
@@ -44,7 +49,14 @@ pub fn is_contacts_kind(kind: &str) -> bool {
     )
 }
 pub fn is_calendar_kind(kind: &str) -> bool {
-    matches!(kind, CALENDAR_REQUEST | CALENDAR_SYNC)
+    matches!(
+        kind,
+        CALENDAR_REQUEST | CALENDAR_SYNC | CALENDAR_WRITE | CALENDAR_WRITE_RESULT
+    )
+}
+/// Packets that change the phone's calendar (a separate, stricter consent than reading).
+pub fn is_calendar_write_kind(kind: &str) -> bool {
+    matches!(kind, CALENDAR_WRITE | CALENDAR_WRITE_RESULT)
 }
 
 pub fn valid_request_id(s: &str) -> bool {
@@ -317,6 +329,14 @@ pub fn calendar_request_body(request_id: &str, since: Option<&str>) -> Map<Strin
 pub struct CalendarInfo {
     pub id: String,
     pub name: String,
+    /// Account the phone syncs this calendar with (for example a Google account name).
+    pub account: Option<String>,
+    /// Account type as Android reports it (`com.google` for Google accounts).
+    pub account_type: Option<String>,
+    /// ARGB colour of the calendar.
+    pub color: Option<u32>,
+    /// The phone would let the user add events here (contributor access or better).
+    pub writable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -371,9 +391,22 @@ pub fn parse_calendar_sync(body: &Map<String, Value>) -> Result<CalendarSync, Wi
         if id.is_empty() || id.len() > 64 {
             return Err(WireError::Malformed);
         }
+        let opt = |k: &str| {
+            str_field(o, k)
+                .map(|v| clean(v, 128))
+                .filter(|v| !v.trim().is_empty())
+        };
         calendars.push(CalendarInfo {
             id: id.to_owned(),
             name: clean(str_field(o, "name").unwrap_or(""), 128),
+            account: opt("account"),
+            account_type: opt("accountType"),
+            color: o
+                .get("color")
+                .and_then(Value::as_i64)
+                .filter(|c| (i64::from(i32::MIN)..=i64::from(u32::MAX)).contains(c))
+                .map(|c| c as u32),
+            writable: o.get("writable").and_then(Value::as_bool).unwrap_or(false),
         });
     }
     let mut deleted = Vec::new();
@@ -433,11 +466,66 @@ fn parse_event(v: &Value) -> Option<(String, Revision, CalendarEvent)> {
         location: opt("location", 512),
         description: opt("description", 16 * 1024),
         recurrence: None,
+        meta: parse_meta(o),
     };
     ev.validate().ok()?;
     rev.validate().ok()?;
     SourceId::new("x", id.clone()).validate().ok()?;
     Some((id, rev, ev))
+}
+
+/// Optional extras of an event; anything malformed is dropped rather than failing the event.
+fn parse_meta(o: &Map<String, Value>) -> EventMeta {
+    let id = |k: &str| {
+        str_field(o, k)
+            .filter(|s| !s.is_empty() && s.len() <= 64 && !s.chars().any(char::is_control))
+            .map(str::to_owned)
+    };
+    let reminders_min = o
+        .get("reminders")
+        .and_then(Value::as_array)
+        .map(|a| {
+            let mut v: Vec<u32> = a
+                .iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|m| u32::try_from(m).ok())
+                .filter(|m| *m <= 40_320)
+                .collect();
+            v.sort_unstable();
+            v.dedup();
+            v.truncate(MAX_REMINDERS);
+            v
+        })
+        .unwrap_or_default();
+    let (attendee_count, attendees) = match o.get("attendees").and_then(Value::as_object) {
+        Some(a) => (
+            a.get("count")
+                .and_then(Value::as_u64)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0)
+                .min(10_000),
+            a.get("names")
+                .and_then(Value::as_array)
+                .map(|n| {
+                    n.iter()
+                        .filter_map(Value::as_str)
+                        .map(|s| clean(s, 128))
+                        .filter(|s| !s.trim().is_empty())
+                        .take(MAX_ATTENDEE_NAMES)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        ),
+        None => (0, Vec::new()),
+    };
+    EventMeta {
+        calendar_id: id("calendarId"),
+        event_id: id("eventId"),
+        recurring: o.get("recurring").and_then(Value::as_bool).unwrap_or(false),
+        reminders_min,
+        attendee_count,
+        attendees,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -512,6 +600,181 @@ pub fn apply_calendar(
 /// True when a record is a live item (helper for views).
 pub fn is_live<T>(r: &Record<T>) -> bool {
     matches!(r.state, State::Live(_))
+}
+
+// ---------------------------------------------------------------- calendar writes
+
+/// Why a draft cannot be sent (shown to the user before anything leaves the computer).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DraftError {
+    Title,
+    Times,
+    Text,
+    Zone,
+    Reminder,
+}
+
+impl DraftError {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Title => "The event needs a title (up to 512 characters).",
+            Self::Times => "The end must be after the start, and all-day events need whole days.",
+            Self::Text => "Location or notes are too long or contain control characters.",
+            Self::Zone => "The time zone name is not valid.",
+            Self::Reminder => "The reminder must be between 0 minutes and 4 weeks before.",
+        }
+    }
+}
+
+const DAY_MS: i64 = 86_400_000;
+pub const MAX_DRAFT_NOTES: usize = 2000;
+
+/// Checks a draft the way the phone will, so a bad one never goes out.
+pub fn validate_draft(d: &EventDraft) -> Result<(), DraftError> {
+    let title = d.title.trim();
+    if title.is_empty() || d.title.len() > 512 || d.title.chars().any(char::is_control) {
+        return Err(DraftError::Title);
+    }
+    if d.all_day {
+        if d.start_ms.rem_euclid(DAY_MS) != 0
+            || d.end_ms.rem_euclid(DAY_MS) != 0
+            || d.end_ms <= d.start_ms
+        {
+            return Err(DraftError::Times);
+        }
+    } else if d.end_ms <= d.start_ms {
+        return Err(DraftError::Times);
+    }
+    if !(0..=4_102_444_800_000_i64).contains(&d.start_ms)
+        || !(0..=4_102_444_800_000_i64 + DAY_MS).contains(&d.end_ms)
+    {
+        return Err(DraftError::Times);
+    }
+    let bad_text = |s: &str, max: usize| {
+        s.len() > max
+            || s.chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    };
+    if d.location.as_deref().is_some_and(|l| bad_text(l, 512))
+        || d.description
+            .as_deref()
+            .is_some_and(|l| bad_text(l, MAX_DRAFT_NOTES))
+    {
+        return Err(DraftError::Text);
+    }
+    let zone_ok = !d.tz.is_empty()
+        && d.tz.len() <= 64
+        && !d.tz.contains("..")
+        && !d.tz.starts_with('/')
+        && d.tz
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_+-/:".contains(c));
+    if !zone_ok {
+        return Err(DraftError::Zone);
+    }
+    if d.reminder_min.is_some_and(|m| m > 40_320) {
+        return Err(DraftError::Reminder);
+    }
+    Ok(())
+}
+
+/// Body of `geekbridge.calendar.write`. `op_id` is the idempotency key: the phone answers a
+/// repeated one with the first outcome instead of writing again.
+pub fn calendar_write_body(
+    op_id: &str,
+    action: CalendarEditAction,
+    calendar_id: Option<&str>,
+    event_id: Option<&str>,
+    draft: Option<&EventDraft>,
+) -> Map<String, Value> {
+    let mut m = Map::new();
+    m.insert("version".into(), json!(1));
+    m.insert("opId".into(), json!(op_id));
+    m.insert(
+        "action".into(),
+        json!(match action {
+            CalendarEditAction::Create => "create",
+            CalendarEditAction::Update => "update",
+            CalendarEditAction::Delete => "delete",
+        }),
+    );
+    if let Some(c) = calendar_id {
+        m.insert("calendarId".into(), json!(c));
+    }
+    if let Some(e) = event_id {
+        m.insert("eventId".into(), json!(e));
+    }
+    if let Some(d) = draft {
+        let mut e = Map::new();
+        e.insert("title".into(), json!(d.title.trim()));
+        e.insert("allDay".into(), json!(d.all_day));
+        e.insert("startMs".into(), json!(d.start_ms));
+        e.insert("endMs".into(), json!(d.end_ms));
+        e.insert(
+            "tz".into(),
+            json!(if d.all_day { "UTC" } else { d.tz.as_str() }),
+        );
+        if let Some(l) = d.location.as_deref().filter(|l| !l.trim().is_empty()) {
+            e.insert("location".into(), json!(l));
+        }
+        if let Some(l) = d.description.as_deref().filter(|l| !l.trim().is_empty()) {
+            e.insert("description".into(), json!(l));
+        }
+        if let Some(r) = d.reminder_min {
+            e.insert("reminderMin".into(), json!(r));
+        }
+        m.insert("event".into(), Value::Object(e));
+    }
+    m
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteResult {
+    pub op_id: String,
+    pub applied: bool,
+    /// The phone cannot say whether an earlier attempt at this operation took effect (it was
+    /// interrupted mid-write). Neither applied nor failed: the user must check.
+    pub unknown: bool,
+    /// Short code on failure (`no_permission`, `not_writable`, `not_found`, `recurring`, ...).
+    pub reason: Option<String>,
+    /// `Events._ID` of the written event (create / update).
+    pub event_id: Option<String>,
+    /// The phone had already handled this `opId` and repeated its first answer.
+    pub duplicate: bool,
+}
+
+pub fn parse_write_result(body: &Map<String, Value>) -> Result<WriteResult, WireError> {
+    let op_id = str_field(body, "opId").ok_or(WireError::Malformed)?;
+    if !valid_request_id(op_id) {
+        return Err(WireError::Malformed);
+    }
+    let (applied, unknown) = match str_field(body, "state").ok_or(WireError::Malformed)? {
+        "applied" => (true, false),
+        "failed" => (false, false),
+        "unknown" => (false, true),
+        _ => return Err(WireError::Malformed),
+    };
+    let code = |k: &str, max: usize| {
+        str_field(body, k)
+            .map(|r| {
+                r.chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .take(max)
+                    .collect::<String>()
+            })
+            .filter(|r| !r.is_empty())
+    };
+    Ok(WriteResult {
+        op_id: op_id.to_owned(),
+        applied,
+        unknown,
+        reason: code("reason", 32),
+        event_id: code("eventId", 20),
+        duplicate: body
+            .get("duplicate")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
 }
 
 // ---------------------------------------------------------------- sms status
@@ -721,5 +984,140 @@ mod tests {
         );
         assert!(parse_sms_status(&obj(json!({"requestId": "r 1", "state": "sent"}))).is_err());
         assert!(parse_sms_status(&obj(json!({"requestId": "r1", "state": "queued"}))).is_err());
+    }
+
+    #[test]
+    fn calendar_extras_parse_and_stay_bounded() {
+        let mut e = ev("9@1", "r1", "Meet");
+        let o = e.as_object_mut().unwrap();
+        o.insert("calendarId".into(), json!("3"));
+        o.insert("eventId".into(), json!("9"));
+        o.insert("recurring".into(), json!(true));
+        o.insert(
+            "reminders".into(),
+            json!([60, 10, 10, -5, "x", 99_999_999, 1, 2, 3, 4]),
+        );
+        o.insert(
+            "attendees".into(),
+            json!({"count": 9, "names": ["A", "", "B", "C", "D", "E", "F", "G", "H"]}),
+        );
+        let s = parse_calendar_sync(&sync_body(true, None, "t", json!([e]), json!([]))).unwrap();
+        let m = &s.events[0].2.meta;
+        assert_eq!(m.calendar_id.as_deref(), Some("3"));
+        assert_eq!(m.event_id.as_deref(), Some("9"));
+        assert!(m.recurring);
+        assert_eq!(m.reminders_min, vec![1, 2, 3, 4, 10]);
+        assert_eq!(m.attendee_count, 9);
+        assert_eq!(m.attendees.len(), MAX_ATTENDEE_NAMES);
+
+        // Old phones send none of it.
+        let s = parse_calendar_sync(&sync_body(
+            true,
+            None,
+            "t",
+            json!([ev("1@1", "r", "A")]),
+            json!([]),
+        ))
+        .unwrap();
+        assert_eq!(s.events[0].2.meta, EventMeta::default());
+
+        let body = obj(
+            json!({"version": 1, "full": true, "base": null, "token": "t",
+            "calendars": [{"id": "1", "name": "Mine", "account": "a@gmail.com", "accountType": "com.google",
+                           "color": -65536, "writable": true}, {"id": "2"}], "events": [], "deleted": []}),
+        );
+        let s = parse_calendar_sync(&body).unwrap();
+        assert_eq!(s.calendars[0].color, Some(0xFFFF0000));
+        assert!(s.calendars[0].writable && !s.calendars[1].writable);
+        assert_eq!(s.calendars[1].account, None);
+    }
+
+    fn draft() -> EventDraft {
+        EventDraft {
+            title: " Lunch ".into(),
+            all_day: false,
+            start_ms: 1_800_000_000_000,
+            end_ms: 1_800_003_600_000,
+            tz: "Europe/Berlin".into(),
+            location: Some("Cafe".into()),
+            description: None,
+            reminder_min: Some(15),
+        }
+    }
+
+    #[test]
+    fn drafts_are_checked_before_anything_is_sent() {
+        assert_eq!(validate_draft(&draft()), Ok(()));
+        let mut d = draft();
+        d.title = "  ".into();
+        assert_eq!(validate_draft(&d), Err(DraftError::Title));
+        let mut d = draft();
+        d.end_ms = d.start_ms;
+        assert_eq!(validate_draft(&d), Err(DraftError::Times));
+        let mut d = draft();
+        d.all_day = true; // not on UTC midnights
+        assert_eq!(validate_draft(&d), Err(DraftError::Times));
+        d.start_ms = 86_400_000 * 20_000;
+        d.end_ms = d.start_ms + 86_400_000;
+        assert_eq!(validate_draft(&d), Ok(()));
+        let mut d = draft();
+        d.tz = "../etc".into();
+        assert_eq!(validate_draft(&d), Err(DraftError::Zone));
+        let mut d = draft();
+        d.reminder_min = Some(50_000);
+        assert_eq!(validate_draft(&d), Err(DraftError::Reminder));
+        let mut d = draft();
+        d.description = Some("x".repeat(MAX_DRAFT_NOTES + 1));
+        assert_eq!(validate_draft(&d), Err(DraftError::Text));
+    }
+
+    #[test]
+    fn write_packet_shape_and_result_parsing() {
+        let b = calendar_write_body(
+            "op-1",
+            CalendarEditAction::Create,
+            Some("3"),
+            None,
+            Some(&draft()),
+        );
+        assert_eq!(b["opId"], "op-1");
+        assert_eq!(b["action"], "create");
+        assert_eq!(b["calendarId"], "3");
+        assert_eq!(b["event"]["title"], "Lunch");
+        assert_eq!(b["event"]["reminderMin"], 15);
+        assert!(b["event"].get("description").is_none());
+        let mut all_day = draft();
+        all_day.all_day = true;
+        let b = calendar_write_body(
+            "op-2",
+            CalendarEditAction::Update,
+            None,
+            Some("9"),
+            Some(&all_day),
+        );
+        assert_eq!(b["event"]["tz"], "UTC");
+        let b = calendar_write_body("op-3", CalendarEditAction::Delete, None, Some("9"), None);
+        assert!(b.get("event").is_none());
+
+        let r = parse_write_result(&obj(
+            json!({"opId": "op-1", "state": "applied", "eventId": "77", "duplicate": true}),
+        ))
+        .unwrap();
+        assert!(r.applied && r.duplicate);
+        assert_eq!(r.event_id.as_deref(), Some("77"));
+        let r = parse_write_result(&obj(
+            json!({"opId": "op-1", "state": "failed", "reason": "not_writable!<"}),
+        ))
+        .unwrap();
+        assert!(!r.applied);
+        assert_eq!(r.reason.as_deref(), Some("not_writable"));
+        assert!(parse_write_result(&obj(json!({"opId": "bad id", "state": "applied"}))).is_err());
+        assert!(parse_write_result(&obj(json!({"opId": "x", "state": "maybe"}))).is_err());
+        let u = parse_write_result(&obj(
+            json!({"opId": "x", "state": "unknown", "reason": "interrupted"}),
+        ))
+        .unwrap();
+        assert!(u.unknown && !u.applied);
+        assert!(is_calendar_write_kind(CALENDAR_WRITE) && !is_calendar_write_kind(CALENDAR_SYNC));
     }
 }

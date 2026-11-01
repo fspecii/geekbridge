@@ -44,6 +44,8 @@ data class PairPrompt(
     val ownCertSha256: String,
     val code: String,
     val expiresInMs: Long,
+    /** The computer's certificate was pinned from a scanned QR code, so there is no code to compare. */
+    val qrPinned: Boolean = false,
 )
 
 data class PairedPeer(val deviceId: String, val name: String, val deviceType: String, val certSha256: String)
@@ -88,6 +90,8 @@ data class StartOptions(
 
 object TransportProtocol {
     const val MAX_LIST = 64
+    /** Matches the core's bound. The wait blocks without a timer in between, so only each expiry is a wakeup. */
+    const val MAX_WAIT_MS = 600_000L
     private val token = Regex("[A-Za-z0-9_:.-]{1,128}")
     private val kindPattern = Regex("[a-z0-9_]{1,48}")
 
@@ -136,6 +140,17 @@ object TransportProtocol {
     }
 
     fun unpairRequest(deviceId: String): String = base("transport_unpair").put("device_id", deviceId).toString()
+
+    /** Blocks in the core until an event newer than [since] exists or the transport stops. Off the main thread only. */
+    fun waitRequest(since: Long, timeoutMs: Long = MAX_WAIT_MS): String =
+        base("transport_wait").put("since", since).put("timeout_ms", timeoutMs.coerceIn(0, MAX_WAIT_MS)).toString()
+
+    /** Newest event sequence, or null if the result is not recognisable or the transport stopped. */
+    fun parseWait(result: Any?): Long? {
+        val o = result as? JSONObject ?: return null
+        if (o.optBoolean("stopped", true) || !o.has("last_event_seq")) return null
+        return o.optLong("last_event_seq", -1).takeIf { it >= 0 }
+    }
     fun disconnectRequest(connectionId: Long): String = base("transport_disconnect").put("connection_id", connectionId).toString()
     fun pingRequest(connectionId: Long): String = base("transport_ping").put("connection_id", connectionId).toString()
 
@@ -222,6 +237,7 @@ object TransportProtocol {
                     ownCertSha256 = p.id("own_cert_sha256") ?: "",
                     code = p.id("verification_code") ?: return@run null,
                     expiresInMs = p.long("expires_in_ms") ?: 0,
+                    qrPinned = p.optBoolean("qr_pinned", false),
                 )
             }
             if (parsed != null) prompts += parsed else undisplayable++

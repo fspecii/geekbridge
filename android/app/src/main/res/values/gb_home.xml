@@ -1,8 +1,35 @@
 <resources>
-    <!-- Home / setup screens: system-blue accent like the desktop apps; tints are alpha-composited at runtime. -->
-    <color name="gb_blue">#0A6CF0</color>
+    <!-- Legacy names kept so every screen shares the token layer: "blue" is now the ink (primary) colour. -->
+    <color name="gb_blue">#0B0B0B</color>
     <color name="gb_on_blue">#FFFFFF</color>
     <color name="gb_panel">#FFFFFF</color>
+
+    <!-- Dot-matrix home -->
+    <string name="hero_caption">LINK</string>
+    <string name="word_online">Online</string>
+    <string name="word_waiting">Waiting</string>
+    <string name="word_linking">Linking</string>
+    <string name="word_offline">Offline</string>
+    <string name="word_unpaired">Unpaired</string>
+    <string name="word_on">On</string>
+    <string name="word_off">Off</string>
+    <string name="word_allow">Allow</string>
+    <string name="word_ready">Ready</string>
+    <string name="home_contacts">Contacts</string>
+    <string name="hero_sending">Sending %1$d of %2$d · %3$d%%</string>
+    <string name="hero_receiving">Receiving %1$d · %2$d%%</string>
+    <string name="hero_sending_plain">Transferring %1$d</string>
+    <string name="home_cd_warning">Warning: %1$s</string>
+    <string name="setup_step_dots">Step %1$d of %2$d</string>
+
+    <!-- Dot calendar / agenda -->
+    <string name="cal_today">today</string>
+    <string name="cal_no_events">no events</string>
+    <plurals name="cal_events">
+        <item quantity="one">%1$d event</item>
+        <item quantity="other">%1$d events</item>
+    </plurals>
+    <string name="cal_add_event">Add event</string>
 
     <string name="setup_label">Setup</string>
     <string name="diagnostics_label">Diagnostics</string>

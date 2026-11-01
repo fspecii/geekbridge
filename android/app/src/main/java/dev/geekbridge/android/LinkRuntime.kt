@@ -9,6 +9,7 @@ object LinkRuntime {
     private val main = Handler(Looper.getMainLooper())
 
     private var observing = false
+    private val waiter = WaiterSlot()
 
     /** Also remembers the paired computers (count and names) whenever a readable status arrives. */
     @Synchronized
@@ -20,11 +21,40 @@ object LinkRuntime {
                 ClipboardRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 CallControlRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 PhoneDataRuntime.onLinkChanged(c.phase == LinkPhase.Running)
+                if (c.phase == LinkPhase.Running) startWaiter(c)
                 val s = c.snapshot
                 if (s != null && s.isRunning) AppState.recordPaired(s.paired, readable = !s.pairedError)
             }
         }
         return c
+    }
+
+    /**
+     * Nothing polls the status while the app is closed, so the core wakes this thread when something happens: a
+     * computer that unpaired this phone reaches [AppState.recordPaired], which stops the background service.
+     */
+    private fun startWaiter(c: TransportController) {
+        if (!waiter.claim()) return
+        Thread({
+            try {
+                waitLoop(c)
+            } finally {
+                waiter.leaveUnless { false }
+            }
+        }, "geekbridge-link-wait").apply { isDaemon = true; start() }
+    }
+
+    private fun waitLoop(c: TransportController) {
+        var since = 0L
+        while (true) {
+            val o = core.transportAction(TransportProtocol.waitRequest(since))
+            // Not running any more; the next link start claims the slot again.
+            val seq = (o as? CoreOutcome.Ok)?.let { TransportProtocol.parseWait(it.result) } ?: return
+            if (seq != since) {
+                since = seq
+                main.post { c.eventsUpTo(seq) }
+            }
+        }
     }
 
     fun startOptions(stateDir: String, deviceName: String, discoveryListen: Boolean, announce: Boolean) = StartOptions(

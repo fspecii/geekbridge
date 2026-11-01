@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Soak test: long reconnect/junk churn with fd and memory growth assertions, plus long fuzz runs.
 #
-#   scripts/soak.sh [--cycles N] [--fuzz-iters N] [--seconds N] [--bin-dir DIR]
+#   scripts/soak.sh [--cycles N] [--fuzz-iters N] [--seconds N] [--bin-dir DIR] [--no-chaos] [--chaos-only]
 #
 # Part 1 runs the in-process leak tests (crates/bridge-service/tests/leaks.rs) and the packet and
 # discovery fuzz tests in release mode with large counts (defaults: 2000 cycles, 2,000,000 fuzz
 # iterations). Part 2 starts the real geekbridge-service and, for --seconds (default 60), hammers
 # its inbound listener, discovery UDP port, public API and control API with junk, then fails if
-# descriptors or RSS grew past the allowance after a warm-up. Linux only (/proc, bash /dev/tcp).
+# descriptors or RSS grew past the allowance after a warm-up. Part 3 (chaos) runs the failure-injection
+# tests (crates/*/tests/chaos*.rs: lossy / slow / resetting / half-open links, 200 MB transfers with
+# cancels, disk full, clipboard bursts, a hostile update server) in GEEKBRIDGE_CHAOS=soak mode: 1000
+# reconnect cycles and full-size files. `cargo test` without the variable is the short CI mode.
+# Linux only (/proc, bash /dev/tcp).
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -19,19 +23,31 @@ BIN_DIR="${CARGO_TARGET_DIR:-$ROOT/target}/release"
 : "${SOAK_RSS_GROWTH_KIB:=3072}"
 : "${SOAK_FD_SLACK:=4}"
 
+RUN_SOAK=1
+RUN_CHAOS=1
 while (($#)); do
     case "$1" in
         --cycles) CYCLES="$2"; shift ;;
         --fuzz-iters) FUZZ="$2"; shift ;;
         --seconds) SECONDS_TOTAL="$2"; shift ;;
         --bin-dir) BIN_DIR="$2"; shift ;;
-        -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --no-chaos) RUN_CHAOS=0 ;;
+        --chaos-only) RUN_SOAK=0 ;;
+        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
 done
 
 cd "$ROOT"
+chaos() {
+    echo "== part 3: chaos / failure-injection tests (soak mode) =="
+    GEEKBRIDGE_CHAOS=soak cargo test --release --locked -p bridge-service \
+        --test chaos_link --test chaos_transfer --test chaos_clipboard -- --nocapture --test-threads=1
+    GEEKBRIDGE_CHAOS=soak cargo test --release --locked -p bridge-android --test chaos -- --nocapture --test-threads=1
+    GEEKBRIDGE_CHAOS=soak cargo test --release --locked -p bridge-update --test chaos_http -- --nocapture
+}
+if ((!RUN_SOAK)); then chaos; exit 0; fi
 echo "== part 1: in-process leak and fuzz tests ($CYCLES cycles, $FUZZ fuzz iterations) =="
 GEEKBRIDGE_SOAK_CYCLES="$CYCLES" GEEKBRIDGE_FUZZ_ITERS="$FUZZ" \
     cargo test --release --locked -p bridge-service --test leaks --test parse_fuzz -- --nocapture --test-threads=1
@@ -80,4 +96,5 @@ echo "rounds=$rounds fds $base_fds -> $end_fds, rss $base_rss kB -> $end_rss kB"
 fail=0
 ((end_fds <= base_fds + SOAK_FD_SLACK)) || { echo "FAIL: descriptor growth" >&2; fail=1; }
 ((end_rss <= base_rss + SOAK_RSS_GROWTH_KIB)) || { echo "FAIL: RSS growth" >&2; fail=1; }
+((RUN_CHAOS)) && chaos
 exit "$fail"

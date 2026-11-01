@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GeekBridge Contacts
+Comment=Your phone's phonebook on the computer
+Exec=geekbridge-contacts
+Icon=dev.geekbridge.Contacts
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.geekbridge.Contacts

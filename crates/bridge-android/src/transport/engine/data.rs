@@ -35,11 +35,18 @@ const RATE_PER_SEC: f64 = 2.0;
 pub(in crate::transport) enum Feature {
     Contacts,
     Calendar,
+    /// Writing events (`geekbridge.calendar.write`); needs its own switch and WRITE_CALENDAR.
+    CalendarEdit,
     Sms,
 }
 
 impl Feature {
-    const ALL: [Feature; 3] = [Feature::Contacts, Feature::Calendar, Feature::Sms];
+    const ALL: [Feature; 4] = [
+        Feature::Contacts,
+        Feature::Calendar,
+        Feature::CalendarEdit,
+        Feature::Sms,
+    ];
 
     fn incoming(self) -> &'static [&'static str] {
         match self {
@@ -48,6 +55,7 @@ impl Feature {
                 "kdeconnect.contacts.request_vcards_by_uid",
             ],
             Feature::Calendar => &["geekbridge.calendar.request"],
+            Feature::CalendarEdit => &["geekbridge.calendar.write"],
             Feature::Sms => &[
                 "kdeconnect.sms.request_conversations",
                 "kdeconnect.sms.request_conversation",
@@ -63,6 +71,7 @@ impl Feature {
                 "kdeconnect.contacts.response_vcards",
             ],
             Feature::Calendar => &["geekbridge.calendar.sync"],
+            Feature::CalendarEdit => &["geekbridge.calendar.write_result"],
             Feature::Sms => &["kdeconnect.sms.messages", "geekbridge.sms.status"],
         }
     }
@@ -81,6 +90,7 @@ impl Feature {
 pub(in crate::transport) struct Flags {
     pub contacts: bool,
     pub calendar: bool,
+    pub calendar_edit: bool,
     pub sms: bool,
 }
 
@@ -89,6 +99,8 @@ impl Flags {
         match f {
             Feature::Contacts => self.contacts,
             Feature::Calendar => self.calendar,
+            // Writing is never possible without reading: the switch alone is not enough.
+            Feature::CalendarEdit => self.calendar_edit && self.calendar,
             Feature::Sms => self.sms,
         }
     }
@@ -243,6 +255,7 @@ impl Hub {
             "stopped": g.stopped,
             "contacts": g.flags.contacts,
             "calendar": g.flags.calendar,
+            "calendar_edit": g.flags.calendar_edit,
             "sms": g.flags.sms,
         })
     }
@@ -347,8 +360,26 @@ mod tests {
         Flags {
             contacts: true,
             calendar: true,
+            calendar_edit: true,
             sms: true,
         }
+    }
+
+    #[test]
+    fn writing_needs_both_switches() {
+        let edit_only = Flags {
+            calendar_edit: true,
+            ..Flags::default()
+        };
+        assert!(incoming_types(edit_only).is_empty());
+        let both = Flags {
+            calendar: true,
+            calendar_edit: true,
+            ..Flags::default()
+        };
+        assert!(incoming_types(both).contains(&"geekbridge.calendar.write".to_owned()));
+        assert!(outgoing_types(both).contains(&"geekbridge.calendar.write_result".to_owned()));
+        assert!(is_data_kind("geekbridge.calendar.write"));
     }
 
     #[test]
@@ -363,8 +394,8 @@ mod tests {
             vec!["geekbridge.calendar.request"]
         );
         assert_eq!(outgoing_types(only_cal), vec!["geekbridge.calendar.sync"]);
-        assert_eq!(incoming_types(on()).len(), 6);
-        assert_eq!(outgoing_types(on()).len(), 5);
+        assert_eq!(incoming_types(on()).len(), 7);
+        assert_eq!(outgoing_types(on()).len(), 6);
     }
 
     #[test]

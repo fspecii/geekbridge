@@ -31,7 +31,7 @@
     <string name="home_messages">Messages</string>
     <string name="home_messages_sub">Android restricts SMS access</string>
     <string name="home_chip_unavailable">Not available</string>
-    <string name="home_agenda">Agenda</string>
+    <string name="home_agenda">Calendar</string>
     <string name="home_agenda_ok">Calendar access allowed</string>
     <string name="home_agenda_todo">Allow calendar access to show your events</string>
     <string name="home_chip_ready">Ready</string>
@@ -89,8 +89,8 @@
     <string name="chip_info">Info</string>
     <string name="setup_why_pair">Pair this phone with your computer once. After that they find each other on your network automatically, and nothing is trusted until you confirm a matching code.</string>
     <string name="setup_why_notifications">Lets GeekBridge show a quiet notice while it stays connected, and tell you about incoming files.</string>
-    <string name="setup_why_contacts">Lets this phone show names instead of numbers for calls and messages. Read on this phone only; nothing is uploaded.</string>
-    <string name="setup_why_calendar">Lets GeekBridge show your upcoming events in Agenda. Titles and times only, read on this phone.</string>
+    <string name="setup_why_contacts">Lets this phone show names instead of numbers for calls and messages, and, if you share contacts, fills the Contacts app on your computer. Read on this phone; nothing is uploaded.</string>
+    <string name="setup_why_calendar">Lets you share your calendars (including Google Calendar accounts that sync on this phone) with the Calendar app on your computer. Read-only; the computer can only add or change events if you separately switch on editing later, in Share with computer.</string>
     <string name="setup_why_phone_state">Lets GeekBridge know whether the phone is idle, ringing or in a call. It never sees phone numbers or call history.</string>
     <string name="setup_why_answer">Lets a paired computer you trust answer, decline or end a call on this phone, so a ringing call can be handled from your desk. GeekBridge cannot hear the call: audio stays on the phone unless the computer is also its Bluetooth hands-free device.</string>
     <string name="setup_why_caller">Android only gives an app the caller\'s number if it can read the call log. Allow this to show who is calling on your computer; with your contacts allowed it also shows the name. Without it the computer shows “Unknown caller”. Read on this phone only; the call log is never read or sent.</string>
@@ -127,6 +127,7 @@
     <string name="pair_dlg_decline">Decline</string>
 
     <!-- Share sheet -->
+    <string name="share_dot_title">Send</string>
     <string name="share_nothing">There is nothing to send.</string>
     <string name="share_nothing_shared">Nothing was shared.</string>
     <plurals name="share_files_header">

@@ -238,7 +238,7 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ header & status
 
     private fun buildHeader(root: LinearLayout) {
-        root.addView(ui.title("Diagnostics"), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        root.addView(DotText(this, "Diagnostics", maxPitchDp = Tok.DOT_NUMERAL, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = ui.dp(8) })
         root.addView(
             ui.text(
                 "GeekBridge ${BuildConfig.VERSION_NAME}. Technical details, the manual computer link and local " +

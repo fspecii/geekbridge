@@ -98,6 +98,10 @@ class TransportProtocolTest {
         assertEquals("transport_ping", JSONObject(TransportProtocol.pingRequest(3)).getString("action"))
         assertEquals("transport_disconnect", JSONObject(TransportProtocol.disconnectRequest(3)).getString("action"))
         assertEquals("transport_unpair", JSONObject(TransportProtocol.unpairRequest(ID_PEER)).getString("action"))
+        val wait = JSONObject(TransportProtocol.waitRequest(7, Long.MAX_VALUE))
+        assertEquals("transport_wait", wait.getString("action"))
+        assertEquals(7L, wait.getLong("since"))
+        assertEquals(TransportProtocol.MAX_WAIT_MS, wait.getLong("timeout_ms"))
         assertEquals("transport_stop", JSONObject(TransportProtocol.stopRequest()).getString("action"))
     }
 }
@@ -155,6 +159,15 @@ class TransportParseTest {
         val j = running()
         j.getJSONArray("connections").getJSONObject(0).getJSONObject("peer").put("name", "Evil\u0007\nName")
         assertEquals("Evil Name", TransportProtocol.parseSnapshot(j)!!.connections.single().peer.name)
+    }
+}
+
+class TransportWaitTest {
+    @Test fun aWaitResultGivesTheNewestSequenceUntilTheTransportStops() {
+        assertEquals(9L, TransportProtocol.parseWait(JSONObject("""{"last_event_seq":9,"stopped":false}""")))
+        assertEquals(null, TransportProtocol.parseWait(JSONObject("""{"last_event_seq":9,"stopped":true}""")))
+        assertEquals(null, TransportProtocol.parseWait(JSONObject("""{"stopped":false}""")))
+        assertEquals(null, TransportProtocol.parseWait("nope"))
     }
 }
 
@@ -217,6 +230,24 @@ class TransportControllerTest {
         assertEquals("transport_stop", f.actions().last())
         c.stop() // idempotent
         assertEquals(1, f.actions().count { it == "transport_stop" })
+    }
+
+    @Test fun eventsTheCoreReportsAreFetchedOnceAndAPeerUnpairIsSaid() {
+        val f = Fake()
+        var status = running()
+        f.answers["transport_status"] = { ok(status) }
+        val c = controller(f); c.start(opts)
+        val before = f.actions().count { it == "transport_status" }
+        c.eventsUpTo(5) // nothing newer than what the controller already saw
+        assertEquals(before, f.actions().count { it == "transport_status" })
+        status = running()
+            .put("last_event_seq", 6)
+            .put("events", JSONArray().put(JSONObject().put("seq", 6).put("kind", "peer_unpaired")))
+        c.eventsUpTo(6)
+        assertEquals(before + 1, f.actions().count { it == "transport_status" })
+        assertTrue(c.notice!!.text.contains("removed the pairing"))
+        c.eventsUpTo(6) // already seen
+        assertEquals(before + 1, f.actions().count { it == "transport_status" })
     }
 
     @Test fun failedStartReturnsToStoppedWithAnExplanation() {

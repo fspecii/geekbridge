@@ -16,12 +16,22 @@ use std::{
 };
 use zeroize::Zeroize;
 
+#[path = "pair_ui.rs"]
+mod pair_ui;
+pub use pair_ui::{NextStep, Problem};
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControlState {
     pub status: Option<Status>,
     pub error: Option<String>,
     pub notice: Option<String>,
     pub busy: bool,
+    /// The QR code the service issued, while the QR window is open.
+    pub pair_qr: Option<ipc::PairQr>,
+    /// Latest "Test connection" answer.
+    pub test: Option<bridge_core::pairing_help::ConnectionTest>,
+    /// The last pairing/connect failure in plain words.
+    pub problem: Option<Problem>,
 }
 impl ControlState {
     pub fn connected(&self) -> bool {
@@ -151,6 +161,8 @@ impl Worker {
             .spawn(move || {
                 let mut state = ControlState::default();
                 let mut previous = None;
+                // Events older than the first status are history, not news.
+                let mut seen_seq: Option<u64> = None;
                 let publish = |state: &ControlState, previous: &mut Option<ControlState>| {
                     if previous.as_ref() != Some(state) {
                         *previous = Some(state.clone());
@@ -170,15 +182,30 @@ impl Worker {
                         }
                     }
                     state.busy = false;
+                    if let Some(status) = &state.status {
+                        let after = *seen_seq.get_or_insert(status.event_seq);
+                        if status.event_seq > after {
+                            if let Ok(Response::Events(page)) = request(&Request::Events { after })
+                            {
+                                absorb_events(&mut state, &page.events);
+                                seen_seq = Some(page.next_after.max(after));
+                            } else {
+                                seen_seq = Some(status.event_seq);
+                            }
+                        }
+                    }
                     publish(&state, &mut previous);
                     match rx.recv_timeout(crate::pace::scaled(Duration::from_secs(1))) {
                         Ok(Command::Request(command)) if !quitting.load(Ordering::Acquire) => {
                             state.busy = true;
                             publish(&state, &mut previous);
-                            state.notice = Some(match request(&command) {
-                                Ok(_) => request_notice(&command).into(),
-                                Err(error) => error,
-                            });
+                            match &command {
+                                Request::TestConnection { .. } => state.test = None,
+                                Request::PairQr | Request::Connect { .. } => state.problem = None,
+                                _ => {}
+                            }
+                            let result = request(&command);
+                            apply_result(&mut state, &command, result);
                         }
                         Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -204,6 +231,43 @@ impl Drop for Worker {
         self.stop.store(true, Ordering::Release);
     }
 }
+/// Fold the answer to an explicit request into what the UI shows.
+fn apply_result(state: &mut ControlState, command: &Request, result: Result<Response, String>) {
+    match (command, result) {
+        (Request::PairQr, Ok(Response::PairQr(qr))) => {
+            state.pair_qr = Some(*qr);
+            state.notice = None;
+        }
+        (Request::PairQrCancel, Ok(_)) => {
+            state.pair_qr = None;
+            state.notice = None;
+        }
+        (Request::TestConnection { .. }, Ok(Response::ConnectionTest(t))) => {
+            state.test = Some(*t);
+            state.notice = None;
+        }
+        (_, Ok(_)) => state.notice = Some(request_notice(command).into()),
+        (_, Err(error)) => {
+            state.notice = Some(error);
+        }
+    }
+}
+
+/// Turn service events into a plain-language problem line and clear it when pairing succeeds.
+fn absorb_events(state: &mut ControlState, events: &[ipc::Event]) {
+    for event in events {
+        match &event.kind {
+            ipc::EventKind::PairFailed { reason }
+            | ipc::EventKind::QrRefused { reason }
+            | ipc::EventKind::ConnectFailed { reason } => {
+                state.problem = Some(Problem::from_reason(reason));
+            }
+            ipc::EventKind::Paired => state.problem = None,
+            _ => {}
+        }
+    }
+}
+
 fn request_notice(request: &Request) -> &'static str {
     match request {
         Request::Connect { .. } => "Connection requested. Waiting for the phone.",
@@ -250,6 +314,7 @@ pub struct Connections {
     active_challenge: Option<String>,
     entered_code: String,
     forget: Option<(String, String)>,
+    pair: pair_ui::PairUi,
 }
 impl Connections {
     pub fn new(ctx: egui::Context) -> Self {
@@ -261,6 +326,7 @@ impl Connections {
             active_challenge: None,
             entered_code: String::new(),
             forget: None,
+            pair: Default::default(),
         }
     }
     pub fn update(&mut self) {
@@ -371,14 +437,9 @@ impl Connections {
         {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(&phone.name, 13.0));
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Connect"))
-                    .clicked()
-                {
-                    self.submit(Request::Connect {
-                        device_id: phone.id.clone(),
-                        endpoint: None,
-                    });
+                ui.label(theme::caption(pal, "Nearby"));
+                if ui.add_enabled(enabled, egui::Button::new("Pair")).clicked() {
+                    self.one_tap_pair(&phone.id);
                 }
             });
         }
@@ -409,6 +470,8 @@ impl Connections {
         });
     }
     pub fn dialogs(&mut self, ctx: &egui::Context, pal: &Palette) {
+        self.pair_tick(ctx);
+        self.qr_window(ctx, pal);
         let challenge = self
             .state
             .status
@@ -428,16 +491,22 @@ impl Connections {
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(theme::semibold(display_text(&challenge.device_name), 17.0));
-                    ui.label("Compare this code with the code shown on your phone.");
-                    ui.label(
-                        RichText::new(&challenge.verification_key)
-                            .monospace()
-                            .size(30.0),
+                    ui.label("Your phone and this computer should show the same code:");
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            RichText::new(&challenge.verification_key)
+                                .monospace()
+                                .strong()
+                                .size(46.0),
+                        );
+                    });
+                    ui.add(
+                        egui::Label::new(theme::caption(
+                            pal,
+                            "Type the code your phone shows to confirm. If they differ, choose Decline: someone else may be on your network.",
+                        ))
+                        .wrap(),
                     );
-                    ui.label(theme::caption(
-                        pal,
-                        "Type the code from your phone to approve. Decline if the codes differ.",
-                    ));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.entered_code)
                             .hint_text("Code from phone")

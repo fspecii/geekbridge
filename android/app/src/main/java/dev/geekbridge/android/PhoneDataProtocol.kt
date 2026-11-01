@@ -5,7 +5,13 @@ import org.json.JSONObject
 import java.security.MessageDigest
 
 /** Which phone-data features may talk over the link right now (setting on AND Android permission granted). */
-data class ActiveFeatures(val contacts: Boolean = false, val calendar: Boolean = false, val sms: Boolean = false) {
+data class ActiveFeatures(
+    val contacts: Boolean = false,
+    val calendar: Boolean = false,
+    val sms: Boolean = false,
+    /** Computer may create/change/delete events: its own switch AND WRITE_CALENDAR, never without [calendar]. */
+    val calendarEdit: Boolean = false,
+) {
     val any: Boolean get() = contacts || calendar || sms
 }
 
@@ -15,6 +21,8 @@ data class PhoneDataSettings(
     val calendar: Boolean = false,
     val sms: Boolean = false,
     val calendarIds: Set<String> = emptySet(),
+    /** "Let the computer edit my calendar" - off by default, asked for separately from reading. */
+    val calendarEdit: Boolean = false,
 )
 
 data class PhoneDataPermissions(
@@ -23,6 +31,7 @@ data class PhoneDataPermissions(
     val readSms: Boolean = false,
     val sendSms: Boolean = false,
     val receiveSms: Boolean = false,
+    val writeCalendar: Boolean = false,
 ) {
     val smsComplete: Boolean get() = readSms && sendSms && receiveSms
 }
@@ -32,6 +41,7 @@ object PhoneDataGate {
         contacts = s.contacts && p.readContacts,
         calendar = s.calendar && p.readCalendar,
         sms = s.sms && p.smsComplete,
+        calendarEdit = s.calendarEdit && s.calendar && p.readCalendar && p.writeCalendar,
     )
 }
 
@@ -43,13 +53,16 @@ object PhoneDataKinds {
     const val CONTACTS_RES_VCARDS = "kdeconnect.contacts.response_vcards"
     const val CALENDAR_REQ = "geekbridge.calendar.request"
     const val CALENDAR_SYNC = "geekbridge.calendar.sync"
+    const val CALENDAR_WRITE = "geekbridge.calendar.write"
+    const val CALENDAR_WRITE_RESULT = "geekbridge.calendar.write_result"
     const val SMS_REQ_CONVERSATIONS = "kdeconnect.sms.request_conversations"
     const val SMS_REQ_CONVERSATION = "kdeconnect.sms.request_conversation"
     const val SMS_REQUEST = "kdeconnect.sms.request"
     const val SMS_MESSAGES = "kdeconnect.sms.messages"
     const val SMS_STATUS = "geekbridge.sms.status"
 
-    val outgoing: Set<String> = setOf(CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, SMS_MESSAGES, SMS_STATUS)
+    val outgoing: Set<String> =
+        setOf(CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, CALENDAR_WRITE_RESULT, SMS_MESSAGES, SMS_STATUS)
 }
 
 /** One desktop request relayed by the native core. */
@@ -67,6 +80,11 @@ object PhoneDataLimits {
     const val MAX_TITLE = 512
     const val MAX_LOCATION = 512
     const val MAX_DESCRIPTION = 2000
+    const val MAX_REMINDERS = 5
+    const val MAX_ATTENDEE_NAMES = 6
+    /** Events whose reminders / attendees are looked up per provider query. */
+    const val DETAIL_BATCH = 200
+    const val MAX_OPS_REMEMBERED = 200
     const val MAX_SMS_PER_PACKET = 100
     const val MAX_SMS_BODY_CHARS = 20_000
     const val MAX_CONVERSATION_PAGE = 50
@@ -86,9 +104,11 @@ object PhoneDataProtocol {
     /** The `data` object of `transport_start`; null when nothing is active so the app declares nothing. */
     fun startObject(a: ActiveFeatures): JSONObject? =
         if (!a.any) null else JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
+            .put("calendar_edit", a.calendarEdit && a.calendar)
 
     fun configRequest(a: ActiveFeatures): String =
-        base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms).toString()
+        base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
+            .put("calendar_edit", a.calendarEdit && a.calendar).toString()
 
     fun waitRequest(since: Long, timeoutMs: Long = PhoneDataLimits.WAIT_MS): String =
         base("transport_data_wait").put("since", since)
@@ -201,9 +221,21 @@ object PhoneDataProtocol {
         val description = clean(i.description, PhoneDataLimits.MAX_DESCRIPTION, multiline = true)
         val tz = if (i.allDay) "UTC" else clean(i.timeZone, 64).ifEmpty { "UTC" }
         val id = "${i.eventId}@${i.begin}"
-        val rev = sha(listOf(title, i.allDay.toString(), i.begin.toString(), i.end.toString(), tz, location, description, i.calendarId))
+        val reminders = i.reminders.filter { it in 0..40_320 }.distinct().sorted().take(PhoneDataLimits.MAX_REMINDERS)
+        val names = i.attendees.map { clean(it, 128) }.filter { it.isNotEmpty() }.take(PhoneDataLimits.MAX_ATTENDEE_NAMES)
+        val rev = sha(
+            listOf(
+                title, i.allDay.toString(), i.begin.toString(), i.end.toString(), tz, location, description, i.calendarId,
+                i.recurring.toString(), reminders.joinToString(","), i.attendeeCount.toString(), names.joinToString("|"),
+            ),
+        )
         val o = JSONObject().put("id", id).put("rev", rev).put("title", title).put("allDay", i.allDay)
             .put("startMs", i.begin).put("endMs", i.end).put("tz", tz).put("calendarId", i.calendarId)
+            .put("eventId", i.eventId).put("recurring", i.recurring)
+        if (reminders.isNotEmpty()) o.put("reminders", JSONArray(reminders))
+        if (i.attendeeCount > 0) {
+            o.put("attendees", JSONObject().put("count", i.attendeeCount.coerceAtMost(10_000)).put("names", JSONArray(names)))
+        }
         if (location.isNotEmpty()) o.put("location", location)
         if (description.isNotEmpty()) o.put("description", description)
         return o
@@ -271,9 +303,25 @@ data class CalInstance(
     val location: String?,
     val description: String?,
     val calendarId: String,
+    /** The event is part of a series (or an exception of one): shown, never editable from the computer. */
+    val recurring: Boolean = false,
+    /** Minutes before the start. */
+    val reminders: List<Int> = emptyList(),
+    val attendeeCount: Int = 0,
+    val attendees: List<String> = emptyList(),
 )
 
-data class CalendarInfo(val id: String, val name: String)
+data class CalendarInfo(
+    val id: String,
+    val name: String,
+    /** Account the calendar syncs with (a Google address for Google Calendar). */
+    val account: String? = null,
+    /** `com.google` for Google accounts. */
+    val accountType: String? = null,
+    val color: Int? = null,
+    /** Contributor access or better: Android lets this app add events here. */
+    val writable: Boolean = false,
+)
 
 data class SmsRow(
     val id: Long,

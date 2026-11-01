@@ -8,6 +8,7 @@ pub mod clipboard_wire;
 pub mod hotkey;
 pub mod ipc;
 pub mod messages;
+pub mod pairing_help;
 pub mod phone_link;
 pub mod phone_view;
 pub mod share;
@@ -27,7 +28,10 @@ pub const MAX_DEVICES: usize = 128;
 pub enum AppKind {
     Calls,
     Messages,
+    /// The Calendar app. The variant keeps its original name (and `geekbridge-agenda` its binary
+    /// name) so installs, scripts and desktop entries keep working.
     Agenda,
+    Contacts,
     Clipboard,
 }
 impl AppKind {
@@ -35,7 +39,8 @@ impl AppKind {
         match self {
             Self::Calls => "Calls",
             Self::Messages => "Messages",
-            Self::Agenda => "Agenda",
+            Self::Agenda => "Calendar",
+            Self::Contacts => "Contacts",
             Self::Clipboard => "Clipboard",
         }
     }
@@ -43,7 +48,8 @@ impl AppKind {
         match self {
             Self::Calls => "Your phone, within reach.",
             Self::Messages => "A little more room for conversation.",
-            Self::Agenda => "Your people. Your day.",
+            Self::Agenda => "Your day, shared with Google Calendar.",
+            Self::Contacts => "Your phone's phonebook.",
             Self::Clipboard => "Pick up where you copied.",
         }
     }

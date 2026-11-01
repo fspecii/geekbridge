@@ -27,7 +27,9 @@ use tokio_rustls::{TlsAcceptor, TlsConnector};
 use crate::cert::{CertInfo, DeviceCredentials};
 use crate::error::KdeError;
 use crate::identity::DeviceId;
-use crate::tls::{PeerPolicy, PeerVerifier, TlsVersions, client_config, server_config};
+use crate::tls::{
+    PeerPolicy, PeerVerifier, TlsVersions, client_config, handshake_error, server_config,
+};
 
 /// Payload port range of stock KDE Connect.
 pub const PAYLOAD_PORTS: RangeInclusive<u16> = 1739..=1764;
@@ -148,9 +150,9 @@ pub struct PayloadContext {
     pub(crate) peer_id: DeviceId,
     pub(crate) peer_cert: CertInfo,
     pub(crate) peer_ip: IpAddr,
-    /// Local IP of the control connection, when known. A dialing receiver binds its payload
-    /// socket to it so the sender (which accepts only the paired peer's IP) sees the same
-    /// address as on the control link, even on multi-homed hosts.
+    /// Local IP of the control connection, when known. A dialing receiver falls back to a payload
+    /// socket bound to it when the plain route fails, for a multi-homed host whose default route
+    /// presents another address to the sender (which accepts only the paired peer's IP).
     pub(crate) local_ip: Option<IpAddr>,
     pub(crate) versions: TlsVersions,
     pub(crate) config: PayloadConfig,
@@ -237,24 +239,9 @@ impl PayloadContext {
         }
         let c = &self.config;
         let work = async {
-            let addr = SocketAddr::new(self.peer_ip, port);
-            let tcp = timeout(c.connect_timeout, dial(addr, self.local_ip))
-                .await
-                .map_err(|_| PayloadError::Timeout("payload connect"))??;
-            tcp.set_nodelay(true)?;
-            let (verifier, _failure) = PeerVerifier::new(
-                PeerPolicy::Pinned(self.peer_cert.clone()),
-                self.peer_id.clone(),
-            );
-            let cfg = client_config(&self.creds, verifier, self.versions)?;
-            let name = rustls::pki_types::ServerName::IpAddress(self.peer_ip.into());
-            let mut tls = timeout(
-                c.handshake_timeout,
-                TlsConnector::from(cfg).connect(name, tcp),
-            )
-            .await
-            .map_err(|_| PayloadError::Timeout("payload TLS handshake"))?
-            .map_err(|e| PayloadError::Link(KdeError::Tls(e.to_string())))?;
+            let mut tls = self
+                .dial_secure(SocketAddr::new(self.peer_ip, port))
+                .await?;
             copy_in(&mut tls, out, expected, max, c.idle_timeout, progress).await
         };
         tokio::select! {
@@ -262,6 +249,53 @@ impl PayloadContext {
             _ = cancel.cancelled() => Err(PayloadError::Cancelled),
             r = work => r,
         }
+    }
+
+    /// A pinned TLS connection to the sender. A route only counts once its handshake finished: a
+    /// connect can succeed on a path that then goes silent or resets (docs/e2e-findings.md E2E-14).
+    /// A certificate the pin rejects ends the search; another route would not change the verdict.
+    async fn dial_secure(
+        &self,
+        addr: SocketAddr,
+    ) -> PayloadResult<tokio_rustls::client::TlsStream<TcpStream>> {
+        let mut last = PayloadError::Timeout("payload connect");
+        for (source, limit) in dial_plan(addr, self.local_ip, self.config.connect_timeout) {
+            match self.dial_once(addr, source, limit).await {
+                Ok(tls) => return Ok(tls),
+                Err(
+                    e @ PayloadError::Link(KdeError::Certificate(_) | KdeError::PinMismatch { .. }),
+                ) => {
+                    return Err(e);
+                }
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
+    async fn dial_once(
+        &self,
+        addr: SocketAddr,
+        source: Option<IpAddr>,
+        connect_limit: Duration,
+    ) -> PayloadResult<tokio_rustls::client::TlsStream<TcpStream>> {
+        let tcp = timeout(connect_limit, dial(addr, source))
+            .await
+            .map_err(|_| PayloadError::Timeout("payload connect"))??;
+        tcp.set_nodelay(true)?;
+        let (verifier, failure) = PeerVerifier::new(
+            PeerPolicy::Pinned(self.peer_cert.clone()),
+            self.peer_id.clone(),
+        );
+        let cfg = client_config(&self.creds, verifier, self.versions)?;
+        let name = rustls::pki_types::ServerName::IpAddress(self.peer_ip.into());
+        timeout(
+            self.config.handshake_timeout,
+            TlsConnector::from(cfg).connect(name, tcp),
+        )
+        .await
+        .map_err(|_| PayloadError::Timeout("payload TLS handshake"))?
+        .map_err(|e| PayloadError::Link(handshake_error(e, &failure, &self.peer_id)))
     }
 }
 
@@ -350,39 +384,43 @@ async fn handshake_server(
     .map_err(|e| PayloadError::Link(KdeError::Tls(e.to_string())))
 }
 
-/// How long a connect from the control link's source address gets before the plain route is tried.
-const BOUND_DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long each route gets to connect while another one is left to try.
+const ROUTE_TRIAL_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Dial `addr`. When the control link's local address is known (and of the same family) the first
-/// attempt is bound to it, so the sender sees the address it already trusts on multi-homed hosts.
-/// That address may have no route to the peer (an Android phone whose control link arrived on one
-/// interface while the default route is another; the emulator does exactly this): the SYN is then
-/// silently dropped, so the bound attempt is short and the plain OS-chosen route follows.
-async fn dial(addr: SocketAddr, local: Option<IpAddr>) -> std::io::Result<TcpStream> {
-    let bound = async {
-        let ip = local.filter(|ip| ip.is_ipv4() == addr.is_ipv4())?;
-        let socket = if addr.is_ipv4() {
-            TcpSocket::new_v4().ok()?
-        } else {
-            TcpSocket::new_v6().ok()?
-        };
-        socket.bind(SocketAddr::new(ip, 0)).ok()?;
-        Some(socket.connect(addr).await)
-    };
-    first_or_fallback(bound, BOUND_DIAL_TIMEOUT, TcpStream::connect(addr)).await
+/// The routes to try, in order, with their connect budget. `None` is the OS-chosen route.
+///
+/// The plain route comes first: it is the one the routing table vouches for. A socket bound to the
+/// control link's address does not leave through that link's interface; Android routes it by the
+/// default network with a source that network does not own, and such a socket can connect and then
+/// die (docs/e2e-findings.md E2E-14). If the plain route shows the sender an address it does not
+/// accept, the sender closes at once and the bound attempt follows. The last entry retries the plain
+/// route with the full budget, for a network that is merely slow.
+fn dial_plan(
+    addr: SocketAddr,
+    local: Option<IpAddr>,
+    connect_timeout: Duration,
+) -> Vec<(Option<IpAddr>, Duration)> {
+    match local.filter(|ip| ip.is_ipv4() == addr.is_ipv4()) {
+        Some(ip) => vec![
+            (None, ROUTE_TRIAL_TIMEOUT),
+            (Some(ip), ROUTE_TRIAL_TIMEOUT),
+            (None, connect_timeout),
+        ],
+        None => vec![(None, connect_timeout)],
+    }
 }
 
-/// The result of `first` if it succeeds within `limit`; otherwise (declined, failed or too slow)
-/// whatever `fallback` produces.
-async fn first_or_fallback<T>(
-    first: impl std::future::Future<Output = Option<std::io::Result<T>>>,
-    limit: Duration,
-    fallback: impl std::future::Future<Output = std::io::Result<T>>,
-) -> std::io::Result<T> {
-    match timeout(limit, first).await {
-        Ok(Some(Ok(v))) => Ok(v),
-        _ => fallback.await,
-    }
+async fn dial(addr: SocketAddr, source: Option<IpAddr>) -> std::io::Result<TcpStream> {
+    let Some(ip) = source else {
+        return TcpStream::connect(addr).await;
+    };
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+    socket.bind(SocketAddr::new(ip, 0))?;
+    socket.connect(addr).await
 }
 
 /// True when `a` and `b` are the same host, treating `::ffff:a.b.c.d` as `a.b.c.d`.

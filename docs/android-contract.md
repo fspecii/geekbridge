@@ -95,6 +95,8 @@ Wire contract: `docs/phone-data-link.md`. Rust relays an allow-listed set of pac
 * `transport_start` takes `data: {contacts?, calendar?, sms?}` (booleans, default false). It decides the declared
   capabilities; changing it needs a restart. `transport_data_config {contacts?, calendar?, sms?}` toggles the runtime
   flags (an off feature drops its packets and discards its queued requests).
+* `transport_wait {since?, timeout_ms?}` (max 600 s) -> `{last_event_seq, stopped}`: blocks until an event newer than `since` or a
+  stop; see [android-transport.md](android-transport.md).
 * `transport_data_wait {since?, timeout_ms?}` (max 25 s) -> `{events:[{seq, connection_id, kind, body}], seq, stopped,
   contacts, calendar, sms}`. Desktop requests of enabled features; queue of 64, oldest dropped, events expire after 60 s
   and are never delivered twice (so a restarted waiter cannot replay an SMS send).

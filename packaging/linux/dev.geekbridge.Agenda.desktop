@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=GeekBridge Agenda
-Comment=Android agenda bridge
+Name=GeekBridge Calendar
+Comment=Your phone's calendars (including Google Calendar) on the computer
 Exec=geekbridge-agenda
 Icon=dev.geekbridge.Agenda
 Terminal=false

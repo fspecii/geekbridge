@@ -17,7 +17,7 @@ import os, re, subprocess, sys, time, xml.etree.ElementTree as ET
 ADB = os.environ["ADB"].split()
 
 def sh(*a, check=True):
-    return subprocess.run(ADB + list(a), capture_output=True, text=True, check=check, timeout=25).stdout
+    return subprocess.run(ADB + list(a), capture_output=True, text=True, check=check, timeout=int(os.environ.get("ADBUI_TIMEOUT", "25"))).stdout
 
 def nodes():
     for _ in range(4):

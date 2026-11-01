@@ -46,6 +46,9 @@ use tokio::{
     time::{Instant, timeout, timeout_at},
 };
 
+#[path = "pairing_flow.rs"]
+mod pairing_flow;
+
 pub const MAX_LINKS: usize = 16;
 pub const MAX_CHALLENGES: usize = 8;
 const EVENT_CAP: usize = 256;
@@ -181,6 +184,8 @@ pub struct Daemon {
     options: DaemonOptions,
     calling_gate: Arc<Semaphore>,
     inbound: Mutex<Option<SocketAddr>>,
+    /// One-time tokens behind "show a QR code" pairing.
+    tokens: Mutex<kde::qrpair::TokenBook>,
     clipboard: Option<Arc<ClipboardService>>,
     /// The hotkey currently registered with the binder, if any.
     bound_hotkey: Mutex<Option<String>>,
@@ -278,6 +283,7 @@ impl Daemon {
             options,
             calling_gate: Arc::new(Semaphore::new(1)),
             inbound: Mutex::new(None),
+            tokens: Mutex::new(kde::qrpair::TokenBook::new()),
             clipboard,
             bound_hotkey: Mutex::new(None),
             share,
@@ -299,6 +305,11 @@ impl Daemon {
 
     fn consents(&self) -> MutexGuard<'_, ConsentStore> {
         self.consents.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The phone-data hub (calendar alert ticker).
+    pub fn phone_data(&self) -> &Arc<crate::phone_data::PhoneData> {
+        &self.data
     }
 
     pub fn set_inbound_listener(&self, addr: SocketAddr) {
@@ -410,6 +421,18 @@ impl Daemon {
             Request::Deny { challenge_id } => {
                 self.decide(&challenge_id, false).map(|()| Response::Ack)
             }
+            Request::PairQr => self.pair_qr().map(|q| Response::PairQr(Box::new(q))),
+            Request::PairQrCancel => {
+                self.pair_qr_cancel();
+                Ok(Response::Ack)
+            }
+            Request::TestConnection {
+                device_id,
+                endpoint,
+            } => self
+                .test_connection(device_id.as_deref(), endpoint)
+                .await
+                .map(|t| Response::ConnectionTest(Box::new(t))),
             Request::Disconnect { device_id } => {
                 self.disconnect(&device_id).await.map(|()| Response::Ack)
             }
@@ -490,10 +513,34 @@ impl Daemon {
                 query,
                 day,
                 utc_offset_minutes,
+                days,
+                people_limit,
             } => self
                 .data
-                .agenda_view(&query, &day, utc_offset_minutes)
+                .agenda_view_range(&query, &day, utc_offset_minutes, days, people_limit)
                 .map(|v| Response::Agenda(Box::new(v))),
+            Request::CalendarEdit {
+                device_id,
+                op_id,
+                action,
+                calendar_id,
+                event_id,
+                draft,
+            } => self
+                .data
+                .calendar_edit(
+                    &device_id,
+                    &op_id,
+                    action,
+                    calendar_id.as_deref(),
+                    event_id.as_deref(),
+                    draft.as_deref(),
+                )
+                .map(|()| Response::Ack),
+            Request::CalendarEditRetry { device_id, op_id } => self
+                .data
+                .calendar_edit_retry(&device_id, &op_id)
+                .map(|()| Response::Ack),
             Request::AgendaRefresh { device_id } => self
                 .data
                 .refresh_agenda(device_id.as_deref())
@@ -1456,6 +1503,7 @@ async fn trusted_loop(
             d.share.drop_job(job);
         }
     }
+    d.share.link_lost(id);
     d.finish(id, attempt, EventKind::LinkLost { reason: loss });
 }
 
@@ -1549,10 +1597,22 @@ fn data_link(
         c.is_enabled(id, Feature::Sms),
     );
     drop(c);
+    let edit = c_edit(d, id);
     let (rx, generation) = d.data.link_up(id, &peer.device_name, caps, consents);
+    d.data.set_enabled(id, Feature::CalendarEdit, edit.0);
+    d.data.set_enabled(id, Feature::CalendarAlerts, edit.1);
     (
         rx,
         DataLinkGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
+}
+
+/// (calendar editing, calendar alerts) consents of one phone.
+fn c_edit(d: &Arc<Daemon>, id: &str) -> (bool, bool) {
+    let c = d.consents();
+    (
+        c.is_enabled(id, Feature::CalendarEdit),
+        c.is_enabled(id, Feature::CalendarAlerts),
     )
 }
 
@@ -1734,6 +1794,13 @@ impl Drop for ChallengeGuard {
 
 impl kde::Approver for ChallengeApprover {
     async fn approve(&mut self, request: kde::ApprovalRequest) -> bool {
+        // A phone that scanned our QR code presents its one-time token: a valid one is our approval
+        // (the user put the code on this screen on purpose); anything else is refused outright.
+        if let Some(token) = request.presented_token.as_deref()
+            && request.direction == kde::Direction::Incoming
+        {
+            return self.daemon.redeem_qr(&self.device_id, token);
+        }
         let challenge_id = random_id();
         let (tx, rx) = oneshot::channel();
         {

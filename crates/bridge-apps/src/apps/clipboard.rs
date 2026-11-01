@@ -149,6 +149,16 @@ pub(crate) fn sync_section(
     draft: &mut Option<String>,
 ) {
     ui.label(theme::overline(pal, "Phone sync"));
+    sync_body(ui, pal, link, draft);
+}
+
+/// The sync status, per-phone switches, paste/send buttons, shortcut and window settings.
+pub(crate) fn sync_body(
+    ui: &mut egui::Ui,
+    pal: &theme::Palette,
+    link: &mut ClipLink,
+    draft: &mut Option<String>,
+) {
     let state = link.state.clone();
     let Some(status) = state.status else {
         theme::group(ui, pal, |ui| {
@@ -168,12 +178,12 @@ pub(crate) fn sync_section(
     theme::group(ui, pal, |ui| {
         ui.add(egui::Label::new(theme::caption(
             pal,
-            "This computer → phone: automatic for phones you turn on below (text and links; passwords from password managers are skipped).",
+            "From this computer to the phone: automatic for phones you turn on below (text and links; passwords from password managers are skipped).",
         )).wrap());
         ui.add_space(2.0);
         ui.add(egui::Label::new(theme::caption(
             pal,
-            "Phone → this computer: you ask for it. Android doesn't let apps read the clipboard in the background, so the phone shares only what you copied recently and only while it's unlocked.",
+            "From the phone to this computer: you ask for it. Android doesn't let apps read the clipboard in the background, so the phone shares only what you copied recently and only while it's unlocked.",
         )).wrap());
         ui.add_space(4.0);
         ui.add(egui::Label::new(theme::caption(pal, clipboard_link::backend_line(&status))).wrap());
@@ -185,7 +195,7 @@ pub(crate) fn sync_section(
             ui.add(
                 egui::Label::new(theme::secondary(
                     pal,
-                    "No paired phones yet. Pair one from the connection details below.",
+                    "No paired phones yet. Pair one from the GeekBridge window: Pair with QR code.",
                 ))
                 .wrap(),
             );

@@ -196,8 +196,16 @@ desk_dial() {
   $ADB emu redir add "tcp:$REDIR_PORT:1716" >/dev/null 2>&1
   # Phone -> desktop file payloads: the phone listens on the first free port of 1739-1764 and the desktop dials it at
   # 127.0.0.1:<port>, so those host ports are forwarded (E2E-7). The desktop's own payload listener (desktop -> phone)
-  # simply takes the first port after these, and the phone dials it at 10.0.2.2:<port>.
-  for p in 1739 1740 1741 1742; do $ADB emu redir add "tcp:$p:$p" >/dev/null 2>&1; done
+  # simply takes the first port after these, and the phone dials it at 10.0.2.2:<port>. A port another emulator on this
+  # host already owns (E2E-11) is kept busy inside this guest, so the phone cannot pick it and be dialled on the wrong phone.
+  local p mine=0
+  for ((p = 1739; p <= 1764 && mine < 4; p++)); do
+    if $ADB emu redir add "tcp:$p:$p" 2>&1 | grep -q '^OK' || $ADB emu redir list 2>/dev/null | grep -q "tcp:$p  *=> *$p"; then
+      mine=$((mine + 1))
+    else
+      $ADB shell "nohup nc -l -p $p >/dev/null 2>&1 </dev/null &" >/dev/null 2>&1
+    fi
+  done
   ctl connect "$PHONE_ID" 127.0.0.1 "$REDIR_PORT" >/dev/null
 }
 load_ids() { desk_id; PHONE_ID="$(cat "$RUN/phone-id" 2>/dev/null)"; }
@@ -264,6 +272,7 @@ phone_clip_sync_on() {
   # E2E-6: the switch can read "On" while the clipboard engine ignores pushes and answers pulls with
   # "Clipboard sync is off in the phone app"; cycling Off -> On re-arms it. Always cycle.
   goto_home; ui scrollto "Clipboard sync" >/dev/null || return 1
+  $ADB shell input swipe 540 1800 540 1200 300; sleep 1   # the row stops under the gesture bar; lift it into reach
   ui has "On. Your computer can ask" && { ui taprow "Clipboard sync" 960; sleep 2; }
   ui taprow "Clipboard sync" 960; sleep 2
   ui has "On. Your computer can ask"

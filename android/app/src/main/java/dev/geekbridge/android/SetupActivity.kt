@@ -153,17 +153,15 @@ class SetupActivity : Activity() {
         box.addView(
             kit.text(if (overview) getString(R.string.setup_overview) else getString(R.string.setup_step_of, page + 1, steps.size), 13f, Tone.Muted, bold = true),
         )
-        val bars = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        for ((i, s) in steps.withIndex()) {
-            val c = when {
-                i == page -> kit.blue
-                s.status == StepStatus.Done -> getColor(R.color.gb_ok)
-                else -> getColor(R.color.gb_line)
-            }
-            val bar = View(this).apply { background = kit.shape(c, 3) }
-            bars.addView(bar, LinearLayout.LayoutParams(0, kit.dp(5), 1f).apply { if (i > 0) marginStart = kit.dp(4) })
+        val stepper = DotStepper(this).apply {
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO // the caption above already says "Step N of M"
+            set(
+                steps.map { if (it.status == StepStatus.Done) DotStep.Done else if (it.status == StepStatus.Denied || it.status == StepStatus.Blocked) DotStep.Attention else DotStep.Todo },
+                page.coerceAtMost(steps.size - 1).let { if (overview) -1 else it },
+                if (overview) getString(R.string.setup_overview) else getString(R.string.setup_step_dots, page + 1, steps.size),
+            )
         }
-        box.addView(bars, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8) })
+        box.addView(stepper, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8) })
         return box
     }
 
@@ -171,8 +169,8 @@ class SetupActivity : Activity() {
         val (icon, why) = copy(s.id)
         val title = SetupModel.title(s.id)
         val head = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.START }
-        head.addView(kit.badge(icon, tone(s.status), 64).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(24) })
-        head.addView(kit.heading(title, 28f).apply { setPadding(0, kit.dp(16), 0, 0) })
+        head.addView(kit.badge(icon, tone(s.status), 64, solid = s.status == StepStatus.Done).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(24) })
+        head.addView(DotText(this, title, maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(20) })
         val chip = kit.chip(chipText(s), tone(s.status))
         head.addView(chip, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = kit.dp(10) })
         root.addView(head)
@@ -282,7 +280,7 @@ class SetupActivity : Activity() {
     }
 
     private fun overview(root: LinearLayout) {
-        root.addView(kit.heading(getString(R.string.setup_overview_title)).apply { setPadding(0, kit.dp(24), 0, 0) })
+        root.addView(DotText(this, getString(R.string.setup_overview_title), maxPitchDp = Tok.DOT_DISPLAY, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(24) })
         val open = steps.count { it.required && it.status != StepStatus.Done }
         root.addView(
             kit.text(

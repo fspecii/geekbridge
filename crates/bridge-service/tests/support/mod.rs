@@ -330,3 +330,5 @@ impl Rng {
         (self.next() % n.max(1) as u64) as usize
     }
 }
+
+pub mod chaos;

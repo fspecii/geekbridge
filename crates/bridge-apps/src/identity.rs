@@ -5,7 +5,9 @@ pub fn binary_name(app: AppKind) -> &'static str {
     match app {
         AppKind::Calls => "geekbridge-calls",
         AppKind::Messages => "geekbridge-messages",
+        // The Calendar app; the old name stays so installs and launchers keep working.
         AppKind::Agenda => "geekbridge-agenda",
+        AppKind::Contacts => "geekbridge-contacts",
         AppKind::Clipboard => "geekbridge-clipboard",
     }
 }
@@ -16,6 +18,7 @@ pub fn app_id(app: AppKind) -> &'static str {
         AppKind::Calls => "dev.geekbridge.Calls",
         AppKind::Messages => "dev.geekbridge.Messages",
         AppKind::Agenda => "dev.geekbridge.Agenda",
+        AppKind::Contacts => "dev.geekbridge.Contacts",
         AppKind::Clipboard => "dev.geekbridge.Clipboard",
     }
 }
@@ -28,7 +31,8 @@ pub fn initial_size(app: AppKind) -> [f32; 2] {
     match app {
         AppKind::Calls => [380.0, 680.0],
         AppKind::Messages => [900.0, 600.0],
-        AppKind::Agenda => [820.0, 600.0],
+        AppKind::Agenda => [1080.0, 720.0],
+        AppKind::Contacts => [820.0, 600.0],
         AppKind::Clipboard => [460.0, 580.0],
     }
 }
@@ -38,7 +42,8 @@ pub fn min_size(app: AppKind) -> [f32; 2] {
     match app {
         AppKind::Calls => [320.0, 560.0],
         AppKind::Messages => [640.0, 460.0],
-        AppKind::Agenda => [560.0, 460.0],
+        AppKind::Agenda => [760.0, 520.0],
+        AppKind::Contacts => [560.0, 460.0],
         AppKind::Clipboard => [360.0, 440.0],
     }
 }
@@ -48,7 +53,8 @@ pub fn feature_label(app: AppKind) -> Option<&'static str> {
     match app {
         AppKind::Calls => None,
         AppKind::Messages => Some("messaging"),
-        AppKind::Agenda => Some("contacts"),
+        AppKind::Agenda => Some("calendar"),
+        AppKind::Contacts => Some("contacts"),
         AppKind::Clipboard => Some("clipboard"),
     }
 }
@@ -58,7 +64,8 @@ pub fn works_without_phone(app: AppKind) -> &'static str {
     match app {
         AppKind::Calls => "You can type a number and copy it. Calling needs a connected phone.",
         AppKind::Messages => "You can write a draft and copy it. Sending needs a connected phone.",
-        AppKind::Agenda => "You can browse days here. Contacts and events need a connected phone.",
+        AppKind::Agenda => "You can browse dates here. Events need a connected phone.",
+        AppKind::Contacts => "Contacts need a connected phone.",
         AppKind::Clipboard => {
             "You can type or paste text and copy it. Sending needs a connected phone."
         }
@@ -70,7 +77,8 @@ pub fn capability_prefix(app: AppKind) -> Option<&'static str> {
     match app {
         AppKind::Calls => None,
         AppKind::Messages => Some("kdeconnect.sms"),
-        AppKind::Agenda => Some("kdeconnect.contacts"),
+        AppKind::Agenda => Some("geekbridge.calendar"),
+        AppKind::Contacts => Some("kdeconnect.contacts"),
         AppKind::Clipboard => Some("kdeconnect.clipboard"),
     }
 }
@@ -78,10 +86,11 @@ pub fn capability_prefix(app: AppKind) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ALL: [AppKind; 4] = [
+    const ALL: [AppKind; 5] = [
         AppKind::Calls,
         AppKind::Messages,
         AppKind::Agenda,
+        AppKind::Contacts,
         AppKind::Clipboard,
     ];
 

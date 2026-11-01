@@ -23,6 +23,7 @@ pub enum Icon {
     Calendar,
     Keypad,
     Clock,
+    Folder,
 }
 
 /// Paints `icon` centred in `rect` (which should be roughly square).
@@ -108,6 +109,17 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Refresh => {
             painter.add(Shape::line(arc(c, s * 0.75, -60.0, 230.0), stroke));
             line(&[p(0.35, -0.95), p(0.5, -0.45), p(0.0, -0.5)]);
+        }
+        Icon::Folder => {
+            line(&[
+                p(-0.9, -0.6),
+                p(-0.35, -0.6),
+                p(-0.1, -0.3),
+                p(0.9, -0.3),
+                p(0.9, 0.75),
+                p(-0.9, 0.75),
+                p(-0.9, -0.6),
+            ]);
         }
         Icon::Clipboard => {
             outline(Rect::from_min_max(p(-0.7, -0.75), p(0.7, 0.95)), round);

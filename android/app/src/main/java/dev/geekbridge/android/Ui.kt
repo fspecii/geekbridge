@@ -28,8 +28,8 @@ enum class Emphasis { Primary, Secondary, Quiet }
 /**
  * Programmatic view helpers (platform widgets only; no AndroidX/Compose).
  *
- * Visual language: macOS-style grouped sections (small caption label above a hairline-bordered rounded
- * group), monochrome type and fills, and one red accent used for dots and the Messages section. Colour is
+ * Visual language (dot-matrix, see [Tok]): grouped sections (small caption label with a dot above a large-radius
+ * card), monochrome ink on off-white / true black, pill buttons, and one red accent for the live dot. Colour is
  * never the only carrier of state: every status also has words.
  */
 class Ui(private val ctx: Context) {
@@ -81,8 +81,8 @@ class Ui(private val ctx: Context) {
         parent.addView(label, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(24); bottomMargin = dp(8) })
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(16))
-            background = rounded(color(R.color.gb_card), 14, color(R.color.gb_line))
+            setPadding(dp(20), dp(16), dp(20), dp(20))
+            background = rounded(color(R.color.gb_card), Tok.R_CARD)
         }
         parent.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
         return card
@@ -146,7 +146,7 @@ class Ui(private val ctx: Context) {
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(40)
             setPadding(dp(10), dp(6), dp(10), dp(6))
-            if (index % 2 == 0) background = rounded(color(R.color.gb_stripe), 8)
+            if (index % 2 == 0) background = rounded(color(R.color.gb_stripe), Tok.R_ROW)
         }
         val l = TextView(ctx).apply {
             text = label
@@ -172,7 +172,7 @@ class Ui(private val ctx: Context) {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(toneColor(tone))
             setPadding(dp(10), dp(8), dp(10), dp(8))
-            if (index % 2 == 0) background = rounded(color(R.color.gb_stripe), 8)
+            if (index % 2 == 0) background = rounded(color(R.color.gb_stripe), Tok.R_ROW)
         }
         parent.addView(v, LinearLayout.LayoutParams(MATCH, WRAP))
     }
@@ -220,17 +220,17 @@ class Ui(private val ctx: Context) {
         minimumWidth = 0
         stateListAnimator = null
         elevation = 0f
-        setPadding(dp(14), dp(8), dp(14), dp(8))
+        setPadding(dp(20), dp(8), dp(20), dp(8))
 
         val fillColor = accent ?: color(R.color.gb_accent)
         val (fill, stroke, textColor) = when (emphasis) {
             Emphasis.Primary -> Triple(fillColor, null, color(R.color.gb_on_accent))
             Emphasis.Secondary -> Triple(color(R.color.gb_fill), null, color(R.color.gb_text))
-            Emphasis.Quiet -> Triple(color(R.color.gb_card), color(R.color.gb_line), color(R.color.gb_text))
+            Emphasis.Quiet -> Triple(0, color(R.color.gb_muted), color(R.color.gb_text))
         }
-        val disabledFill = if (emphasis == Emphasis.Quiet) color(R.color.gb_card) else color(R.color.gb_fill)
-        val normal = rounded(fill, 10, stroke)
-        val off = rounded(disabledFill, 10, stroke ?: color(R.color.gb_line))
+        val disabledFill = if (emphasis == Emphasis.Quiet) 0 else color(R.color.gb_fill)
+        val normal = rounded(fill, Tok.R_PILL, stroke)
+        val off = rounded(disabledFill, Tok.R_PILL, stroke ?: color(R.color.gb_line))
         val states = StateListDrawable().apply {
             addState(intArrayOf(-android.R.attr.state_enabled), off)
             addState(intArrayOf(), normal)
@@ -286,8 +286,8 @@ class Ui(private val ctx: Context) {
         setTextColor(color(R.color.gb_text))
         setHintTextColor(color(R.color.gb_muted))
         minHeight = dp(48)
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = rounded(color(R.color.gb_surface), 10, color(R.color.gb_line))
+        setPadding(dp(16), dp(12), dp(16), dp(12))
+        background = rounded(color(R.color.gb_fill), Tok.R_INPUT)
         filters = arrayOf(InputFilter.LengthFilter(maxChars))
         // Private text must not be written into saved instance state.
         isSaveEnabled = false

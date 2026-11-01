@@ -375,6 +375,25 @@ impl When {
             Self::Timed { start_utc_ms, .. } => *start_utc_ms,
         }
     }
+    /// Whether the event touches any day of `[first, first + days)` as seen at `utc_offset_minutes`.
+    pub fn overlaps_days(&self, first: Date, days: u32, utc_offset_minutes: i32) -> bool {
+        let from = first.epoch_day();
+        let to = from + i64::from(days.max(1));
+        match self {
+            Self::AllDay {
+                start,
+                end_exclusive,
+            } => start.epoch_day() < to && end_exclusive.epoch_day() > from,
+            Self::Timed {
+                start_utc_ms,
+                end_utc_ms,
+                ..
+            } => {
+                let shift = i64::from(utc_offset_minutes) * 60_000;
+                start_utc_ms + shift < to * DAY_MS && end_utc_ms + shift > from * DAY_MS
+            }
+        }
+    }
     /// Whether the event touches `day` as seen at `utc_offset_minutes` (the viewer's offset on
     /// that day; this crate has no tz database). All-day events ignore the offset.
     pub fn covers_day(&self, day: Date, utc_offset_minutes: i32) -> bool {
@@ -494,6 +513,46 @@ pub struct CalendarEvent {
     pub description: Option<String>,
     #[serde(default)]
     pub recurrence: Option<Recurrence>,
+    /// Calendar, reminder and attendee details of a phone event (all optional on the wire).
+    #[serde(default)]
+    pub meta: EventMeta,
+}
+
+/// Extra, display-only details of one calendar instance. All bounded by [`Validate`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventMeta {
+    /// The phone's calendar this instance belongs to (`Calendars._ID`).
+    #[serde(default)]
+    pub calendar_id: Option<String>,
+    /// The phone's `Events._ID`, the handle an edit or delete refers to.
+    #[serde(default)]
+    pub event_id: Option<String>,
+    /// The instance belongs to a recurring series (it cannot be edited from the desktop).
+    #[serde(default)]
+    pub recurring: bool,
+    /// Reminders in minutes before the start.
+    #[serde(default)]
+    pub reminders_min: Vec<u32>,
+    #[serde(default)]
+    pub attendee_count: u32,
+    /// Names (or addresses) of the first few attendees.
+    #[serde(default)]
+    pub attendees: Vec<String>,
+}
+pub const MAX_REMINDERS: usize = 5;
+pub const MAX_ATTENDEE_NAMES: usize = 6;
+impl Validate for EventMeta {
+    fn validate(&self) -> Result<()> {
+        for id in [&self.calendar_id, &self.event_id].into_iter().flatten() {
+            text("id", id, 64, false, true)?;
+        }
+        if self.reminders_min.len() > MAX_REMINDERS || self.attendees.len() > MAX_ATTENDEE_NAMES {
+            return Err(AgendaError::InvalidField("meta count"));
+        }
+        self.attendees
+            .iter()
+            .try_for_each(|a| text("attendee", a, 128, false, false))
+    }
 }
 impl Validate for CalendarEvent {
     fn validate(&self) -> Result<()> {
@@ -505,6 +564,7 @@ impl Validate for CalendarEvent {
             text("description", d, 16 * 1024, true, false)?;
         }
         self.when.validate()?;
+        self.meta.validate()?;
         self.recurrence
             .as_ref()
             .map_or(Ok(()), Recurrence::validate)
@@ -682,12 +742,23 @@ impl Agenda {
 
     /// Day view: all-day events first, then by start. Series masters are skipped (not expanded).
     pub fn day(&self, day: Date, utc_offset_minutes: i32) -> Vec<&Record<CalendarEvent>> {
+        self.range(day, 1, utc_offset_minutes)
+    }
+
+    /// Events touching any of `days` days from `first` (month / week / list views), all-day first
+    /// within a start. Series masters are skipped; the phone already expands recurrences.
+    pub fn range(
+        &self,
+        first: Date,
+        days: u32,
+        utc_offset_minutes: i32,
+    ) -> Vec<&Record<CalendarEvent>> {
         let mut out: Vec<_> = self
             .events
             .live()
             .filter(|(_, e)| {
                 !matches!(e.recurrence, Some(Recurrence::Series { .. }))
-                    && e.when.covers_day(day, utc_offset_minutes)
+                    && e.when.overlaps_days(first, days, utc_offset_minutes)
             })
             .collect();
         out.sort_by_cached_key(|(r, e)| {
@@ -731,6 +802,7 @@ mod tests {
             location: None,
             description: None,
             recurrence: None,
+            meta: EventMeta::default(),
         }
     }
     fn all_day(s: Date, e: Date) -> When {

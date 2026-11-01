@@ -17,14 +17,21 @@ Commands:
   events [AFTER]                      events newer than AFTER (default 0)
   connect DEVICE_ID [IP PORT]         dial a device (endpoint from discovery if omitted)
   pair DEVICE_ID [request|await]      start pairing on an unpaired link (default: request)
+  pair-qr                             one-time pairing link for the QR code (valid 2 minutes, single use);
+                                      the desktop apps draw it as a QR code the phone scans
+  test-connection [DEVICE_ID|IP PORT] check why a phone and this computer can't talk, in plain words
   approve CHALLENGE_ID CODE           approve; CODE is the verification key shown on the phone
   deny CHALLENGE_ID
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
   consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony
   ping DEVICE_ID                      interoperability check on a paired link
-  agenda [QUERY] [YYYY-MM-DD]         contacts matching QUERY and that day's events, from phones whose
+  agenda [QUERY] [YYYY-MM-DD] [DAYS]         contacts matching QUERY and that day's events, from phones whose
                                       Contacts/Calendar consent is on (prints personal data; memory only)
+  calendar-add DEVICE_ID CALENDAR_ID TITLE START_MS MINUTES [LOCATION]
+                                      create an event on the phone (needs the calendar_edit consent)
+  calendar-delete DEVICE_ID EVENT_ID  delete a one-off event on the phone (calendar_edit consent)
+  calendar-retry DEVICE_ID OP_ID      send an uncertain edit again under the same operation id
   agenda-refresh [DEVICE_ID]          ask the phone(s) for fresh contacts and calendar data
   messages [DEVICE_ID THREAD_ID]      SMS conversations from phones whose Sms consent is on, and one thread
   messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
@@ -112,6 +119,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         "send-file" | "send-text" | "send-url" | "share"
     ) {
         return share_command(&command, &args[1..], port, &state_dir);
+    }
+    if matches!(command.as_str(), "pair-qr" | "test-connection") {
+        return pairing_command(&command, &args[1..], port, &state_dir);
     }
     if command == "diagnose" {
         return diagnose_command(port, &state_dir);
@@ -217,8 +227,52 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 query: arg(1, "QUERY").unwrap_or_default(),
                 day,
                 utc_offset_minutes: 0,
+                days: arg(3, "DAYS")
+                    .ok()
+                    .and_then(|d| d.parse().ok())
+                    .unwrap_or(1),
+                people_limit: 0,
             }
         }
+        "calendar-add" => {
+            let start: i64 = arg(4, "START_MS")?
+                .parse()
+                .map_err(|_| "START_MS must be epoch milliseconds")?;
+            let minutes: i64 = arg(5, "MINUTES")?
+                .parse()
+                .map_err(|_| "MINUTES must be a number")?;
+            let op_id = op_id();
+            eprintln!("operation id: {op_id}");
+            Request::CalendarEdit {
+                device_id: arg(1, "DEVICE_ID")?,
+                op_id,
+                action: bridge_core::phone_view::CalendarEditAction::Create,
+                calendar_id: Some(arg(2, "CALENDAR_ID")?),
+                event_id: None,
+                draft: Some(Box::new(bridge_core::phone_view::EventDraft {
+                    title: arg(3, "TITLE")?,
+                    all_day: false,
+                    start_ms: start,
+                    end_ms: start + minutes * 60_000,
+                    tz: "UTC".into(),
+                    location: arg(6, "LOCATION").ok(),
+                    description: None,
+                    reminder_min: Some(10),
+                })),
+            }
+        }
+        "calendar-delete" => Request::CalendarEdit {
+            device_id: arg(1, "DEVICE_ID")?,
+            op_id: op_id(),
+            action: bridge_core::phone_view::CalendarEditAction::Delete,
+            calendar_id: None,
+            event_id: Some(arg(2, "EVENT_ID")?),
+            draft: None,
+        },
+        "calendar-retry" => Request::CalendarEditRetry {
+            device_id: arg(1, "DEVICE_ID")?,
+            op_id: arg(2, "OP_ID")?,
+        },
         "agenda-refresh" => Request::AgendaRefresh {
             device_id: arg(1, "DEVICE_ID").ok(),
         },
@@ -264,6 +318,75 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             "{}",
             serde_json::to_string_pretty(&other).map_err(|e| e.to_string())?
         ),
+    }
+    Ok(())
+}
+
+fn op_id() -> String {
+    format!(
+        "ctl{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis())
+    )
+}
+
+fn pairing_command(
+    command: &str,
+    args: &[OsString],
+    port: u16,
+    state_dir: &std::path::Path,
+) -> Result<(), String> {
+    let token = load_token(state_dir)?;
+    let words: Vec<String> = args
+        .iter()
+        .filter_map(|a| a.to_str().map(str::to_owned))
+        .collect();
+    let request = if command == "pair-qr" {
+        Request::PairQr
+    } else {
+        let endpoint = match (words.first(), words.get(1)) {
+            (Some(ip), Some(p)) if ip.parse::<std::net::IpAddr>().is_ok() => Some(Endpoint {
+                address: ip.parse().map_err(|_| "invalid IP address")?,
+                port: p.parse().map_err(|_| "invalid port")?,
+            }),
+            _ => None,
+        };
+        let device_id = if endpoint.is_none() {
+            words.first().cloned()
+        } else {
+            None
+        };
+        Request::TestConnection {
+            device_id,
+            endpoint,
+        }
+    };
+    match clipboard_call(port, &token, &request)? {
+        Response::PairQr(q) => {
+            println!("{}", q.payload);
+            eprintln!(
+                "Valid for {} s, single use. Addresses: {}",
+                q.expires_in_ms / 1000,
+                q.addresses.join(", ")
+            );
+        }
+        Response::ConnectionTest(t) => {
+            println!("{}", t.headline);
+            for step in &t.steps {
+                println!(
+                    "  [{}] {}: {}",
+                    if step.ok { "ok" } else { "!!" },
+                    step.label,
+                    step.detail
+                );
+            }
+            for line in &t.advice {
+                println!("  - {line}");
+            }
+        }
+        _ => return Err("unexpected reply from the service".into()),
     }
     Ok(())
 }

@@ -1698,3 +1698,111 @@ async fn loopback_is_refused_unless_allowed_and_unpaired_slots_are_capped() {
     ));
     drop(kept);
 }
+
+// ---------------------------------------------------------------------------
+// QR pairing token
+// ---------------------------------------------------------------------------
+
+const QR_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+#[tokio::test]
+async fn our_request_carries_the_qr_token_and_marks_the_prompt_pinned() {
+    let store = Arc::new(MemoryTrustStore::new());
+    let ep = endpoint(store.clone());
+    let computer = raw_peer('t');
+    let (l, addr) = listener().await;
+    let peer_id = id_of(&computer);
+    let approver = Auto::yes();
+    let local = tokio::spawn({
+        let (ep, mut ap) = (ep.clone(), approver.clone());
+        async move {
+            let link =
+                pending(ep.connect(addr, &peer_id).await.unwrap()).with_pair_token(QR_TOKEN.into());
+            link.pair(PairMode::Request, &mut ap).await
+        }
+    });
+    let mut s = within(raw_as_acceptor(&l, &computer, V::Tls12, &Opts::default())).await;
+    let req = raw_read_line(&mut s.io).await.expect("pair request");
+    assert_eq!(req["body"]["gbToken"], QR_TOKEN);
+    raw_send(&mut s.io, "kdeconnect.pair", json!({"pair": true})).await;
+    within(local).await.unwrap().unwrap();
+    let seen = approver.seen.lock().unwrap()[0].clone();
+    assert!(seen.qr_pinned);
+    assert!(store.get(&id_of(&computer)).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn presented_token_reaches_the_approver_and_junk_tokens_are_malformed() {
+    let store = Arc::new(MemoryTrustStore::new());
+    let ep = endpoint(store.clone());
+    let phone = raw_peer('u');
+    let (l, addr) = listener().await;
+    let approver = Auto::yes();
+    let local = tokio::spawn({
+        let (ep, mut ap) = (ep.clone(), approver.clone());
+        async move {
+            let (tcp, _) = l.accept().await.unwrap();
+            let link = pending(ep.accept(tcp).await.unwrap());
+            link.pair(PairMode::AwaitPeerRequest, &mut ap).await
+        }
+    });
+    let mut s = within(raw_as_initiator(
+        addr,
+        &phone,
+        ep.local_identity().device_id.as_str(),
+        V::Tls12,
+        &Opts::default(),
+    ))
+    .await;
+    let ts = bridge_kde::cert::unix_now();
+    raw_send(
+        &mut s.io,
+        "kdeconnect.pair",
+        json!({"pair": true, "timestamp": ts, "gbToken": QR_TOKEN}),
+    )
+    .await;
+    let accept = raw_read_line(&mut s.io).await.expect("accept");
+    assert_eq!(
+        accept["body"],
+        json!({"pair": true}),
+        "the token is never echoed"
+    );
+    within(local).await.unwrap().unwrap();
+    let seen = approver.seen.lock().unwrap()[0].clone();
+    assert_eq!(seen.presented_token.as_deref(), Some(QR_TOKEN));
+    assert!(!seen.qr_pinned);
+}
+
+#[tokio::test]
+async fn a_malformed_token_aborts_the_pairing() {
+    let store = Arc::new(MemoryTrustStore::new());
+    let ep = endpoint(store.clone());
+    let phone = raw_peer('v');
+    let (l, addr) = listener().await;
+    let local = tokio::spawn({
+        let ep = ep.clone();
+        async move {
+            let (tcp, _) = l.accept().await.unwrap();
+            let link = pending(ep.accept(tcp).await.unwrap());
+            link.pair(PairMode::AwaitPeerRequest, &mut Auto::yes())
+                .await
+        }
+    });
+    let mut s = within(raw_as_initiator(
+        addr,
+        &phone,
+        ep.local_identity().device_id.as_str(),
+        V::Tls12,
+        &Opts::default(),
+    ))
+    .await;
+    let ts = bridge_kde::cert::unix_now();
+    raw_send(
+        &mut s.io,
+        "kdeconnect.pair",
+        json!({"pair": true, "timestamp": ts, "gbToken": "../../etc/passwd"}),
+    )
+    .await;
+    assert!(within(local).await.unwrap().is_err());
+    assert!(store.list().unwrap().is_empty());
+}

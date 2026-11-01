@@ -1072,6 +1072,77 @@ fn peer_unpairing_removes_trust_on_the_phone() {
     assert!(Phone::array(&s, "paired").is_empty());
 }
 
+/// With the app closed nothing polls the status, so a `{pair:false}` must wake `transport_wait`: that is
+/// what lets the app drop the computer and stop its background service.
+#[test]
+fn a_peer_unpairing_wakes_the_event_wait_and_ends_its_transfers() {
+    let phone = Arc::new(Phone::start());
+    let peer = Peer::new('p');
+    let mut link = pair_by_peer(&phone, &peer);
+    let since = phone.status()["last_event_seq"].as_u64().unwrap();
+
+    // Nothing new: it waits out the timeout instead of returning at once.
+    let t0 = Instant::now();
+    let r = phone.act("transport_wait", json!({"since": since, "timeout_ms": 150}));
+    assert_eq!(ok(&r)["last_event_seq"], since);
+    assert_eq!(ok(&r)["stopped"], false);
+    assert!(t0.elapsed() >= Duration::from_millis(140));
+    // A newer event than `since` is reported without blocking.
+    let t0 = Instant::now();
+    let r = phone.act("transport_wait", json!({"since": 0, "timeout_ms": 30_000}));
+    assert_eq!(ok(&r)["last_event_seq"], since);
+    assert!(t0.elapsed() < Duration::from_secs(5));
+
+    // An offer in flight when the computer unpairs must not stay answerable.
+    let ctx = link.payload_context();
+    let listener = peer.rt.block_on(ctx.listen()).unwrap();
+    let packet = bridge_kde::share::file_packet("a.bin", 10, None, listener.port());
+    peer.rt.block_on(link.send_with_payload(&packet)).unwrap();
+    phone.wait("the offer", |s| !Phone::array(s, "transfers").is_empty());
+
+    let waiter = {
+        let phone = phone.clone();
+        std::thread::spawn(move || {
+            phone.act(
+                "transport_wait",
+                json!({"since": since, "timeout_ms": 60_000}),
+            )
+        })
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    peer.rt.block_on(link.unpair()).unwrap();
+    let woken = waiter.join().unwrap();
+    assert!(ok(&woken)["last_event_seq"].as_u64().unwrap() > since);
+    let s = phone.status();
+    assert!(!Phone::events(&s, "peer_unpaired").is_empty());
+    assert!(Phone::array(&s, "paired").is_empty());
+    assert_eq!(Phone::array(&s, "transfers")[0]["state"], "cancelled");
+}
+
+#[test]
+fn stopping_the_transport_ends_the_event_wait() {
+    let phone = Arc::new(Phone::start());
+    let since = phone.status()["last_event_seq"].as_u64().unwrap();
+    let waiter = {
+        let phone = phone.clone();
+        std::thread::spawn(move || {
+            let t0 = Instant::now();
+            let r = phone.act(
+                "transport_wait",
+                json!({"since": since, "timeout_ms": 60_000}),
+            );
+            (r, t0.elapsed())
+        })
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    phone.stop();
+    let (r, took) = waiter.join().unwrap();
+    assert_eq!(ok(&r)["stopped"], true);
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    // Stopped: the app's wait loop ends here.
+    assert_eq!(code(&phone.act("transport_wait", json!({}))), "not_running");
+}
+
 #[test]
 fn a_different_certificate_under_a_known_device_id_is_refused() {
     let phone = Phone::start();
@@ -1816,4 +1887,141 @@ mod sharing {
             .unwrap();
         assert_eq!(std::fs::read(path).unwrap(), payload(2000));
     }
+}
+
+// ------------------------------------------------------------------------------- QR pairing
+
+const QR_TOKEN: &str = "00112233445566778899aabbccddeeff";
+
+/// Dial `peer`, wait until the connection is parked, and return its id.
+fn dial_parked(phone: &Phone, peer: &Peer) -> (Value, JoinHandle<Result<Handshake, KdeError>>) {
+    let (listener, addr) = peer.listen();
+    let accepted = peer.accept_one(listener);
+    let v = phone.act(
+        "transport_connect",
+        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+    );
+    assert_eq!(ok(&v)["accepted"], true);
+    let s = phone.wait("a parked connection", |s| {
+        !Phone::array(s, "connections").is_empty()
+    });
+    (
+        Phone::array(&s, "connections")[0]["connection_id"].clone(),
+        accepted,
+    )
+}
+
+#[test]
+fn a_scanned_qr_sends_its_token_only_to_the_pinned_certificate_and_flags_the_prompt() {
+    let phone = Phone::start();
+    let peer = Peer::new('w');
+    let (cid, accepted) = dial_parked(&phone, &peer);
+    let link = pending(peer.finish(accepted).unwrap());
+    let (join, seen) = peer.spawn_pair(link, PairMode::AwaitPeerRequest, true);
+
+    let r = phone.act(
+        "transport_pair_request",
+        json!({"connection_id": cid, "qr_token": QR_TOKEN, "qr_cert_sha256": peer.cert.to_uppercase()}),
+    );
+    assert_eq!(ok(&r)["phase"], "pairing_request");
+    let s = phone.wait("our prompt", |s| !Phone::array(s, "prompts").is_empty());
+    let prompt = &Phone::array(&s, "prompts")[0];
+    assert_eq!(
+        prompt["qr_pinned"], true,
+        "the phone UI can skip the code comparison"
+    );
+    ok(&phone.decision(prompt, true));
+    let _link = peer.finish(join).expect("pairing completes");
+    let shown = wait_seen(&seen);
+    assert_eq!(shown.presented_token.as_deref(), Some(QR_TOKEN));
+    phone.wait("trusted", Phone::first_trusted);
+}
+
+#[test]
+fn a_different_certificate_than_the_qr_pinned_never_gets_the_token() {
+    let phone = Phone::start();
+    let peer = Peer::new('x');
+    let (cid, accepted) = dial_parked(&phone, &peer);
+    let link = pending(peer.finish(accepted).unwrap());
+    let (_join, seen) = peer.spawn_pair(link, PairMode::AwaitPeerRequest, true);
+
+    let r = phone.act(
+        "transport_pair_request",
+        json!({"connection_id": cid, "qr_token": QR_TOKEN, "qr_cert_sha256": "ab".repeat(32)}),
+    );
+    assert_eq!(code(&r), "qr_certificate_mismatch");
+    // The connection is gone and the peer never heard a thing.
+    phone.wait("the connection to be dropped", |s| {
+        Phone::array(s, "connections").is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        seen.lock().unwrap().is_none(),
+        "no pair request, so no token, reached the peer"
+    );
+    assert!(Phone::array(&phone.status(), "paired").is_empty());
+}
+
+#[test]
+fn qr_fields_come_as_a_pair_and_only_for_a_request() {
+    let phone = Phone::start();
+    let peer = Peer::new('y');
+    let (cid, _accepted) = dial_parked(&phone, &peer);
+    for fields in [
+        json!({"connection_id": cid, "qr_token": QR_TOKEN}),
+        json!({"connection_id": cid, "qr_cert_sha256": peer.cert}),
+    ] {
+        assert_eq!(
+            code(&phone.act("transport_pair_request", fields)),
+            "missing_field"
+        );
+    }
+    assert_eq!(
+        code(&phone.act(
+            "transport_pair_request",
+            json!({"connection_id": cid, "mode": "await", "qr_token": QR_TOKEN, "qr_cert_sha256": peer.cert})
+        )),
+        "invalid_field"
+    );
+    // None of those consumed the parked connection.
+    ok(&phone.act("transport_pair_request", json!({"connection_id": cid})));
+}
+
+#[test]
+fn qr_text_is_parsed_by_the_core() {
+    let phone = Phone::start();
+    let text = format!(
+        "geekbridge://pair?v=1&id={}&fp={}&t={QR_TOKEN}&a=192.168.1.20%3A1716,%5Bfe80%3A%3A1%5D%3A1717&n=Work%20laptop",
+        "a".repeat(32),
+        "cd".repeat(32)
+    );
+    let v = phone.act("pairing_parse_qr", json!({"text": text}));
+    let r = ok(&v);
+    assert_eq!(r["device_id"], "a".repeat(32));
+    assert_eq!(r["name"], "Work laptop");
+    assert_eq!(r["cert_sha256"], "cd".repeat(32));
+    assert_eq!(r["token"], QR_TOKEN);
+    assert_eq!(
+        r["addresses"][0],
+        json!({"host": "192.168.1.20", "port": 1716})
+    );
+    assert_eq!(r["addresses"][1], json!({"host": "fe80::1", "port": 1717}));
+    assert_eq!(
+        code(&phone.act("pairing_parse_qr", json!({"text": "https://example.com"}))),
+        "qr_not_geekbridge"
+    );
+    assert_eq!(
+        code(&phone.act(
+            "pairing_parse_qr",
+            json!({"text": text.replace("v=1", "v=9")})
+        )),
+        "qr_version"
+    );
+    assert_eq!(
+        code(&phone.act(
+            "pairing_parse_qr",
+            json!({"text": text.replace(QR_TOKEN, "short")})
+        )),
+        "qr_malformed"
+    );
 }

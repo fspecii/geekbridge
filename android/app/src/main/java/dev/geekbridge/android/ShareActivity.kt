@@ -46,6 +46,7 @@ class ShareActivity : Activity() {
         box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
         setContentView(ScrollView(this).apply { addView(box) })
         if (savedInstanceState == null && request !is ShareRequest.Invalid) {
+            coordinator.forgetFinishedSession()
             hold.take()
             startLinkIfNeeded()
         }
@@ -55,7 +56,11 @@ class ShareActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (!coordinator.sessionActive) { parse(intent); render() }
+        if (!coordinator.sessionActive) {
+            parse(intent)
+            if (request !is ShareRequest.Invalid) coordinator.forgetFinishedSession()
+            render()
+        }
     }
 
     override fun onStart() {
@@ -151,6 +156,7 @@ class ShareActivity : Activity() {
     private fun render() {
         box.removeAllViews()
         // The dialog window already shows "Send to computer" as its title (and TalkBack reads it); no second heading.
+        box.addView(DotText(this, getString(R.string.share_dot_title), maxPitchDp = 5f, maxLines = 1, accentDot = true, decorative = true))
         val req = request
         if (req is ShareRequest.Invalid) {
             box.addView(ui.text(req.reason.ifEmpty { getString(R.string.share_nothing) }, Tone.Warn))
@@ -224,6 +230,15 @@ class ShareActivity : Activity() {
         for (i in coordinator.items) {
             val (text, tone) = coordinator.itemLine(i)
             box.addView(ui.text(text, tone))
+            // Dotted progress for a file that is moving (the line above already says the percentage in words).
+            val t = i.transferId?.let { id -> coordinator.controller.snapshot?.transfers?.firstOrNull { it.id == id } }
+            val pct = t?.takeIf { it.state == TransferState.Active }?.let { ProgressText.percent(it) }
+            if (pct != null) {
+                box.addView(
+                    DotProgress(this).apply { set(pct / 100f, text) },
+                    LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = ui.dp(8); bottomMargin = ui.dp(4) },
+                )
+            }
         }
         val active = coordinator.controller.snapshot?.transfers.orEmpty().filter { it.direction == TransferDirection.Outgoing && !it.state.finished }
         if (coordinator.sessionActive) {

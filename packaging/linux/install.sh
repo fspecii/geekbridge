@@ -27,9 +27,9 @@ case "$mode" in
   custom) unitdir="$prefix/lib/systemd/user"; autostart="$prefix/etc/xdg/autostart";;
 esac
 bindir="$prefix/bin" appdir="$prefix/share/applications" icondir="$prefix/share/icons/hicolor"
-bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-share geekbridge-service-launch)
-desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Clipboard dev.geekbridge.Share)
-iconnames=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Clipboard dev.geekbridge.Share)
+bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share geekbridge-service-launch)
+desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share)
+iconnames=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share)
 
 user_systemd() { [[ $mode == user ]] && command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; }
 

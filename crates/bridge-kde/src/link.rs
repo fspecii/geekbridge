@@ -336,6 +336,13 @@ impl PendingLink {
         &self.conn.info
     }
 
+    /// Put a one-time QR token in our pair request. Call only after checking that the peer's
+    /// certificate on this link is the one the QR code pinned ([`crate::qrpair`]).
+    pub fn with_pair_token(mut self, token: String) -> Self {
+        self.pairing.token = Some(token);
+        self
+    }
+
     /// Close without pairing. Nothing is persisted.
     pub fn close(self) {}
 }
@@ -678,12 +685,6 @@ impl Endpoint {
 /// Keepalive so a half-dead phone link is noticed in about a minute.
 fn configure_tcp(stream: &TcpStream) -> Result<()> {
     stream.set_nodelay(true)?;
-    let sock = socket2::SockRef::from(stream);
-    let ka = socket2::TcpKeepalive::new().with_time(Duration::from_secs(30));
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-    let ka = ka.with_interval(Duration::from_secs(10)).with_retries(3);
-    sock.set_tcp_keepalive(&ka)?;
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    sock.set_tcp_user_timeout(Some(Duration::from_secs(60)))?;
+    crate::keepalive::arm(&socket2::SockRef::from(stream))?;
     Ok(())
 }

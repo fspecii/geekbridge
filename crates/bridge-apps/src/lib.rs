@@ -1,5 +1,6 @@
 //! Shared implementation for the four separate GeekBridge app executables.
 pub mod apps;
+pub mod calendar_model;
 pub mod call_feed;
 pub mod call_ui;
 pub mod cli;
@@ -15,6 +16,7 @@ pub mod pace;
 pub mod phone_feed;
 pub mod phone_ui;
 pub mod poller;
+pub mod prefill;
 pub mod share_app;
 pub mod shell;
 pub mod state;

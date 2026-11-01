@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use bridge_kde::{
@@ -72,6 +72,8 @@ pub(super) const MAX_UNPAIRED: usize = 8;
 const MAX_INBOUND_HANDSHAKES: usize = 8;
 const MAX_PROMPTS: usize = 4;
 const MAX_EVENTS: usize = 64;
+/// `transport_wait` blocks without any timer in between, so its bound can be long: each expiry is a wakeup.
+const MAX_EVENT_WAIT: Duration = Duration::from_secs(600);
 const MAX_PAIRED_LISTED: usize = 64;
 /// Wrong verification codes or certificate echoes tolerated per prompt before it is rejected.
 const MAX_WRONG_ATTEMPTS: u8 = 3;
@@ -114,8 +116,14 @@ enum Origin {
     Outbound,
 }
 
+/// What a scanned QR code pinned: the computer's certificate and the one-time token to present.
+pub(super) struct QrPin {
+    pub token: String,
+    pub cert_sha256: String,
+}
+
 enum Ctl {
-    Pair(PairMode),
+    Pair(PairMode, Option<String>),
     Ping,
     Unpair,
     SendFile(Box<share::SendJob>),
@@ -157,6 +165,8 @@ struct Prompt {
     own_cert_sha256: String,
     code: String,
     timestamp: i64,
+    /// The peer's certificate was pinned from a scanned QR code before this prompt.
+    qr_pinned: bool,
     deadline: Instant,
     wrong_attempts: u8,
     tx: oneshot::Sender<bool>,
@@ -186,6 +196,8 @@ struct State {
     prompts: Vec<Prompt>,
     events: VecDeque<Event>,
     next_seq: u64,
+    /// Wakes `transport_wait` when an event is recorded or the transport stops.
+    changed: Arc<Condvar>,
     discovered: Vec<Discovered>,
     counters: Counters,
 }
@@ -212,6 +224,7 @@ impl State {
             device_id: device.map(|d| d.to_string()),
             code,
         });
+        self.changed.notify_all();
     }
 
     fn drop_connection(&mut self, id: u64) {
@@ -272,6 +285,7 @@ impl Core {
                 prompts: Vec::new(),
                 events: VecDeque::new(),
                 next_seq: 0,
+                changed: Arc::new(Condvar::new()),
                 discovered: Vec::new(),
                 counters: Counters::default(),
             }),
@@ -311,6 +325,26 @@ impl Core {
         st.attempts.clear();
         st.discovered.clear();
         st.events.clear();
+        st.changed.notify_all();
+    }
+
+    /// Block until the newest event is not `since` any more, the transport stops, or `timeout`
+    /// passes. This is how the app learns about a change (the peer unpaired) while nothing polls.
+    pub(super) fn wait_events(&self, since: u64, timeout: Duration) -> Value {
+        let deadline = std::time::Instant::now() + timeout.min(MAX_EVENT_WAIT);
+        let mut st = self.lock();
+        let changed = st.changed.clone();
+        while st.open && st.next_seq == since {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            st = changed
+                .wait_timeout(st, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        json!({ "last_event_seq": st.next_seq, "stopped": !st.open })
     }
 
     // ------------------------------------------------------------------------- commands
@@ -347,7 +381,12 @@ impl Core {
         Ok(id)
     }
 
-    pub(super) fn pair_request(&self, id: u64, mode: PairMode) -> Result<Value, ApiError> {
+    pub(super) fn pair_request(
+        &self,
+        id: u64,
+        mode: PairMode,
+        qr: Option<QrPin>,
+    ) -> Result<Value, ApiError> {
         let mut st = self.lock();
         let c = st
             .conns
@@ -359,8 +398,29 @@ impl Core {
                 "the connection is not waiting for a pairing mode",
             ));
         }
+        // The token is a secret that only the computer in the QR code may see: check the
+        // certificate on this very connection against the pinned one *before* it is sent.
+        let token = match qr {
+            Some(pin) if mode == PairMode::Request => {
+                if !c.peer_cert_sha256.eq_ignore_ascii_case(&pin.cert_sha256) {
+                    c.close.notify_one();
+                    st.drop_connection(id);
+                    return Err(err(
+                        "qr_certificate_mismatch",
+                        "this is not the computer in the QR code",
+                    ));
+                }
+                Some(pin.token)
+            }
+            Some(_) => return Err(err("invalid_field", "a field has an invalid value")),
+            None => None,
+        };
+        let c = st
+            .conns
+            .get_mut(&id)
+            .ok_or_else(|| err("unknown_connection", "no such connection"))?;
         c.ctl
-            .try_send(Ctl::Pair(mode))
+            .try_send(Ctl::Pair(mode, token))
             .map_err(|_| err("busy", "the connection is busy"))?;
         c.phase = match mode {
             PairMode::Request => Phase::PairingRequest,
@@ -607,6 +667,7 @@ impl Core {
             own_cert_sha256: r.own_cert_sha256,
             code: r.verification_key,
             timestamp: r.timestamp,
+            qr_pinned: r.qr_pinned,
             deadline: Instant::now() + r.expires_in,
             wrong_attempts: 0,
             tx,
@@ -671,6 +732,7 @@ impl Core {
                     "peer_cert_sha256": p.peer_cert_sha256,
                     "own_cert_sha256": p.own_cert_sha256,
                     "verification_code": p.code,
+                    "qr_pinned": p.qr_pinned,
                     "timestamp": p.timestamp,
                     "expires_in_ms": u64::try_from(p.deadline.saturating_duration_since(now).as_millis()).unwrap_or(0),
                 })
@@ -860,11 +922,11 @@ async fn run_pending(
     mut ctl_rx: mpsc::Receiver<Ctl>,
     close: Arc<Notify>,
 ) {
-    let mode = match origin {
+    let (mode, token) = match origin {
         // Inbound peers are listened to at once so a request from the peer shows up as a prompt.
-        Origin::Inbound => PairMode::AwaitPeerRequest,
+        Origin::Inbound => (PairMode::AwaitPeerRequest, None),
         Origin::Outbound => match park(&mut ctl_rx, &close).await {
-            Parked::Mode(mode) => mode,
+            Parked::Mode(mode, token) => (mode, token),
             Parked::Closed => {
                 core.remove_conn(id, None);
                 return;
@@ -874,6 +936,10 @@ async fn run_pending(
                 return;
             }
         },
+    };
+    let link = match token {
+        Some(token) => link.with_pair_token(token),
+        None => link,
     };
     let mut approver = UiApprover {
         core: core.clone(),
@@ -912,7 +978,7 @@ async fn run_pending(
 }
 
 enum Parked {
-    Mode(PairMode),
+    Mode(PairMode, Option<String>),
     Closed,
     Expired,
 }
@@ -927,7 +993,7 @@ async fn park(ctl_rx: &mut mpsc::Receiver<Ctl>, close: &Notify) -> Parked {
             _ = close.notified() => return Parked::Closed,
             _ = &mut ttl => return Parked::Expired,
             ctl = ctl_rx.recv() => match ctl {
-                Some(Ctl::Pair(mode)) => return Parked::Mode(mode),
+                Some(Ctl::Pair(mode, token)) => return Parked::Mode(mode, token),
                 Some(_) => {}
                 None => return Parked::Closed,
             },
@@ -989,7 +1055,7 @@ async fn run_trusted(
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
-                Some(Ctl::Pair(_)) => {}
+                Some(Ctl::Pair(..)) => {}
                 None => break None,
             },
             event = link.recv() => match event {
@@ -1013,7 +1079,14 @@ async fn run_trusted(
                         if is_ping { c.pings_received += 1 } else if !acted { c.ignored_packets += 1 }
                     });
                 }
-                Ok(LinkEvent::PeerUnpaired) => break Some(("peer_unpaired", None)),
+                Ok(LinkEvent::PeerUnpaired) => {
+                    // bridge-kde already removed the trust record.
+                    let device = core.lock().conns.get(&id).map(|c| c.peer_id.clone());
+                    if let Some(device) = device {
+                        core.cancel_transfers_of(device.as_str());
+                    }
+                    break Some(("peer_unpaired", None));
+                }
                 Ok(LinkEvent::PeerRequestedRePair { .. }) => {
                     let mut st = core.lock();
                     let device = st.conns.get(&id).map(|c| c.peer_id.clone());

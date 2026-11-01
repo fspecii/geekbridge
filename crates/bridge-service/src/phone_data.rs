@@ -9,6 +9,7 @@
 //!   contacts and events are capped, and inbound traffic is rate limited per device.
 //! * **Honest send state.** A send is `HandedToPhone` until the phone itself says more
 //!   (`geekbridge.sms.status`, GeekBridge phones only). It is never resent automatically.
+use crate::calendar_edit::EditLedger;
 use bridge_core::{
     agenda::{Agenda, CalendarEvent, Contact, Date, Record, SourceId, Store, When},
     ipc::{ErrorBody, ErrorCode, Feature},
@@ -18,8 +19,9 @@ use bridge_core::{
     },
     phone_link::{self as wire, SmsPhase},
     phone_view::{
-        AgendaView, ConversationItem, DataDevice, DataState, EventItem, MAX_CONVERSATIONS_SHOWN,
-        MAX_EVENTS_SHOWN, MAX_MESSAGES_SHOWN, MAX_PEOPLE_SHOWN, MAX_SENDS_SHOWN, MessageItem,
+        AgendaView, CalendarEditAction, CalendarItem, ConversationItem, DataDevice, DataState,
+        EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_SHOWN,
+        MAX_PEOPLE_LIMIT, MAX_PEOPLE_SHOWN, MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem,
         MessagesView, Person, SelectedThread, SendItem, SendPhase,
     },
 };
@@ -42,6 +44,8 @@ pub struct Out {
 /// never reach a notifier.
 pub trait SmsNotifier: Send + Sync {
     fn received(&self, device_name: &str, sender: &str);
+    /// An event from the shared calendar starts in `minutes` (0 = now). Default: no notification.
+    fn event_soon(&self, _device_name: &str, _title: &str, _minutes: u32) {}
 }
 
 /// What the link negotiated, for one phone.
@@ -49,6 +53,8 @@ pub trait SmsNotifier: Send + Sync {
 pub struct Caps {
     pub contacts: bool,
     pub calendar: bool,
+    /// The phone accepts `geekbridge.calendar.write` and answers with a result.
+    pub calendar_write: bool,
     pub sms_read: bool,
     pub sms_send: bool,
     pub sms_status: bool,
@@ -63,6 +69,7 @@ impl Caps {
                 && inc(wire::CONTACTS_UIDS)
                 && inc(wire::CONTACTS_VCARDS),
             calendar: out(wire::CALENDAR_REQUEST) && inc(wire::CALENDAR_SYNC),
+            calendar_write: out(wire::CALENDAR_WRITE) && inc(wire::CALENDAR_WRITE_RESULT),
             sms_read: out(sms::REQUEST_CONVERSATIONS)
                 && out(sms::REQUEST_CONVERSATION)
                 && inc(sms::MESSAGES),
@@ -153,6 +160,12 @@ struct Dev {
     cal_synced: Option<u64>,
     cal_asked_ms: u64,
     cal_request_seq: u64,
+    cal_info: Vec<wire::CalendarInfo>,
+    /// Separate consents: changing the phone's calendar, and notifying before events.
+    edit_consent: bool,
+    alert_consent: bool,
+    edits: EditLedger,
+    alerted: HashSet<String>,
 
     threads: BTreeMap<ThreadId, Thread>,
     sms_requested: bool,
@@ -204,6 +217,11 @@ impl Dev {
             cal_synced: None,
             cal_asked_ms: 0,
             cal_request_seq: 0,
+            cal_info: Vec::new(),
+            edit_consent: false,
+            alert_consent: false,
+            edits: EditLedger::default(),
+            alerted: HashSet::new(),
             threads: BTreeMap::new(),
             sms_requested: false,
             sms_listed: false,
@@ -269,6 +287,8 @@ impl Dev {
                 self.calendar_requested = false;
                 self.cal_token = None;
                 self.cal_names.clear();
+                self.cal_info.clear();
+                self.alerted.clear();
                 self.cal_truncated = false;
                 self.cal_synced = None;
             }
@@ -441,6 +461,7 @@ impl Dev {
             Ok(_) => {
                 self.cal_token = Some(sync.token.clone());
                 self.cal_names = sync.calendars.iter().map(|c| c.name.clone()).collect();
+                self.cal_info = sync.calendars.clone();
                 self.cal_truncated = sync.truncated;
                 self.cal_synced = Some(now);
             }
@@ -604,6 +625,48 @@ impl Dev {
     }
 }
 
+impl Dev {
+    fn edit_state(&self) -> DataState {
+        if !self.edit_consent || !self.consent[CALENDAR] {
+            DataState::ConsentOff
+        } else if !self.connected() {
+            DataState::Offline
+        } else if !self.caps.calendar_write {
+            DataState::NotOffered
+        } else {
+            DataState::Ready
+        }
+    }
+
+    fn on_write_result(&mut self, body: &Map<String, Value>, now: u64) -> Disposition {
+        if !self.edit_consent {
+            return Disposition::Ignored;
+        }
+        let Ok(r) = wire::parse_write_result(body) else {
+            return Disposition::Invalid;
+        };
+        if !self.edits.on_result(&r, now) {
+            return Disposition::Ignored;
+        }
+        if r.applied {
+            // Show the change right away instead of waiting for the phone's own push.
+            self.ask_calendar(now, false);
+        }
+        Disposition::Accepted
+    }
+}
+
+/// Minutes before an event at which it is announced: its largest reminder, else 10, at most 60.
+fn alert_lead_minutes(e: &CalendarEvent) -> u32 {
+    e.meta
+        .reminders_min
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(10)
+        .clamp(1, 60)
+}
+
 #[derive(Default)]
 struct Inner {
     devices: HashMap<String, Dev>,
@@ -678,11 +741,29 @@ impl PhoneData {
         {
             d.tx = None;
             d.ledger.connection_lost(now_ms());
+            d.edits.connection_lost(now_ms());
         }
     }
 
     /// The user changed a consent. Turning one off erases that feature's data at once.
     pub fn set_enabled(&self, id: &str, feature: Feature, on: bool) {
+        if matches!(feature, Feature::CalendarEdit | Feature::CalendarAlerts) {
+            let mut g = self.lock();
+            let d = g
+                .devices
+                .entry(id.to_owned())
+                .or_insert_with(|| Dev::new("", now_ms()));
+            if feature == Feature::CalendarEdit {
+                d.edit_consent = on;
+                if !on {
+                    d.edits.clear();
+                }
+            } else {
+                d.alert_consent = on;
+                d.alerted.clear();
+            }
+            return;
+        }
         let Some(i) = slot(feature) else { return };
         let now = now_ms();
         let mut g = self.lock();
@@ -726,6 +807,7 @@ impl PhoneData {
                 wire::CONTACTS_UIDS => d.on_uids(id, body),
                 wire::CONTACTS_VCARDS => d.on_vcards(id, body),
                 wire::CALENDAR_SYNC => d.on_calendar(id, body, now),
+                wire::CALENDAR_WRITE_RESULT => d.on_write_result(body, now),
                 sms::MESSAGES => {
                     let (v, notify) = d.on_messages(body, now);
                     if let Some(sender) = notify.into_iter().next() {
@@ -884,6 +966,180 @@ impl PhoneData {
         Ok(id.0)
     }
 
+    // ------------------------------------------------------------ calendar edits
+
+    /// Sends one create / update / delete to the phone. Refused (nothing leaves this computer)
+    /// unless the user allowed editing for this phone, the phone offers it, and the request is
+    /// complete: creating needs an explicit writable calendar, changing needs a known one-off event.
+    pub fn calendar_edit(
+        &self,
+        device: &str,
+        op_id: &str,
+        action: CalendarEditAction,
+        calendar_id: Option<&str>,
+        event_id: Option<&str>,
+        draft: Option<&EventDraft>,
+    ) -> Result<(), ErrorBody> {
+        let bad = |m: &str| err(ErrorCode::BadRequest, m);
+        if !wire::valid_request_id(op_id) {
+            return Err(bad("operation id must be 1-64 letters, digits, - or _"));
+        }
+        let now = now_ms();
+        let mut g = self.lock();
+        let d = Self::target(&mut g, device)?;
+        if !d.edit_consent || !d.consent[CALENDAR] {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "Editing the calendar is not allowed for this phone",
+            ));
+        }
+        if !d.connected() {
+            return Err(err(
+                ErrorCode::NotConnected,
+                "the phone is not connected, nothing was changed",
+            ));
+        }
+        if !d.caps.calendar_write {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "this phone does not offer calendar editing (turn it on in the GeekBridge app)",
+            ));
+        }
+        if d.edits.contains(op_id) {
+            return Err(bad("that operation was already sent"));
+        }
+        if !d.edits.rate_ok(now) {
+            return Err(err(ErrorCode::TooMany, "too many changes in a minute"));
+        }
+        let title: String;
+        match action {
+            CalendarEditAction::Create => {
+                let cal = calendar_id.ok_or_else(|| bad("choose a calendar"))?;
+                let info = d
+                    .cal_info
+                    .iter()
+                    .find(|c| c.id == cal)
+                    .ok_or_else(|| bad("that calendar is not shared by the phone"))?;
+                if !info.writable {
+                    return Err(bad("that calendar is read-only on the phone"));
+                }
+                let dr = draft.ok_or_else(|| bad("missing event details"))?;
+                wire::validate_draft(dr).map_err(|e| bad(e.message()))?;
+                title = dr.title.trim().to_owned();
+            }
+            CalendarEditAction::Update | CalendarEditAction::Delete => {
+                let eid = event_id.ok_or_else(|| bad("missing event"))?;
+                let known = d
+                    .agenda
+                    .events
+                    .live()
+                    .map(|(_, e)| e)
+                    .find(|e| e.meta.event_id.as_deref() == Some(eid))
+                    .ok_or_else(|| bad("that event is not on the phone any more"))?;
+                if known.meta.recurring || known.recurrence.is_some() {
+                    return Err(bad("repeating events cannot be changed from the computer"));
+                }
+                let writable = known
+                    .meta
+                    .calendar_id
+                    .as_deref()
+                    .is_some_and(|cid| d.cal_info.iter().any(|c| c.id == cid && c.writable));
+                if !writable {
+                    return Err(bad("that calendar is read-only on the phone"));
+                }
+                title = known.title.clone();
+                if action == CalendarEditAction::Update {
+                    let dr = draft.ok_or_else(|| bad("missing event details"))?;
+                    wire::validate_draft(dr).map_err(|e| bad(e.message()))?;
+                }
+            }
+        }
+        let body = wire::calendar_write_body(op_id, action, calendar_id, event_id, draft);
+        if !d
+            .edits
+            .begin(device, op_id, action, &title, body.clone(), now)
+        {
+            return Err(bad("that operation was already sent"));
+        }
+        if !d.send(wire::CALENDAR_WRITE, body) {
+            d.edits.abort(op_id);
+            return Err(err(
+                ErrorCode::Busy,
+                "the link is busy, nothing was changed",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Sends an in-doubt (or failed) edit again with its original operation id.
+    pub fn calendar_edit_retry(&self, device: &str, op_id: &str) -> Result<(), ErrorBody> {
+        let now = now_ms();
+        let mut g = self.lock();
+        let d = Self::target(&mut g, device)?;
+        if !d.edit_consent || !d.connected() || !d.caps.calendar_write {
+            return Err(err(
+                ErrorCode::NotConnected,
+                "the phone is not ready for calendar changes",
+            ));
+        }
+        let body = d
+            .edits
+            .retry_body(op_id)
+            .cloned()
+            .ok_or_else(|| err(ErrorCode::NotFound, "nothing to send again"))?;
+        if !d.send(wire::CALENDAR_WRITE, body) {
+            return Err(err(ErrorCode::Busy, "the link is busy, nothing was sent"));
+        }
+        d.edits.mark_resent(op_id, now);
+        Ok(())
+    }
+
+    /// Announces events that are about to start for phones with the alerts consent. Called about
+    /// every 30 seconds; each event instance is announced once.
+    pub fn tick_alerts(&self) {
+        let now = now_ms();
+        let mut due: Vec<(String, String, u32)> = Vec::new();
+        {
+            let mut g = self.lock();
+            for d in g.devices.values_mut() {
+                d.edits.tick(now);
+                if !d.alert_consent || !d.consent[CALENDAR] {
+                    continue;
+                }
+                let mut live = HashSet::new();
+                for (rec, e) in d.agenda.events.live() {
+                    let When::Timed { start_utc_ms, .. } = &e.when else {
+                        continue;
+                    };
+                    let key = format!("{}@{}", rec.id.id, rec.revision.0);
+                    live.insert(key.clone());
+                    let start = u64::try_from(*start_utc_ms).unwrap_or(0);
+                    let lead = u64::from(alert_lead_minutes(e)) * 60_000;
+                    // Never announce something that began more than a minute ago (late link, restart).
+                    if now + lead >= start && now < start + 60_000 && d.alerted.insert(key) {
+                        let minutes =
+                            u32::try_from(start.saturating_sub(now).div_ceil(60_000)).unwrap_or(0);
+                        due.push((d.name.clone(), e.title.clone(), minutes));
+                    }
+                }
+                d.alerted.retain(|k| live.contains(k));
+            }
+        }
+        if due.is_empty() {
+            return;
+        }
+        let notifier = self
+            .notifier
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(n) = notifier {
+            for (device, title, minutes) in due {
+                n.event_soon(&device, &title, minutes);
+            }
+        }
+    }
+
     // ------------------------------------------------------------ views
 
     fn devices(g: &Inner) -> Vec<DataDevice> {
@@ -896,6 +1152,8 @@ impl PhoneData {
                 name: d.name.clone(),
                 contacts: d.state_of(CONTACTS),
                 calendar: d.state_of(CALENDAR),
+                calendar_edit: d.edit_state(),
+                calendar_writable: d.cal_info.iter().any(|c| c.writable),
                 sms: d.state_of(SMS),
                 contacts_count: d.agenda.contacts.live().count(),
                 events_count: d.agenda.events.live().count(),
@@ -916,7 +1174,25 @@ impl PhoneData {
         day: &str,
         utc_offset_minutes: i32,
     ) -> Result<AgendaView, ErrorBody> {
+        self.agenda_view_range(query, day, utc_offset_minutes, 1, 0)
+    }
+
+    /// Contacts matching `query` (alphabetical, at most `people_limit`) and the events touching
+    /// `days` days from `day`, both within a byte budget so the reply always fits one response.
+    pub fn agenda_view_range(
+        &self,
+        query: &str,
+        day: &str,
+        utc_offset_minutes: i32,
+        days: u32,
+        people_limit: usize,
+    ) -> Result<AgendaView, ErrorBody> {
         let date = parse_day(day)?;
+        let days = days.clamp(1, MAX_VIEW_DAYS);
+        let people_limit = match people_limit {
+            0 => MAX_PEOPLE_SHOWN,
+            n => n.min(MAX_PEOPLE_LIMIT),
+        };
         let query: String = query.chars().take(64).collect();
         let now = now_ms();
         let mut g = self.lock();
@@ -934,7 +1210,12 @@ impl PhoneData {
         let devices = Self::devices(&g);
         let mut people = Vec::new();
         let mut people_total = 0;
+        let mut people_bytes = 0;
         let mut events = Vec::new();
+        let mut events_bytes = 0;
+        let mut events_truncated = false;
+        let mut calendars = Vec::new();
+        let mut edits = Vec::new();
         let mut ids: Vec<&String> = g.devices.keys().collect();
         ids.sort();
         for id in ids {
@@ -943,31 +1224,45 @@ impl PhoneData {
                 let found = d.agenda.people(&query);
                 people_total += found.len();
                 for rec in found {
-                    if people.len() >= MAX_PEOPLE_SHOWN {
+                    if people.len() >= people_limit || people_bytes > VIEW_PEOPLE_BYTES {
                         break;
                     }
                     if let Some(c) = rec.item() {
-                        people.push(person(id, rec, c));
+                        let p = person(id, rec, c);
+                        people_bytes += approx_person_bytes(&p);
+                        people.push(p);
                     }
                 }
             }
             if d.consent[CALENDAR] {
-                for rec in d.agenda.day(date, utc_offset_minutes) {
-                    if events.len() >= MAX_EVENTS_SHOWN {
+                calendars.extend(d.cal_info.iter().map(|c| calendar_item(id, c)));
+                for rec in d.agenda.range(date, days, utc_offset_minutes) {
+                    if events.len() >= MAX_EVENTS_SHOWN || events_bytes > VIEW_EVENTS_BYTES {
+                        events_truncated = true;
                         break;
                     }
                     if let Some(e) = rec.item() {
-                        events.push(event_item(id, rec, e));
+                        let item = event_item(id, rec, e, days > 1);
+                        events_bytes += approx_event_bytes(&item);
+                        events.push(item);
                     }
                 }
             }
+            if d.edit_consent {
+                edits.extend(d.edits.items());
+            }
         }
-        events.sort_by_key(|e: &EventItem| (!e.all_day, e.start_ms));
+        events.sort_by_key(|e: &EventItem| (e.start_ms, !e.all_day));
+        edits.sort_by_key(|e| std::cmp::Reverse(e.created_unix_ms));
+        edits.truncate(bridge_core::phone_view::MAX_EDITS_SHOWN);
         Ok(AgendaView {
             devices,
             people,
             people_total,
             events,
+            calendars,
+            edits,
+            events_truncated,
         })
     }
 
@@ -1217,7 +1512,44 @@ fn person(device: &str, rec: &Record<Contact>, c: &Contact) -> Person {
     }
 }
 
-fn event_item(device: &str, rec: &Record<CalendarEvent>, e: &CalendarEvent) -> EventItem {
+/// Budgets that keep every reply under `ipc::MAX_RESPONSE_BYTES` (256 KiB) with room to spare.
+const VIEW_PEOPLE_BYTES: usize = 90 * 1024;
+const VIEW_EVENTS_BYTES: usize = 110 * 1024;
+
+fn approx_person_bytes(p: &Person) -> usize {
+    160 + p.name.len()
+        + p.id.len()
+        + p.phones.iter().map(|s| s.len() + 4).sum::<usize>()
+        + p.emails.iter().map(|s| s.len() + 4).sum::<usize>()
+        + p.organization.as_ref().map_or(0, String::len)
+}
+
+fn approx_event_bytes(e: &EventItem) -> usize {
+    330 + e.title.len()
+        + e.id.len()
+        + e.location.as_ref().map_or(0, String::len)
+        + e.description.as_ref().map_or(0, String::len)
+        + e.attendees.iter().map(|s| s.len() + 4).sum::<usize>()
+}
+
+fn calendar_item(device: &str, c: &wire::CalendarInfo) -> CalendarItem {
+    CalendarItem {
+        device_id: device.to_owned(),
+        id: c.id.clone(),
+        name: c.name.clone(),
+        account: c.account.clone(),
+        account_type: c.account_type.clone(),
+        color: c.color,
+        writable: c.writable,
+    }
+}
+
+fn event_item(
+    device: &str,
+    rec: &Record<CalendarEvent>,
+    e: &CalendarEvent,
+    compact: bool,
+) -> EventItem {
     let (all_day, start_ms, end_ms) = match &e.when {
         When::AllDay {
             start,
@@ -1241,7 +1573,20 @@ fn event_item(device: &str, rec: &Record<CalendarEvent>, e: &CalendarEvent) -> E
         start_ms,
         end_ms,
         location: e.location.clone(),
-        description: e.description.as_ref().map(|d| truncate(d, 600)),
+        description: e
+            .description
+            .as_ref()
+            .map(|d| truncate(d, if compact { 200 } else { 600 })),
+        calendar_id: e.meta.calendar_id.clone(),
+        event_id: e.meta.event_id.clone(),
+        recurring: e.meta.recurring || e.recurrence.is_some(),
+        tz: match &e.when {
+            When::Timed { time_zone, .. } => Some(time_zone.clone()),
+            When::AllDay { .. } => None,
+        },
+        reminders_min: e.meta.reminders_min.clone(),
+        attendee_count: e.meta.attendee_count,
+        attendees: e.meta.attendees.clone(),
     }
 }
 
@@ -1267,7 +1612,41 @@ impl NotifySendSms {
     }
 }
 
+impl NotifySendSms {
+    pub fn event_args(device: &str, title: &str, minutes: u32) -> Vec<String> {
+        let clean = |s: &str, n: usize| -> String {
+            s.chars()
+                .filter(|c| !c.is_control())
+                .take(n)
+                .collect::<String>()
+        };
+        vec![
+            "--app-name=GeekBridge".into(),
+            "--expire-time=15000".into(),
+            "--".into(),
+            if minutes == 0 {
+                format!("Now: {}", clean(title, 80))
+            } else {
+                format!("In {minutes} min: {}", clean(title, 80))
+            },
+            format!("Calendar on {}", clean(device, 48)),
+        ]
+    }
+}
+
 impl SmsNotifier for NotifySendSms {
+    fn event_soon(&self, device_name: &str, title: &str, minutes: u32) {
+        let args = Self::event_args(device_name, title, minutes);
+        std::thread::spawn(move || {
+            let _ = std::process::Command::new("notify-send")
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
+    }
+
     fn received(&self, device_name: &str, sender: &str) {
         let args = Self::args(device_name, sender);
         std::thread::spawn(move || {
@@ -1284,6 +1663,7 @@ impl SmsNotifier for NotifySendSms {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bridge_core::phone_view::EditPhase;
     use serde_json::json;
 
     fn obj(v: Value) -> Map<String, Value> {
@@ -1293,6 +1673,7 @@ mod tests {
         Caps {
             contacts: true,
             calendar: true,
+            calendar_write: true,
             sms_read: true,
             sms_send: true,
             sms_status: true,
@@ -1591,5 +1972,334 @@ mod tests {
         ] {
             assert!(parse_day(bad).is_err(), "{bad}");
         }
+    }
+
+    // ------------------------------------------------------------ calendar edits and alerts
+
+    fn cal_sync(events: Value, token: &str, full: bool, base: Option<&str>) -> Map<String, Value> {
+        obj(
+            json!({"version": 1, "full": full, "base": base, "token": token,
+            "calendars": [
+                {"id": "1", "name": "Personal", "account": "me@gmail.com", "accountType": "com.google",
+                 "color": -16711936, "writable": true},
+                {"id": "2", "name": "Holidays", "account": "me@gmail.com", "color": 255, "writable": false}],
+            "events": events, "deleted": []}),
+        )
+    }
+    fn cal_ev(id: &str, event_id: &str, cal: &str, start: i64, recurring: bool) -> Value {
+        json!({"id": id, "rev": "r1", "title": "Dentist", "allDay": false,
+            "startMs": start, "endMs": start + 3_600_000, "tz": "Europe/Berlin",
+            "calendarId": cal, "eventId": event_id, "recurring": recurring,
+            "reminders": [30, 10], "attendees": {"count": 2, "names": ["Ann", "Bob"]}})
+    }
+    fn editing_hub(events: Value) -> (Arc<PhoneData>, mpsc::Receiver<Out>) {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (false, true, false));
+        h.set_enabled(ID, Feature::CalendarEdit, true);
+        h.refresh_agenda(Some(ID)).unwrap();
+        drain(&mut rx);
+        assert_eq!(
+            h.on_packet(
+                ID,
+                wire::CALENDAR_SYNC,
+                &cal_sync(events, "t:1", true, None)
+            ),
+            Disposition::Accepted
+        );
+        (h, rx)
+    }
+    fn draft() -> EventDraft {
+        EventDraft {
+            title: "Lunch".into(),
+            all_day: false,
+            start_ms: 1_800_000_000_000,
+            end_ms: 1_800_003_600_000,
+            tz: "Europe/Berlin".into(),
+            location: None,
+            description: None,
+            reminder_min: Some(10),
+        }
+    }
+
+    #[test]
+    fn calendar_view_carries_account_colour_reminders_and_attendees() {
+        let (h, _rx) = editing_hub(json!([cal_ev("5@1", "5", "1", 1_800_000_000_000, false)]));
+        let v = h.agenda_view_range("", "2027-01-15", 0, 42, 0).unwrap();
+        assert_eq!(v.calendars.len(), 2);
+        assert_eq!(v.calendars[0].account.as_deref(), Some("me@gmail.com"));
+        assert_eq!(v.calendars[0].account_type.as_deref(), Some("com.google"));
+        assert_eq!(v.calendars[0].color, Some(0xFF00FF00));
+        assert!(v.calendars[0].writable && !v.calendars[1].writable);
+        let e = &v.events[0];
+        assert_eq!(e.calendar_id.as_deref(), Some("1"));
+        assert_eq!(e.reminders_min, vec![10, 30]);
+        assert_eq!((e.attendee_count, e.attendees.len()), (2, 2));
+        assert_eq!(e.tz.as_deref(), Some("Europe/Berlin"));
+        assert_eq!(v.devices[0].calendar_edit, DataState::Ready);
+    }
+
+    #[test]
+    fn nothing_is_written_without_consent_capability_and_a_writable_calendar() {
+        // No edit consent at all.
+        let h = PhoneData::new();
+        let mut rx = up(&h, (false, true, false));
+        drain(&mut rx);
+        h.on_packet(
+            ID,
+            wire::CALENDAR_SYNC,
+            &cal_sync(json!([]), "t:1", true, None),
+        );
+        let create = |h: &PhoneData, cal: Option<&str>| {
+            h.calendar_edit(
+                ID,
+                "op1",
+                CalendarEditAction::Create,
+                cal,
+                None,
+                Some(&draft()),
+            )
+        };
+        assert_eq!(
+            create(&h, Some("1")).unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+        assert!(drain(&mut rx).is_empty());
+
+        // Consent, but no explicit calendar / read-only calendar / unknown calendar.
+        h.set_enabled(ID, Feature::CalendarEdit, true);
+        assert_eq!(create(&h, None).unwrap_err().code, ErrorCode::BadRequest);
+        assert_eq!(
+            create(&h, Some("2")).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            create(&h, Some("9")).unwrap_err().code,
+            ErrorCode::BadRequest
+        );
+        let mut bad = draft();
+        bad.end_ms = bad.start_ms;
+        assert!(
+            h.calendar_edit(
+                ID,
+                "op2",
+                CalendarEditAction::Create,
+                Some("1"),
+                None,
+                Some(&bad)
+            )
+            .is_err()
+        );
+        assert!(
+            drain(&mut rx).is_empty(),
+            "refusals must not touch the link"
+        );
+
+        // A phone that does not declare writing is refused too.
+        let h2 = PhoneData::new();
+        let caps = Caps {
+            calendar_write: false,
+            ..caps_all()
+        };
+        let mut rx2 = h2.link_up(ID, "Pixel", caps, (false, true, false)).0;
+        h2.set_enabled(ID, Feature::CalendarEdit, true);
+        h2.on_packet(
+            ID,
+            wire::CALENDAR_SYNC,
+            &cal_sync(json!([]), "t:1", true, None),
+        );
+        drain(&mut rx2);
+        assert_eq!(
+            h2.calendar_edit(
+                ID,
+                "op",
+                CalendarEditAction::Create,
+                Some("1"),
+                None,
+                Some(&draft())
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+        assert!(drain(&mut rx2).is_empty());
+    }
+
+    #[test]
+    fn create_goes_out_once_and_only_the_phones_answer_applies_it() {
+        let (h, mut rx) = editing_hub(json!([]));
+        h.calendar_edit(
+            ID,
+            "op-1",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(&draft()),
+        )
+        .unwrap();
+        let out = rx.try_recv().unwrap();
+        assert_eq!(out.kind, wire::CALENDAR_WRITE);
+        assert_eq!(out.body["opId"], "op-1");
+        assert_eq!(out.body["calendarId"], "1");
+        assert_eq!(out.body["event"]["title"], "Lunch");
+        // Same operation id again: refused, not sent twice.
+        assert!(
+            h.calendar_edit(
+                ID,
+                "op-1",
+                CalendarEditAction::Create,
+                Some("1"),
+                None,
+                Some(&draft())
+            )
+            .is_err()
+        );
+        assert!(drain(&mut rx).is_empty());
+        let phase = |h: &PhoneData| h.agenda_view("", "2027-01-15", 0).unwrap().edits[0].phase;
+        assert_eq!(phase(&h), EditPhase::HandedToPhone);
+        // Unknown ids are ignored; the real answer applies it and refreshes the events.
+        let stranger = obj(json!({"opId": "nope", "state": "applied"}));
+        assert_eq!(
+            h.on_packet(ID, wire::CALENDAR_WRITE_RESULT, &stranger),
+            Disposition::Ignored
+        );
+        let ok = obj(json!({"opId": "op-1", "state": "applied", "eventId": "77"}));
+        assert_eq!(
+            h.on_packet(ID, wire::CALENDAR_WRITE_RESULT, &ok),
+            Disposition::Accepted
+        );
+        assert_eq!(phase(&h), EditPhase::Applied);
+        assert_eq!(drain(&mut rx), vec![wire::CALENDAR_REQUEST]);
+    }
+
+    #[test]
+    fn a_dropped_link_makes_an_edit_uncertain_and_retry_reuses_the_operation_id() {
+        let (h, mut rx) = editing_hub(json!([]));
+        h.calendar_edit(
+            ID,
+            "op-9",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(&draft()),
+        )
+        .unwrap();
+        let first = rx.try_recv().unwrap();
+        let (_, gen_) = {
+            // Reconnect: the old generation's link_down must not matter; simulate the drop.
+            let g = h.lock();
+            (0, g.devices[ID].generation)
+        };
+        h.link_down(ID, gen_);
+        let view = h.agenda_view("", "2027-01-15", 0).unwrap();
+        assert_eq!(view.edits[0].phase, EditPhase::Uncertain);
+        let mut rx2 = h.link_up(ID, "Pixel", caps_all(), (false, true, false)).0;
+        h.set_enabled(ID, Feature::CalendarEdit, true);
+        drain(&mut rx2);
+        h.on_packet(
+            ID,
+            wire::CALENDAR_SYNC,
+            &cal_sync(json!([]), "t:2", true, None),
+        );
+        h.calendar_edit_retry(ID, "op-9").unwrap();
+        let again = rx2.try_recv().unwrap();
+        assert_eq!(again.body, first.body, "a retry repeats the exact packet");
+        assert!(
+            h.calendar_edit_retry(ID, "op-9").is_err(),
+            "no double retry while in flight"
+        );
+    }
+
+    #[test]
+    fn repeating_and_read_only_events_cannot_be_edited_or_deleted() {
+        let (h, mut rx) = editing_hub(json!([
+            cal_ev("5@1", "5", "1", 1_800_000_000_000, true),
+            cal_ev("6@1", "6", "2", 1_800_000_000_000, false),
+            cal_ev("7@1", "7", "1", 1_800_000_000_000, false),
+        ]));
+        for ev in ["5", "6", "404"] {
+            let r = h.calendar_edit(
+                ID,
+                &format!("d{ev}"),
+                CalendarEditAction::Delete,
+                None,
+                Some(ev),
+                None,
+            );
+            assert_eq!(r.unwrap_err().code, ErrorCode::BadRequest, "{ev}");
+        }
+        assert!(drain(&mut rx).is_empty());
+        h.calendar_edit(ID, "d7", CalendarEditAction::Delete, None, Some("7"), None)
+            .unwrap();
+        let out = rx.try_recv().unwrap();
+        assert_eq!(out.body["action"], "delete");
+        assert_eq!(out.body["eventId"], "7");
+        assert!(out.body.get("event").is_none());
+    }
+
+    #[test]
+    fn turning_edit_consent_off_forgets_the_ledger() {
+        let (h, _rx) = editing_hub(json!([]));
+        h.calendar_edit(
+            ID,
+            "op",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(&draft()),
+        )
+        .unwrap();
+        h.set_enabled(ID, Feature::CalendarEdit, false);
+        assert!(h.agenda_view("", "2027-01-15", 0).unwrap().edits.is_empty());
+        assert_eq!(
+            h.calendar_edit(
+                ID,
+                "o2",
+                CalendarEditAction::Create,
+                Some("1"),
+                None,
+                Some(&draft())
+            )
+            .unwrap_err()
+            .code,
+            ErrorCode::Unsupported
+        );
+    }
+
+    #[test]
+    fn upcoming_events_are_announced_once_and_only_with_alert_consent() {
+        struct Rec(Mutex<Vec<(String, u32)>>);
+        impl SmsNotifier for Rec {
+            fn received(&self, _: &str, _: &str) {}
+            fn event_soon(&self, _: &str, title: &str, minutes: u32) {
+                self.0.lock().unwrap().push((title.into(), minutes));
+            }
+        }
+        let rec = Arc::new(Rec(Mutex::new(Vec::new())));
+        let soon = now_ms() as i64 + 20 * 60_000; // inside the 30 minute reminder, outside 10
+        let (h, _rx) = editing_hub(json!([
+            cal_ev("5@1", "5", "1", soon, false),
+            cal_ev("6@1", "6", "1", now_ms() as i64 + 5 * 3_600_000, false),
+        ]));
+        h.set_notifier(rec.clone());
+        h.tick_alerts();
+        assert!(
+            rec.0.lock().unwrap().is_empty(),
+            "alerts are off by default"
+        );
+        h.set_enabled(ID, Feature::CalendarAlerts, true);
+        h.tick_alerts();
+        h.tick_alerts();
+        let got = rec.0.lock().unwrap().clone();
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].0, "Dentist");
+        assert!((19..=20).contains(&got[0].1));
+    }
+
+    #[test]
+    fn event_notification_text_has_no_control_characters() {
+        let a = NotifySendSms::event_args("Pi\nxel", "Den\ttist", 5);
+        assert!(a.iter().all(|s| !s.contains('\n') && !s.contains('\t')));
+        assert!(a[3].starts_with("In 5 min"));
+        assert!(NotifySendSms::event_args("p", "t", 0)[3].starts_with("Now"));
     }
 }

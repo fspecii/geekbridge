@@ -203,6 +203,15 @@ class ShareCoordinator private constructor(app: Context) {
 
     // ------------------------------------------------------------------ outgoing session
 
+    /**
+     * A new share was opened: results of the last session, once it has ended, must not stand in for it. They stay on
+     * screen only for the Share screen that ran them (this object outlives it); otherwise every later share in this
+     * process would just show the old result and never send.
+     */
+    fun forgetFinishedSession() {
+        if (!sessionActive) items = emptyList()
+    }
+
     /** Starts sending [uris] (content:// only, checked by the caller) to [connectionId]. */
     fun sendFiles(connectionId: Long, uris: List<Uri>) {
         if (sessionActive) return

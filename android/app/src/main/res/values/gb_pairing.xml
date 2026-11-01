@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- First-time pairing: QR code / pairing link, the connection test and the "what to do next" card. -->
+<resources>
+    <string name="qr_title">Pair with QR code</string>
+    <string name="qr_intro">On your computer, open GeekBridge and choose “Pair with QR code”. Then scan the code it shows.</string>
+    <string name="qr_scan_app">Scan with a scanner app</string>
+    <string name="qr_scan_app_missing">No QR scanner app is installed. Use the camera app or paste the link instead.</string>
+    <string name="qr_camera">Open the camera app</string>
+    <string name="qr_camera_hint">Point your camera at the code and tap the GeekBridge link it shows. GeekBridge itself never uses the camera, so it needs no camera permission.</string>
+    <string name="qr_paste_header">Or paste the pairing link</string>
+    <string name="qr_link_hint">geekbridge://pair?…</string>
+    <string name="qr_paste">Paste from clipboard</string>
+    <string name="qr_continue">Continue</string>
+    <string name="qr_confirm_title">Pair with %1$s?</string>
+    <string name="qr_confirm_body">A pairing link asks this phone to connect to “%1$s” at %2$s. Only continue if you just chose “Pair with QR code” on your own computer.</string>
+    <string name="qr_cancel">Cancel</string>
+    <string name="qr_connecting">Connecting to %1$s…</string>
+    <string name="qr_connecting_hint">Checking that this is the computer in the QR code. You will be asked to confirm.</string>
+    <string name="qr_done_title">Paired with %1$s</string>
+    <string name="qr_next_title">What to do next</string>
+    <string name="qr_next_clipboard">Try the clipboard: turn on Clipboard sync on the Home screen, copy something on this phone, then press Ctrl+Shift+V on your computer.</string>
+    <string name="qr_next_file">Send a file: pick one below, or use Share → Send to computer in any app.</string>
+    <string name="qr_next_home">Open Home</string>
+    <string name="qr_next_file_btn">Choose a file to send</string>
+    <string name="qr_next_done">Done</string>
+    <string name="qr_test">Test connection</string>
+    <string name="qr_testing">Testing the connection…</string>
+    <string name="qr_try_again">Try again</string>
+    <string name="qr_close">Close</string>
+    <string name="qr_no_picker">No file picker is available on this phone.</string>
+    <string name="pair_scan_qr">Scan QR code</string>
+    <string name="pair_test_connection">Test connection</string>
+    <string name="qr_dlg_title">Pair with %1$s?</string>
+    <string name="qr_dlg_body">This is the computer you scanned: its identity matches the QR code, so there is no code to compare. Pair only if you started this on your own computer.</string>
+    <string name="qr_dlg_cert">Computer identity</string>
+</resources>

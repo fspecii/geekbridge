@@ -19,6 +19,7 @@ pub fn capabilities() -> (Vec<String>, Vec<String>) {
             wire::CONTACTS_REQUEST_UIDS,
             wire::CONTACTS_REQUEST_VCARDS,
             wire::CALENDAR_REQUEST,
+            wire::CALENDAR_WRITE,
             SMS_REQUEST_CONVERSATIONS,
             SMS_REQUEST_CONVERSATION,
             SMS_REQUEST,
@@ -28,10 +29,19 @@ pub fn capabilities() -> (Vec<String>, Vec<String>) {
             wire::CONTACTS_UIDS,
             wire::CONTACTS_VCARDS,
             wire::CALENDAR_SYNC,
+            wire::CALENDAR_WRITE_RESULT,
             SMS_MESSAGES,
             wire::SMS_STATUS,
         ]),
     )
+}
+
+/// Capabilities of a phone whose user did not enable calendar editing (the default in the app).
+pub fn capabilities_read_only() -> (Vec<String>, Vec<String>) {
+    let (mut i, mut o) = capabilities();
+    i.retain(|k| k != wire::CALENDAR_WRITE);
+    o.retain(|k| k != wire::CALENDAR_WRITE_RESULT);
+    (i, o)
 }
 
 pub type Reply = (&'static str, Map<String, Value>);
@@ -52,11 +62,55 @@ pub struct SimEvent {
     pub start_ms: i64,
     pub end_ms: i64,
     pub location: Option<String>,
+    pub calendar_id: String,
+    /// `Events._ID` (the part of `id` before the `@`).
+    pub event_id: String,
+    pub reminders: Vec<u32>,
+    pub attendees: Vec<String>,
+    pub recurring: bool,
+}
+
+impl SimEvent {
+    pub fn new(id: &str, title: &str, start_ms: i64, end_ms: i64) -> Self {
+        Self {
+            id: id.into(),
+            rev: "r0".into(),
+            title: title.into(),
+            all_day: false,
+            start_ms,
+            end_ms,
+            location: None,
+            calendar_id: "1".into(),
+            event_id: id.split('@').next().unwrap_or(id).into(),
+            reminders: vec![10],
+            attendees: Vec::new(),
+            recurring: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SimCalendar {
+    pub id: String,
+    pub name: String,
+    pub account: String,
+    pub account_type: String,
+    pub color: i32,
+    pub writable: bool,
 }
 
 pub struct PhoneScript {
     pub contacts: Vec<SimContact>,
     pub events: Vec<SimEvent>,
+    pub calendars: Vec<SimCalendar>,
+    /// Answer `geekbridge.calendar.write` (the user enabled editing and Android granted it).
+    pub writes_enabled: bool,
+    /// Apply writes but never answer, like a link that dies right after the phone wrote.
+    pub silent_writes: bool,
+    /// Operation ids applied, in order (a repeated id must not appear twice).
+    pub write_log: Vec<String>,
+    results: std::collections::HashMap<String, Map<String, Value>>,
+    next_event: i64,
     /// Message JSON objects in the stock `kdeconnect.sms.messages` shape.
     pub messages: Vec<Value>,
     /// Include the `delivered` report (carriers do not always send one).
@@ -92,6 +146,29 @@ impl PhoneScript {
         Self {
             contacts: Vec::new(),
             events: Vec::new(),
+            calendars: vec![
+                SimCalendar {
+                    id: "1".into(),
+                    name: "Personal".into(),
+                    account: "demo@gmail.com".into(),
+                    account_type: "com.google".into(),
+                    color: 0xFF1E88E5_u32 as i32,
+                    writable: true,
+                },
+                SimCalendar {
+                    id: "2".into(),
+                    name: "Holidays".into(),
+                    account: "demo@gmail.com".into(),
+                    account_type: "com.google".into(),
+                    color: 0xFF43A047_u32 as i32,
+                    writable: false,
+                },
+            ],
+            writes_enabled: true,
+            silent_writes: false,
+            write_log: Vec::new(),
+            results: std::collections::HashMap::new(),
+            next_event: 200,
             messages: Vec::new(),
             deliver: true,
             token: 0,
@@ -142,15 +219,10 @@ impl PhoneScript {
         const HOUR: i64 = 3_600_000;
         let day = now_ms.div_euclid(86_400_000) * 86_400_000;
         let mut ev = |id: &str, title: &str, start: i64, len: i64, loc: Option<&str>| {
-            s.events.push(SimEvent {
-                id: id.into(),
-                rev: format!("r{}", s.events.len() + 1),
-                title: title.into(),
-                all_day: false,
-                start_ms: start,
-                end_ms: start + len,
-                location: loc.map(str::to_owned),
-            });
+            let mut e = SimEvent::new(id, title, start, start + len);
+            e.rev = format!("r{}", s.events.len() + 1);
+            e.location = loc.map(str::to_owned);
+            s.events.push(e);
         };
         ev("11@1", "Standup", day + 9 * HOUR, HOUR / 2, Some("Room 4"));
         ev("12@1", "Design review", day + 11 * HOUR, HOUR, None);
@@ -169,15 +241,26 @@ impl PhoneScript {
             2 * HOUR,
             None,
         );
-        s.events.push(SimEvent {
-            id: "16@1".into(),
-            rev: "r6".into(),
-            title: "Team offsite".into(),
-            all_day: true,
-            start_ms: day,
-            end_ms: day + 86_400_000,
-            location: None,
-        });
+        let mut offsite = SimEvent::new("16@1", "Team offsite", day, day + 86_400_000);
+        offsite.rev = "r6".into();
+        offsite.all_day = true;
+        offsite.attendees = vec!["Ada Lovelace".into(), "Grace Hopper".into()];
+        s.events.push(offsite);
+        let mut holiday = SimEvent::new(
+            "17@2",
+            "Public holiday",
+            day + 2 * 86_400_000,
+            day + 3 * 86_400_000,
+        );
+        holiday.rev = "r7".into();
+        holiday.all_day = true;
+        holiday.calendar_id = "2".into();
+        s.events.push(holiday);
+        let mut weekly = SimEvent::new("18@1", "Weekly sync", day + 14 * HOUR, day + 15 * HOUR);
+        weekly.rev = "r8".into();
+        weekly.recurring = true;
+        weekly.reminders = vec![5, 30];
+        s.events.push(weekly);
         let m = |id: i64, thread: i64, ty: i64, who: &str, body: &str, ago_min: i64, read: i64| {
             json!({"addresses": [{"address": who}], "body": body,
                    "date": now_ms - ago_min * 60_000, "type": ty, "read": read,
@@ -277,7 +360,12 @@ impl PhoneScript {
 
     fn event_json(e: &SimEvent) -> Value {
         let mut v = json!({"id": e.id, "rev": e.rev, "title": e.title, "allDay": e.all_day,
-                           "startMs": e.start_ms, "endMs": e.end_ms, "tz": "UTC", "calendarId": "1"});
+                           "startMs": e.start_ms, "endMs": e.end_ms, "tz": "UTC",
+                           "calendarId": e.calendar_id, "eventId": e.event_id,
+                           "recurring": e.recurring, "reminders": e.reminders});
+        if !e.attendees.is_empty() {
+            v["attendees"] = json!({"count": e.attendees.len(), "names": e.attendees});
+        }
         if let Some(l) = &e.location {
             v["location"] = json!(l);
         }
@@ -299,7 +387,9 @@ impl PhoneScript {
         let mut body = json!({
             "version": 1, "token": token,
             "windowStartMs": 0, "windowEndMs": 0, "truncated": false,
-            "calendars": [{"id": "1", "name": "Personal"}],
+            "calendars": self.calendars.iter().map(|c| json!({
+                "id": c.id, "name": c.name, "account": c.account, "accountType": c.account_type,
+                "color": c.color, "writable": c.writable})).collect::<Vec<_>>(),
         });
         match delta {
             Some(prev) => {
@@ -331,6 +421,89 @@ impl PhoneScript {
         }
         self.last_sent = Some((token, now));
         (wire::CALENDAR_SYNC, obj(body))
+    }
+
+    fn calendar_write(&mut self, body: &Map<String, Value>) -> Vec<Reply> {
+        let op = body
+            .get("opId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        if let Some(prev) = self.results.get(&op) {
+            // Idempotent: the same operation id gets its first answer, nothing is written again.
+            let mut again = prev.clone();
+            again.insert("duplicate".into(), json!(true));
+            return vec![(wire::CALENDAR_WRITE_RESULT, again)];
+        }
+        let fail = |reason: &str| -> Map<String, Value> {
+            obj(json!({"opId": op, "state": "failed", "reason": reason}))
+        };
+        let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+        let ev = body.get("event");
+        let result = match action {
+            "create" => {
+                let cal = body.get("calendarId").and_then(Value::as_str).unwrap_or("");
+                match self.calendars.iter().find(|c| c.id == cal) {
+                    None => fail("calendar_missing"),
+                    Some(c) if !c.writable => fail("not_writable"),
+                    Some(_) => {
+                        self.next_event += 1;
+                        let eid = self.next_event.to_string();
+                        let g = |k: &str| ev.and_then(|e| e.get(k));
+                        let start = g("startMs").and_then(Value::as_i64).unwrap_or(0);
+                        let mut e = SimEvent::new(
+                            &format!("{eid}@{start}"),
+                            g("title").and_then(Value::as_str).unwrap_or(""),
+                            start,
+                            g("endMs").and_then(Value::as_i64).unwrap_or(start),
+                        );
+                        e.rev = format!("w{}", self.write_log.len() + 1);
+                        e.all_day = g("allDay").and_then(Value::as_bool).unwrap_or(false);
+                        e.calendar_id = cal.to_owned();
+                        e.location = g("location").and_then(Value::as_str).map(str::to_owned);
+                        e.reminders = g("reminderMin")
+                            .and_then(Value::as_u64)
+                            .map(|m| vec![m as u32])
+                            .unwrap_or_default();
+                        self.events.push(e);
+                        obj(json!({"opId": op, "state": "applied", "eventId": eid}))
+                    }
+                }
+            }
+            "update" | "delete" => {
+                let eid = body.get("eventId").and_then(Value::as_str).unwrap_or("");
+                match self.events.iter().position(|e| e.event_id == eid) {
+                    None => fail("not_found"),
+                    Some(i) if self.events[i].recurring => fail("recurring"),
+                    Some(i) if action == "delete" => {
+                        self.events.remove(i);
+                        obj(json!({"opId": op, "state": "applied", "eventId": eid}))
+                    }
+                    Some(i) => {
+                        let g = |k: &str| ev.and_then(|e| e.get(k));
+                        let e = &mut self.events[i];
+                        if let Some(t) = g("title").and_then(Value::as_str) {
+                            e.title = t.into();
+                        }
+                        e.start_ms = g("startMs").and_then(Value::as_i64).unwrap_or(e.start_ms);
+                        e.end_ms = g("endMs").and_then(Value::as_i64).unwrap_or(e.end_ms);
+                        e.location = g("location").and_then(Value::as_str).map(str::to_owned);
+                        e.rev = format!("w{}", self.write_log.len() + 1);
+                        obj(json!({"opId": op, "state": "applied", "eventId": eid}))
+                    }
+                }
+            }
+            _ => fail("invalid"),
+        };
+        if result.get("state").and_then(Value::as_str) == Some("applied") {
+            self.write_log.push(op.clone());
+        }
+        self.results.insert(op, result.clone());
+        if self.silent_writes {
+            Vec::new()
+        } else {
+            vec![(wire::CALENDAR_WRITE_RESULT, result)]
+        }
     }
 
     /// Answers one desktop request with the packets the phone would send back.
@@ -371,6 +544,7 @@ impl PhoneScript {
                 let rid = body.get("requestId").and_then(Value::as_str);
                 vec![self.calendar_sync(since, rid)]
             }
+            wire::CALENDAR_WRITE if self.writes_enabled => self.calendar_write(body),
             SMS_REQUEST_CONVERSATIONS => vec![Self::messages_packet(self.thread_newest())],
             SMS_REQUEST_CONVERSATION => {
                 let t = body.get("threadID").and_then(Value::as_i64).unwrap_or(-1);
@@ -459,12 +633,68 @@ mod tests {
             &wire::calendar_request_body("a", None),
         );
         let s = wire::parse_calendar_sync(&full[0].1).unwrap();
-        assert!(s.full && s.events.len() == 6);
+        assert!(s.full && s.events.len() == 8);
+        assert_eq!(s.calendars.len(), 2);
+        assert_eq!(s.calendars[0].account.as_deref(), Some("demo@gmail.com"));
         let delta = p.handle(
             wire::CALENDAR_REQUEST,
             &wire::calendar_request_body("b", Some(&s.token)),
         );
         let d = wire::parse_calendar_sync(&delta[0].1).unwrap();
         assert!(!d.full && d.events.is_empty() && d.base.as_deref() == Some(s.token.as_str()));
+    }
+
+    fn write(p: &mut PhoneScript, v: Value) -> Vec<Reply> {
+        p.handle(wire::CALENDAR_WRITE, &obj(v))
+    }
+
+    #[test]
+    fn calendar_writes_apply_once_per_operation_id() {
+        let mut p = PhoneScript::demo(now_ms_i64());
+        let before = p.events.len();
+        let create = json!({"version": 1, "opId": "op1", "action": "create", "calendarId": "1",
+            "event": {"title": "Lunch", "allDay": false, "startMs": 1000, "endMs": 5000, "tz": "UTC"}});
+        let r = write(&mut p, create.clone());
+        assert_eq!(r[0].1["state"], "applied");
+        let eid = r[0].1["eventId"].as_str().unwrap().to_owned();
+        assert_eq!(p.events.len(), before + 1);
+        // Same id again: first answer, flagged duplicate, nothing written twice.
+        let again = write(&mut p, create);
+        assert_eq!(again[0].1["duplicate"], true);
+        assert_eq!(again[0].1["eventId"], json!(eid));
+        assert_eq!(p.events.len(), before + 1);
+        assert_eq!(p.write_log, vec!["op1"]);
+
+        let d = write(
+            &mut p,
+            json!({"opId": "op2", "action": "delete", "eventId": eid}),
+        );
+        assert_eq!(d[0].1["state"], "applied");
+        assert_eq!(p.events.len(), before);
+        let ro = write(
+            &mut p,
+            json!({"opId": "op3", "action": "create", "calendarId": "2", "event": {}}),
+        );
+        assert_eq!(ro[0].1["reason"], "not_writable");
+        let rec = write(
+            &mut p,
+            json!({"opId": "op4", "action": "delete", "eventId": "18"}),
+        );
+        assert_eq!(rec[0].1["reason"], "recurring");
+
+        p.silent_writes = true;
+        let quiet = json!({"opId": "op5", "action": "create", "calendarId": "1",
+            "event": {"title": "Q", "startMs": 1, "endMs": 2}});
+        assert!(
+            write(&mut p, quiet.clone()).is_empty(),
+            "applied but never answered"
+        );
+        let retry = write(&mut p, quiet);
+        assert_eq!(
+            retry[0].1["duplicate"], true,
+            "the retry still learns the outcome"
+        );
+        let off = capabilities_read_only();
+        assert!(!off.0.iter().any(|k| k == wire::CALENDAR_WRITE));
     }
 }

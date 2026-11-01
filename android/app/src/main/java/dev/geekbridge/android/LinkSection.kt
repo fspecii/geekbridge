@@ -73,7 +73,7 @@ class LinkSection(
             "A development transport that speaks the KDE Connect protocol (TCP + TLS with certificate pinning). " +
                 "It starts only when you tap Start and stops when you leave the app. Pairing needs your explicit " +
                 "approval of an exact code and certificate. It can only exchange a “ping”: no messages, calls, " +
-                "clipboard, contacts or agenda are sent. Not yet tested with a real KDE Connect device or the " +
+                "clipboard, contacts or calendar are sent. Not yet tested with a real KDE Connect device or the " +
                 "GeekBridge desktop apps.",
             Tone.Muted,
         )
@@ -218,7 +218,7 @@ class LinkSection(
                 ui.setStatus(
                     summary,
                     "Connection: link running — ${conns.size} open, $trusted trusted. Only a ping can be exchanged; no messages, calls, " +
-                        "clipboard, contacts or agenda are sent.",
+                        "clipboard, contacts or calendar are sent.",
                     Tone.Ok,
                 )
                 val paired = s?.paired.orEmpty()

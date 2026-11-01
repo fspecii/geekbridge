@@ -43,6 +43,7 @@ Source: "{#BinDir}\geekbridge-calls.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\geekbridge-messages.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\geekbridge-clipboard.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\geekbridge-agenda.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\geekbridge-contacts.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\geekbridge-share.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 

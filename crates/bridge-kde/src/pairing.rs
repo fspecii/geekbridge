@@ -45,6 +45,9 @@ pub struct PairingConfig {
     pub max_unexpected: u32,
     /// Wall clock in unix seconds (injectable for tests).
     pub clock: fn() -> i64,
+    /// One-time QR token to put in our own pair request ([`crate::qrpair`]). The caller has
+    /// already checked that the peer's certificate is the one the QR code pinned.
+    pub token: Option<String>,
 }
 
 impl Default for PairingConfig {
@@ -55,6 +58,7 @@ impl Default for PairingConfig {
             max_skew_secs: 1800,
             max_unexpected: 8,
             clock: unix_now,
+            token: None,
         }
     }
 }
@@ -88,6 +92,12 @@ pub struct ApprovalRequest {
     pub verification_key: String,
     pub timestamp: i64,
     pub expires_in: Duration,
+    /// One-time token the peer put in its pair request (QR pairing). It is unverified here: the
+    /// approver redeems it against its own [`crate::qrpair::TokenBook`].
+    pub presented_token: Option<String>,
+    /// We sent a QR token ourselves, i.e. the peer's certificate was pinned from the QR code
+    /// before this prompt, so the code comparison is not needed.
+    pub qr_pinned: bool,
 }
 
 /// Source of the local decision. Returning `true` is the explicit approval; a
@@ -100,6 +110,7 @@ pub trait Approver: Send {
 pub struct PairBody {
     pub pair: bool,
     pub timestamp: Option<i64>,
+    pub token: Option<String>,
 }
 
 impl PairBody {
@@ -116,7 +127,16 @@ impl PairBody {
             ),
             Some(_) => return Err(PairingFailure::Malformed("timestamp is not an integer")),
         };
-        Ok(Self { pair, timestamp })
+        let token = match packet.body.get("gbToken") {
+            None => None,
+            Some(Value::String(t)) if crate::qrpair::token_shape_ok(t) => Some(t.clone()),
+            Some(_) => return Err(PairingFailure::Malformed("gbToken is not a token")),
+        };
+        Ok(Self {
+            pair,
+            timestamp,
+            token,
+        })
     }
 }
 
@@ -435,13 +455,22 @@ impl PendingLink {
         };
         let mut actions = machine.start(mode, now());
         let mut approver = Some(approver);
+        let mut peer_token: Option<String> = None;
         let mut approval: Option<Approval<'_>> = None;
 
         loop {
             for action in std::mem::take(&mut actions) {
                 match action {
                     Action::Send { pair, timestamp } => {
-                        self.conn.send(&pair_packet(pair, timestamp)).await?
+                        let mut packet = pair_packet(pair, timestamp);
+                        // Only our own request carries the QR token, never an accept or a cancel.
+                        if let (true, Some(_), Some(token)) = (pair, timestamp, &self.pairing.token)
+                        {
+                            packet
+                                .body
+                                .insert("gbToken".into(), Value::from(token.clone()));
+                        }
+                        self.conn.send(&packet).await?
                     }
                     Action::Prompt {
                         direction,
@@ -458,6 +487,9 @@ impl PendingLink {
                             verification_key,
                             timestamp,
                             expires_in,
+                            presented_token: peer_token.clone(),
+                            qr_pinned: self.pairing.token.is_some()
+                                && direction == Direction::Outgoing,
                         };
                         // The machine prompts exactly once per attempt.
                         let ap = approver
@@ -492,7 +524,11 @@ impl PendingLink {
                     })?;
                     let packet = Packet::from_line(&line)?;
                     actions = if packet.kind == PAIR_TYPE {
-                        machine.on_pair(PairBody::parse(&packet)?, now())
+                        let body = PairBody::parse(&packet)?;
+                        if body.pair && body.timestamp.is_some() && peer_token.is_none() {
+                            peer_token = body.token.clone();
+                        }
+                        machine.on_pair(body, now())
                     } else {
                         machine.on_other_packet(now())
                     };
@@ -557,18 +593,21 @@ mod tests {
         PairBody {
             pair: true,
             timestamp: None,
+            token: None,
         }
     }
     fn request(ts: i64) -> PairBody {
         PairBody {
             pair: true,
             timestamp: Some(ts),
+            token: None,
         }
     }
     fn cancel() -> PairBody {
         PairBody {
             pair: false,
             timestamp: None,
+            token: None,
         }
     }
 

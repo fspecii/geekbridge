@@ -75,7 +75,7 @@ jobs:
           out="stage/geekbridge-${{ matrix.name }}"
           mkdir -p "$out" dist
           ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
-          for bin in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-share; do
+          for bin in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
             cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
           done
           cp README.md "$out/" || true

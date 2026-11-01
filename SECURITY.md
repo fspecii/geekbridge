@@ -22,6 +22,10 @@ Only the latest released version receives fixes while the project is pre-1.0.
 
 - Phone and computer authenticate with pinned TLS certificates after a code comparison on both screens; discovery
   alone never grants trust.
+- QR / link pairing pins the computer's certificate before anything secret is sent, uses a 128-bit token that works
+  once for two minutes, and still needs an explicit tap on the phone (see [docs/pairing.md](docs/pairing.md)).
+- The service now listens for phones (TCP 1716-1764) and announces itself on the LAN by default so pairing is easy; both
+  can be switched off (`--no-listen-inbound`, `--no-announce`). An unpaired connection can only pair or be closed.
 - The local control API is bound to loopback and needs a per-user token stored with owner-only permissions.
 - Clipboard and file sharing are off until the user opts in per phone; nothing is read or sent in the background.
 - Updates are only offered with a published SHA-256, verified before the file is shown; nothing installs itself.

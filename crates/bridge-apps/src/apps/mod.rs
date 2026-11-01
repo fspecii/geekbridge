@@ -1,7 +1,8 @@
 //! The four independent app bodies. Nothing here switches between apps.
-mod agenda;
+mod calendar;
 mod calls;
 pub(crate) mod clipboard;
+mod contacts;
 mod messages;
 
 use crate::shell::AppView;
@@ -11,7 +12,8 @@ pub fn view_for(app: AppKind) -> Box<dyn AppView> {
     match app {
         AppKind::Calls => Box::<calls::Calls>::default(),
         AppKind::Messages => Box::<messages::Messages>::default(),
-        AppKind::Agenda => Box::<agenda::Agenda>::default(),
+        AppKind::Agenda => Box::<calendar::Calendar>::default(),
+        AppKind::Contacts => Box::<contacts::Contacts>::default(),
         AppKind::Clipboard => Box::<clipboard::Clipboard>::default(),
     }
 }

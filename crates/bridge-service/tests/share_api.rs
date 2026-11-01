@@ -700,6 +700,75 @@ async fn a_phone_without_share_support_cannot_be_sent_to() {
     );
 }
 
+/// An outgoing offer holds a payload listener. Cancelling it, or unpairing the phone it was for, must close that
+/// port at once instead of leaving it to the accept timeout.
+#[tokio::test]
+async fn cancel_and_unpair_close_the_payload_listener() {
+    async fn offered_port(
+        rig: &Rig,
+        phone: &Arc<Phone>,
+        link: &mut kde::TrustedLink,
+        path: &str,
+    ) -> (u64, u16) {
+        let Ok(Response::TransferStarted { transfer_id }) = rig
+            .call(Request::ShareSendFile {
+                device_id: phone.id(),
+                path: path.to_owned(),
+            })
+            .await
+        else {
+            panic!("expected a started transfer");
+        };
+        let ev = timeout(Duration::from_secs(10), link.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let kde::LinkEvent::Packet(p) = ev else {
+            panic!("expected a packet")
+        };
+        let Ok(kshare::ShareContent::File(offer)) = kshare::parse_share(&p, 1 << 30) else {
+            panic!("{p:?}")
+        };
+        (transfer_id, offer.port)
+    }
+    async fn closes(port: u16) -> bool {
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_err()
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    let rig = Rig::start().await;
+    let phone = Phone::sharing();
+    let mut link = rig.pair(&phone).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.bin");
+    std::fs::write(&file, data(1000)).unwrap();
+    let path = file.display().to_string();
+
+    let (id, port) = offered_port(&rig, &phone, &mut link, &path).await;
+    assert!(
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+    );
+    rig.ok(Request::ShareCancel { transfer_id: id }).await;
+    assert!(closes(port).await, "cancelled: port {port} still answers");
+
+    let (_, port) = offered_port(&rig, &phone, &mut link, &path).await;
+    rig.ok(Request::Unpair {
+        device_id: phone.id(),
+    })
+    .await;
+    assert!(closes(port).await, "unpaired: port {port} still answers");
+}
+
 #[tokio::test]
 async fn unpairing_forgets_share_permissions() {
     let rig = Rig::start().await;

@@ -35,6 +35,8 @@ Single version source: see [builds.md](builds.md#releases-and-versioning).
 * Turn automatic checks off: untick **Check automatically** in the app's Details panel, run
   `geekbridge-ctl update disable`, or start the service with `GEEKBRIDGE_NO_UPDATE_CHECK=1` (also stops the
   schedule). Manual checks still work when you ask for one.
+* Test hook: `GEEKBRIDGE_UPDATE_BASE_URL=http://127.0.0.1:PORT` points the service at a mock release server
+  (`scripts/e2e/mock_release_server.py`); any other value is ignored.
 * `geekbridge-ctl update status | check | download | skip VERSION | enable | disable`.
 * The apps show a banner "Update available: vX.Y.Z" with **Download**, **Release notes**, **Skip this version**
   and **Later**. **Download** is offered only when the release lists an installer for this OS/architecture
@@ -55,7 +57,7 @@ exactly these names.
 
 ## Android
 
-* `UpdateChecker` (platform `HttpURLConnection`, no libraries) checks when the app opens at most once per 12 h
+* `UpdateChecker` (platform `HttpURLConnection`, no libraries) checks when the Diagnostics & about screen opens (the card lives there, not on Home) at most once per 12 h
   (switch in the "App updates" card) and on **Check for updates**. It shows the version and notes.
 * **Download and verify** fetches `geekbridge-android.apk` into the app-private cache (`cache/updates/`),
   verifies size and SHA-256 from `SHA256SUMS`, and deletes it on any mismatch. The download is abandoned if the

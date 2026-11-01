@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update"]
+members = ["crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update", "crates/bridge-chaos"]
 resolver = "2"
 
 [workspace.package]

@@ -30,9 +30,11 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 25] = [
+pub(crate) const ACTIONS: [&str; 27] = [
+    "pairing_parse_qr",
     "transport_start",
     "transport_status",
+    "transport_wait",
     "transport_stop",
     "transport_connect",
     "transport_disconnect",
@@ -420,6 +422,7 @@ fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
     let flags = engine::DataFlags {
         contacts: o.take_opt_bool("contacts")?.unwrap_or(false),
         calendar: o.take_opt_bool("calendar")?.unwrap_or(false),
+        calendar_edit: o.take_opt_bool("calendar_edit")?.unwrap_or(false),
         sms: o.take_opt_bool("sms")?.unwrap_or(false),
     };
     Ok(flags)
@@ -441,6 +444,26 @@ fn parse_state_dir(s: String) -> Result<PathBuf, ApiError> {
     }
 }
 
+/// Parse the text of a scanned (or pasted) pairing QR code. Pure: nothing is dialled or stored.
+fn parse_qr(text: &str) -> Result<Value, ApiError> {
+    use bridge_kde::qrpair::{PayloadError, QrPayload};
+    let p = QrPayload::parse(text).map_err(|e| {
+        let code = match e {
+            PayloadError::NotGeekBridge => "qr_not_geekbridge",
+            PayloadError::Version => "qr_version",
+            PayloadError::Malformed => "qr_malformed",
+        };
+        err(code, e.message())
+    })?;
+    Ok(json!({
+        "device_id": p.device_id,
+        "name": p.name,
+        "cert_sha256": p.cert_sha256,
+        "token": p.token,
+        "addresses": p.addresses.iter().map(|a| json!({ "host": a.ip().to_string(), "port": a.port() })).collect::<Vec<_>>(),
+    }))
+}
+
 fn token(f: &mut Fields, key: &'static str) -> Result<Option<String>, ApiError> {
     match f.take_opt_string(key)? {
         Some(s) if s.chars().count() > MAX_TOKEN_CHARS => Err(invalid_field()),
@@ -455,6 +478,14 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let since = f.take_opt_u64("since")?.unwrap_or(0);
             f.finish()?;
             host.status(since)
+        }
+        "transport_wait" => {
+            let since = f.take_opt_u64("since")?.unwrap_or(0);
+            let timeout_ms = f.take_opt_u64("timeout_ms")?.unwrap_or(30_000);
+            f.finish()?;
+            // The slot lock is released before blocking: other requests keep working meanwhile.
+            let (core, _) = host.running()?;
+            Ok(core.wait_events(since, Duration::from_millis(timeout_ms)))
         }
         "transport_stop" => {
             f.finish()?;
@@ -484,8 +515,20 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                 Some("await") => PairMode::AwaitPeerRequest,
                 Some(_) => return Err(invalid_field()),
             };
+            let qr_token = token(&mut f, "qr_token")?;
+            let cert = token(&mut f, "qr_cert_sha256")?;
             f.finish()?;
-            host.running()?.0.pair_request(id, mode)
+            let qr = match (qr_token, cert) {
+                (Some(token), Some(cert_sha256)) => Some(engine::QrPin { token, cert_sha256 }),
+                (None, None) => None,
+                _ => return Err(err("missing_field", "a required field is missing")),
+            };
+            host.running()?.0.pair_request(id, mode, qr)
+        }
+        "pairing_parse_qr" => {
+            let text = f.take_string("text")?;
+            f.finish()?;
+            parse_qr(&text)
         }
         "transport_pair_decision" => {
             let request_id = f.take_u64("request_id")?;
@@ -637,6 +680,9 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let flags = engine::DataFlags {
                 contacts: f.take_opt_bool("contacts")?.unwrap_or(current.contacts),
                 calendar: f.take_opt_bool("calendar")?.unwrap_or(current.calendar),
+                calendar_edit: f
+                    .take_opt_bool("calendar_edit")?
+                    .unwrap_or(current.calendar_edit),
                 sms: f.take_opt_bool("sms")?.unwrap_or(current.sms),
             };
             f.finish()?;

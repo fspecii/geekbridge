@@ -18,8 +18,8 @@ pub use bridge_core::calls_link::{
 };
 
 pub use bridge_core::phone_link::{
-    CALENDAR_REQUEST, CALENDAR_SYNC, CONTACTS_REQUEST_UIDS, CONTACTS_REQUEST_VCARDS, CONTACTS_UIDS,
-    CONTACTS_VCARDS, SMS_STATUS,
+    CALENDAR_REQUEST, CALENDAR_SYNC, CALENDAR_WRITE, CALENDAR_WRITE_RESULT, CONTACTS_REQUEST_UIDS,
+    CONTACTS_REQUEST_VCARDS, CONTACTS_UIDS, CONTACTS_VCARDS, SMS_STATUS,
 };
 pub use bridge_kde::sms::{
     MESSAGES as SMS_MESSAGES, REQUEST as SMS_REQUEST,
@@ -31,7 +31,7 @@ pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 13] = [
+pub const LOCAL_INCOMING: [&str; 14] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -43,10 +43,11 @@ pub const LOCAL_INCOMING: [&str; 13] = [
     CONTACTS_UIDS,
     CONTACTS_VCARDS,
     CALENDAR_SYNC,
+    CALENDAR_WRITE_RESULT,
     SMS_MESSAGES,
     SMS_STATUS,
 ];
-pub const LOCAL_OUTGOING: [&str; 13] = [
+pub const LOCAL_OUTGOING: [&str; 14] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -57,6 +58,7 @@ pub const LOCAL_OUTGOING: [&str; 13] = [
     CONTACTS_REQUEST_UIDS,
     CONTACTS_REQUEST_VCARDS,
     CALENDAR_REQUEST,
+    CALENDAR_WRITE,
     SMS_REQUEST_CONVERSATIONS,
     SMS_REQUEST_CONVERSATION,
     SMS_REQUEST,
@@ -88,6 +90,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::calls_link::is_calls_kind(kind) {
         return Some(Feature::Telephony);
     }
+    if bridge_core::phone_link::is_calendar_write_kind(kind) {
+        return Some(Feature::CalendarEdit);
+    }
     if bridge_core::phone_link::is_calendar_kind(kind) {
         return Some(Feature::Calendar);
     }
@@ -115,6 +120,8 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::Sms
             | Feature::Contacts
             | Feature::Calendar
+            | Feature::CalendarEdit
+            | Feature::CalendarAlerts
     )
 }
 
@@ -141,7 +148,12 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::Calls
     } else if matches!(
         kind,
-        CONTACTS_UIDS | CONTACTS_VCARDS | CALENDAR_SYNC | SMS_MESSAGES | SMS_STATUS
+        CONTACTS_UIDS
+            | CONTACTS_VCARDS
+            | CALENDAR_SYNC
+            | CALENDAR_WRITE_RESULT
+            | SMS_MESSAGES
+            | SMS_STATUS
     ) && negotiated.iter().any(|k| k == kind)
     {
         Incoming::PhoneData

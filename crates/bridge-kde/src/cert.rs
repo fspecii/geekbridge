@@ -229,7 +229,7 @@ pub fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-fn random_bytes(buf: &mut [u8]) -> Result<()> {
+pub(crate) fn random_bytes(buf: &mut [u8]) -> Result<()> {
     provider()
         .secure_random
         .fill(buf)

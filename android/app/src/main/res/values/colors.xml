@@ -1,16 +1,24 @@
 <resources>
-    <!-- Monochrome base with one red accent (used sparingly: Messages section, status dots). -->
-    <color name="gb_surface">#F5F5F7</color>
+    <!-- Design tokens, light theme. Monochrome ink on off-white with ONE red accent (#D71921), used for the
+         single live dot, "today", warnings and the unread/primary signal. Dark theme: values-night. -->
+    <color name="gb_surface">#F5F5F5</color>
     <color name="gb_card">#FFFFFF</color>
-    <color name="gb_stripe">#F7F7F9</color>
-    <color name="gb_line">#D2D2D7</color>
-    <color name="gb_fill">#EBEBF0</color>
-    <color name="gb_text">#1D1D1F</color>
-    <color name="gb_muted">#6B6B70</color>
-    <color name="gb_accent">#1D1D1F</color>
+    <color name="gb_stripe">#F0F0F0</color>
+    <color name="gb_line">#D6D6D6</color>
+    <color name="gb_fill">#E9E9E9</color>
+    <color name="gb_text">#0B0B0B</color>
+    <color name="gb_muted">#666666</color>
+    <color name="gb_accent">#0B0B0B</color>
     <color name="gb_on_accent">#FFFFFF</color>
     <color name="gb_red">#D71921</color>
-    <color name="gb_ok">#1E7B3A</color>
-    <color name="gb_warn">#8F5400</color>
-    <color name="gb_bad">#C4161C</color>
+    <!-- "Ok" is ink, not green: state is always carried by words and by a filled (vs hollow) dot. -->
+    <color name="gb_ok">#0B0B0B</color>
+    <color name="gb_warn">#C4141C</color>
+    <color name="gb_bad">#C4141C</color>
+    <!-- Dot-matrix hero/tile: an inverted (dark) tile in light mode so the dots read as lit. -->
+    <color name="gb_hero">#0B0B0B</color>
+    <color name="gb_on_hero">#FFFFFF</color>
+    <color name="gb_hero_dim">#4A4A4A</color>
+    <color name="gb_hero_muted">#A8A8A8</color>
+    <color name="gb_dot_off">#CFCFCF</color>
 </resources>

@@ -1059,7 +1059,9 @@ impl ClipboardService {
                 body: clipboard_wire::connect_body(&text, stamp),
             });
         }
-        if !enabled {
+        if !enabled || !start_watcher {
+            // Disabled: let the watcher notice and stop. Enabled with a watcher already running: have
+            // it read now so a not-yet-primed baseline is taken at link-up, not a poll interval later.
             self.wake.notify_one();
         }
         if start_watcher {
@@ -1513,6 +1515,7 @@ impl ClipboardService {
             .await
             .ok()
             .flatten();
+        let mut first_pass = true;
         loop {
             let interval = if events.is_some() {
                 EVENT_SAFETY_POLL.max(self.poll)
@@ -1520,11 +1523,17 @@ impl ClipboardService {
                 self.poll
             };
             let mut stream_ended = false;
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
-                _ = self.wake.notified() => {}
-                ev = async { events.as_mut().unwrap().changed().await }, if events.is_some() => {
-                    stream_ended = ev.is_none();
+            if first_pass {
+                // Take the baseline right away: waiting a whole poll interval would swallow a copy
+                // made just after the link came up (docs/chaos-findings.md, C-10).
+                first_pass = false;
+            } else {
+                tokio::select! {
+                    _ = tokio::time::sleep(interval) => {}
+                    _ = self.wake.notified() => {}
+                    ev = async { events.as_mut().unwrap().changed().await }, if events.is_some() => {
+                        stream_ended = ev.is_none();
+                    }
                 }
             }
             if stream_ended {

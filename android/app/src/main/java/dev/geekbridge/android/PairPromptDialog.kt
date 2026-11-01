@@ -38,22 +38,38 @@ class PairPromptDialog(
             orientation = LinearLayout.VERTICAL
             setPadding(pad, ui.dp(8), pad, 0)
         }
-        body.addView(
-            ui.text(
-                activity.getString(if (outgoing) R.string.pair_dlg_outgoing else R.string.pair_dlg_incoming, name),
-            ),
-        )
-        body.addView(ui.mono(p.code, 30f, bold = true).apply { letterSpacing = 0.12f })
-        body.addView(ui.text(activity.getString(R.string.pair_dlg_cert), Tone.Muted, 12f))
-        body.addView(ui.mono(TransportText.group(p.peerCertSha256), 12f))
-        body.addView(
-            ui.text(
-                activity.resources.getQuantityString(R.plurals.pair_dlg_warning, secs, secs),
-                Tone.Muted,
-            ),
-        )
+        if (p.qrPinned) {
+            // The certificate came from the scanned code, so there is nothing to compare: just a clear question.
+            body.addView(ui.text(activity.getString(R.string.qr_dlg_body)))
+            body.addView(ui.text(activity.getString(R.string.qr_dlg_cert), Tone.Muted, 12f))
+            body.addView(ui.mono(TransportText.group(p.peerCertSha256), 12f))
+        } else {
+            body.addView(
+                ui.text(
+                    activity.getString(if (outgoing) R.string.pair_dlg_outgoing else R.string.pair_dlg_incoming, name),
+                ),
+            )
+            // Big and spaced out: this is the one thing both screens must agree on.
+            body.addView(ui.mono(p.code, 44f, bold = true).apply { letterSpacing = 0.12f })
+            body.addView(ui.text(activity.getString(R.string.pair_dlg_cert), Tone.Muted, 12f))
+            body.addView(ui.mono(TransportText.group(p.peerCertSha256), 12f))
+        }
+        if (!p.qrPinned) {
+            body.addView(
+                ui.text(
+                    activity.resources.getQuantityString(R.plurals.pair_dlg_warning, secs, secs),
+                    Tone.Muted,
+                ),
+            )
+        }
         val d = AlertDialog.Builder(activity)
-            .setTitle(if (outgoing) activity.getString(R.string.pair_dlg_title_outgoing, name) else activity.getString(R.string.pair_dlg_title_incoming))
+            .setTitle(
+                when {
+                    p.qrPinned -> activity.getString(R.string.qr_dlg_title, name)
+                    outgoing -> activity.getString(R.string.pair_dlg_title_outgoing, name)
+                    else -> activity.getString(R.string.pair_dlg_title_incoming)
+                },
+            )
             .setView(ScrollView(activity).apply { addView(body) })
             .setCancelable(false)
             .setPositiveButton(R.string.pair_dlg_pair) { _, _ -> finish(p, true) }

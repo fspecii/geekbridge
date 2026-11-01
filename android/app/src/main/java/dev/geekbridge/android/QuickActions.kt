@@ -10,6 +10,8 @@ import android.app.Activity
  *  - `dev.geekbridge.android.SendFileAction`      -> "Send file"
  *  - `dev.geekbridge.android.SendClipboardAction` -> "Send clipboard"
  *  - `dev.geekbridge.android.UpdateAction`        -> "Check for updates" (About section)
+ *  - `dev.geekbridge.android.ContactsAction`      -> opens the Contacts screen (Home "Contacts" tile)
+ *  - `dev.geekbridge.android.CalendarAction`      -> opens the Calendar/Agenda screen (Home "Calendar" tile)
  * Lookup is by class name, so if release builds ever enable R8, keep these classes.
  */
 interface QuickActionHandler {
@@ -24,6 +26,8 @@ object QuickActions {
     val sendFile: QuickActionHandler? by lazy { load("SendFileAction") }
     val sendClipboard: QuickActionHandler? by lazy { load("SendClipboardAction") }
     val update: QuickActionHandler? by lazy { load("UpdateAction") }
+    val contacts: QuickActionHandler? by lazy { load("ContactsAction") }
+    val calendar: QuickActionHandler? by lazy { load("CalendarAction") }
 
     private fun load(simpleName: String): QuickActionHandler? = try {
         Class.forName(PKG + simpleName).getField("INSTANCE").get(null) as? QuickActionHandler

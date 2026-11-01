@@ -260,16 +260,23 @@ pub enum Feature {
     Contacts,
     /// Read-only calendar events (`geekbridge.calendar.*`).
     Calendar,
+    /// Creating, changing and deleting events on the phone's calendar (`geekbridge.calendar.write`).
+    /// Separate from reading and off by default; nothing is ever written without it.
+    CalendarEdit,
+    /// Desktop notifications shortly before events from the shared calendar.
+    CalendarAlerts,
     Clipboard,
     Notifications,
     Telephony,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 6] = [
+    pub const ALL: [Feature; 8] = [
         Feature::Sms,
         Feature::Contacts,
         Feature::Calendar,
+        Feature::CalendarEdit,
+        Feature::CalendarAlerts,
         Feature::Clipboard,
         Feature::Notifications,
         Feature::Telephony,
@@ -319,6 +326,20 @@ pub enum Request {
     },
     Deny {
         challenge_id: String,
+    },
+    /// Show-a-QR pairing: issue a one-time token and return the text to encode in the QR code.
+    /// Scanning it pins this computer on the phone; the phone still asks its user.
+    PairQr,
+    /// Revoke every outstanding QR token (the QR dialog was closed).
+    PairQrCancel,
+    /// "Test connection": look for the usual reasons a phone and this computer cannot talk and
+    /// answer in plain language. `device_id` names the phone to probe (its discovered address);
+    /// `endpoint` overrides the address.
+    TestConnection {
+        #[serde(default)]
+        device_id: Option<String>,
+        #[serde(default)]
+        endpoint: Option<Endpoint>,
     },
     /// Close the live link; the pairing is kept.
     Disconnect {
@@ -436,6 +457,32 @@ pub enum Request {
         query: String,
         day: String,
         utc_offset_minutes: i32,
+        /// Number of days shown from `day` (1 = a single day, 7 week, up to 42 for a month grid).
+        #[serde(default)]
+        days: u32,
+        /// How many contacts to list at most (0 = the default of 300, capped at 1000).
+        #[serde(default)]
+        people_limit: usize,
+    },
+    /// Create, change or delete one event on a phone's calendar. `op_id` makes a retry idempotent
+    /// (the phone applies each id once). Needs the per-device `CalendarEdit` consent and a phone that
+    /// declares write support; an explicit `calendar_id` is required to create.
+    CalendarEdit {
+        device_id: String,
+        op_id: String,
+        action: crate::phone_view::CalendarEditAction,
+        #[serde(default)]
+        calendar_id: Option<String>,
+        #[serde(default)]
+        event_id: Option<String>,
+        #[serde(default)]
+        draft: Option<Box<crate::phone_view::EventDraft>>,
+    },
+    /// Send an uncertain or failed edit again under the same `op_id` (safe: the phone answers a
+    /// repeated id with its first outcome).
+    CalendarEditRetry {
+        device_id: String,
+        op_id: String,
     },
     /// Ask the phone(s) for fresh contacts and calendar data now.
     AgendaRefresh {
@@ -548,6 +595,17 @@ pub struct PairChallenge {
     /// Compare with the code the phone shows before approving.
     pub verification_key: String,
     pub expires_in_ms: u64,
+}
+
+/// What the pair-by-QR dialog shows.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PairQr {
+    /// The exact text to encode in the QR code (also usable as a pasteable link).
+    pub payload: String,
+    pub expires_in_ms: u64,
+    pub computer_name: String,
+    /// The addresses written into the code, for display.
+    pub addresses: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -717,6 +775,13 @@ pub enum EventKind {
     PairChallenge {
         challenge_id: String,
     },
+    /// A phone presented a QR token that was refused (expired, already used, unknown, locked out).
+    /// `reason` is a plain-language sentence.
+    QrRefused {
+        reason: String,
+    },
+    /// The next pairing used a valid QR token, so no code comparison was shown.
+    QrAccepted,
     Paired,
     PairFailed {
         reason: String,
@@ -800,6 +865,8 @@ pub enum Response {
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
     Share(Box<ShareStatus>),
+    PairQr(Box<PairQr>),
+    ConnectionTest(Box<crate::pairing_help::ConnectionTest>),
     Agenda(Box<crate::phone_view::AgendaView>),
     Messages(Box<crate::phone_view::MessagesView>),
     MessageQueued {

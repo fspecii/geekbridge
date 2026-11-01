@@ -2,6 +2,7 @@ package dev.geekbridge.android
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -28,6 +29,10 @@ class PairPanel(
     private var pendingDevice: String? = null
     private var lastSig = ""
     private var lastPaired = AppState.pairedCount
+    /** Set when a computer got paired while this panel was open: shows the "what to do next" card. */
+    private var showNext = false
+    private var netReport: NetReport? = null
+    private var testing = false
     private val observer: () -> Unit = { render() }
     private var attached = false
 
@@ -89,6 +94,7 @@ class PairPanel(
             }
         }
         if (AppState.pairedCount != lastPaired) {
+            if (AppState.pairedCount > lastPaired) showNext = true
             lastPaired = AppState.pairedCount
             main.post { onPairedChanged() }
         }
@@ -98,6 +104,7 @@ class PairPanel(
             phase, s?.discovered?.joinToString { "${it.deviceId}${it.ip}${it.paired}" },
             s?.connections?.joinToString { "${it.id}${it.phase}${it.trusted}" },
             s?.paired?.joinToString { it.deviceId }, controller.notice?.text, pendingDevice, AppState.pairedNames,
+            showNext, testing, netReport?.headline,
         ).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
@@ -111,6 +118,18 @@ class PairPanel(
             for (n in names) {
                 kit.row(container, R.drawable.ic_computer, n, activity.getString(R.string.pair_paired_and_trusted), kit.chip(activity.getString(R.string.pair_chip_paired), Tone.Ok), Tone.Ok)
             }
+        }
+        if (showNext && names.isNotEmpty()) {
+            NextSteps.card(activity, kit, container, onHome = {
+                activity.startActivity(Intent(activity, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+            }, onFile = {
+                activity.startActivity(Intent(activity, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
+            })
+            kit.button(container, activity.getString(R.string.qr_next_done), BtnStyle.Plain) { showNext = false; render() }
+        }
+        // No code needed: scan the QR code the computer shows.
+        kit.button(container, activity.getString(R.string.pair_scan_qr), if (names.isEmpty()) BtnStyle.Primary else BtnStyle.Tonal) {
+            activity.startActivity(Intent(activity, QrPairActivity::class.java))
         }
         when (phase) {
             LinkPhase.Stopped -> {
@@ -156,6 +175,14 @@ class PairPanel(
                         kit.button(container, activity.getString(R.string.pair_wait_for, name), BtnStyle.Tonal) { controller.pairRequest(c.id, await = true) }
                     }
                 }
+                val target = found.firstOrNull() ?: s?.discovered.orEmpty().firstOrNull()
+                kit.button(container, activity.getString(if (testing) R.string.qr_testing else R.string.pair_test_connection), BtnStyle.Tonal, enabled = !testing) {
+                    testing = true
+                    netReport = null
+                    render()
+                    NetCheck.run(activity, target?.ip, target?.tcpPort ?: 1716) { r -> testing = false; netReport = r; render() }
+                }
+                netReport?.let { ReportView.add(kit, container, it) }
                 kit.button(container, activity.getString(R.string.pair_stop_looking), BtnStyle.Plain) { controller.stop() }
             }
         }

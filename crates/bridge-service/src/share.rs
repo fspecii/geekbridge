@@ -39,6 +39,8 @@ pub const MAX_OFFERED: usize = 8;
 /// One paired phone cannot hold more than this many of the [`MAX_OFFERED`] slots.
 pub const MAX_OFFERED_PER_DEVICE: usize = 3;
 pub const MAX_RECEIVED_TEXT: usize = kshare::MAX_TEXT_BYTES;
+/// How long an unfetched outgoing file survives its link before it is given up (see `link_lost`).
+const LINK_LOST_GRACE: Duration = Duration::from_secs(10);
 pub const SETTINGS_FILE: &str = "share.json";
 const MAX_SETTINGS_DEVICES: usize = 1024;
 
@@ -945,6 +947,35 @@ impl ShareManager {
                 self.finish(transfer_id, &device, Err("link_lost"));
             }
         }
+    }
+
+    /// The control link to `device_id` ended. An outgoing file whose payload listener is still waiting
+    /// for a phone that never connected would hold its port, file handle and transfer slot for the
+    /// whole accept timeout (120 s); after a short grace period for the phone to reconnect to the
+    /// payload port, give those up. Transfers that have started streaming are left to finish.
+    pub fn link_lost(self: &Arc<Self>, device_id: &str) {
+        let (me, device) = (self.clone(), device_id.to_owned());
+        tokio::spawn(async move {
+            tokio::time::sleep(LINK_LOST_GRACE).await;
+            let ids: Vec<u64> = me
+                .inner()
+                .items
+                .iter()
+                .filter(|t| {
+                    t.info.device_id == device
+                        && t.info.direction == TransferDirection::Outgoing
+                        && t.info.state.is_live()
+                        && t.bytes.load(Ordering::Relaxed) == 0
+                })
+                .map(|t| t.info.transfer_id)
+                .collect();
+            for id in ids {
+                if let Some(t) = me.inner().items.iter().find(|t| t.info.transfer_id == id) {
+                    t.cancel.cancel();
+                }
+                me.finish(id, &device, Err("link_lost"));
+            }
+        });
     }
 
     /// A job could not be queued after `begin_send_file`.
