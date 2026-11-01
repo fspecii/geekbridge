@@ -10,7 +10,7 @@ import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -31,13 +31,13 @@ class LinkSection(
 ) {
     private val main = Handler(Looper.getMainLooper())
 
-    private val card = ui.card(root, "Computer link · development")
+    private val card = ui.card(root, "Computer link", accent = true)
     private val stateLine: TextView
-    private val optListen: CheckBox
+    private val optListen: CompoundButton
     private val optPort: EditText
-    private val optDiscover: CheckBox
-    private val optAnnounce: CheckBox
-    private val optLoopback: CheckBox?
+    private val optDiscover: CompoundButton
+    private val optAnnounce: CompoundButton
+    private val optLoopback: CompoundButton?
     private val toggle: Button
     private val infoBox = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
     private val nameValue: TextView
@@ -70,25 +70,26 @@ class LinkSection(
     init {
         ui.body(
             card,
-            "A development transport that speaks the KDE Connect protocol (TCP + TLS with certificate pinning). " +
-                "It starts only when you tap Start and stops when you leave the app. Pairing needs your explicit " +
-                "approval of an exact code and certificate. It can only exchange a “ping”: no messages, calls, " +
-                "clipboard, contacts or calendar are sent. Not yet tested with a real KDE Connect device or the " +
-                "GeekBridge desktop apps.",
+            "Your phone and your computer talk over an encrypted link on your own network (TCP + TLS with " +
+                "certificate pinning). Pairing needs your approval of an exact code and certificate. Once paired you " +
+                "can share the clipboard, send files and answer calls, and, if you switch them on, share texts, " +
+                "contacts and calendar. The link starts when you tap Start and stops when you leave the app.",
             Tone.Muted,
         )
         stateLine = ui.statusLine(card, "Link: stopped.", Tone.Muted)
+        toggle = ui.button(card, "Start link", emphasis = Emphasis.Primary) { onToggle() }
+        // Everything below is for testing and troubleshooting; the defaults are right for everyday use.
+        val dev = ui.expander(card, "Developer options", "Ports, discovery and connecting by address", "link-dev")
 
-        optListen = ui.check(card, "Accept connections from computers (TCP port below)", checked = true)
-        optPort = ui.input(card, "Listen port (default 1716)", InputType.TYPE_CLASS_NUMBER, 5)
-        optDiscover = ui.check(card, "Look for computers on this network (UDP discovery)")
-        optAnnounce = ui.check(card, "Announce this phone on this network")
+        optListen = ui.check(dev, "Accept connections from computers (TCP port below)", checked = true)
+        optPort = ui.input(dev, "Listen port (default 1716)", InputType.TYPE_CLASS_NUMBER, 5)
+        optDiscover = ui.check(dev, "Look for computers on this network (UDP discovery)")
+        optAnnounce = ui.check(dev, "Announce this phone on this network")
         optLoopback = if (BuildConfig.DEBUG) {
-            ui.check(card, "Testing only: allow loopback peers (debug build)")
+            ui.check(dev, "Testing only: allow loopback peers (debug build)")
         } else {
             null
         }
-        toggle = ui.button(card, "Start link", emphasis = Emphasis.Primary) { onToggle() }
 
         // Details while running.
         card.addView(infoBox, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
@@ -100,7 +101,7 @@ class LinkSection(
         certText = ui.mono("", 12f).also { infoBox.addView(it, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP)) }
 
         // Manual connect.
-        card.addView(connectBox, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        dev.addView(connectBox, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         ui.divider(connectBox)
         ui.body(connectBox, "Connect to a computer by address. Only private local-network IP addresses are accepted; this does not pair.", Tone.Muted)
         hostField = ui.input(connectBox, "IP address, e.g. 192.168.1.20", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI, 64)
@@ -214,11 +215,10 @@ class LinkSection(
             LinkPhase.Running -> {
                 val conns = s?.connections.orEmpty()
                 val trusted = conns.count { it.trusted }
-                ui.setStatus(stateLine, "Link: running (development transport, ping only).", Tone.Ok)
+                ui.setStatus(stateLine, "Link: running.", Tone.Ok)
                 ui.setStatus(
                     summary,
-                    "Connection: link running — ${conns.size} open, $trusted trusted. Only a ping can be exchanged; no messages, calls, " +
-                        "clipboard, contacts or calendar are sent.",
+                    "Connection: link running — ${conns.size} open, $trusted trusted.",
                     Tone.Ok,
                 )
                 val paired = s?.paired.orEmpty()

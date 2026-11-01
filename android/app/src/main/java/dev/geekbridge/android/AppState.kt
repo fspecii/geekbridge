@@ -25,6 +25,7 @@ object AppState {
                 // Call control reads its own opt-in here so StartOptions can negotiate it on every start path.
                 CallControlRuntime.init(ctx.applicationContext)
                 PhoneDataRuntime.init(ctx.applicationContext)
+                ComputerGrantsRuntime.init(ctx.applicationContext)
             }
         }
     }
@@ -49,12 +50,20 @@ object AppState {
     val pairedNames: List<String>
         get() = p()?.getString("paired_names", "")?.split('\n')?.filter { it.isNotEmpty() }.orEmpty()
 
+    /** Paired computers as (device id, name), for the per-computer allow lists. */
+    val pairedPeers: List<Pair<String, String>>
+        get() = p()?.getString("paired_peers", "")?.split('\n')?.mapNotNull { l ->
+            l.split('\t', limit = 2).takeIf { it.size == 2 && it[0].isNotEmpty() }?.let { it[0] to it[1] }
+        }.orEmpty()
+
     /** Called with every readable status snapshot; an unreadable one ([readable] false) changes nothing. */
     fun recordPaired(paired: List<PairedPeer>, readable: Boolean) {
         if (!readable) return
         val names = paired.take(MAX_NAMES).map { it.name.ifEmpty { "Computer" }.replace('\n', ' ').take(NAME_CHARS) }
+        ComputerGrantsRuntime.onPaired(paired)
         val before = pairedCount
-        p()?.edit()?.putInt("paired_count", paired.size)?.putString("paired_names", names.joinToString("\n"))?.apply()
+        p()?.edit()?.putInt("paired_count", paired.size)?.putString("paired_names", names.joinToString("\n"))
+            ?.putString("paired_peers", paired.take(MAX_NAMES).joinToString("\n") { it.deviceId + "\t" + it.name.ifEmpty { "Computer" }.replace(Regex("[\\n\\t]"), " ").take(NAME_CHARS) })?.apply()
         // Starting or stopping the background connection follows the paired count (event-driven, no polling).
         if ((before > 0) != (paired.isNotEmpty())) appContext?.let { LinkService.sync(it) }
     }

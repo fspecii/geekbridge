@@ -117,7 +117,7 @@ desktop() {
 android() {
   local A1="$W/gb-0.1.0.apk" A2="$W/gb-0.2.0.apk"
   [[ -f "$A1" && -f "$A2" ]] || { rec android FAIL "missing $A1 / $A2 (see header)"; return 1; }
-  export ADBUI_TIMEOUT=60 E2E_SOURCE_ONLY=1 E2E_ADB_PORT=16048 E2E_EMU_PORT=5624 E2E_AVD=gb36u E2E_RUN="$W/and-run" E2E_RESULTS="$W/and-results.tsv"
+  export ADBUI_TIMEOUT=60 E2E_SOURCE_ONLY=1 E2E_ADB_PORT="${E2E_UPD_ADB_PORT:-16048}" E2E_EMU_PORT="${E2E_UPD_EMU_PORT:-5624}" E2E_AVD="${E2E_UPD_AVD:-gb36u}" E2E_RUN="$W/and-run" E2E_RESULTS="$W/and-results.tsv"
   # shellcheck disable=SC1091
   set -- ; source scripts/e2e-android.sh
   set +e

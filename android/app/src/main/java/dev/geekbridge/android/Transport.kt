@@ -86,6 +86,8 @@ data class StartOptions(
     val calls: CallLinkSettings? = null,
     /** Contacts / calendar / SMS capabilities that are enabled AND permitted (PhoneDataRuntime); null or all-off declares none. */
     val data: ActiveFeatures? = null,
+    /** Which paired computer may use which opt-in; the default is what the app has stored (nobody before it loads). */
+    val permits: ComputerGrants = GrantsHolder.current,
 )
 
 object TransportProtocol {
@@ -113,6 +115,8 @@ object TransportProtocol {
         if (o.clipboard != null) r.put("clipboard", ClipboardProtocol.startObject(o.clipboard))
         if (o.calls != null) r.put("calls", CallsProtocol.startObject(o.calls))
         o.data?.let { PhoneDataProtocol.startObject(it) }?.let { r.put("data", it) }
+        // Always sent: a computer has no calls / contacts / calendar / SMS rights until the user allowed it.
+        r.put("permits", o.permits.permitsObject())
         return r.toString()
     }
 

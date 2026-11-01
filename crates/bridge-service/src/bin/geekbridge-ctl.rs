@@ -41,6 +41,11 @@ Commands:
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call mute on|off | call audio       mute the computer microphone / move the audio here (only where offered)
+  hotkey install|uninstall|print|status
+                                      bind paste-from-phone and float the call/share windows on Hyprland
+                                      (dry run unless --apply), or print steps for GNOME/KDE/sway;
+                                      `geekbridge-ctl hotkey --help` for options
+  status --waybar                     one JSON line for a waybar custom module (docs/omarchy.md)
   clipboard status                    clipboard bridge: backend, per-device counters, hotkey, window
   clipboard paste-from-phone [DEVICE_ID] [--notify]
                                       pull the phone's latest eligible item (copied within the
@@ -112,6 +117,13 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         .ok_or("cannot determine the state directory; pass --state-dir")?;
     if command == "token-path" {
         println!("{}", ipc::token_path(&state_dir).display());
+        return Ok(());
+    }
+    if command == "hotkey" {
+        return hotkey_command(&args[1..], port, &state_dir);
+    }
+    if command == "status" && args.iter().skip(1).any(|a| a == "--waybar") {
+        println!("{}", waybar_line(port, &state_dir));
         return Ok(());
     }
     if matches!(
@@ -582,6 +594,125 @@ fn clipboard_command(
         }
         other => Err(format!("unknown clipboard command: {other}\n\n{USAGE}")),
     }
+}
+
+fn hotkey_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_service::hotkey_cli::{Env, run};
+    let words: Vec<String> = args
+        .iter()
+        .map(|a| {
+            a.to_str()
+                .map(str::to_owned)
+                .ok_or("arguments must be text")
+        })
+        .collect::<Result<_, _>>()?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| home.as_ref().map(|h| h.join(".config")))
+        .ok_or("cannot find your config directory ($HOME is not set)")?;
+    // Omarchy keeps its shipped defaults read-only under $OMARCHY_PATH, /usr/share/omarchy or
+    // ~/.local/share/omarchy; they are only read, to warn about a shortcut they already use.
+    let roots = [
+        std::env::var_os("OMARCHY_PATH").map(PathBuf::from),
+        Some(PathBuf::from("/usr/share/omarchy")),
+        home.map(|h| h.join(".local/share/omarchy")),
+    ];
+    let default_binding_files = roots
+        .into_iter()
+        .flatten()
+        .filter_map(|r| std::fs::read_dir(r.join("default/hypr/bindings")).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    let configured = load_token(state_dir)
+        .ok()
+        .and_then(|t| clipboard_status(port, &t).ok())
+        .map(|s| s.hotkey);
+    let env = Env {
+        hypr_dir: config_home.join("hypr"),
+        stamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+            .to_string(),
+        default_binding_files,
+        ctl: std::env::current_exe()
+            .ok()
+            .filter(|p| p.file_name().is_some_and(|n| n == "geekbridge-ctl"))
+            .map(|p| p.to_string_lossy().into_owned()),
+        configured,
+    };
+    let report = run(&words, &env)?;
+    print!("{}", report.text);
+    // Hyprland reloads on save; ask it to now and show any error so a mistake is seen at once.
+    if report.wrote && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+        let hypr = |a: &[&str]| {
+            std::process::Command::new("hyprctl")
+                .args(a)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .ok()
+        };
+        if hypr(&["reload"]).is_some() {
+            let errors = hypr(&["configerrors"])
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .unwrap_or_default();
+            if errors.is_empty() {
+                println!("Hyprland reloaded; `hyprctl configerrors` is clean.");
+            } else {
+                println!(
+                    "Hyprland reports config errors:\n{errors}\nRestore the backup or run `geekbridge-ctl hotkey uninstall --apply`."
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The waybar JSON line. Every failure degrades to a state, never to an error exit: a bar that
+/// prints nothing shows a blank gap.
+fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
+    use bridge_service::waybar::{BarState, render};
+    let mut bar = BarState::default();
+    if let Ok(token) = load_token(state_dir)
+        && let Ok(status) = ipc::status(port, &token)
+    {
+        bar.service_up = true;
+        bar.paired = status.paired.len();
+        bar.connected = status
+            .links
+            .iter()
+            .filter(|l| l.phase == ipc::LinkPhase::Connected)
+            .map(|l| l.name.clone())
+            .collect();
+        if let Ok(Response::Calls(c)) = ipc::call(port, &token, &Request::Calls) {
+            bar.ringing = c.view.rows.iter().filter(|r| r.ringing()).count();
+        }
+        if !bar.connected.is_empty()
+            && let Ok(Response::Messages(m)) = ipc::call(
+                port,
+                &token,
+                &Request::MessagesView {
+                    device_id: None,
+                    thread_id: None,
+                },
+            )
+            && m.devices
+                .iter()
+                .any(|d| d.sms == bridge_core::phone_view::DataState::Ready)
+        {
+            bar.unread_sms = Some(m.conversations.iter().map(|c| c.unread).sum());
+        }
+        if let Ok(Response::Update(u)) = ipc::call(port, &token, &Request::UpdateStatus)
+            && u.newer
+            && !u.skipped
+        {
+            bar.update = u.latest.map(|r| r.version);
+        }
+    }
+    render(&bar)
 }
 
 fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {

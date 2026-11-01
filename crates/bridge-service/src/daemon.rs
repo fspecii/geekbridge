@@ -50,6 +50,8 @@ use tokio::{
 mod pairing_flow;
 
 pub const MAX_LINKS: usize = 16;
+/// Unpaired links one source address may hold at once (S2-1 in docs/security-review-2.md).
+pub const MAX_UNPAIRED_PER_IP: usize = 3;
 pub const MAX_CHALLENGES: usize = 8;
 const EVENT_CAP: usize = 256;
 const EVENTS_PER_PAGE: usize = 128;
@@ -1157,9 +1159,22 @@ impl Daemon {
         let id = info.peer.device_id.to_string();
         let trusted = matches!(handshake, kde::Handshake::Trusted(_));
         let mut core = self.core();
+        // Strangers must not starve the table (docs/security-review-2.md S2-1): one address holds
+        // only a few unpaired links, and a paired phone takes the place of the oldest stranger.
+        let mut evicted = None;
         match core.links.get(&id) {
             Some(_) if !trusted => return,
-            None if core.links.len() >= MAX_LINKS => return,
+            None if !trusted && unpaired_from(&core, info.peer_ip) >= MAX_UNPAIRED_PER_IP => {
+                return;
+            }
+            None if core.links.len() >= MAX_LINKS => {
+                let victim = trusted.then(|| oldest_unpaired(&core)).flatten();
+                let Some(victim) = victim else { return };
+                evicted = core.links.remove(&victim);
+                if let Some(old) = &evicted {
+                    core.challenges.retain(|_, c| c.attempt != old.attempt);
+                }
+            }
             _ => {}
         }
         let displaced = core.links.remove(&id);
@@ -1176,7 +1191,7 @@ impl Daemon {
         self.install(&mut core, status, out, Entry::Ready(Box::new(handshake)));
         drop(core);
         // Aborted only after the lock is released: dropping the task runs guards that take it.
-        if let Some(old) = displaced {
+        for old in displaced.into_iter().chain(evicted) {
             old.task.abort();
         }
     }
@@ -1226,6 +1241,27 @@ fn event(id: &str, kind: EventKind) -> Event {
         device_id: Some(id.to_owned()),
         kind,
     }
+}
+
+fn is_unpaired(l: &LiveLink) -> bool {
+    matches!(l.status.phase, LinkPhase::Unpaired | LinkPhase::Pairing)
+}
+
+/// Links in the table that are waiting to be paired and came from `ip`.
+fn unpaired_from(core: &Core, ip: IpAddr) -> usize {
+    core.links
+        .values()
+        .filter(|l| is_unpaired(l) && l.status.peer_ip == Some(ip))
+        .count()
+}
+
+/// The longest-waiting unpaired link: what a paired phone may displace when the table is full.
+fn oldest_unpaired(core: &Core) -> Option<String> {
+    core.links
+        .iter()
+        .filter(|(_, l)| is_unpaired(l))
+        .min_by_key(|(_, l)| l.attempt)
+        .map(|(id, _)| id.clone())
 }
 
 fn describe(info: &kde::LinkInfo, trusted: bool) -> (LinkStatus, Vec<String>) {

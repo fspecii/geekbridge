@@ -10,7 +10,8 @@ use std::time::Duration;
 pub(crate) const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
 pub(crate) const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
 pub(crate) const KEEPALIVE_PROBES: u32 = 3;
-/// Longest a vanished peer may go unnoticed.
+/// Longest a vanished peer may go unnoticed (macOS has no hard limit option, so only tests read it there).
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub(crate) const DEAD_LINK_LIMIT: Duration = Duration::from_secs(60);
 
 /// Arm the keepalive timer (and the platform's hard limit) on a link socket.

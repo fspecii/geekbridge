@@ -454,6 +454,7 @@ object PhoneDataRuntime {
             sms = p.getBoolean("sms", false),
             calendarIds = p.getStringSet("calendar_ids", emptySet()).orEmpty().toSet(),
             calendarEdit = p.getBoolean("calendar_edit", false),
+            smsSpecialNumbers = p.getBoolean("sms_special", false),
         )
         val sms = AndroidSmsPort(a)
         smsPort = sms
@@ -474,6 +475,13 @@ object PhoneDataRuntime {
                     }
                 }),
             ) { settings.calendarIds },
+            allowSpecialNumbers = { settings.smsSpecialNumbers },
+            smsLedger = RequestLedger(object : BlobStore {
+                override fun read() = p.getString("sms_requests", "") ?: ""
+                override fun write(text: String) {
+                    p.edit().putString("sms_requests", text).apply()
+                }
+            }),
         )
     }
 
@@ -501,6 +509,7 @@ object PhoneDataRuntime {
     fun setCalendar(on: Boolean) = update { it.copy(calendar = on) }
     fun setCalendarEdit(on: Boolean) = update { it.copy(calendarEdit = on) }
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
+    fun setSmsSpecialNumbers(on: Boolean) = update { it.copy(smsSpecialNumbers = on) }
     fun setCalendarIds(ids: Set<String>) {
         update { it.copy(calendarIds = ids.take(PhoneDataLimits.MAX_CALENDARS).toSet()) }
         worker.execute { engine?.reset() } // selection changed: the next sync is a full snapshot
@@ -510,7 +519,8 @@ object PhoneDataRuntime {
         settings = change(settings)
         prefs?.edit()
             ?.putBoolean("contacts", settings.contacts)?.putBoolean("calendar", settings.calendar)
-            ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)?.apply()
+            ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)
+            ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.apply()
         resync()
     }
 

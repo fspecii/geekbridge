@@ -6,4 +6,10 @@ Exec=geekbridge-clipboard
 Icon=dev.geekbridge.Clipboard
 Terminal=false
 Categories=Utility;
+Keywords=clipboard;paste;copy;phone;android;geekbridge;
 StartupWMClass=dev.geekbridge.Clipboard
+Actions=PasteFromPhone;
+
+[Desktop Action PasteFromPhone]
+Name=Paste from phone
+Exec=geekbridge-ctl clipboard paste-from-phone --notify

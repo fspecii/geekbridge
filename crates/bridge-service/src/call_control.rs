@@ -104,11 +104,7 @@ pub trait CallNotifier: Send + Sync {
 pub struct NotifySendCalls;
 impl NotifySendCalls {
     pub fn args(caller: &str, can_answer: bool, can_decline: bool) -> Vec<String> {
-        let clean: String = caller
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(80)
-            .collect();
+        let clean = crate::notify_text::plain(caller, 80);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
             "--urgency=critical".to_owned(),
@@ -124,6 +120,12 @@ impl NotifySendCalls {
         if can_decline {
             args.push("--action=decline=Decline".into());
         }
+        if can_answer || can_decline {
+            // A click on the body (mako draws no buttons) opens the Calls window; it never answers.
+            args.push("--action=default=Open".into());
+        }
+        // `--`: a caller-ID name that starts with a dash is text, not an option.
+        args.push("--".into());
         args.push("Incoming call".into());
         args.push(clean);
         args
@@ -148,6 +150,7 @@ impl CallNotifier for NotifySendCalls {
                 match String::from_utf8_lossy(&out.stdout).trim() {
                     "answer" if can_answer => reply(RingChoice::Answer),
                     "decline" if can_decline => reply(RingChoice::Decline),
+                    "default" => crate::desktop_notify::open_app("geekbridge-calls"),
                     _ => {}
                 }
             }
@@ -980,6 +983,17 @@ mod tests {
                 call: CallId::new("c1")
             })
         );
+    }
+
+    #[test]
+    fn a_caller_label_cannot_become_an_option_or_markup() {
+        // A caller-ID name is chosen by the caller (S2-3 in docs/security-review-2.md).
+        let a = NotifySendCalls::args("--action=answer=Ignore me", true, true);
+        let dashdash = a.iter().position(|s| s == "--").expect("positional marker");
+        assert!(a[dashdash + 1..].iter().any(|s| s == "Incoming call"));
+        assert!(a[..dashdash].iter().all(|s| !s.contains("Ignore me")));
+        let b = NotifySendCalls::args("<a href=\"http://evil\">Bank</a>", false, false);
+        assert!(!b.last().unwrap().contains(['<', '>']));
     }
 
     #[test]

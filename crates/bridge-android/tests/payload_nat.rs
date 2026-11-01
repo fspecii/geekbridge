@@ -7,6 +7,7 @@
 //! phone's TCP ignores, which an application sees as silence. A socket on the plain route works.
 //!
 //! `GEEKBRIDGE_CHAOS=soak` uses 500 MiB instead of the short size.
+#![cfg(unix)] // passes raw file descriptors to the Android transport
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::AsRawFd;
 use std::pin::Pin;

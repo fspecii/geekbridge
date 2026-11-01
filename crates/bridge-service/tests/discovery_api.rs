@@ -112,6 +112,12 @@ fn id_n(n: usize) -> String {
     format!("{n:032x}")
 }
 
+/// Put an identity datagram into the cache the way the listener does, minus the per-source limiter.
+async fn seed(service: &Service, datagram: &[u8]) {
+    let device = discovery::parse_identity(datagram, Ipv4Addr::LOCALHOST.into(), now_ms()).unwrap();
+    bridge_service::record_device(&mut *service.state.write().await, device);
+}
+
 async fn wait_for(what: &str, mut cond: impl AsyncFnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !cond().await {
@@ -371,14 +377,14 @@ async fn cache_is_bounded_and_first_come_first_kept() {
     let service = Service::start().await;
     let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let flood = MAX_DEVICES + 40;
+    // Seeded through the parser and `record_device` directly: the listener's per-source limiter (see
+    // `one_source_cannot_flood_the_discovery_list`) would otherwise stop a single loopback sender at a few ids.
     for n in 0..flood {
-        service
-            .send_from(
-                &sender,
-                &datagram(&identity_json(&id_n(n), &format!("Phone {n:03}"))),
-            )
-            .await;
-        tokio::task::yield_now().await; // keep loopback socket buffer from overflowing
+        seed(
+            &service,
+            &datagram(&identity_json(&id_n(n), &format!("Phone {n:03}"))),
+        )
+        .await;
     }
     wait_for("cache filled to the cap", async || {
         service.state.read().await.devices.len() == MAX_DEVICES
@@ -419,6 +425,24 @@ async fn cache_is_bounded_and_first_come_first_kept() {
     })
     .await;
     assert_eq!(service.state.read().await.devices.len(), MAX_DEVICES);
+}
+
+#[tokio::test]
+async fn one_udp_source_can_list_only_a_few_device_ids() {
+    let service = Service::start().await;
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    for n in 0..40 {
+        service
+            .send_from(&sender, &datagram(&identity_json(&id_n(n), "Invented")))
+            .await;
+        tokio::task::yield_now().await;
+    }
+    time::sleep(Duration::from_millis(300)).await;
+    let listed = service.state.read().await.devices.len();
+    assert!(
+        (1..=4).contains(&listed),
+        "one source listed {listed} invented phones"
+    );
 }
 
 #[tokio::test]
@@ -775,10 +799,8 @@ fn heavy_identity(n: usize) -> Vec<u8> {
 }
 
 async fn flood_with_heavy_devices(service: &Service, count: usize) {
-    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     for n in 0..count {
-        service.send_from(&sender, &heavy_identity(n)).await;
-        tokio::task::yield_now().await;
+        seed(service, &heavy_identity(n)).await;
     }
     wait_for("heavy devices cached", async || {
         service.state.read().await.devices.len() == count

@@ -32,10 +32,9 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 
 /**
- * Single-screen companion. Everything shown is either local to this phone (device info, contacts and
- * calendar previews, the text the user typed) or an honest statement that a feature is unavailable.
- * The only networking is the optional "Computer link" (a ping-only development transport the user starts
- * explicitly); nothing else is synced, so there are no messages, calls or clipboard results from a computer.
+ * Diagnostics & about: technical details, local previews and the manual "Computer link" for troubleshooting.
+ * The everyday app is HomeActivity. Previews are local to this phone; the only networking here is the link to a
+ * paired computer, which the user starts explicitly.
  */
 class MainActivity : Activity() {
     private lateinit var ui: Ui
@@ -93,6 +92,7 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply {
             clipToPadding = false
+            isVerticalScrollBarEnabled = false
             addView(root, android.widget.FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
             setOnApplyWindowInsetsListener { v, insets -> applyInsets(v, insets) }
         }
@@ -301,7 +301,8 @@ class MainActivity : Activity() {
             card,
             "Shows whether this phone is idle, ringing or in a call, after you allow it. Only that coarse state " +
                 "is read: no phone numbers, call log or contacts are requested, shown or stored, so an incoming " +
-                "call is just \"Ringing\". Nothing is sent to a computer: the development link only carries a ping.",
+                "call is just \"Ringing\". This preview stays on the phone; sharing call status with a computer is a " +
+                "separate switch in Setup > Answer calls.",
         )
         callPermissionRow = ui.row(card, 0, "Call state access", "", Tone.Muted)
         callStateRow = ui.row(card, 1, "Phone state", "", Tone.Muted)
@@ -481,21 +482,20 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ messages (validation only)
 
     private fun buildMessagesCard(root: LinearLayout) {
-        val card = ui.card(root, "Messages \u00b7 validate only", accent = true)
+        val card = ui.card(root, "Messages \u00b7 draft check", accent = true)
         ui.dotBanner(card, "MESSAGES")
         val red = getColor(R.color.gb_red)
+        val shared = PhoneDataRuntime.active().sms
         ui.row(card, 0, "Check a draft against the shared rules", "available offline", Tone.Normal)
-        ui.row(card, 1, "Read messages on this phone", "off \u00b7 no permission", Tone.Muted)
-        ui.row(card, 2, "Send a text from the computer", "off \u00b7 not implemented", Tone.Muted)
-        ui.row(card, 3, "Sync conversations", "off \u00b7 not implemented", Tone.Muted)
+        ui.row(card, 1, "Share texts with your computer", if (shared) "on" else "off \u00b7 optional", if (shared) Tone.Ok else Tone.Muted)
         ui.body(
             card,
-            "Checks a draft against the shared message rules in the native core. It does not send, read " +
-                "or store any SMS, and this app holds no SMS permission. Reading or sending SMS for a computer " +
-                "would need READ_SMS/SEND_SMS, which Android restricts: stores generally allow them only for the " +
-                "default SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". " +
+            "Checks a draft against the shared message rules in the native core; nothing is sent from this box. " +
+                "Reading and sending texts for a paired computer is optional and set up in Setup > Share with computer. " +
+                "It needs the SMS permissions, which Android restricts: stores generally allow them only for the default " +
+                "SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". " +
                 "A denial at the runtime prompt is final until you change it in app settings. " +
-                "Nothing here ever sends automatically.",
+                "Nothing is ever sent automatically.",
             Tone.Muted,
         )
         smsRecipient = ui.input(card, "Recipient number", InputType.TYPE_CLASS_PHONE, Limits.SMS_MAX_ADDRESS_CHARS)
@@ -503,7 +503,6 @@ class MainActivity : Activity() {
         smsSubscription = ui.input(card, "SIM subscription id (optional)", InputType.TYPE_CLASS_NUMBER, 9)
         smsStatus = ui.body(card, "Not checked.", Tone.Muted)
         ui.button(card, "Validate draft (nothing is sent)", emphasis = Emphasis.Primary, accent = red) { validateSms() }
-        ui.button(card, "Send from computer (unavailable)", enabled = false, emphasis = Emphasis.Quiet) {}
     }
 
     private fun validateSms() {

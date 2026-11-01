@@ -296,6 +296,7 @@ class Screen(private val activity: Activity, private val kit: UiKit) {
     fun install() {
         scroll.apply {
             clipToPadding = false
+            isVerticalScrollBarEnabled = false   // the overlay bar painted over the right edge of full-width tiles
             isFillViewport = false
             addView(root, FrameLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
             setOnApplyWindowInsetsListener { v, insets -> applyInsets(v, insets) }

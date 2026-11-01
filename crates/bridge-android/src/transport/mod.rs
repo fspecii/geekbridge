@@ -30,7 +30,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 27] = [
+pub(crate) const ACTIONS: [&str; 28] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -58,6 +58,7 @@ pub(crate) const ACTIONS: [&str; 27] = [
     "transport_data_config",
     "transport_data_wait",
     "transport_data_send",
+    "transport_permits",
 ];
 
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
@@ -296,6 +297,8 @@ struct StartArgs {
     calls: Option<bool>,
     /// Phone data features (contacts, calendar, SMS) to negotiate; all off when absent.
     data: engine::DataFlags,
+    /// Which paired computers may use calls / contacts / calendar / SMS; `None` leaves everything open.
+    permits: Option<engine::PermitMap>,
 }
 
 struct DiscoveryArgs {
@@ -395,6 +398,10 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         None => engine::DataFlags::default(),
         Some(mut o) => parse_data_flags(&mut o)?,
     };
+    let permits = f
+        .take_opt_object("permits")?
+        .map(parse_permits)
+        .transpose()?;
     f.finish()?;
 
     if discovery.announce && listen.is_none() {
@@ -415,7 +422,29 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         clipboard,
         calls,
         data,
+        permits,
     })
+}
+
+/// `{"sms": ["<device id>", ...], ...}`: the five known features only, at most 16 valid device ids each.
+fn parse_permits(mut o: Fields) -> Result<engine::PermitMap, ApiError> {
+    let mut map = engine::PermitMap::new();
+    for feature in engine::PERMIT_FEATURES {
+        let Some(v) = o.take_opt_array(feature)? else {
+            continue;
+        };
+        if v.len() > 16 {
+            return Err(invalid_field());
+        }
+        let mut ids = std::collections::HashSet::new();
+        for item in v {
+            let s = item.as_str().ok_or_else(invalid_field)?;
+            ids.insert(parse_device_id(s)?.to_string());
+        }
+        map.insert(feature.to_owned(), ids);
+    }
+    o.finish()?;
+    Ok(map)
 }
 
 fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
@@ -704,6 +733,16 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let (core, _) = host.running()?;
             core.data_send(&kind, body, connection_id)
         }
+        "transport_permits" => {
+            let map = parse_permits(
+                f.take_opt_object("permits")?
+                    .ok_or_else(|| err("missing_field", "a required field is missing"))?,
+            )?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.set_permits(map);
+            Ok(json!({ "ok": true }))
+        }
         "transport_unpair" => {
             let device = f.take_string("device_id")?;
             f.finish()?;
@@ -918,6 +957,9 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         core.calls().configure(enabled);
     }
     core.data().set_flags(args.data);
+    if let Some(p) = args.permits {
+        core.set_permits(p);
+    }
 
     // The TCP listener is bound and listening before any task (or announcement) exists.
     if let Some(listener) = tcp {

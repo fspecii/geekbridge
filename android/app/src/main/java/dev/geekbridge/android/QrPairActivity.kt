@@ -71,6 +71,8 @@ class QrPairActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // A link from outside must not take over a pairing that is already running.
+        if (mode is Mode.Connecting) return
         handleIntent(intent)
         render()
     }
@@ -251,12 +253,18 @@ class QrPairActivity : Activity() {
     }
 
     private fun confirm(root: LinearLayout, t: QrTarget) {
-        val name = t.name.ifEmpty { getString(R.string.pair_this_computer) }
+        val name = QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) }
         val card = kit.panel(root)
-        card.addView(kit.text(getString(R.string.qr_confirm_title, name), 20f, bold = true))
-        card.addView(
-            kit.text(getString(R.string.qr_confirm_body, name, t.addresses.first().host), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(4)) },
-        )
+        // The name and address come from whoever made the link: say so, and show the part that cannot be faked.
+        card.addView(kit.text(getString(R.string.qr_confirm_title2), 20f, bold = true))
+        card.addView(kit.text(getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        card.addView(kit.text(getString(R.string.qr_confirm_name_label), 12f, Tone.Muted))
+        card.addView(kit.text("“$name”  ·  " + getString(R.string.qr_confirm_unverified), 16f, Tone.Warn, bold = true))
+        card.addView(kit.text(getString(R.string.qr_confirm_addr_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.ui.mono(QrConfirmText.address(t), 13f))
+        card.addView(kit.text(getString(R.string.qr_confirm_fp_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.ui.mono(QrConfirmText.fingerprintPrefix(t.certSha256), 16f, bold = true))
+        card.addView(kit.text(getString(R.string.qr_confirm_fp_hint), 12f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
         kit.button(card, getString(R.string.qr_continue), BtnStyle.Primary) { begin(t) }
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) { mode = Mode.Entry; render() }
     }

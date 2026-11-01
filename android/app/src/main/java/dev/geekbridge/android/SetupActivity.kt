@@ -217,9 +217,11 @@ class SetupActivity : Activity() {
             getString(R.string.setup_calls_toggle_sub),
             kit.toggle(CallControlRuntime.settings.enabled) { on ->
                 CallControlRuntime.setEnabled(on)
+                GrantsUi.switched(this, GrantFeature.Calls, on) { render() }
                 CallControlRuntime.onPermissionsChanged()
             },
         )
+        if (CallControlRuntime.settings.enabled) GrantsUi.add(this, kit, panel, GrantFeature.Calls) { render() }
         panel.addView(
             kit.text(
                 getString(R.string.setup_calls_audio_note),

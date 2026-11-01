@@ -1596,12 +1596,7 @@ pub struct NotifySendSms;
 
 impl NotifySendSms {
     pub fn args(device: &str, sender: &str) -> Vec<String> {
-        let clean = |s: &str| -> String {
-            s.chars()
-                .filter(|c| !c.is_control())
-                .take(48)
-                .collect::<String>()
-        };
+        let clean = |s: &str| crate::notify_text::plain(s, 48);
         vec![
             "--app-name=GeekBridge".into(),
             "--expire-time=8000".into(),
@@ -1614,12 +1609,7 @@ impl NotifySendSms {
 
 impl NotifySendSms {
     pub fn event_args(device: &str, title: &str, minutes: u32) -> Vec<String> {
-        let clean = |s: &str, n: usize| -> String {
-            s.chars()
-                .filter(|c| !c.is_control())
-                .take(n)
-                .collect::<String>()
-        };
+        let clean = |s: &str, n: usize| crate::notify_text::plain(s, n);
         vec![
             "--app-name=GeekBridge".into(),
             "--expire-time=15000".into(),
@@ -2293,6 +2283,16 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0].0, "Dentist");
         assert!((19..=20).contains(&got[0].1));
+    }
+
+    #[test]
+    fn notification_text_has_no_markup_or_direction_overrides() {
+        // Sender and title are chosen by the other side (S2-3 in docs/security-review-2.md).
+        let a = NotifySendSms::args("Pixel", "<a href=\"http://evil\">Bank</a>\u{202E}");
+        let e = NotifySendSms::event_args("Pi<b>xel", "<img src=x>Dentist", 5);
+        for s in a.iter().chain(e.iter()).filter(|s| !s.starts_with("--")) {
+            assert!(!s.contains(['<', '>', '&', '\u{202E}']), "{s}");
+        }
     }
 
     #[test]

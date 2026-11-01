@@ -6,4 +6,5 @@ Exec=geekbridge-share %F
 Icon=dev.geekbridge.Share
 Terminal=false
 Categories=Network;FileTransfer;
+Keywords=share;send;file;transfer;phone;android;geekbridge;
 StartupWMClass=dev.geekbridge.Share

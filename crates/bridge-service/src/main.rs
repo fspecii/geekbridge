@@ -6,6 +6,9 @@ use bridge_service::config::{self, Parsed};
 const WORKER_THREADS: usize = 2;
 
 fn main() -> std::io::Result<()> {
+    // Started from a systemd user unit before the compositor exported its environment? Find the
+    // session's Wayland socket / Hyprland instance / bus ourselves (docs/omarchy.md).
+    bridge_service::session_env::adopt_session_env();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(WORKER_THREADS)
         .enable_all()

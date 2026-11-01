@@ -160,6 +160,8 @@ pub trait Notifier: Send + Sync {
         reply: Box<dyn FnOnce(bool) + Send>,
     );
     fn received_text(&self, _device_name: &str, _is_url: bool) {}
+    /// A file finished arriving and was saved at `path`.
+    fn received_file(&self, _path: &std::path::Path) {}
 }
 
 pub struct NoNotifier;
@@ -173,19 +175,17 @@ pub struct NotifySend;
 
 impl NotifySend {
     pub fn args(device: &str, file: &str, size: Option<u64>) -> Vec<String> {
-        let clean = |s: &str| -> String {
-            s.chars()
-                .filter(|c| !c.is_control())
-                .take(80)
-                .collect::<String>()
-        };
+        let clean = |s: &str| crate::notify_text::plain(s, 80);
         let size = size.map_or(String::new(), |n| format!(" ({})", human_size(n)));
         vec![
             "--app-name=GeekBridge".into(),
             "--wait".into(),
             "--action=accept=Accept".into(),
             "--action=decline=Decline".into(),
+            // A click on the body (daemons that draw no buttons) opens the Share window; it never accepts.
+            "--action=default=Open".into(),
             "--expire-time=60000".into(),
+            "--".into(),
             format!("{} wants to send a file", clean(device)),
             format!("{}{size}", clean(file)),
         ]
@@ -211,22 +211,24 @@ impl Notifier for NotifySend {
                 match String::from_utf8_lossy(&out.stdout).trim() {
                     "accept" => reply(true),
                     "decline" => reply(false),
+                    "default" => crate::desktop_notify::open_app("geekbridge-share"),
                     _ => {}
                 }
             }
         });
     }
 
+    fn received_file(&self, path: &std::path::Path) {
+        crate::desktop_notify::file_received(path);
+    }
+
     fn received_text(&self, device: &str, is_url: bool) {
         let what = if is_url { "a link" } else { "text" };
-        let device: String = device
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(80)
-            .collect();
+        let device = crate::notify_text::plain(device, 80);
         let _ = std::process::Command::new("notify-send")
             .args([
                 "--app-name=GeekBridge",
+                "--",
                 &format!("{device} sent {what}"),
                 "Open the Share window to view it.",
             ])
@@ -781,6 +783,7 @@ impl ShareManager {
 
     fn finish(&self, id: u64, device: &str, result: Result<Option<PathBuf>, &'static str>) {
         let ok = result.is_ok();
+        let received = result.as_ref().ok().and_then(Clone::clone);
         {
             let mut inner = self.inner();
             let Some(t) = inner.items.iter_mut().find(|t| t.info.transfer_id == id) else {
@@ -817,6 +820,14 @@ impl ShareManager {
                 ok,
             },
         );
+        if let Some(path) = received {
+            let notifier = self
+                .notifier
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            notifier.received_file(&path);
+        }
     }
 
     pub fn cancel(&self, transfer_id: u64) -> Result<(), ErrorBody> {
@@ -1089,6 +1100,15 @@ mod tests {
         ] {
             assert_eq!(parse_xdg_download(bad, home), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_device_name_cannot_become_an_option_or_markup() {
+        // The title starts with the peer's chosen device name (S2-3 in docs/security-review-2.md).
+        let a = NotifySend::args("--action=accept=Open invoice", "<b>x</b>.txt", None);
+        let dashdash = a.iter().position(|s| s == "--").expect("positional marker");
+        assert!(a[..dashdash].iter().all(|s| !s.contains("Open invoice")));
+        assert!(a[dashdash + 1..].iter().all(|s| !s.contains(['<', '>'])));
     }
 
     #[test]

@@ -6,4 +6,5 @@ Exec=geekbridge-contacts
 Icon=dev.geekbridge.Contacts
 Terminal=false
 Categories=Utility;
+Keywords=contacts;phonebook;people;phone;android;geekbridge;
 StartupWMClass=dev.geekbridge.Contacts

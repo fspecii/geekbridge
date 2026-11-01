@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use bridge_kde::Packet;
 use serde_json::{Map, Value, json};
 
-use super::{Core, Ctl, Phase};
+use super::{Core, Ctl};
 use crate::dispatch::{ApiError, err};
 
 const MAX_EVENTS: usize = 64;
@@ -47,6 +47,15 @@ impl Feature {
         Feature::CalendarEdit,
         Feature::Sms,
     ];
+
+    fn key(self) -> &'static str {
+        match self {
+            Feature::Contacts => "contacts",
+            Feature::Calendar => "calendar",
+            Feature::CalendarEdit => "calendar_edit",
+            Feature::Sms => "sms",
+        }
+    }
 
     fn incoming(self) -> &'static [&'static str] {
         match self {
@@ -307,14 +316,7 @@ impl Core {
         if size > MAX_SEND_BODY_BYTES {
             return Err(err("too_large", "the packet body is over the size limit"));
         }
-        let ctls: Vec<_> = {
-            let st = self.lock();
-            st.conns
-                .values()
-                .filter(|c| c.phase == Phase::Trusted && only.is_none_or(|id| id == c.id))
-                .map(|c| c.ctl.clone())
-                .collect()
-        };
+        let ctls = self.permitted_ctls(feature.key(), only);
         if ctls.is_empty() {
             return Err(err("not_connected", "no trusted computer is connected"));
         }
@@ -346,8 +348,10 @@ impl Core {
         let Some(feature) = Feature::of_incoming(&p.kind) else {
             return false;
         };
-        self.data
-            .push(feature, connection_id, &p.kind, p.body.clone());
+        if self.permitted(feature.key(), connection_id) {
+            self.data
+                .push(feature, connection_id, &p.kind, p.body.clone());
+        }
         true
     }
 }

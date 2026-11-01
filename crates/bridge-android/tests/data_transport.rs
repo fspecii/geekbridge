@@ -421,3 +421,59 @@ fn sending_is_rate_limited_and_needs_a_trusted_link() {
     }
     assert!(limited >= 10, "{limited}");
 }
+
+#[test]
+fn a_computer_outside_the_permit_list_gets_nothing_and_is_ignored() {
+    let phone = Phone::start(Some(json!({"sms": true, "calendar": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    // The list names a different computer for SMS and nobody for the calendar.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"sms": ["e".repeat(32)]}}),
+    );
+    peer.send("kdeconnect.sms.request_conversations", Map::new());
+    peer.send(
+        "geekbridge.calendar.request",
+        body(json!({"requestId": "r1"})),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for kind in ["geekbridge.sms.status", "geekbridge.calendar.sync"] {
+        assert_eq!(
+            phone.code("transport_data_send", json!({"kind": kind, "body": {}})),
+            "not_connected"
+        );
+    }
+    // Allowing this computer for SMS only opens SMS.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"sms": ["d".repeat(32)]}}),
+    );
+    peer.send("kdeconnect.sms.request_conversations", Map::new());
+    assert_eq!(
+        phone.events(0, 1)[0]["kind"],
+        "kdeconnect.sms.request_conversations"
+    );
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "geekbridge.sms.status", "body": {"requestId": "r1", "state": "sent"}}),
+    );
+    assert_eq!(
+        peer.recv_kind("geekbridge.sms.status").body["state"],
+        "sent"
+    );
+    // Bad lists are refused.
+    for bad in [
+        json!({"permits": {"bogus": []}}),
+        json!({"permits": {"sms": ["not an id"]}}),
+        json!({"permits": {"sms": [1]}}),
+    ] {
+        assert!(phone.call("transport_permits", bad)["ok"] == false);
+    }
+}

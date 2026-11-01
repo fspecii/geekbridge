@@ -9,6 +9,24 @@ data class QrAddress(val host: String, val port: Int)
  * The token is a secret: it is never logged, shown or saved, and is sent only after the core has checked
  * that the certificate on the live connection is [certSha256].
  */
+/** What the confirmation of a link from outside shows. The name is chosen by whoever made the link, so it is marked as such. */
+object QrConfirmText {
+    /** The first 16 hex digits of the certificate fingerprint, in groups of four (what the computer's QR screen can show too). */
+    fun fingerprintPrefix(certSha256: String): String =
+        certSha256.filter { it.isLetterOrDigit() }.uppercase().take(16).chunked(4).joinToString(" ")
+
+    /** The advertised name with control, direction-override and zero-width characters removed, bounded, never empty. */
+    fun safeName(raw: String): String {
+        val s = raw.filter { c ->
+            !Character.isISOControl(c) && Character.getType(c) != Character.FORMAT.toInt() && c != '\u2028' && c != '\u2029'
+        }.trim()
+        return Bounds.clip(s, 40)
+    }
+
+    /** Where the link would make this phone connect: host:port of the first address. */
+    fun address(t: QrTarget): String = t.addresses.first().let { "${it.host}:${it.port}" }
+}
+
 data class QrTarget(
     val deviceId: String,
     val name: String,

@@ -172,7 +172,7 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:taskAffinity=""
-            android:theme="@android:style/Theme.NoDisplay">
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
                 <action android:name="android.intent.action.PROCESS_TEXT" />
                 <category android:name="android.intent.category.DEFAULT" />

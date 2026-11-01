@@ -6,4 +6,5 @@ Exec=geekbridge-calls
 Icon=dev.geekbridge.Calls
 Terminal=false
 Categories=Utility;
+Keywords=phone;call;answer;dial;android;geekbridge;
 StartupWMClass=dev.geekbridge.Calls

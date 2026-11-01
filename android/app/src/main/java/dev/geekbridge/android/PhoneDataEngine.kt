@@ -50,6 +50,8 @@ class PhoneDataEngine(
     private val clock: () -> Long = System::currentTimeMillis,
     private val bootId: String = java.lang.Long.toString(System.nanoTime() and 0xffffff, 36),
     private val calendarWriter: CalendarWriter? = null,
+    private val allowSpecialNumbers: () -> Boolean = { false },
+    private val smsLedger: RequestLedger = RequestLedger(),
 ) {
     // calendar sync state for the current link
     private var calToken: String? = null
@@ -59,6 +61,7 @@ class PhoneDataEngine(
 
     private var smsRequested = false
     private val smsSendTimes = ArrayDeque<Long>()
+    private val smsHourTimes = ArrayDeque<Long>()
     private var backoffUntil = 0L
 
     /** Link went down or features changed: the next link starts from scratch. */
@@ -69,6 +72,7 @@ class PhoneDataEngine(
         calSent = emptyMap()
         smsRequested = false
         smsSendTimes.clear()
+        smsHourTimes.clear() // the request-id ledger is kept on purpose: a replay on the next link must not send again
     }
 
     @Synchronized
@@ -170,9 +174,11 @@ class PhoneDataEngine(
         val to = now + PhoneDataLimits.WINDOW_FUTURE_MS
         val raw = if (chosen.isEmpty()) emptyList() else
             calendar.instances(chosen.map { it.id }.toSet(), from, to, PhoneDataLimits.MAX_EVENTS * 2) ?: return false
-        val truncated0 = raw.size > PhoneDataLimits.MAX_EVENTS
+        // One row per (calendar, event, begin): the same instance twice must not eat the cap or be sent twice.
+        val unique = raw.distinctBy { Triple(it.calendarId, it.eventId, it.begin) }
+        val truncated0 = unique.size > PhoneDataLimits.MAX_EVENTS
         // Nearest first so the cut drops the far future / far past.
-        var current = raw.map { PhoneDataProtocol.calendarEvent(it) }
+        var current = unique.map { PhoneDataProtocol.calendarEvent(it) }
             .sortedBy { abs(it.getLong("startMs") - now) }
             .take(PhoneDataLimits.MAX_EVENTS)
         var truncated = truncated0
@@ -292,10 +298,19 @@ class PhoneDataEngine(
         when (val p = PhoneDataProtocol.parseSmsRequest(body)) {
             is PhoneDataProtocol.SmsParse.Bad -> status(p.requestId, "failed", p.reason)
             is PhoneDataProtocol.SmsParse.Ok -> {
+                // A repeated request id is the same send: never text twice (its first status is already on its way).
+                if (p.requestId != null && !smsLedger.firstTime(p.requestId)) return
+                if (SmsDestination.check(p.address) != SmsDestination.Verdict.Ok && !allowSpecialNumbers()) {
+                    return status(p.requestId, "failed", "blocked_number")
+                }
                 val now = clock()
                 while (smsSendTimes.isNotEmpty() && now - smsSendTimes.first() > 60_000) smsSendTimes.removeFirst()
-                if (smsSendTimes.size >= PhoneDataLimits.SMS_SENDS_PER_MINUTE) return status(p.requestId, "failed", "limit")
+                while (smsHourTimes.isNotEmpty() && now - smsHourTimes.first() > 3_600_000) smsHourTimes.removeFirst()
+                if (smsSendTimes.size >= PhoneDataLimits.SMS_SENDS_PER_MINUTE || smsHourTimes.size >= PhoneDataLimits.SMS_SENDS_PER_HOUR) {
+                    return status(p.requestId, "failed", "limit")
+                }
                 smsSendTimes.addLast(now)
+                smsHourTimes.addLast(now)
                 try {
                     sender.send(p.address, p.text, p.subId, object : SmsStatusListener {
                         override fun onStatus(state: String, reason: String?) {
@@ -309,5 +324,23 @@ class PhoneDataEngine(
                 }
             }
         }
+    }
+}
+
+/** Remembers the last request ids so a repeated packet is recognised. Ids only, never text; optionally restart-safe. */
+class RequestLedger(private val blob: BlobStore? = null, private val max: Int = PhoneDataLimits.MAX_SMS_REQUESTS_REMEMBERED) {
+    private val ids = LinkedHashSet<String>()
+
+    init {
+        blob?.read().orEmpty().split('\n').filter { PhoneDataProtocol.validRequestId(it) }.takeLast(max).forEach { ids += it }
+    }
+
+    /** True the first time [id] is seen (and records it); false for a repeat. */
+    @Synchronized
+    fun firstTime(id: String): Boolean {
+        if (!ids.add(id)) return false
+        while (ids.size > max) ids.remove(ids.first())
+        blob?.write(ids.joinToString("\n"))
+        return true
     }
 }

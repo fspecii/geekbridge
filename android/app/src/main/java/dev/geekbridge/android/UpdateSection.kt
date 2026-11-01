@@ -10,7 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
@@ -38,7 +38,7 @@ class UpdateSection(
     private val card = ui.card(root, "App updates")
     private val status: TextView
     private val notes: TextView
-    private val autoCheck: CheckBox
+    private val autoCheck: CompoundButton
     private val checkButton: Button
     private val downloadButton: Button
     private val installButton: Button

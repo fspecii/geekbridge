@@ -237,7 +237,7 @@ impl Core {
         let body = report.body();
         self.calls.lock().last = Some(body.clone());
         let mut queued = 0;
-        for ctl in self.trusted_ctls(None) {
+        for ctl in self.permitted_ctls("calls", None) {
             if ctl.try_send(Ctl::Calls(Out::State(body.clone()))).is_ok() {
                 queued += 1;
             }
@@ -282,7 +282,7 @@ impl Core {
         let Ok((request_id, action)) = wire::parse_request(&p.body) else {
             return true;
         };
-        if self.calls.enabled() {
+        if self.calls.enabled() && self.permitted("calls", connection_id) {
             self.calls.push(json!({
                 "kind": "request",
                 "connection_id": connection_id,
@@ -290,7 +290,7 @@ impl Core {
                 "action": action.as_str(),
             }));
         } else {
-            // Off in the app: refuse at once; Kotlin never hears about it.
+            // Off in the app, or not allowed for this computer: refuse at once; Kotlin never hears about it.
             for ctl in self.trusted_ctls(Some(connection_id)) {
                 let _ = ctl.try_send(Ctl::Calls(Out::Result(wire::result_body(
                     &request_id,

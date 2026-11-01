@@ -945,6 +945,53 @@ mod tests {
     }
 
     #[test]
+    fn a_refresh_replaces_events_instead_of_appending_them() {
+        let mut store = Store::default();
+        let snap = |token: &str, rev: &str, ids: &[&str]| {
+            let events: Vec<Value> = ids.iter().map(|i| ev(i, rev, "Dentist")).collect();
+            parse_calendar_sync(&sync_body(true, None, token, json!(events), json!([]))).unwrap()
+        };
+        // The same instance listed twice in one packet is one record.
+        let first = snap("b:1", "r1", &["4@1", "4@1", "5@1"]);
+        let r = apply_calendar(&mut store, "android:p:cal", None, &first, 1000).unwrap();
+        assert_eq!((r.inserted, store.live().count()), (2, 2));
+        // Pressing Refresh re-sends everything: nothing is added, nothing is lost.
+        let again = snap("b:2", "r1", &["4@1", "5@1"]);
+        let r = apply_calendar(&mut store, "android:p:cal", Some("b:1"), &again, 2000).unwrap();
+        assert_eq!(
+            (r.inserted, r.updated, r.deleted, store.live().count()),
+            (0, 0, 0, 2)
+        );
+        // A changed copy replaces the old one; a snapshot that omits an event removes it.
+        let edited = snap("b:3", "r2", &["4@1"]);
+        let r = apply_calendar(&mut store, "android:p:cal", Some("b:2"), &edited, 3000).unwrap();
+        assert_eq!(
+            (r.inserted, r.updated, r.deleted, store.live().count()),
+            (0, 1, 1, 1)
+        );
+    }
+
+    #[test]
+    fn separate_events_with_identical_text_stay_separate() {
+        // Two provider rows (different event ids) are two events even when title and time match: the
+        // phone's calendar really holds both, and hiding one would hide the user's data.
+        let mut store = Store::default();
+        let s = parse_calendar_sync(&sync_body(
+            true,
+            None,
+            "b:1",
+            json!([
+                ev("3@1", "r", "Team offsite"),
+                ev("8@1", "r", "Team offsite")
+            ]),
+            json!([]),
+        ))
+        .unwrap();
+        apply_calendar(&mut store, "android:p:cal", None, &s, 1000).unwrap();
+        assert_eq!(store.live().count(), 2);
+    }
+
+    #[test]
     fn calendar_parse_is_strict_and_bounded() {
         let mut bad = sync_body(true, Some("x"), "t", json!([]), json!([]));
         assert!(parse_calendar_sync(&bad).is_err()); // full with base

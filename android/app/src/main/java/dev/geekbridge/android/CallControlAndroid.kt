@@ -196,7 +196,8 @@ object CallControlRuntime {
         if (Build.VERSION.SDK_INT >= 33) {
             a.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            a.registerReceiver(r, filter)
+            // Exported below Android 13: accept only broadcasts from a sender holding the system-only permission.
+            a.registerReceiver(r, filter, CallRules.PHONE_STATE_SENDER_PERMISSION, null)
         }
         receiver = r
     }

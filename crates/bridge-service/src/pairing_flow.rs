@@ -139,7 +139,13 @@ impl Daemon {
 
     /// Decide a pairing request that carried a QR token.
     pub(super) fn redeem_qr(&self, device_id: &str, token: &str) -> bool {
-        let result = self.tokens().redeem(token, unix_ms());
+        // Wrong tokens are counted per source address, so a stranger cannot revoke the owner's code.
+        let source = self
+            .core()
+            .links
+            .get(device_id)
+            .and_then(|l| l.status.peer_ip);
+        let result = self.tokens().redeem_from(token, unix_ms(), source);
         let mut core = self.core();
         match result {
             Ok(()) => {

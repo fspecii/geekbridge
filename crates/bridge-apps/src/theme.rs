@@ -31,6 +31,8 @@ pub struct Palette {
     pub control_hover: Color32,
     pub control_active: Color32,
     pub accent: Color32,
+    /// Brand red for fills, dots and indicators (not for small text on dark).
+    pub accent_fill: Color32,
     pub on_accent: Color32,
     pub selected_bg: Color32,
     pub selected_fg: Color32,
@@ -40,102 +42,73 @@ pub struct Palette {
     /// Recessed display (Messages status display).
     pub lcd_bg: Color32,
     pub lcd_off: Color32,
+    /// Rounded-square tile and card fill, and its hover shade.
+    pub tile: Color32,
+    pub tile_hover: Color32,
+    /// Unlit dot-matrix dots.
+    pub dot_off: Color32,
 }
 
-pub fn palette(app: AppKind, dark: bool) -> Palette {
-    match (app, dark) {
-        (AppKind::Messages, false) => Palette {
+/// One palette for every window: true-black / warm off-white, grey ramps and a single red.
+/// `accent` is the text-safe red (>= 4.5:1 on every surface of its theme); `accent_fill` is the
+/// brand #D71921 for dots, fills and indicators (white text on it is 5.2:1).
+pub fn palette(_app: AppKind, dark: bool) -> Palette {
+    if dark {
+        Palette {
             dark,
-            toolbar: rgb(0xEDEDEA),
-            sidebar: rgb(0xF3F3F0),
-            content: rgb(0xFAFAF8),
-            surface: rgb(0xFFFFFF),
-            text: rgb(0x0C0C0C),
-            text2: rgb(0x6B6B66),
-            text3: rgb(0xA4A49E),
-            separator: rgb(0xDADAD4),
-            control: rgb(0xE6E6E1),
-            control_hover: rgb(0xDCDCD6),
-            control_active: rgb(0xCFCFC8),
-            accent: rgb(0xD71921),
-            on_accent: Color32::WHITE,
-            selected_bg: rgb(0x0C0C0C),
-            selected_fg: rgb(0xFAFAF8),
-            ok: rgb(0x2E7D4F),
-            warn: rgb(0xA86400),
-            err: rgb(0xD71921),
-            lcd_bg: rgb(0xE2E2DD),
-            lcd_off: rgb(0xD3D3CD),
-        },
-        (AppKind::Messages, true) => Palette {
-            dark,
-            toolbar: rgb(0x141414),
-            sidebar: rgb(0x0B0B0B),
+            toolbar: rgb(0x000000),
+            sidebar: rgb(0x0A0A0A),
             content: rgb(0x000000),
-            surface: rgb(0x151515),
+            surface: rgb(0x121212),
             text: rgb(0xF4F4F1),
-            text2: rgb(0x9A9A95),
-            text3: rgb(0x5E5E5A),
-            separator: rgb(0x262624),
-            control: rgb(0x222221),
-            control_hover: rgb(0x2D2D2B),
-            control_active: rgb(0x3A3A37),
-            accent: rgb(0xFF3B30),
+            text2: rgb(0xA3A39D),
+            text3: rgb(0x9A9A94),
+            separator: rgb(0x242422),
+            control: rgb(0x1E1E1D),
+            control_hover: rgb(0x2A2A28),
+            control_active: rgb(0x383835),
+            accent: rgb(0xFF5A5A),
+            accent_fill: rgb(0xD71921),
             on_accent: Color32::WHITE,
             selected_bg: rgb(0xF4F4F1),
             selected_fg: rgb(0x0C0C0C),
             ok: rgb(0x58C486),
             warn: rgb(0xE0A030),
-            err: rgb(0xFF3B30),
+            err: rgb(0xFF5A5A),
             lcd_bg: rgb(0x0A0A0A),
             lcd_off: rgb(0x242422),
-        },
-        (_, false) => Palette {
+            tile: rgb(0x141414),
+            tile_hover: rgb(0x1C1C1B),
+            dot_off: rgb(0x2E2E2C),
+        }
+    } else {
+        Palette {
             dark,
-            toolbar: rgb(0xECECEE),
-            sidebar: rgb(0xF2F2F4),
-            content: rgb(0xFFFFFF),
-            surface: rgb(0xF4F4F6),
-            text: rgb(0x1D1D1F),
-            text2: rgb(0x6E6E73),
-            text3: rgb(0xA1A1A6),
-            separator: rgb(0xD9D9DD),
-            control: rgb(0xE6E6EA),
-            control_hover: rgb(0xDCDCE1),
-            control_active: rgb(0xCECED5),
-            accent: rgb(0x0A7AFF),
+            toolbar: rgb(0xF4F3EF),
+            sidebar: rgb(0xFBFAF7),
+            content: rgb(0xF4F3EF),
+            surface: rgb(0xFFFFFF),
+            text: rgb(0x0C0C0C),
+            text2: rgb(0x52524D),
+            text3: rgb(0x5F5F5A),
+            separator: rgb(0xDEDDD6),
+            control: rgb(0xE8E7E1),
+            control_hover: rgb(0xDDDCD5),
+            control_active: rgb(0xCFCEC6),
+            accent: rgb(0xB8121A),
+            accent_fill: rgb(0xD71921),
             on_accent: Color32::WHITE,
-            selected_bg: rgb(0xD9D9DE),
-            selected_fg: rgb(0x1D1D1F),
-            ok: rgb(0x2DB04F),
-            warn: rgb(0xB26A00),
-            err: rgb(0xD93025),
-            lcd_bg: rgb(0xE6E6EA),
-            lcd_off: rgb(0xD2D2D8),
-        },
-        (_, true) => Palette {
-            dark,
-            toolbar: rgb(0x2A2A2D),
-            sidebar: rgb(0x232326),
-            content: rgb(0x1C1C1E),
-            surface: rgb(0x2A2A2D),
-            text: rgb(0xF2F2F7),
-            text2: rgb(0xA0A0A8),
-            text3: rgb(0x6C6C72),
-            separator: rgb(0x3A3A3E),
-            control: rgb(0x3A3A3E),
-            control_hover: rgb(0x46464B),
-            control_active: rgb(0x55555B),
-            accent: rgb(0x0A84FF),
-            on_accent: Color32::WHITE,
-            selected_bg: rgb(0x3C3C41),
-            selected_fg: rgb(0xF2F2F7),
-            ok: rgb(0x32D74B),
-            warn: rgb(0xFFB340),
-            err: rgb(0xFF453A),
-            lcd_bg: rgb(0x2A2A2D),
-            lcd_off: rgb(0x3A3A3E),
-        },
+            selected_bg: rgb(0x0C0C0C),
+            selected_fg: rgb(0xFAFAF8),
+            ok: rgb(0x1F7A45),
+            warn: rgb(0x8F5500),
+            err: rgb(0xD71921),
+            lcd_bg: rgb(0xE8E7E1),
+            lcd_off: rgb(0xD6D5CE),
+            tile: rgb(0xFFFFFF),
+            tile_hover: rgb(0xF7F6F2),
+            dot_off: rgb(0xD3D2CB),
+        }
     }
 }
 
@@ -283,10 +256,10 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             v.faint_bg_color = pal.control;
             v.override_text_color = Some(pal.text);
             v.hyperlink_color = pal.accent;
-            v.selection.bg_fill = pal.accent.gamma_multiply(if dark { 0.45 } else { 0.28 });
+            v.selection.bg_fill = pal.accent_fill.gamma_multiply(if dark { 0.5 } else { 0.28 });
             v.selection.stroke = Stroke::new(1.0_f32, pal.accent);
             v.text_cursor.stroke = Stroke::new(1.5_f32, pal.accent);
-            let radius = CornerRadius::same(7);
+            let radius = CornerRadius::same(12);
             for (w, fill) in [
                 (&mut v.widgets.inactive, pal.control),
                 (&mut v.widgets.hovered, pal.control_hover),
@@ -302,7 +275,7 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             v.widgets.noninteractive.corner_radius = radius;
             v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text2);
             v.widgets.open.corner_radius = radius;
-            v.window_corner_radius = CornerRadius::same(10);
+            v.window_corner_radius = CornerRadius::same(18);
             v.window_stroke = Stroke::new(1.0_f32, pal.separator);
             style.visuals = v;
             style.spacing.item_spacing = vec2(8.0, 8.0);
@@ -483,7 +456,7 @@ pub fn pill_button(
     enabled: bool,
 ) -> Response {
     let (fill, fg) = match (kind, enabled) {
-        (ButtonKind::Primary, true) => (pal.accent, pal.on_accent),
+        (ButtonKind::Primary, true) => (pal.accent_fill, pal.on_accent),
         (ButtonKind::Primary, false) => (pal.control, pal.text3),
         (ButtonKind::Plain, true) => (pal.control, pal.text),
         (ButtonKind::Plain, false) => (pal.control.gamma_multiply(0.6), pal.text3),
@@ -591,7 +564,7 @@ pub fn segmented<T: PartialEq + Copy>(
     let seg_w = galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max) + 26.0;
     let total = vec2(seg_w * options.len() as f32 + 4.0, 26.0);
     let (rect, _) = ui.allocate_exact_size(total, Sense::hover());
-    let track = CornerRadius::same(8);
+    let track = CornerRadius::same(13);
     ui.painter().rect_filled(rect, track, pal.control);
     let mut changed = false;
     for (i, ((option, label), galley)) in options.iter().zip(galleys).enumerate() {
@@ -608,22 +581,22 @@ pub fn segmented<T: PartialEq + Copy>(
             } else {
                 Color32::WHITE
             };
-            ui.painter().rect_filled(seg, CornerRadius::same(6), fill);
+            ui.painter().rect_filled(seg, CornerRadius::same(11), fill);
             ui.painter().rect_stroke(
                 seg,
-                CornerRadius::same(6),
+                CornerRadius::same(11),
                 Stroke::new(1.0_f32, pal.separator),
                 StrokeKind::Inside,
             );
         } else if response.hovered() {
             ui.painter().rect_filled(
                 seg,
-                CornerRadius::same(6),
+                CornerRadius::same(11),
                 pal.control_hover.gamma_multiply(0.6),
             );
         }
         if response.has_focus() {
-            focus_ring(ui, pal, seg, CornerRadius::same(6));
+            focus_ring(ui, pal, seg, CornerRadius::same(11));
         }
         let color = if selected { pal.text } else { pal.text2 };
         ui.painter().galley(
@@ -656,7 +629,7 @@ pub fn sidebar_item(
     marker: Option<Color32>,
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
-    let radius = CornerRadius::same(7);
+    let radius = CornerRadius::same(crate::nothing::R_ROW);
     if selected {
         ui.painter().rect_filled(rect, radius, pal.selected_bg);
     } else if response.hovered() {
@@ -725,13 +698,59 @@ pub fn blocked_note(ui: &mut Ui, pal: &Palette, reason: &str) {
 /// Rounded raised block for grouped content in the simple utility layouts.
 pub fn group<R>(ui: &mut Ui, pal: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
-        .fill(pal.surface)
-        .stroke(Stroke::new(1.0_f32, pal.separator))
-        .corner_radius(CornerRadius::same(10))
+        .fill(pal.tile)
+        .stroke(if pal.dark { Stroke::NONE } else { Stroke::new(1.0_f32, pal.separator) })
+        .corner_radius(CornerRadius::same(crate::nothing::R_CARD))
         .inner_margin(Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
         })
         .inner
+}
+
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    fn lin(c: u8) -> f64 {
+        let v = f64::from(c) / 255.0;
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    }
+    fn lum(c: Color32) -> f64 {
+        0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+    }
+    pub fn ratio(a: Color32, b: Color32) -> f64 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn text_and_red_accent_meet_4_5_to_1_on_every_surface_in_both_themes() {
+        for dark in [false, true] {
+            let p = palette(AppKind::Calls, dark);
+            for (bg_name, bg) in [
+                ("content", p.content),
+                ("sidebar", p.sidebar),
+                ("tile", p.tile),
+                ("tile_hover", p.tile_hover),
+                ("control", p.control),
+                ("control_hover", p.control_hover),
+            ] {
+                for (fg_name, fg) in [
+                    ("text", p.text),
+                    ("text2", p.text2),
+                    ("text3", p.text3),
+                    ("accent", p.accent),
+                ] {
+                    let r = ratio(fg, bg);
+                    assert!(r >= 4.5, "dark={dark} {fg_name} on {bg_name}: {r:.2}");
+                }
+            }
+            let r = ratio(p.on_accent, p.accent_fill);
+            assert!(r >= 4.5, "dark={dark} on_accent on accent_fill: {r:.2}");
+            assert!(ratio(p.selected_fg, p.selected_bg) >= 4.5);
+        }
+        assert_eq!(palette(AppKind::Calls, true).content, Color32::BLACK);
+    }
 }

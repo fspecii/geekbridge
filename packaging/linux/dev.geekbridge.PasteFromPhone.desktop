@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Paste from Phone
+GenericName=Phone clipboard
+Comment=Copy the phone's latest clipboard item to this computer's clipboard
+Exec=geekbridge-ctl clipboard paste-from-phone --notify
+Icon=dev.geekbridge.PasteFromPhone
+Terminal=false
+Categories=Utility;
+Keywords=paste;clipboard;phone;android;geekbridge;

@@ -60,6 +60,18 @@ write_prefs() { # calendar ids (space separated), edit on
 </map>
 XML
 }
+# Seeding must be repeatable: every run starts from an empty provider for the test accounts, otherwise each re-run
+# stacks another copy of every event/contact and the screenshots show the same entry several times.
+reset_seed() {
+  provider_insert_del() { sh_q "content delete --uri $1 ${*:2}" >/dev/null 2>&1; }
+  provider_insert_del "'content://com.android.calendar/calendars?caller_is_syncadapter=true&account_name=demo@gmail.com&account_type=com.google'"
+  provider_insert_del "'content://com.android.contacts/raw_contacts?caller_is_syncadapter=true'" --where "\"account_name='gbtest'\""
+}
+# Prints the number of provider events that repeat another one's (calendar, title, start, end): 0 for a clean seed.
+seed_duplicates() {
+  sh_q "content query --uri content://com.android.calendar/events --projection calendar_id:title:dtstart:dtend:original_id" \
+    | tr -d '\r' | sed 's/^Row: [0-9]* //; s/_id=[0-9]*, //' | grep -v 'original_id=[0-9]' | sort | uniq -d | wc -l
+}
 inject_contacts() {
   local -a people=("Ada Lovelace|+44 20 7946 0001|ada@example.org" "Grace Hopper|+1 555 010 0002|grace@example.org" "Alan Turing|+44 20 7946 0003|" "Katherine Johnson|+1 555 010 0004|kj@example.org" "Margaret Hamilton|+1 555 010 0005|")
   for p in "${people[@]}"; do
@@ -84,6 +96,7 @@ stage_calendar() {
   load_ids; [[ -n "$PHONE_ID" ]] || { rec calendar SKIP "not paired (run pair first)"; return 1; }
   CARGO_TARGET_DIR="$E2E_TARGET" cargo build --release -p bridge-apps --bins >>"$LOGS/e2e-build-desktop.log" 2>&1
   wake; grant
+  reset_seed
   inject_contacts
   local personal holidays base day
   personal="$(add_calendar Personal demo@gmail.com com.google 700 -14575885)"
@@ -100,6 +113,7 @@ stage_calendar() {
   # A weekly series (RRULE + duration, no dtend) to prove recurring instances are expanded and not editable.
   provider_insert content://com.android.calendar/events --bind calendar_id:i:$personal --bind title:s:"'Weekly sync'" \
     --bind dtstart:l:$(( base + 2 * 3600000 )) --bind duration:s:PT1H --bind "rrule:s:'FREQ=DAILY;COUNT=5'" --bind eventTimezone:s:UTC --bind allDay:i:0
+  pcheck calendar_seed_unique "$(( $(seed_duplicates) == 0 ))" "no event is stored twice in the provider after seeding"
   write_prefs "$personal $holidays"
   goto_home; sleep 2; ensure_link || true
   desk_dial; wait_for 25 is_connected || { rec calendar FAIL "link did not come back"; return 1; }

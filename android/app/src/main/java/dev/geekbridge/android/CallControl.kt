@@ -72,6 +72,17 @@ object CallRules {
     /** Declining and ending use `TelecomManager.endCall()`, which exists from API 28. */
     fun canEnd(sdk: Int, p: CallPermissions) = sdk >= MIN_SDK_END && p.answerPhoneCalls && p.readPhoneState
 
+    private val phoneNumber = Regex("[+0-9*#().\\- ]{1,32}")
+
+    /** A broadcast extra is only a phone number if it looks like one; anything else (text, markup) is ignored. */
+    fun plausibleNumber(raw: String?): Boolean = raw != null && phoneNumber.matches(raw)
+
+    /**
+     * Below Android 13 a receiver cannot be marked not-exported, so any app could send a fake PHONE_STATE_CHANGED.
+     * Only the system holds this permission, so requiring it on the receiver keeps other apps' broadcasts out.
+     */
+    const val PHONE_STATE_SENDER_PERMISSION = "android.permission.READ_PRIVILEGED_PHONE_STATE"
+
     /** A caller field that fits the wire limit and has no control characters; otherwise it is dropped. */
     fun cleanField(raw: String?): String? {
         val s = raw?.trim().orEmpty()
@@ -217,7 +228,7 @@ class CallControlEngine(
     /** The incoming number arrived after the state (Android delivers them separately). */
     @Synchronized
     fun onNumber(number: String) {
-        if (state == null || state == CallState.Idle) return
+        if (state == null || state == CallState.Idle || !CallRules.plausibleNumber(number)) return
         setNumber(number)
         send()
     }

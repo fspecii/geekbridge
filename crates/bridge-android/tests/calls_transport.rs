@@ -429,3 +429,45 @@ fn a_blocked_wait_ends_on_stop() {
     let v = waiter.join().unwrap();
     assert_eq!(v["result"]["stopped"], true);
 }
+
+#[test]
+fn a_computer_outside_the_permit_list_is_refused_and_hears_no_call_state() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"calls": ["e".repeat(32)]}}),
+    );
+    // A report is queued for nobody.
+    let r = phone.ok(
+        "transport_calls_report",
+        json!({"state": "ringing", "number": "+4915112345", "can_answer": true, "can_end": true}),
+    );
+    assert_eq!(r["queued"], 0);
+    // Its request is refused at once and never reaches Kotlin.
+    peer.send(REQUEST, wire::request_body("r1", LinkAction::Answer));
+    let res = peer.recv_kind(RESULT);
+    assert_eq!(
+        wire::parse_result(&res.body),
+        Ok(("r1".to_owned(), Err(LinkFailure::PermissionMissing)))
+    );
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Allowed again: reports and requests flow.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"calls": ["d".repeat(32)]}}),
+    );
+    let r = phone.ok(
+        "transport_calls_report",
+        json!({"state": "ringing", "can_answer": true, "can_end": true}),
+    );
+    assert_eq!(r["queued"], 1);
+    peer.send(REQUEST, wire::request_body("r2", LinkAction::Answer));
+    assert_eq!(phone.events(0, 1)[0]["request_id"], "r2");
+}

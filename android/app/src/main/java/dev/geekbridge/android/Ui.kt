@@ -15,9 +15,10 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
+import android.widget.CompoundButton
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.Switch
 import android.widget.TextView
 
 enum class Tone { Normal, Ok, Warn, Bad, Muted }
@@ -82,7 +83,7 @@ class Ui(private val ctx: Context) {
         val card = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(16), dp(20), dp(20))
-            background = rounded(color(R.color.gb_card), Tok.R_CARD)
+            background = rounded(color(R.color.gb_card), Tok.R_CARD, color(R.color.gb_line))
         }
         parent.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
         return card
@@ -184,17 +185,83 @@ class Ui(private val ctx: Context) {
             setTextIsSelectable(false)
         }
 
-    fun check(card: LinearLayout, label: String, checked: Boolean = false): CheckBox =
-        CheckBox(ctx).apply {
+    /**
+     * A labelled on/off row: the label on the left, the same ink pill switch as the Home settings on the right.
+     * (Named `check` for its callers; it is a [Switch], not a grey platform checkbox.)
+     */
+    fun check(card: LinearLayout, label: String, checked: Boolean = false): CompoundButton =
+        Switch(ctx).apply {
             text = label
-            isChecked = checked
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             setTextColor(color(R.color.gb_text))
-            buttonTintList = ColorStateList.valueOf(color(R.color.gb_accent))
-            minHeight = dp(48)
-            minimumHeight = dp(48)
+            showText = false
+            switchPadding = dp(12)
+            minHeight = dp(Tok.TARGET)
+            minimumHeight = dp(Tok.TARGET)
+            fun pill(c: Int) = GradientDrawable().apply { setColor(c); cornerRadius = dp(15).toFloat(); setSize(dp(52), dp(30)) }
+            fun disc(c: Int, ring: Int) = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL; setColor(c); setStroke(dp(4), ring); setSize(dp(30), dp(30))
+            }
+            trackDrawable = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_checked), pill(color(R.color.gb_accent)))
+                addState(intArrayOf(), pill(color(R.color.gb_line)))
+            }
+            thumbDrawable = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_checked), disc(color(R.color.gb_on_accent), color(R.color.gb_accent)))
+                addState(intArrayOf(), disc(color(R.color.gb_muted), color(R.color.gb_line)))
+            }
+            isChecked = checked
             isSaveEnabled = false
         }.also { card.addView(it, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(4) }) }
+
+    /**
+     * A collapsed-by-default group ("Developer options"): one 48dp header row that reads its state aloud, and a
+     * body that is added to [card] hidden. Returns the body. The open state survives rotation within the process.
+     */
+    fun expander(card: LinearLayout, title: String, hint: String, key: String): LinearLayout {
+        val body = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        val head = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(Tok.TARGET)
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = rounded(color(R.color.gb_stripe), Tok.R_ROW)
+            isClickable = true
+            isFocusable = true
+        }
+        val labels = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        labels.addView(TextView(ctx).apply {
+            text = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(color(R.color.gb_text))
+        })
+        labels.addView(TextView(ctx).apply {
+            text = hint
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTextColor(color(R.color.gb_muted))
+        })
+        val mark = TextView(ctx).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+            typeface = Typeface.MONOSPACE
+            setTextColor(color(R.color.gb_text))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        head.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
+        head.addView(mark)
+        fun apply(open: Boolean) {
+            openExpanders[key] = open
+            body.visibility = if (open) View.VISIBLE else View.GONE
+            mark.text = if (open) "\u2212" else "+"
+            head.contentDescription = "$title, ${if (open) "expanded" else "collapsed"}. $hint"
+            if (Build.VERSION.SDK_INT >= 30) head.stateDescription = if (open) "Expanded" else "Collapsed"
+        }
+        head.setOnClickListener { apply(openExpanders[key] != true) }
+        apply(openExpanders[key] == true)
+        card.addView(head, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(12) })
+        card.addView(body, LinearLayout.LayoutParams(MATCH, WRAP))
+        return body
+    }
 
     fun divider(card: LinearLayout) {
         val v = View(ctx).apply { setBackgroundColor(color(R.color.gb_line)) }
@@ -301,6 +368,7 @@ class Ui(private val ctx: Context) {
         }
 
     companion object {
+        private val openExpanders = HashMap<String, Boolean>()
         const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     }

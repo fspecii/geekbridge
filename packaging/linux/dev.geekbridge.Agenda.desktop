@@ -6,4 +6,5 @@ Exec=geekbridge-agenda
 Icon=dev.geekbridge.Agenda
 Terminal=false
 Categories=Utility;
+Keywords=calendar;agenda;events;phone;android;geekbridge;
 StartupWMClass=dev.geekbridge.Agenda

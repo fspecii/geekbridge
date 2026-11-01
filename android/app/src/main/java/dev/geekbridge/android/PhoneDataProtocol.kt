@@ -21,6 +21,8 @@ data class PhoneDataSettings(
     val calendar: Boolean = false,
     val sms: Boolean = false,
     val calendarIds: Set<String> = emptySet(),
+    /** Allow the computer to text short codes and premium-rate numbers. Off by default; they can cost money. */
+    val smsSpecialNumbers: Boolean = false,
     /** "Let the computer edit my calendar" - off by default, asked for separately from reading. */
     val calendarEdit: Boolean = false,
 )
@@ -93,6 +95,8 @@ object PhoneDataLimits {
     const val CALENDAR_PUSH_SPACING_MS = 30_000L
     const val WAIT_MS = 25_000L
     const val SMS_SENDS_PER_MINUTE = 10
+    const val SMS_SENDS_PER_HOUR = 60
+    const val MAX_SMS_REQUESTS_REMEMBERED = 200
 }
 
 object PhoneDataProtocol {
@@ -333,3 +337,31 @@ data class SmsRow(
     val read: Boolean,
     val subId: Int,
 )
+
+/**
+ * Where a text from the computer may go. Short codes and premium-rate ranges can bill the owner of the SIM, so they are
+ * refused unless the user allowed them. A prefix list cannot be complete (Android's own premium-SMS prompt stays the
+ * last barrier), but it covers the common ranges and every number too short to be a normal subscriber number.
+ */
+object SmsDestination {
+    private const val MIN_DIGITS = 7
+    private val premiumInternational = listOf(
+        "+1900", "+1976", "+449", "+4470", "+43900", "+43930", "+43939", "+49900", "+49137", "+49138",
+        "+3389", "+33 89".replace(" ", ""), "+34803", "+34806", "+34807", "+41900", "+41901", "+41906", "+3190", "+3191",
+    )
+    private val premiumNational = listOf("0900", "0901", "0137", "0138", "1900", "1976")
+
+    enum class Verdict { Ok, Invalid, ShortCode, Premium }
+
+    fun check(address: String): Verdict {
+        val s = address.filter { !it.isWhitespace() && it != '(' && it != ')' && it != '-' && it != '.' }
+        val plus = s.startsWith("+")
+        val digits = if (plus) s.drop(1) else s
+        if (digits.isEmpty() || !digits.all { it in '0'..'9' }) return Verdict.Invalid
+        if (digits.length < MIN_DIGITS) return Verdict.ShortCode
+        val international = if (plus) s else if (s.startsWith("00")) "+" + s.drop(2) else null
+        if (international != null && premiumInternational.any { international.startsWith(it) }) return Verdict.Premium
+        if (international == null && premiumNational.any { s.startsWith(it) }) return Verdict.Premium
+        return Verdict.Ok
+    }
+}

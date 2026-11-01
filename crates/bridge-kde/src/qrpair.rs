@@ -10,7 +10,7 @@
 //!
 //! Everything here is pure (time is passed in) so expiry, reuse and mismatch are unit-tested.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -26,8 +26,12 @@ pub const PAYLOAD_VERSION: u32 = 1;
 pub const TOKEN_TTL: Duration = Duration::from_secs(120);
 /// Tokens that may be outstanding at once (each "show QR" issues one).
 const MAX_OUTSTANDING: usize = 4;
-/// Wrong tokens tolerated before every outstanding token is revoked.
+/// Wrong tokens tolerated from one source before that source is refused until the next QR code.
+/// Other sources and the outstanding tokens are not affected, so a stranger on the network cannot
+/// revoke the code its owner is about to scan (docs/security-review-2.md S2-2).
 const MAX_BAD_ATTEMPTS: u32 = 5;
+/// Sources remembered for the count above.
+const MAX_SOURCES: usize = 32;
 /// Remembered used tokens, so reuse is reported as reuse and not as "unknown".
 const MAX_USED: usize = 16;
 const MAX_PAYLOAD_BYTES: usize = 700;
@@ -41,7 +45,7 @@ pub enum RedeemError {
     Expired,
     /// Valid once, already used.
     AlreadyUsed,
-    /// Too many wrong tokens: everything outstanding was revoked.
+    /// Too many wrong tokens from this source.
     LockedOut,
 }
 
@@ -69,7 +73,8 @@ struct Issued {
 pub struct TokenBook {
     live: Vec<Issued>,
     used: Vec<[u8; 32]>,
-    bad_attempts: u32,
+    /// Wrong tokens per source address (`None` = source unknown), oldest source first.
+    bad: Vec<(Option<IpAddr>, u32)>,
 }
 
 fn digest(token: &str) -> [u8; 32] {
@@ -105,13 +110,28 @@ impl TokenBook {
             digest: digest(token),
             expires_ms,
         });
-        self.bad_attempts = 0;
+        self.bad.clear();
         (token.to_owned(), expires_ms)
     }
 
     /// Redeem `presented` once. On success the token is gone for good.
     pub fn redeem(&mut self, presented: &str, now_ms: u64) -> std::result::Result<(), RedeemError> {
-        if self.bad_attempts >= MAX_BAD_ATTEMPTS {
+        self.redeem_from(presented, now_ms, None)
+    }
+
+    /// [`redeem`](Self::redeem) for a request that came from `source`: wrong tokens are counted
+    /// per source, and only that source is locked out.
+    pub fn redeem_from(
+        &mut self,
+        presented: &str,
+        now_ms: u64,
+        source: Option<IpAddr>,
+    ) -> std::result::Result<(), RedeemError> {
+        let source = source.map(|ip| match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            v4 => v4,
+        });
+        if self.bad_count(source) >= MAX_BAD_ATTEMPTS {
             return Err(RedeemError::LockedOut);
         }
         let d = digest(presented);
@@ -131,17 +151,33 @@ impl TokenBook {
             if self.used.len() > MAX_USED {
                 self.used.remove(0);
             }
-            self.bad_attempts = 0;
+            self.bad.retain(|(s, _)| *s != source);
             return Ok(());
         }
         if self.used.iter().any(|u| same(u, &d)) {
             return Err(RedeemError::AlreadyUsed);
         }
-        self.bad_attempts += 1;
-        if self.bad_attempts >= MAX_BAD_ATTEMPTS {
-            self.live.clear();
-        }
+        self.note_bad(source);
         Err(RedeemError::Unknown)
+    }
+
+    fn bad_count(&self, source: Option<IpAddr>) -> u32 {
+        self.bad
+            .iter()
+            .find(|(s, _)| *s == source)
+            .map_or(0, |(_, n)| *n)
+    }
+
+    fn note_bad(&mut self, source: Option<IpAddr>) {
+        match self.bad.iter_mut().find(|(s, _)| *s == source) {
+            Some((_, n)) => *n += 1,
+            None => {
+                if self.bad.len() >= MAX_SOURCES {
+                    self.bad.remove(0);
+                }
+                self.bad.push((source, 1));
+            }
+        }
     }
 
     /// Drop every outstanding token (the user closed the QR dialog).
@@ -376,6 +412,23 @@ mod tests {
         // A freshly shown QR starts over.
         book.issue_with("11111111111111111111111111111111", 30, TTL);
         assert_eq!(book.redeem("11111111111111111111111111111111", 40), Ok(()));
+    }
+
+    #[test]
+    fn a_strangers_wrong_tokens_do_not_lock_out_the_owner() {
+        let a: IpAddr = "192.168.1.66".parse().unwrap();
+        let b: IpAddr = "192.168.1.20".parse().unwrap();
+        let mut book = TokenBook::new();
+        book.issue_with(TOKEN, 0, TTL);
+        for i in 0..(MAX_BAD_ATTEMPTS + 3) {
+            let _ = book.redeem_from(&format!("{i:032x}"), 10, Some(a));
+        }
+        assert_eq!(
+            book.redeem_from(TOKEN, 20, Some(a)),
+            Err(RedeemError::LockedOut)
+        );
+        // The code on the screen still works for everyone else.
+        assert_eq!(book.redeem_from(TOKEN, 30, Some(b)), Ok(()));
     }
 
     #[test]

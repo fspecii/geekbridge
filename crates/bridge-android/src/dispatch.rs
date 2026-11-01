@@ -313,6 +313,17 @@ impl Fields {
             Some(_) => Err(wrong_type()),
         }
     }
+    /// An optional array of arbitrary values.
+    pub(crate) fn take_opt_array(
+        &mut self,
+        key: &'static str,
+    ) -> Result<Option<Vec<Value>>, ApiError> {
+        match self.take(key) {
+            None => Ok(None),
+            Some(Value::Array(v)) => Ok(Some(v)),
+            Some(_) => Err(wrong_type()),
+        }
+    }
     /// Call after taking every known field.
     pub(crate) fn finish(self) -> Result<(), ApiError> {
         if self.0.is_empty() {

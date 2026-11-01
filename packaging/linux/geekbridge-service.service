@@ -9,7 +9,10 @@ ExecStart=@BINDIR@/geekbridge-service
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
-PrivateTmp=yes
+# No PrivateTmp: X11 clipboard tools reach the X server through /tmp/.X11-unix, which a private /tmp hides.
+# The Wayland socket and the notification bus live in XDG_RUNTIME_DIR, which is shared. On Wayland sessions
+# that start this unit before the compositor exports WAYLAND_DISPLAY (uwsm/Omarchy), the service finds the
+# socket itself; the autostart launcher also imports the session environment (docs/omarchy.md).
 
 [Install]
 WantedBy=default.target

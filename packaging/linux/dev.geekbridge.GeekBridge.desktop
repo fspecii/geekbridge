@@ -9,3 +9,8 @@ Terminal=false
 Categories=Network;
 Keywords=phone;android;clipboard;share;pair;
 StartupWMClass=dev.geekbridge.GeekBridge
+Actions=PasteFromPhone;
+
+[Desktop Action PasteFromPhone]
+Name=Paste from phone
+Exec=geekbridge-ctl clipboard paste-from-phone --notify

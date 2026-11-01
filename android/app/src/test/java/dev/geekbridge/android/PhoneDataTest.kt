@@ -210,6 +210,31 @@ class PhoneDataTest {
         assertEquals(2000, x.getString("description").length); assertEquals("UTC", x.getString("tz"))
     }
 
+    @Test fun aRepeatedInstanceRowIsSentOnceButDistinctEventsWithTheSameTextAreKept() {
+        val core = FakeCore(); val now = 1_000_000_000L
+        val twice = inst("7", now + 60_000, "Dentist")
+        // Same provider row twice (window overlap / re-expansion): one entry. Different event ids with identical
+        // text are the user's own separate events (the provider keeps them apart), as are other calendars' copies.
+        val e = engine(
+            core, ids = setOf("1", "2"),
+            cal = FakeCal(listOf(twice, twice, inst("8", now + 60_000, "Dentist"), inst("7", now + 60_000, "Dentist", cal = "2"))),
+            clock = { now },
+        )
+        e.onEvents(listOf(ev(PhoneDataKinds.CALENDAR_REQ)))
+        val b = core.of(PhoneDataKinds.CALENDAR_SYNC).single()
+        assertEquals(3, b.getJSONArray("events").length())
+        assertFalse(b.getBoolean("truncated"))
+    }
+
+    @Test fun anAllDayEventKeepsItsUtcMidnightsWhateverTheTimeZoneColumnSays() {
+        val day = 1_793_491_200_000L // 2026-11-01T00:00Z
+        val o = PhoneDataProtocol.calendarEvent(
+            CalInstance("3", day, day + 86_400_000, "Team offsite", true, "America/Los_Angeles", null, null, "1"),
+        )
+        assertEquals("UTC", o.getString("tz")); assertEquals(day, o.getLong("startMs")); assertEquals(day + 86_400_000, o.getLong("endMs"))
+        assertEquals("3@$day", o.getString("id"))
+    }
+
     @Test fun revisionIsContentHashAndAllDayUsesUtc() {
         val a = PhoneDataProtocol.calendarEvent(inst("1", 0, allDay = true)); val b = PhoneDataProtocol.calendarEvent(inst("1", 0, allDay = true))
         assertEquals(a.getString("rev"), b.getString("rev")); assertEquals("UTC", a.getString("tz"))
@@ -296,28 +321,76 @@ class PhoneDataTest {
         val core = FakeCore()
         val sender = FakeSender { l -> l.onStatus("accepted"); l.onStatus("sent"); l.onStatus("delivered") }
         val e = engine(core, sender = sender)
-        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+1555"))))
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567"))))
         assertEquals(listOf("accepted", "sent", "delivered"), core.of(PhoneDataKinds.SMS_STATUS).map { it.getString("state") })
         assertTrue(core.of(PhoneDataKinds.SMS_STATUS).all { it.getString("requestId") == "req-1" })
-        assertEquals(Triple("+1555", "hi", null), sender.calls.single())
+        assertEquals(Triple("+4915551234567", "hi", null), sender.calls.single())
 
         core.sent.clear()
-        engine(core, sender = FakeSender { throw SecurityException() }).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+1"))))
+        engine(core, sender = FakeSender { throw SecurityException() }).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567"))))
         assertEquals("no_permission", core.of(PhoneDataKinds.SMS_STATUS).single().getString("reason"))
         core.sent.clear()
-        engine(core).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+1", "+2"))))
+        engine(core).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", "+4915551234568"))))
         assertEquals("failed", core.of(PhoneDataKinds.SMS_STATUS).single().getString("state"))
         core.sent.clear()
         // A stock request without requestId still sends, but nothing can be reported.
-        val s2 = FakeSender(); engine(core, sender = s2).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+1", id = null))))
+        val s2 = FakeSender(); engine(core, sender = s2).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = null))))
         assertEquals(1, s2.calls.size); assertTrue(core.sent.isEmpty())
     }
 
     @Test fun smsSendsAreRateLimitedPerMinute() {
         val core = FakeCore(); val sender = FakeSender(); val e = engine(core, sender = sender)
-        repeat(12) { e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("m$it", "+1", id = "r$it")))) }
+        repeat(12) { e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("m$it", "+4915551234567", id = "r$it")))) }
         assertEquals(PhoneDataLimits.SMS_SENDS_PER_MINUTE, sender.calls.size)
         assertEquals("limit", core.of(PhoneDataKinds.SMS_STATUS).last().getString("reason"))
+    }
+
+    @Test fun aRepeatedSmsRequestIdIsSentOnlyOnce() {
+        val core = FakeCore(); val sender = FakeSender(); val ledger = RequestLedger()
+        fun e() = PhoneDataEngine(core::call, { ActiveFeatures(sms = true) }, { emptySet() }, FakeContacts(emptyList()), FakeCal(), FakeSms(), sender, { 1_000_000_000L }, "boot", smsLedger = ledger)
+        val ev = ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "same-1"))
+        e().onEvents(listOf(ev)); e().onEvents(listOf(ev)); e().reset()
+        e().onEvents(listOf(ev))
+        assertEquals(1, sender.calls.size)
+        e().onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "other-2"))))
+        assertEquals(2, sender.calls.size)
+    }
+
+    @Test fun theRequestLedgerSurvivesARestartAndIsBounded() {
+        var saved = ""
+        val blob = object : BlobStore { override fun read() = saved; override fun write(text: String) { saved = text } }
+        val a = RequestLedger(blob, max = 3)
+        assertTrue(a.firstTime("a")); assertFalse(a.firstTime("a"))
+        listOf("b", "c", "d").forEach { a.firstTime(it) }
+        val b = RequestLedger(blob, max = 3)
+        assertFalse(b.firstTime("d")); assertTrue(b.firstTime("a")) // "a" fell out of the bounded list
+    }
+
+    @Test fun shortCodesAndPremiumNumbersAreRefusedUnlessAllowed() {
+        for (n in listOf("1234", "+1555", "12345", "+1 900 555 0100", "0044 9 0123 4567", "+49 900 1234567", "09001234567", "Bank", "+49abc1234567")) {
+            assertTrue(n, SmsDestination.check(n) != SmsDestination.Verdict.Ok)
+        }
+        for (n in listOf("+49 151 1234 5678", "0151 1234567", "+1 (415) 555-0100", "+44 7700 900123")) {
+            assertEquals(n, SmsDestination.Verdict.Ok, SmsDestination.check(n))
+        }
+        val core = FakeCore(); val sender = FakeSender()
+        engine(core, sender = sender).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("STOP", "12345"))))
+        assertTrue(sender.calls.isEmpty())
+        assertEquals("blocked_number", core.of(PhoneDataKinds.SMS_STATUS).single().getString("reason"))
+        val s2 = FakeSender()
+        PhoneDataEngine(FakeCore()::call, { ActiveFeatures(sms = true) }, { emptySet() }, FakeContacts(emptyList()), FakeCal(), FakeSms(), s2, allowSpecialNumbers = { true })
+            .onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("STOP", "12345"))))
+        assertEquals(1, s2.calls.size)
+    }
+
+    @Test fun smsSendsAreCappedPerHour() {
+        var now = 1_000_000_000L
+        val core = FakeCore(); val sender = FakeSender(); val e = engine(core, sender = sender, clock = { now })
+        repeat(PhoneDataLimits.SMS_SENDS_PER_HOUR + 5) {
+            now += 30_000
+            e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("m", "+4915551234567", id = "h$it"))))
+        }
+        assertEquals(PhoneDataLimits.SMS_SENDS_PER_HOUR, sender.calls.size)
     }
 
     @Test fun partTrackerReportsSentOnceAllPartsAndFirstFailure() {

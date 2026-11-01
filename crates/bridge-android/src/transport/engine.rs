@@ -33,6 +33,7 @@ use bridge_kde::share::{SHARE_REQUEST, SHARE_REQUEST_UPDATE};
 mod calls;
 mod clipboard;
 mod data;
+mod permits;
 mod share;
 
 pub(super) use clipboard::SendArgs as ClipboardSend;
@@ -40,6 +41,7 @@ pub(super) use clipboard::SendArgs as ClipboardSend;
 pub(super) use calls::ReportArgs as CallsReport;
 
 pub(super) use data::Flags as DataFlags;
+pub(super) use permits::{FEATURES as PERMIT_FEATURES, PermitMap};
 
 pub(super) fn data_incoming_types(flags: DataFlags) -> Vec<String> {
     data::incoming_types(flags)
@@ -253,6 +255,7 @@ pub(super) struct Core {
     clip: clipboard::Hub,
     calls: calls::Hub,
     data: data::Hub,
+    permits: permits::Permits,
 }
 
 pub(super) struct Decision {
@@ -293,6 +296,7 @@ impl Core {
             clip: clipboard::Hub::default(),
             calls: calls::Hub::default(),
             data: data::Hub::default(),
+            permits: permits::Permits::default(),
         }
     }
 
@@ -1009,7 +1013,10 @@ async fn run_trusted(
     close: Arc<Notify>,
 ) {
     // A computer that connects while a call is already ringing must hear about it.
-    if let Some(body) = core.calls().current()
+    if let Some(body) = core
+        .calls()
+        .current()
+        .filter(|_| core.permitted("calls", id))
         && !calls::send(&mut link, calls::Out::State(body)).await
     {
         core.remove_conn(id, Some(("link_closed", Some("io_error"))));

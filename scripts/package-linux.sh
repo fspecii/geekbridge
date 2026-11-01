@@ -32,7 +32,7 @@ command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 pk="$ROOT/packaging/linux"
-desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share)
+desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
 
 # ---- shared payload (installer tarball layout: bin/ share/)
 pay="$work/payload"; mkdir -p "$pay/bin" "$pay/share/applications" "$pay/share/icons/hicolor/scalable/apps"

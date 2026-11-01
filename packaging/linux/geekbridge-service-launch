@@ -3,6 +3,14 @@
 # journal logging); runs the service directly on sessions without a systemd user manager.
 if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 \
    && systemctl --user cat geekbridge-service.service >/dev/null 2>&1; then
+    # Hand the graphical session's environment to the user manager first, so the unit sees the
+    # Wayland socket, the Hyprland instance and the bus (Hyprland/uwsm sessions export them late).
+    env_vars=""
+    for v in WAYLAND_DISPLAY DISPLAY XAUTHORITY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS; do
+        eval "[ -n \"\${$v:-}\" ]" && env_vars="$env_vars $v"
+    done
+    # shellcheck disable=SC2086
+    [ -n "$env_vars" ] && systemctl --user import-environment $env_vars
     exec systemctl --user start geekbridge-service.service
 fi
 exec geekbridge-service

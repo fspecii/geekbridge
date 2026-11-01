@@ -32,16 +32,16 @@ cd "$ROOT"
 source scripts/android-env.sh >/dev/null 2>&1
 
 PKG=dev.geekbridge.android
-P="$ROOT/target/perf-run"; RAW="$P/raw"; SCRATCH="$ROOT/target/perf-android"; RESULTS="$P/results.tsv"
+P="${PERF_DIR:-$ROOT/target/perf-run}"; RAW="$P/raw"; SCRATCH="${PERF_SCRATCH:-$ROOT/target/perf-android}"; RESULTS="$P/results.tsv"
 mkdir -p "$RAW" "$SCRATCH/dist"
 VARIANT="${VARIANT:-release}" IDLE_MIN="${IDLE_MIN:-30}" RECONNECTS="${RECONNECTS:-50}" XFER_MB="${XFER_MB:-100}" STARTS="${STARTS:-7}" BIG_MB="${BIG_MB:-100 500}" BIG_DIRS="${BIG_DIRS:-d2p p2d}"
 
 # Dedicated ports/names (same knobs scripts/e2e-android.sh reads).
-export E2E_AVD=gb36d E2E_EMU_PORT=5604 E2E_ADB_PORT=16041 E2E_RUN="$P/desk" E2E_SCRATCH="$SCRATCH" E2E_CTRL_PORT=17581
-export E2E_API_PORT=17580 E2E_DISC_PORT=17516 E2E_LISTEN_PORT=1731 E2E_XDISP=:96 E2E_REDIR_PORT=17261 E2E_TAG=perf
-export E2E_RESULTS="$P/e2e-results.tsv" E2E_TARGET="$ROOT/target/perf-desktop"   # own desktop build: same tree as the phone library
-export ANDROID_ADB_SERVER_PORT=16041
-SERIAL=emulator-5604
+export E2E_AVD="${PERF_AVD:-gb36d}" E2E_EMU_PORT="${PERF_EMU_PORT:-5604}" E2E_ADB_PORT="${PERF_ADB_PORT:-16041}" E2E_RUN="$P/desk" E2E_SCRATCH="$SCRATCH" E2E_CTRL_PORT="${PERF_CTRL_PORT:-17581}"
+export E2E_API_PORT="${PERF_API_PORT:-17580}" E2E_DISC_PORT="${PERF_DISC_PORT:-17516}" E2E_LISTEN_PORT="${PERF_LISTEN_PORT:-1731}" E2E_XDISP="${PERF_XDISP:-:96}" E2E_REDIR_PORT="${PERF_REDIR_PORT:-17261}" E2E_TAG="${PERF_TAG:-perf}"
+export E2E_RESULTS="$P/e2e-results.tsv" E2E_TARGET="${PERF_DESKTOP:-$ROOT/target/perf-desktop}"   # own desktop build: same tree as the phone library
+export ANDROID_ADB_SERVER_PORT="$E2E_ADB_PORT"
+SERIAL="emulator-$E2E_EMU_PORT"
 A() { adb -s "$SERIAL" "$@"; }
 CTL=("$E2E_TARGET/release/geekbridge-ctl" --state-dir "$E2E_RUN/state" --control-port "$E2E_CTRL_PORT")
 ctl() { timeout 30 "${CTL[@]}" "$@"; }

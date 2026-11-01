@@ -173,7 +173,7 @@ fun UiKit.monthCard(parent: LinearLayout, year: Int, month: Int, dayOfMonth: Int
         TextView(context).apply {
             text = DateUtils.formatDateTime(context, cal.timeInMillis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NO_MONTH_DAY or DateUtils.FORMAT_SHOW_YEAR)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-            setTextColor(color(R.color.gb_red))
+            setTextColor(color(R.color.gb_warn))
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         },
@@ -191,7 +191,7 @@ fun UiKit.agendaCard(parent: LinearLayout, dayOfMonth: Int, monthLabel: String, 
     val card = panel(parent, 16, color(R.color.gb_panel), null)
     val head = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     head.addView(DotText(context, "%02d".format(Locale.ROOT, dayOfMonth), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 1), LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
-    head.addView(text(monthLabel, 15f, Tone.Bad, bold = true).apply { setTextColor(color(R.color.gb_red)) })
+    head.addView(text(monthLabel, 15f, Tone.Bad, bold = true).apply { setTextColor(color(R.color.gb_warn)) })
     card.addView(head, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { bottomMargin = dp(6) })
     if (entries.isEmpty()) card.addView(text(emptyText, 14f, Tone.Muted))
     entries.forEachIndexed { i, e ->

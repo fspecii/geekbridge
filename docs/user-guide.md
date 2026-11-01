@@ -61,6 +61,9 @@ section or with `geekbridge-ctl clipboard hotkey "Ctrl+Alt+P"`. Most desktops ca
 for the service: bind `geekbridge-ctl clipboard paste-from-phone --notify` in your keyboard settings (the window
 shows the line). Details: [clipboard-sync.md](clipboard-sync.md).
 
+On Omarchy / Hyprland, `geekbridge-ctl hotkey install` binds the key for you, floats the call and share windows and
+documents a waybar status line; see [omarchy.md](omarchy.md) (it also lists the GNOME, KDE and sway steps).
+
 ## Share files, links and text
 
 Drop files on the GeekBridge window (they open in **Geekbridge Share** for the first connected phone), or open

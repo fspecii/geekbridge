@@ -187,7 +187,27 @@ pub fn parse_picker_output(out: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Extensions that run code (or a shortcut to code) when the system "opens" them. A received file with one of these is
+/// only ever shown in the folder, never launched: the user can still start it from the file manager on purpose.
+const RISKY_EXTENSIONS: &[&str] = &[
+    "exe", "bat", "cmd", "com", "scr", "pif", "msi", "msp", "msix", "appx", "ps1", "psm1", "vbs",
+    "vbe", "js", "jse", "wsf", "wsh", "hta", "cpl", "reg", "lnk", "url", "scf", "jar", "command",
+    "app", "sh", "bash", "zsh", "csh", "ksh", "run", "bin", "desktop", "workflow", "action", "pkg",
+    "dmg", "py", "pl", "rb", "dll", "gadget", "inf", "chm", "iso", "appimage",
+];
+
+/// True if opening this file could run it. Case-insensitive, and trailing dots/spaces (which Windows ignores) do not hide it.
+pub fn is_risky_to_open(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    let Some(name) = name else { return false };
+    let name = name.trim_end_matches(['.', ' ']);
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| RISKY_EXTENSIONS.contains(&ext))
+}
+
 fn open_command(path: &Path, reveal: bool) -> (&'static str, Vec<String>) {
+    // "Open" on something that would execute becomes "show in folder".
+    let reveal = reveal || is_risky_to_open(path);
     let p = path.display().to_string();
     if cfg!(target_os = "windows") {
         (
@@ -610,7 +630,7 @@ impl ShareApp {
                 });
             }
         });
-        ui.add_space(14.0);
+        ui.add_space(22.0);
         ui.label(theme::overline(pal, "Link or text"));
         ui.horizontal(|ui| {
             ui.add(
@@ -998,6 +1018,57 @@ mod tests {
         let (prog, args) = open_command(Path::new("/tmp/x/y.txt"), true);
         if cfg!(target_os = "linux") {
             assert_eq!((prog, args), ("xdg-open", vec!["/tmp/x".to_owned()]));
+        }
+    }
+
+    #[test]
+    fn opening_a_program_or_script_only_shows_it_in_its_folder() {
+        for name in [
+            "setup.exe",
+            "a.BAT",
+            "b.cmd",
+            "c.com",
+            "d.scr",
+            "e.ps1",
+            "f.lnk",
+            "g.command",
+            "h.app",
+            "i.jar",
+            "j.msi",
+            "k.sh",
+            "l.vbs",
+            "m.js",
+            "n.desktop",
+            "invoice.pdf.exe",
+            "hidden.exe.",
+            "spaced.exe ",
+        ] {
+            assert!(is_risky_to_open(Path::new(name)), "{name}");
+            let p = format!("/tmp/x/{name}");
+            let (prog, args) = open_command(Path::new(&p), false);
+            let (rprog, rargs) = open_command(Path::new(&p), true);
+            assert_eq!(
+                (prog, &args),
+                (rprog, &rargs),
+                "{name} must reveal, not open"
+            );
+        }
+        for name in [
+            "photo.jpg",
+            "notes.txt",
+            "report.pdf",
+            "archive.zip",
+            "noext",
+            "exe",
+            ".bashrc.txt",
+        ] {
+            assert!(!is_risky_to_open(Path::new(name)), "{name}");
+        }
+        if cfg!(target_os = "linux") {
+            let (_, args) = open_command(Path::new("/tmp/x/run.sh"), false);
+            assert_eq!(args, vec!["/tmp/x".to_owned()]);
+            let (_, args) = open_command(Path::new("/tmp/x/pic.png"), false);
+            assert_eq!(args, vec!["/tmp/x/pic.png".to_owned()]);
         }
     }
 

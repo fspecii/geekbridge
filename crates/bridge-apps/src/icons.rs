@@ -24,6 +24,8 @@ pub enum Icon {
     Keypad,
     Clock,
     Folder,
+    Home,
+    Sliders,
 }
 
 /// Paints `icon` centred in `rect` (which should be roughly square).
@@ -109,6 +111,25 @@ pub fn paint(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Refresh => {
             painter.add(Shape::line(arc(c, s * 0.75, -60.0, 230.0), stroke));
             line(&[p(0.35, -0.95), p(0.5, -0.45), p(0.0, -0.5)]);
+        }
+        Icon::Home => {
+            line(&[
+                p(-0.85, -0.05),
+                p(0.0, -0.85),
+                p(0.85, -0.05),
+            ]);
+            line(&[
+                p(-0.6, 0.1),
+                p(-0.6, 0.85),
+                p(0.6, 0.85),
+                p(0.6, 0.1),
+            ]);
+        }
+        Icon::Sliders => {
+            line(&[p(-0.85, -0.45), p(0.85, -0.45)]);
+            line(&[p(-0.85, 0.45), p(0.85, 0.45)]);
+            painter.circle_filled(p(0.3, -0.45), s * 0.26, color);
+            painter.circle_filled(p(-0.3, 0.45), s * 0.26, color);
         }
         Icon::Folder => {
             line(&[

@@ -145,8 +145,12 @@ ensure_link() {
   local which; which="$(ui scrollto "Start link" "Stop link")" || return 1
   if [[ "$which" == "Start link" ]]; then tap "Start link"; sleep 3; ui scrollto "Stop link" >/dev/null; fi
 }
+dev_options_open() { # manual connect lives behind the collapsed "Developer options" expander
+  ui scrollto "Developer options" >/dev/null || return 1   # bring the header on screen first
+  ui has "Developer options, expanded" || { tap "Developer options"; sleep 1; }
+}
 phone_connect() { # dial the desktop (10.0.2.2 is the emulator's alias for the host's loopback)
-  ui scrollto Connect || return 1
+  dev_options_open; ui scrollto Connect || return 1
   ui fields 10.0.2.2 "$LISTEN_PORT" "$DESK_ID"
   ui scrollto Connect >/dev/null; tap Connect
 }
@@ -402,9 +406,10 @@ stage_update() {
   $ADB shell run-as $PKG cp /data/local/tmp/updates.xml shared_prefs/updates.xml
   goto_diag; ui scrollto "Check for updates" >/dev/null; tap "Check for updates"; sleep 5; shot 30-update-available
   ui has "Version 99.0.0 is available" || { rec update FAIL "no offer shown: $(ui dump | grep -iE "Couldn|GitHub|up to date" | head -1 | cut -c1-100)"; return 1; }
-  tap "Download and verify"; sleep 8; shot 31-update-verified
+  # The reskinned Diagnostics screen is taller than the display: the buttons sit below the fold.
+  ui scrolltap "Download and verify" >/dev/null; sleep 8; ui scrollto "Install update" >/dev/null; shot 31-update-verified
   ui has "downloaded and verified against the published SHA-256" || { rec update FAIL "download/verify did not complete"; return 1; }
-  tap "Install update"; sleep 4; shot 32-update-install-handoff
+  ui scrolltap "Install update" >/dev/null; sleep 4; shot 32-update-install-handoff
   local focus; focus="$($ADB shell dumpsys window | grep mCurrentFocus)"
   $ADB shell input keyevent KEYCODE_BACK; $ADB shell input keyevent KEYCODE_BACK
   if [[ "$focus" == *settings* || "$focus" == *packageinstaller* ]]; then rec update PASS "check -> v99.0.0 offer -> download + SHA-256 verified -> Android install handoff ($focus); the install itself is not completed"

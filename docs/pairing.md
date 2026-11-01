@@ -45,8 +45,10 @@ geekbridge://pair?v=1&id=<device id>&fp=<sha256 of TLS cert, hex>&t=<token, 32 h
 * `fp` pins the computer's certificate. `a` lists up to 4 LAN addresses (percent-encoded `ip:port`, IPv6 in brackets).
   `v` is the payload version; unknown keys are ignored, a different version is refused with a clear message.
 * `t` is a 128-bit random, **single-use, 120-second** token. The computer keeps only its SHA-256
-  (`TokenBook`), at most 4 outstanding (a new QR evicts the oldest), and revokes everything after 5 wrong tokens or when
-  the QR window closes. Reuse, expiry and a wrong token are distinct, tested outcomes (`RedeemError`).
+  (`TokenBook`), at most 4 outstanding (a new QR evicts the oldest). Five wrong tokens from one source address lock out
+  that address only (a stranger cannot revoke the code on the screen); everything is revoked when the QR window closes.
+  One address may hold at most 3 unpaired connections, and a paired phone displaces the oldest stranger when the link
+  table is full ([security-review-2.md](security-review-2.md) S2-1, S2-2). Reuse, expiry and a wrong token are distinct, tested outcomes (`RedeemError`).
 
 Flow (phone scans):
 

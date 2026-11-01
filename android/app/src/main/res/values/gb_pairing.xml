@@ -11,6 +11,13 @@
     <string name="qr_link_hint">geekbridge://pair?…</string>
     <string name="qr_paste">Paste from clipboard</string>
     <string name="qr_continue">Continue</string>
+    <string name="qr_confirm_title2">Connect to a computer?</string>
+    <string name="qr_confirm_body2">Another app or web page opened this pairing link. Nothing connects until you tap Continue, and you still approve the pairing after that. Only continue if you just chose “Pair with QR code” on your own computer.</string>
+    <string name="qr_confirm_name_label">Name given by the link</string>
+    <string name="qr_confirm_unverified">unverified</string>
+    <string name="qr_confirm_addr_label">This phone would connect to</string>
+    <string name="qr_confirm_fp_label">Certificate fingerprint (start)</string>
+    <string name="qr_confirm_fp_hint">The full fingerprint is shown again when you approve; it must match your computer’s. If you did not start this yourself, cancel.</string>
     <string name="qr_confirm_title">Pair with %1$s?</string>
     <string name="qr_confirm_body">A pairing link asks this phone to connect to “%1$s” at %2$s. Only continue if you just chose “Pair with QR code” on your own computer.</string>
     <string name="qr_cancel">Cancel</string>

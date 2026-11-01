@@ -11,14 +11,21 @@ pub mod clipboard;
 pub mod config;
 pub mod control;
 pub mod daemon;
+pub mod desktop_notify;
 pub mod diagnose;
 pub mod discovery;
 pub mod gate;
 pub mod hotkey_bind;
+pub mod hotkey_cli;
+pub mod hotkey_help;
+pub mod hypr_config;
 pub mod macos_host;
+pub mod notify_text;
 pub mod phone_data;
 pub mod private;
+pub mod session_env;
 pub mod share;
+pub mod waybar;
 pub mod windows_host;
 use bridge_core::{MAX_API_BYTES, MAX_DEVICES, Snapshot, api_address};
 use std::{
@@ -61,15 +68,101 @@ pub fn ignore_own_announcements(device_id: &str) {
     let _ = OWN_DEVICE_ID.set(device_id.to_owned());
 }
 
+/// Announcements one source address may send per window; a phone announces every few seconds.
+const ANNOUNCE_PER_WINDOW: u32 = 30;
+const ANNOUNCE_WINDOW_MS: u64 = 10_000;
+/// Different device ids one source address may announce within the list's lifetime. A phone has one id.
+const IDS_PER_SOURCE: usize = 4;
+const MAX_SOURCES: usize = 256;
+
+/// Per-source limits on the unauthenticated discovery listing, so one LAN host cannot fill the device list with
+/// invented phones or keep the daemon busy parsing. Nothing here is trusted; this only bounds the noise.
+#[derive(Default)]
+pub struct SourceLimiter {
+    sources: std::collections::HashMap<std::net::IpAddr, SourceUse>,
+}
+
+struct SourceUse {
+    window_start: u64,
+    count: u32,
+    ids: Vec<(String, u64)>,
+}
+
+impl SourceLimiter {
+    fn entry(&mut self, ip: std::net::IpAddr, now: u64) -> Option<&mut SourceUse> {
+        if !self.sources.contains_key(&ip) {
+            if self.sources.len() >= MAX_SOURCES {
+                // Forget sources whose window and ids have expired; if none did, drop the newcomer.
+                self.sources.retain(|_, u| {
+                    now.saturating_sub(u.window_start) < ANNOUNCE_WINDOW_MS
+                        || u.ids
+                            .iter()
+                            .any(|(_, t)| now.saturating_sub(*t) < DEVICE_TTL_MS)
+                });
+                if self.sources.len() >= MAX_SOURCES {
+                    return None;
+                }
+            }
+            self.sources.insert(
+                ip,
+                SourceUse {
+                    window_start: now,
+                    count: 0,
+                    ids: Vec::new(),
+                },
+            );
+        }
+        self.sources.get_mut(&ip)
+    }
+
+    /// May this source send another announcement right now?
+    pub fn allow_packet(&mut self, ip: std::net::IpAddr, now: u64) -> bool {
+        let Some(u) = self.entry(ip, now) else {
+            return false;
+        };
+        if now.saturating_sub(u.window_start) >= ANNOUNCE_WINDOW_MS {
+            u.window_start = now;
+            u.count = 0;
+        }
+        u.count += 1;
+        u.count <= ANNOUNCE_PER_WINDOW
+    }
+
+    /// May this source list this device id? A source is allowed [`IDS_PER_SOURCE`] ids at a time.
+    pub fn allow_id(&mut self, ip: std::net::IpAddr, id: &str, now: u64) -> bool {
+        let Some(u) = self.entry(ip, now) else {
+            return false;
+        };
+        u.ids
+            .retain(|(_, t)| now.saturating_sub(*t) < DEVICE_TTL_MS);
+        if let Some(known) = u.ids.iter_mut().find(|(i, _)| i == id) {
+            known.1 = now;
+            return true;
+        }
+        if u.ids.len() >= IDS_PER_SOURCE {
+            return false;
+        }
+        u.ids.push((id.to_owned(), now));
+        true
+    }
+}
+
 /// Listens for phones' announcements. Hearing one only lists the phone; it never dials or trusts.
 /// This socket never sends; this computer's own announcement is `Daemon::announce_loop`.
 pub async fn listen_discovery(socket: UdpSocket, state: SharedState) -> io::Result<()> {
     let mut bytes = vec![0; discovery::MAX_IDENTITY_BYTES + 1];
+    let mut limiter = SourceLimiter::default();
     loop {
         let (size, source) = socket.recv_from(&mut bytes).await?;
+        if !limiter.allow_packet(source.ip(), now_ms()) {
+            continue;
+        }
         if let Ok(device) = discovery::parse_identity(&bytes[..size], source.ip(), now_ms()) {
             // Our own announcement comes back on the shared broadcast port.
             if OWN_DEVICE_ID.get().is_some_and(|own| *own == device.id) {
+                continue;
+            }
+            if !limiter.allow_id(source.ip(), &device.id, now_ms()) {
                 continue;
             }
             record_device(&mut *state.write().await, device);
@@ -348,6 +441,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         options.share_notifier = Some(Arc::new(share::NotifySend));
         options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
         options.sms_notifier = Some(Arc::new(phone_data::NotifySendSms));
+        desktop_notify::spawn_update_watcher(options.updates.clone());
         if config.calling_probe {
             let session = bridge_calls::Session::new(bridge_calls::default_backend());
             options.call_host =
@@ -448,6 +542,44 @@ pub async fn run(config: config::Config) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_source_cannot_flood_the_discovery_list() {
+        let a: std::net::IpAddr = "192.168.1.10".parse().unwrap();
+        let b: std::net::IpAddr = "192.168.1.11".parse().unwrap();
+        let mut l = SourceLimiter::default();
+        // Packet rate: 30 per window, then refused until the window passes; another source is unaffected.
+        assert!((0..ANNOUNCE_PER_WINDOW).all(|_| l.allow_packet(a, 1_000)));
+        assert!(!l.allow_packet(a, 2_000));
+        assert!(l.allow_packet(b, 2_000));
+        assert!(l.allow_packet(a, 1_000 + ANNOUNCE_WINDOW_MS));
+        // Invented ids: four per source, a known one keeps working, a fifth is refused, and they expire.
+        for i in 0..IDS_PER_SOURCE {
+            assert!(l.allow_id(a, &format!("id{i}"), 5_000));
+        }
+        assert!(!l.allow_id(a, "id-extra", 5_000));
+        assert!(l.allow_id(a, "id0", 6_000));
+        assert!(l.allow_id(b, "id-extra", 6_000));
+        assert!(l.allow_id(a, "id-extra", 6_000 + DEVICE_TTL_MS + 1));
+    }
+
+    #[test]
+    fn the_limiter_remembers_a_bounded_number_of_sources() {
+        let mut l = SourceLimiter::default();
+        for i in 0..MAX_SOURCES as u32 {
+            assert!(l.allow_packet(
+                std::net::IpAddr::from([10, 0, (i / 256) as u8, (i % 256) as u8]),
+                1_000
+            ));
+        }
+        // Table full of live sources: a newcomer is refused rather than evicting one.
+        assert!(!l.allow_packet("10.9.9.9".parse().unwrap(), 1_500));
+        // Once they expire the newcomer fits.
+        assert!(l.allow_packet(
+            "10.9.9.9".parse().unwrap(),
+            1_000 + DEVICE_TTL_MS + ANNOUNCE_WINDOW_MS
+        ));
+    }
     #[cfg(unix)]
     #[tokio::test]
     async fn sigterm_ends_the_service_cleanly() {
