@@ -38,13 +38,20 @@ class ShareCoordinator private constructor(app: Context) {
         override fun putBoolean(key: String, value: Boolean) { prefs.edit().putBoolean(key, value).apply() }
     })
 
-    /** Called on the main thread when offers, received text or the session changed (for dialogs / screens). */
-    var onChange: (() -> Unit)? = null
+    /**
+     * Screens that want to hear about offers, received text or the session, by owner. A single callback slot was
+     * clobbered when the Share screen stopped, so Home no longer showed incoming-file dialogs (E2E-5).
+     */
+    private val listeners = LinkedHashMap<Any, () -> Unit>()
 
-    private val answered = HashSet<Long>()
+    fun setListener(owner: Any, listener: () -> Unit) { listeners[owner] = listener }
+    fun clearListener(owner: Any) { listeners.remove(owner) }
+    private fun onChange() { for (l in listeners.values.toList()) l() }
+
+    private val answered = RecentIds(RECENT_IDS)
     private val saved = HashMap<Long, SavedFile>()
-    private val finished = HashSet<Long>()
-    private val handledText = HashSet<Long>()
+    private val finished = RecentIds(RECENT_IDS)
+    private val handledText = RecentIds(RECENT_IDS)
     val texts = ArrayList<ReceivedText>()
 
     // --- outgoing session ---
@@ -90,10 +97,11 @@ class ShareCoordinator private constructor(app: Context) {
         pump()
         outgoingNotification(transfers)
         if (controller.needsLink()) schedule()
-        else if (!controller.appVisible && controller.phase == LinkPhase.Running) {
+        // The background service owns the link while it runs: the system Share chooser covers Home (E2E-4).
+        else if (!controller.appVisible && !LinkService.isRunning && controller.phase == LinkPhase.Running) {
             controller.stop("Link stopped: the transfers finished and the app is in the background.")
         }
-        onChange?.invoke()
+        onChange()
     }
 
     /** Offers waiting for the user (not auto-accepted, not answered). */
@@ -154,8 +162,8 @@ class ShareCoordinator private constructor(app: Context) {
             val t = controller.snapshot?.transfers?.firstOrNull { it.id == id }
             if (t == null || t.state != TransferState.Offered || !answered.add(id)) return@post
             notifications.clearOffer(id)
-            if (accept) accept(t) else controller.raw(ShareProtocol.decline(id)) { onChange?.invoke() }
-            onChange?.invoke()
+            if (accept) accept(t) else controller.raw(ShareProtocol.decline(id)) { onChange() }
+            onChange()
         }
     }
 
@@ -204,7 +212,7 @@ class ShareCoordinator private constructor(app: Context) {
         queue.clear()
         queue.addAll(list)
         pump()
-        onChange?.invoke()
+        onChange()
     }
 
     fun sendText(connectionId: Long, kind: TransferKind, text: String) {
@@ -216,9 +224,9 @@ class ShareCoordinator private constructor(app: Context) {
             item.inFlight = false
             if (o !is CoreOutcome.Ok) item.error = describe(o)
             endIfDone()
-            onChange?.invoke()
+            onChange()
         }
-        onChange?.invoke()
+        onChange()
     }
 
     private fun beginSession(conn: Long) {
@@ -275,7 +283,7 @@ class ShareCoordinator private constructor(app: Context) {
                     }
                     controller.poll()
                     pump()
-                    onChange?.invoke()
+                    onChange()
                 }
             }
         } catch (e: Exception) {
@@ -287,7 +295,7 @@ class ShareCoordinator private constructor(app: Context) {
         item.inFlight = false
         item.error = why
         pump()
-        onChange?.invoke()
+        onChange()
     }
 
     private fun endIfDone() {
@@ -331,6 +339,9 @@ class ShareCoordinator private constructor(app: Context) {
 
     companion object {
         const val MAX_ACTIVE = 3
+
+        /** How many transfer ids each bookkeeping set remembers; older ones are long gone from the snapshot. */
+        const val RECENT_IDS = 512
 
         @Volatile private var instance: ShareCoordinator? = null
         fun get(ctx: Context): ShareCoordinator =

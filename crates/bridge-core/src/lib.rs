@@ -8,6 +8,8 @@ pub mod clipboard_wire;
 pub mod hotkey;
 pub mod ipc;
 pub mod messages;
+pub mod phone_link;
+pub mod phone_view;
 pub mod share;
 use serde::{Deserialize, Serialize};
 use std::{

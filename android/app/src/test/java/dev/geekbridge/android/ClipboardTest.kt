@@ -215,6 +215,8 @@ class ClipboardEngineTest {
         var dismissed = 0
         var imageFd: Int? = 77
         var imageReads = 0
+        var forgotten = 0
+        override fun forgetSpooledImage() { forgotten++ }
         override fun isLocked() = locked
         override fun write(item: ClipEvent.Incoming) { written += item }
         override fun askForTap() { asks++ }
@@ -289,7 +291,8 @@ class ClipboardEngineTest {
         now += ClipboardEngine.PENDING_MS + 1
         val result = engine.onGesture(snap("later", copiedAgo = 3_600_000))
         assertTrue("an explicit send has no age limit", result.sent)
-        val r = sent.single()
+        assertEquals("the lapsed question is refused first", "expired", sent.first().getString("none"))
+        val r = sent.last()
         assertFalse(r.has("request_id")); assertFalse(r.has("connection_id"))
     }
 
@@ -363,6 +366,51 @@ class ClipboardEngineTest {
         val r = engine.sendText("hello")
         assertFalse(r.sent)
         assertEquals("Not connected to a computer.", r.message)
+    }
+
+    @Test fun aNewPullRefusesTheOneItReplacesInsteadOfLeavingItHanging() {
+        engine.onEvents(listOf(pull("old")))
+        engine.onEvents(listOf(pull("new")))
+        assertEquals("old", sent.single().getString("request_id"))
+        assertEquals("expired", sent.single().getString("none"))
+        assertEquals(2, host.asks)
+        // The tap answers the newer question only.
+        sent.clear()
+        engine.onGesture(snap())
+        assertEquals("new", sent.single().getString("request_id"))
+    }
+
+    @Test fun aQuestionThatLapsedBeforeTheTapIsRefusedNotForgotten() {
+        engine.onEvents(listOf(pull("late")))
+        now += ClipboardEngine.PENDING_MS + 1
+        engine.onGesture(snap())
+        assertEquals("late", sent.first().getString("request_id"))
+        assertEquals("expired", sent.first().getString("none"))
+    }
+
+    @Test fun aCoreThatIsNotRunningIsNotReportedAsTooLarge() {
+        coreReply = CoreOutcome.Unavailable("core not running")
+        engine.capture(snap())
+        engine.onEvents(listOf(pull("x")))
+        // Only the send went out: no bogus "too_large" answer to the computer.
+        assertEquals(1, sent.size)
+        assertFalse(sent.single().has("none"))
+        coreReply = CoreOutcome.Unavailable("core not running")
+        engine.capture(snap())
+        val r = engine.onGesture(snap())
+        assertEquals("not_connected", r.reason)
+    }
+
+    @Test fun aCoreSayingTooLargeIsStillAnsweredTooLarge() {
+        coreReply = CoreOutcome.Rejected("too_large", "big")
+        engine.capture(snap())
+        engine.onEvents(listOf(pull("big")))
+        assertEquals("too_large", sent.last().getString("none"))
+    }
+
+    @Test fun resetAsksTheHostToDropItsSpooledImage() {
+        engine.reset()
+        assertEquals(1, host.forgotten)
     }
 
     @Test fun resetForgetsEverythingHeldInMemory() {

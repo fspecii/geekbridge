@@ -24,6 +24,7 @@ object AppState {
                 prefs = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
                 // Call control reads its own opt-in here so StartOptions can negotiate it on every start path.
                 CallControlRuntime.init(ctx.applicationContext)
+                PhoneDataRuntime.init(ctx.applicationContext)
             }
         }
     }

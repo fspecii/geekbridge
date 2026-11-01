@@ -376,6 +376,38 @@ async fn accept_saves_the_file_safely_and_never_overwrites() {
 }
 
 #[tokio::test]
+async fn one_phone_cannot_fill_every_offer_slot() {
+    let rig = Rig::start().await;
+    let (a, b) = (Phone::sharing(), Phone::sharing());
+    let mut link_a = rig.pair(&a).await;
+    let mut link_b = rig.pair(&b).await;
+    for p in [&a, &b] {
+        rig.ok(Request::ShareSettings {
+            device_id: p.id(),
+            receive: Some(true),
+            auto_accept: None,
+        })
+        .await;
+    }
+    let cap = bridge_service::share::MAX_OFFERED_PER_DEVICE;
+    let mut serving = Vec::new();
+    for i in 0..bridge_service::share::MAX_OFFERED + 2 {
+        serving.push(phone_offers(&mut link_a, &format!("a{i}.bin"), data(10)).await);
+    }
+    serving.push(phone_offers(&mut link_b, "b.bin", data(10)).await);
+    rig.wait_transfer("the other phone's offer", |t| t.name == "b.bin")
+        .await;
+    let from_a = rig
+        .share()
+        .await
+        .transfers
+        .iter()
+        .filter(|t| t.device_id == a.id() && t.state == TransferState::Offered)
+        .count();
+    assert_eq!(from_a, cap);
+}
+
+#[tokio::test]
 async fn decline_and_expiry_leave_nothing_on_disk() {
     let rig = Rig::start().await;
     let phone = Phone::sharing();

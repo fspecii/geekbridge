@@ -121,11 +121,19 @@ class CoreClient(
     /** `transport_clipboard_*` requests; replies may carry several clipboard items. */
     fun clipboardAction(request: String): CoreOutcome = call(request, Limits.MAX_CLIPBOARD_RESPONSE_CHARS)
 
-    private fun call(request: String, maxResponseChars: Int = Limits.MAX_RESPONSE_CHARS): CoreOutcome {
+    /** `transport_data_*` requests (docs/phone-data-link.md). Only `transport_data_send` may exceed the usual request cap. */
+    fun dataAction(request: String): CoreOutcome =
+        call(request, Limits.MAX_CLIPBOARD_RESPONSE_CHARS, maxRequestChars = Limits.MAX_DATA_REQUEST_CHARS)
+
+    private fun call(
+        request: String,
+        maxResponseChars: Int = Limits.MAX_RESPONSE_CHARS,
+        maxRequestChars: Int = Limits.MAX_REQUEST_CHARS,
+    ): CoreOutcome {
         if (!isAvailable()) {
             return CoreOutcome.Unavailable(unavailableReason() ?: "native core not loaded")
         }
-        if (request.length > Limits.MAX_REQUEST_CHARS) {
+        if (request.length > maxRequestChars) {
             return CoreOutcome.Rejected("input_too_large", "Request is over the allowed size.", local = true)
         }
         // Reasons below name only the exception class, never its message: messages could echo input.

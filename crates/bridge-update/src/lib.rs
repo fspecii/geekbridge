@@ -652,9 +652,12 @@ impl Updater {
     pub fn verified_installer(&self) -> Result<PathBuf, Error> {
         let (file, expected) = {
             let rt = self.lock();
+            // Same rule as `status()`: an installer for a release that is no longer the cached one is stale.
+            let cached = rt.persisted.release.as_ref();
             let d = rt
                 .downloaded
                 .as_ref()
+                .filter(|d| cached.is_some_and(|c| c.version == d.version))
                 .ok_or(Error::NothingToDownload("no installer has been downloaded"))?;
             (d.file.clone(), d.sha256.clone())
         };
@@ -804,6 +807,7 @@ fn make_private_dir(root: &Path) -> Result<PathBuf, Error> {
             "{DIR_PREFIX}{}",
             bridge_core::ipc::encode_hex(&random)
         ));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -854,6 +858,40 @@ mod tests {
         assert!(st.last_checked_unix.is_none());
         // ... and it is not retried on every tick.
         assert!(!up.check_due(false));
+    }
+
+    #[test]
+    fn an_installer_for_a_superseded_release_is_not_handed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("installer.bin");
+        std::fs::write(&file, b"old").unwrap();
+        let sha = bridge_core::ipc::encode_hex(&Sha256::digest(b"old"));
+        let up = Updater::new(Config::github("0.1.0")).unwrap();
+        let cached = |version: &str| Cached {
+            version: version.into(),
+            tag: format!("v{version}"),
+            notes: String::new(),
+            release_url: String::new(),
+            asset: None,
+            sha256: None,
+        };
+        {
+            let mut rt = up.lock();
+            rt.persisted.release = Some(cached("0.2.0"));
+            rt.downloaded = Some(Downloaded {
+                dir: dir.path().to_path_buf(),
+                file: file.clone(),
+                version: "0.2.0".into(),
+                sha256: sha,
+            });
+        }
+        assert_eq!(up.verified_installer().unwrap(), file);
+        // A newer release is cached: the old download is hidden from status and must not be openable either.
+        up.lock().persisted.release = Some(cached("0.3.0"));
+        assert!(matches!(
+            up.verified_installer(),
+            Err(Error::NothingToDownload(_))
+        ));
     }
 
     #[test]

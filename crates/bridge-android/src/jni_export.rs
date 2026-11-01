@@ -6,7 +6,7 @@
 //! The panic guard is `EnvUnowned::with_env` (catches before the JVM frame) around
 //! `handle_request`, which has its own guard. Request data never reaches an exception message.
 use crate::{
-    InputError, MAX_REQUEST_BYTES, handle_request, input_error_response,
+    InputError, MAX_DATA_REQUEST_BYTES, handle_request, input_error_response,
     mutf8::has_unpaired_surrogate,
 };
 use jni::{
@@ -19,7 +19,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Modified UTF-8 is never shorter than UTF-8 and at most 1.5x longer (NUL is 2 bytes, a
 /// supplementary char 6). Refuse anything beyond twice the request limit without decoding it.
-const MAX_MUTF8_BYTES: usize = MAX_REQUEST_BYTES * 2;
+const MAX_MUTF8_BYTES: usize = MAX_DATA_REQUEST_BYTES * 2;
 
 /// Only reached when a response string cannot be created or the glue itself fails. Throws one
 /// fixed-message `RuntimeException`; the JNI error and any panic payload are dropped unread.

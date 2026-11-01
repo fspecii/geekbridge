@@ -10,10 +10,12 @@ pub mod clipboard;
 pub mod config;
 pub mod control;
 pub mod daemon;
+pub mod diagnose;
 pub mod discovery;
 pub mod gate;
 pub mod hotkey_bind;
 pub mod macos_host;
+pub mod phone_data;
 pub mod private;
 pub mod share;
 pub mod windows_host;
@@ -233,19 +235,15 @@ fn shutdown_signal() -> io::Result<impl std::future::Future<Output = io::Result<
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let ctrl_c = tokio::signal::ctrl_c();
-    Ok(async move {
-        #[cfg(unix)]
-        {
-            tokio::select! {
-                result = ctrl_c => result,
-                _ = term.recv() => Ok(()),
-            }
+    #[cfg(unix)]
+    return Ok(async move {
+        tokio::select! {
+            result = ctrl_c => result,
+            _ = term.recv() => Ok(()),
         }
-        #[cfg(not(unix))]
-        {
-            ctrl_c.await
-        }
-    })
+    });
+    #[cfg(not(unix))]
+    Ok(ctrl_c)
 }
 
 /// The update checker for a real run: settings persist beside the other private state, and the
@@ -311,6 +309,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     {
         options.share_notifier = Some(Arc::new(share::NotifySend));
         options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
+        options.sms_notifier = Some(Arc::new(phone_data::NotifySendSms));
         if config.calling_probe {
             let session = bridge_calls::Session::new(bridge_calls::default_backend());
             options.call_host =

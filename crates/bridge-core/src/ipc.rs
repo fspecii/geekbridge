@@ -258,15 +258,18 @@ pub fn hmac_sha256(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
 pub enum Feature {
     Sms,
     Contacts,
+    /// Read-only calendar events (`geekbridge.calendar.*`).
+    Calendar,
     Clipboard,
     Notifications,
     Telephony,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 5] = [
+    pub const ALL: [Feature; 6] = [
         Feature::Sms,
         Feature::Contacts,
+        Feature::Calendar,
         Feature::Clipboard,
         Feature::Notifications,
         Feature::Telephony,
@@ -425,6 +428,45 @@ pub enum Request {
         receive: Option<bool>,
         #[serde(default)]
         auto_accept: Option<bool>,
+    },
+    /// People matching `query` and the events of `day` (`YYYY-MM-DD`, seen at `utc_offset_minutes`)
+    /// from every phone whose Contacts / Calendar consent is on. Memory only; nothing is stored.
+    AgendaView {
+        #[serde(default)]
+        query: String,
+        day: String,
+        utc_offset_minutes: i32,
+    },
+    /// Ask the phone(s) for fresh contacts and calendar data now.
+    AgendaRefresh {
+        #[serde(default)]
+        device_id: Option<String>,
+    },
+    /// Conversations of every phone with SMS consent, plus one thread's messages if asked.
+    MessagesView {
+        #[serde(default)]
+        device_id: Option<String>,
+        #[serde(default)]
+        thread_id: Option<i64>,
+    },
+    /// Ask for the conversation list, or for older history of one thread.
+    MessagesRefresh {
+        device_id: String,
+        #[serde(default)]
+        thread_id: Option<i64>,
+    },
+    /// Send one SMS through the phone. `submission_id` makes a retry of the same click idempotent.
+    MessagesSend {
+        device_id: String,
+        recipient: String,
+        text: String,
+        submission_id: String,
+    },
+    /// Send an uncertain or failed message again, accepting that the recipient may get it twice.
+    MessagesResend {
+        device_id: String,
+        send_id: u64,
+        submission_id: String,
     },
 }
 
@@ -758,6 +800,11 @@ pub enum Response {
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
     Share(Box<ShareStatus>),
+    Agenda(Box<crate::phone_view::AgendaView>),
+    Messages(Box<crate::phone_view::MessagesView>),
+    MessageQueued {
+        send_id: u64,
+    },
     TransferStarted {
         transfer_id: u64,
     },

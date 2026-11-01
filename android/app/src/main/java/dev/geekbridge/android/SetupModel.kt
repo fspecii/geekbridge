@@ -79,7 +79,7 @@ object SetupModel {
         out += permissionStep(StepId.CallerNumber, i.callLog, required = false)
         out += StepInfo(
             StepId.Sms, StepStatus.Info, required = false,
-            detail = "Not requested: Android only lets the default messaging app read or send SMS",
+            detail = "Optional · contacts, calendar and texts for your computer, off until you switch them on",
         )
         out += batteryStep(i)
         return out
@@ -145,7 +145,7 @@ object SetupModel {
         StepId.PhoneState -> "Phone state"
         StepId.AnswerCalls -> "Answer calls"
         StepId.CallerNumber -> "Caller number"
-        StepId.Sms -> "SMS"
+        StepId.Sms -> "Share with computer"
         StepId.Battery -> "Battery"
     }
 

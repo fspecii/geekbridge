@@ -36,6 +36,8 @@ pub const MAX_TRANSFERS: usize = 64;
 pub const MAX_ACTIVE: usize = 3;
 pub const MAX_ACTIVE_PER_DEVICE: usize = 2;
 pub const MAX_OFFERED: usize = 8;
+/// One paired phone cannot hold more than this many of the [`MAX_OFFERED`] slots.
+pub const MAX_OFFERED_PER_DEVICE: usize = 3;
 pub const MAX_RECEIVED_TEXT: usize = kshare::MAX_TEXT_BYTES;
 pub const SETTINGS_FILE: &str = "share.json";
 const MAX_SETTINGS_DEVICES: usize = 1024;
@@ -308,6 +310,8 @@ pub enum ShareJob {
 impl ShareManager {
     pub fn new(opts: ShareOptions) -> Arc<Self> {
         let settings = Settings::open(opts.settings_path.clone());
+        // A previous run may have died mid-download; clear what it left in the save directory.
+        kshare::sweep_partials(&opts.save_dir, Duration::from_secs(600));
         Arc::new(Self {
             opts,
             inner: Mutex::new(Inner::default()),
@@ -618,13 +622,18 @@ impl ShareManager {
     ) -> Disposition {
         let (id, name, size) = {
             let mut inner = self.inner();
-            if !self.make_room(&mut inner)
+            if !self.make_room(&mut inner) {
+                return Disposition::Rejected;
+            }
+            let offered = |t: &&Transfer| t.info.state == TransferState::Offered;
+            if inner.items.iter().filter(offered).count() >= MAX_OFFERED
                 || inner
                     .items
                     .iter()
-                    .filter(|t| t.info.state == TransferState::Offered)
+                    .filter(offered)
+                    .filter(|t| t.info.device_id == device_id)
                     .count()
-                    >= MAX_OFFERED
+                    >= MAX_OFFERED_PER_DEVICE
             {
                 return Disposition::Rejected;
             }

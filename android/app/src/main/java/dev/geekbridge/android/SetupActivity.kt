@@ -116,6 +116,7 @@ class SetupActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         CallControlRuntime.onPermissionsChanged()
+        PhoneDataRuntime.resync()
         render()
     }
 
@@ -182,7 +183,9 @@ class SetupActivity : Activity() {
         when (s.id) {
             StepId.Pair -> pairStep(panel)
             StepId.Sms -> {
-                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Tonal) { PowerChecks.openAppSettings(this) }
+                PhoneDataUi.addSection(this, kit, panel) { render() }
+                kit.divider(panel)
+                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
                 panel.addView(kit.text(getString(R.string.setup_sms_restricted), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
             }
             StepId.Battery -> batteryStep(panel, s)

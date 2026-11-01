@@ -41,7 +41,7 @@ pub(super) fn list_transports(deadline: Deadline) -> Step<Vec<TransportRecord>> 
     )?;
     let mut out = Vec::new();
     for info in found {
-        if out.len() >= MAX_DEVICES + 1 {
+        if out.len() > MAX_DEVICES {
             // One extra entry lets the engine see that the list was truncated.
             break;
         }

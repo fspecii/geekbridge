@@ -21,8 +21,14 @@ Commands:
   deny CHALLENGE_ID
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
-  consent DEVICE_ID FEATURE on|off    sms, contacts, clipboard, notifications, telephony
+  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony
   ping DEVICE_ID                      interoperability check on a paired link
+  agenda [QUERY] [YYYY-MM-DD]         contacts matching QUERY and that day's events, from phones whose
+                                      Contacts/Calendar consent is on (prints personal data; memory only)
+  agenda-refresh [DEVICE_ID]          ask the phone(s) for fresh contacts and calendar data
+  messages [DEVICE_ID THREAD_ID]      SMS conversations from phones whose Sms consent is on, and one thread
+  messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
+  messages-send DEVICE_ID NUMBER TEXT send one SMS through the phone; the printed send id is not a receipt
   calling                             read-only host calling backend summary
   calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
@@ -48,6 +54,8 @@ Commands:
   share cancel|dismiss TRANSFER_ID    stop a transfer / forget a finished one
   share allow DEVICE_ID on|off        let the device send us files, links and text (default off)
   share auto-accept DEVICE_ID on|off  accept files from the device without asking (default off)
+  diagnose                            redacted support bundle (versions, capabilities, counters, last
+                                      errors); no names, addresses, keys or content
   token-path                          where the control token lives (never its contents)";
 
 fn main() -> ExitCode {
@@ -104,6 +112,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         "send-file" | "send-text" | "send-url" | "share"
     ) {
         return share_command(&command, &args[1..], port, &state_dir);
+    }
+    if command == "diagnose" {
+        return diagnose_command(port, &state_dir);
     }
     if command == "update" {
         return update_command(&args[1..], port, &state_dir);
@@ -190,6 +201,53 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             device_id: arg(1, "DEVICE_ID")?,
         },
         "calling" => Request::CallingStatus,
+        "agenda" => {
+            let day = match arg(2, "DAY") {
+                Ok(d) => d,
+                Err(_) => {
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs());
+                    let d = bridge_core::agenda::Date::from_epoch_day((secs / 86_400) as i64)
+                        .map_err(|e| e.to_string())?;
+                    format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
+                }
+            };
+            Request::AgendaView {
+                query: arg(1, "QUERY").unwrap_or_default(),
+                day,
+                utc_offset_minutes: 0,
+            }
+        }
+        "agenda-refresh" => Request::AgendaRefresh {
+            device_id: arg(1, "DEVICE_ID").ok(),
+        },
+        "messages" => Request::MessagesView {
+            device_id: arg(1, "DEVICE_ID").ok(),
+            thread_id: match arg(2, "THREAD_ID") {
+                Ok(t) => Some(t.parse().map_err(|_| "THREAD_ID must be a number")?),
+                Err(_) => None,
+            },
+        },
+        "messages-refresh" => Request::MessagesRefresh {
+            device_id: arg(1, "DEVICE_ID")?,
+            thread_id: match arg(2, "THREAD") {
+                Ok(t) => Some(t.parse().map_err(|_| "THREAD must be a number")?),
+                Err(_) => None,
+            },
+        },
+        "messages-send" => Request::MessagesSend {
+            device_id: arg(1, "DEVICE_ID")?,
+            recipient: arg(2, "NUMBER")?,
+            text: arg(3, "TEXT")?,
+            submission_id: format!(
+                "ctl{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis())
+            ),
+        },
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
     };
     let token = load_token(&state_dir)?;
@@ -409,6 +467,59 @@ fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
         .map_err(|e| format!("cannot read the control token safely: {e}"))?
         .ok_or("no control token yet; start geekbridge-service with the same --state-dir first")?;
     Token::parse(&bytes).map_err(|e| e.to_string())
+}
+
+fn diagnose_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_service::diagnose::{Inputs, render};
+    let token = load_token(state_dir)?;
+    let mut notes = Vec::new();
+    let status = match ipc::call(port, &token, &Request::Status).map_err(|e| e.to_string())? {
+        Response::Status(s) => *s,
+        _ => return Err("unexpected reply from the service".into()),
+    };
+    let mut ask = |request: Request, what: &str| match ipc::call(port, &token, &request) {
+        Ok(Response::Error(e)) => {
+            notes.push(format!("{what}: {}", e.message));
+            None
+        }
+        Ok(r) => Some(r),
+        Err(e) => {
+            notes.push(format!("{what}: {e}"));
+            None
+        }
+    };
+    let events = match ask(Request::Events { after: 0 }, "events") {
+        Some(Response::Events(p)) => Some(p),
+        _ => None,
+    };
+    let calling = match ask(Request::CallingStatus, "calling") {
+        Some(Response::CallingStatus(c)) => Some(c),
+        _ => None,
+    };
+    let clipboard = match ask(Request::ClipboardStatus, "clipboard") {
+        Some(Response::ClipboardStatus(c)) => Some(*c),
+        _ => None,
+    };
+    let update = match ask(Request::UpdateStatus, "update") {
+        Some(Response::Update(u)) => Some(*u),
+        _ => None,
+    };
+    let host = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+    print!(
+        "{}",
+        render(
+            &Inputs {
+                status,
+                events,
+                calling,
+                clipboard,
+                update,
+                notes
+            },
+            &host
+        )
+    );
+    Ok(())
 }
 
 fn update_call(port: u16, token: &Token, request: &Request) -> Result<UpdateStatus, String> {

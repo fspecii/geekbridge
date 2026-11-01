@@ -26,6 +26,9 @@ pub const REQUEST_VERSION: u64 = 1;
 /// byte) of a clipboard item at the shared default limit, plus envelope. Equals
 /// `bridge_core::clipboard::max_wire_bytes(DEFAULT_MAX_TEXT_BYTES)` (asserted in tests).
 pub const MAX_REQUEST_BYTES: usize = 6 * DEFAULT_MAX_TEXT_BYTES + 1024;
+/// `transport_data_send` carries up to 1 MiB of phone data (contact cards, calendar, messages) plus
+/// the envelope; every other request keeps [`MAX_REQUEST_BYTES`].
+pub const MAX_DATA_REQUEST_BYTES: usize = 1024 * 1024 + 2048;
 /// Requests carry a handful of keys; more is never legitimate.
 const MAX_FIELDS: usize = 8;
 
@@ -289,6 +292,16 @@ impl Fields {
             Ok(None)
         }
     }
+    pub(crate) fn take_object(
+        &mut self,
+        key: &'static str,
+    ) -> Result<serde_json::Map<String, Value>, ApiError> {
+        match self.take(key) {
+            None => Err(err("missing_field", "a required field is missing")),
+            Some(Value::Object(map)) => Ok(map),
+            Some(_) => Err(wrong_type()),
+        }
+    }
     /// An optional nested option object, with the same strictness as the envelope.
     pub(crate) fn take_opt_object(
         &mut self,
@@ -311,7 +324,7 @@ impl Fields {
 }
 
 fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
-    if request.len() > MAX_REQUEST_BYTES {
+    if request.len() > MAX_DATA_REQUEST_BYTES {
         return Err(request_too_large());
     }
     let mut fields: Fields = serde_json::from_str(request).map_err(|e| {
@@ -332,6 +345,9 @@ fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
         Some(_) => return Err(err("unsupported_version", "unsupported request version")),
     }
     let action = fields.take_string("action")?;
+    if action != "transport_data_send" && request.len() > MAX_REQUEST_BYTES {
+        return Err(request_too_large());
+    }
     match action.as_str() {
         "version" => {
             fields.finish()?;
@@ -342,7 +358,9 @@ fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
         a if transport::ACTIONS.contains(&a) => {
             // Clipboard text and HTML legitimately exceed the 16 KiB control-message limit; the
             // overall request limit and the clipboard size checks still apply.
-            if a != "transport_clipboard_send" && request.len() > MAX_TRANSPORT_REQUEST_BYTES {
+            if !matches!(a, "transport_clipboard_send" | "transport_data_send")
+                && request.len() > MAX_TRANSPORT_REQUEST_BYTES
+            {
                 return Err(request_too_large());
             }
             transport::handle(&dispatcher.transport, a, fields)

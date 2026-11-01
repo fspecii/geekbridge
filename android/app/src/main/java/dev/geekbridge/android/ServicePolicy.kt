@@ -10,4 +10,17 @@ object ServicePolicy {
         previousNetworkId != null && previousNetworkId != newNetworkId
 
     const val RESTART_DEBOUNCE_MS = 3_000L
+
+    /**
+     * Runs [promote] (startForeground). On Android 12+ a restart from the background may be refused with an
+     * exception; the service then has no right to keep running, so [stop] is called instead of crashing.
+     * Returns true if it is now a foreground service.
+     */
+    fun promoteOrStop(promote: () -> Unit, stop: () -> Unit): Boolean = try {
+        promote()
+        true
+    } catch (_: RuntimeException) {
+        stop()
+        false
+    }
 }

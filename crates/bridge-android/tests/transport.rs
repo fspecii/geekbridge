@@ -432,6 +432,7 @@ fn start_reports_identity_listener_and_only_ping() {
     assert_eq!(hs.info().peer.outgoing_capabilities, caps);
 }
 
+#[cfg(unix)]
 #[test]
 fn state_directory_is_private_and_responses_do_not_leak_it() {
     use std::os::unix::fs::PermissionsExt;
@@ -452,6 +453,7 @@ fn state_directory_is_private_and_responses_do_not_leak_it() {
     }
 }
 
+#[cfg(unix)]
 #[test]
 fn a_loose_state_directory_is_refused_and_the_host_stays_usable() {
     use std::os::unix::fs::PermissionsExt;
@@ -1385,6 +1387,8 @@ fn discovery_bind_failure_does_not_fail_the_start() {
 
 // ------------------------------------------------------------------------------- sharing
 
+// The sharing tests hand raw file descriptors across the JSON request interface (Android only).
+#[cfg(unix)]
 mod sharing {
     use super::*;
     use bridge_kde::share;
@@ -1560,6 +1564,51 @@ mod sharing {
         assert_eq!(transfers(&phone.status())[0]["state"], "cancelled");
         let again = phone.act("share_cancel", json!({"transfer_id": id}));
         assert_eq!(code(&again), "wrong_state");
+    }
+
+    #[test]
+    fn files_queued_behind_a_closing_link_are_failed_not_left_waiting() {
+        let (phone, peer, mut link) = paired();
+        let cid = conn_id(&phone.status());
+        // Queue a burst and close at once. Whatever the loop got to before the close was announced to
+        // the peer; everything it never ran has to be failed by the drain in `run_trusted`.
+        let mut ids = Vec::new();
+        let mut files = Vec::new();
+        for i in 0..3 {
+            let mut f = tempfile::tempfile().unwrap();
+            f.write_all(&payload(1000)).unwrap();
+            f.seek(SeekFrom::Start(0)).unwrap();
+            let v = phone.act(
+                "share_send_file",
+                json!({"connection_id": cid, "fd": f.as_raw_fd(), "name": format!("q{i}.bin"), "size": 1000}),
+            );
+            ids.push(ok(&v)["transfer_id"].as_u64().unwrap());
+            files.push(f);
+        }
+        ok(&phone.act("transport_disconnect", json!({"connection_id": cid})));
+        let mut announced = 0;
+        while let Ok(LinkEvent::Packet(p)) = peer.recv(&mut link) {
+            if matches!(
+                share::parse_share(&p, 1 << 30),
+                Ok(share::ShareContent::File(_))
+            ) {
+                announced += 1;
+            }
+        }
+        let s = phone.wait("the unsent files to fail", |s| {
+            transfers(s)
+                .iter()
+                .filter(|t| t["state"] == "failed" && t["code"] == "link_lost")
+                .count()
+                == ids.len() - announced
+        });
+        assert!(Phone::array(&s, "connections").is_empty());
+        // An announced file may still wait for the computer to collect it; nothing else may be waiting.
+        let waiting = transfers(&s)
+            .iter()
+            .filter(|t| t["state"] == "waiting")
+            .count();
+        assert_eq!(waiting, announced, "{s}");
     }
 
     #[test]

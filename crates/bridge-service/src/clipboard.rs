@@ -1099,6 +1099,10 @@ impl ClipboardService {
                 continue;
             }
             if g.pulls.len() >= MAX_PENDING_PULLS {
+                // Earlier targets were already asked: that is a success, not a failure.
+                if sent > 0 {
+                    break;
+                }
                 return Err("too_many_requests");
             }
             let request_id = random_id();
@@ -2104,6 +2108,21 @@ mod tests {
             (lp.state.as_str(), lp.reason.as_deref()),
             ("none", Some("expired"))
         );
+    }
+
+    #[tokio::test]
+    async fn hitting_the_pull_limit_part_way_is_not_reported_as_failure() {
+        let (_mem, svc) = rig();
+        let mut rx = svc.link_up(PHONE, "P", FULL, true);
+        let _rx2 = svc.link_up(PHONE2, "Q", FULL, true);
+        for _ in 0..MAX_PENDING_PULLS - 1 {
+            svc.pull(Some(PHONE)).unwrap();
+        }
+        // One slot left for two targets: one is asked, so the call succeeded.
+        assert_eq!(svc.pull(None), Ok(1));
+        // Now nothing is left at all.
+        assert_eq!(svc.pull(None), Err("too_many_requests"));
+        let _ = request_id_of(&mut rx);
     }
 
     #[tokio::test]

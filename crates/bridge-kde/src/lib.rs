@@ -21,6 +21,7 @@ pub mod packet;
 pub mod pairing;
 pub mod payload;
 pub mod share;
+pub mod sms;
 pub mod store;
 pub mod tls;
 

@@ -262,6 +262,14 @@ class MainActivity : Activity() {
         }
         connSummary = ui.statusLine(card, "Connection: link stopped.", Tone.Muted)
         ui.button(card, "Recheck native core") { refreshCore() }
+        ui.button(card, "Copy report") { copyReport() }
+        ui.body(card, "Copies versions, permissions and states only: no names, numbers, addresses or content.", Tone.Muted)
+    }
+
+    private fun copyReport() {
+        val report = DiagnosticsReport.build(this, coreStatus.text.toString(), connSummary.text.toString())
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("GeekBridge report", report))
+        Toast.makeText(this, "Report copied.", Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshCore() {

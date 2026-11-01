@@ -53,6 +53,21 @@ jobs:
         if: runner.os == 'Linux'
         run: scripts/perf-check.sh --window 10
 
+  cross-targets:
+    name: Type-check Windows and macOS targets (from Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
+          components: clippy
+      - name: cargo check --workspace --all-targets for Windows, macOS arm64 and x86_64 (warnings denied)
+        env:
+          XCHECK_CLIPPY: '1'
+        run: scripts/xcheck.sh
+
   android:
     name: Android / unit tests, lint, debug APK
     runs-on: ubuntu-latest

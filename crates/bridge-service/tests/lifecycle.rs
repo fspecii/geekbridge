@@ -220,7 +220,7 @@ async fn hostile_packets_on_an_established_link_never_hurt_the_service() {
             "kdeconnect.ping",
             body_with(
                 "pad",
-                json!("x".repeat(bridge_core::clipboard_wire::MAX_ITEM_LINE_BYTES + 1024)),
+                json!("x".repeat(2 * 1024 * 1024 + 1024)), // daemon::MAX_PACKET_LINE + a bit
             ),
         ),
         Outcome::Dropped,

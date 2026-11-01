@@ -114,7 +114,8 @@ impl CancelToken {
 pub struct PayloadConfig {
     /// Ports we may listen on and the only ports we will dial.
     pub ports: RangeInclusive<u16>,
-    /// Development/test switch: bind an ephemeral port and dial any non-zero port.
+    /// Development/test switch: dial any non-zero port, and fall back to an ephemeral port to listen
+    /// on when the whole range is taken.
     pub any_port: bool,
     /// How long a sender waits for the receiver to connect (the receiver may be waiting for the
     /// user to press Accept).
@@ -190,11 +191,12 @@ impl PayloadContext {
         } else {
             Ipv4Addr::UNSPECIFIED.into()
         };
-        let candidates: Vec<u16> = if self.config.any_port {
-            vec![0]
-        } else {
-            self.config.ports.clone().collect()
-        };
+        // The standard range first, even with `any_port`: a peer with the real configuration only
+        // dials that range, so an ephemeral port is the fallback for when the range is taken.
+        let mut candidates: Vec<u16> = self.config.ports.clone().collect();
+        if self.config.any_port {
+            candidates.push(0);
+        }
         for p in candidates {
             if let Ok(listener) = TcpListener::bind(SocketAddr::new(any, p)).await {
                 let port = listener.local_addr()?.port();
@@ -348,22 +350,39 @@ async fn handshake_server(
     .map_err(|e| PayloadError::Link(KdeError::Tls(e.to_string())))
 }
 
-/// Dial `addr`, with the source bound to `local` (port chosen by the OS) when it is known and of
-/// the same family. If binding fails the plain OS-chosen route is used.
+/// How long a connect from the control link's source address gets before the plain route is tried.
+const BOUND_DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Dial `addr`. When the control link's local address is known (and of the same family) the first
+/// attempt is bound to it, so the sender sees the address it already trusts on multi-homed hosts.
+/// That address may have no route to the peer (an Android phone whose control link arrived on one
+/// interface while the default route is another; the emulator does exactly this): the SYN is then
+/// silently dropped, so the bound attempt is short and the plain OS-chosen route follows.
 async fn dial(addr: SocketAddr, local: Option<IpAddr>) -> std::io::Result<TcpStream> {
-    if let Some(ip) = local
-        && ip.is_ipv4() == addr.is_ipv4()
-    {
+    let bound = async {
+        let ip = local.filter(|ip| ip.is_ipv4() == addr.is_ipv4())?;
         let socket = if addr.is_ipv4() {
-            TcpSocket::new_v4()?
+            TcpSocket::new_v4().ok()?
         } else {
-            TcpSocket::new_v6()?
+            TcpSocket::new_v6().ok()?
         };
-        if socket.bind(SocketAddr::new(ip, 0)).is_ok() {
-            return socket.connect(addr).await;
-        }
+        socket.bind(SocketAddr::new(ip, 0)).ok()?;
+        Some(socket.connect(addr).await)
+    };
+    first_or_fallback(bound, BOUND_DIAL_TIMEOUT, TcpStream::connect(addr)).await
+}
+
+/// The result of `first` if it succeeds within `limit`; otherwise (declined, failed or too slow)
+/// whatever `fallback` produces.
+async fn first_or_fallback<T>(
+    first: impl std::future::Future<Output = Option<std::io::Result<T>>>,
+    limit: Duration,
+    fallback: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    match timeout(limit, first).await {
+        Ok(Some(Ok(v))) => Ok(v),
+        _ => fallback.await,
     }
-    TcpStream::connect(addr).await
 }
 
 /// True when `a` and `b` are the same host, treating `::ffff:a.b.c.d` as `a.b.c.d`.

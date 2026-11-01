@@ -32,12 +32,21 @@ use bridge_kde::share::{SHARE_REQUEST, SHARE_REQUEST_UPDATE};
 
 mod calls;
 mod clipboard;
+mod data;
 mod share;
 
 pub(super) use clipboard::SendArgs as ClipboardSend;
 
 pub(super) use calls::ReportArgs as CallsReport;
 
+pub(super) use data::Flags as DataFlags;
+
+pub(super) fn data_incoming_types(flags: DataFlags) -> Vec<String> {
+    data::incoming_types(flags)
+}
+pub(super) fn data_outgoing_types(flags: DataFlags) -> Vec<String> {
+    data::outgoing_types(flags)
+}
 pub(super) fn calls_incoming_types() -> Vec<String> {
     calls::incoming_types()
 }
@@ -113,6 +122,7 @@ enum Ctl {
     SendText(share::TextJob),
     Clip(Box<clipboard::Out>),
     Calls(calls::Out),
+    Data(data::Out),
 }
 
 struct ConnEntry {
@@ -229,6 +239,7 @@ pub(super) struct Core {
     shares: Mutex<share::Book>,
     clip: clipboard::Hub,
     calls: calls::Hub,
+    data: data::Hub,
 }
 
 pub(super) struct Decision {
@@ -267,6 +278,7 @@ impl Core {
             shares: Mutex::new(share::Book::default()),
             clip: clipboard::Hub::default(),
             calls: calls::Hub::default(),
+            data: data::Hub::default(),
         }
     }
 
@@ -284,6 +296,7 @@ impl Core {
     pub(super) fn shutdown(&self) {
         self.clip.shutdown();
         self.calls.shutdown();
+        self.data.shutdown();
         self.shares
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -971,6 +984,11 @@ async fn run_trusted(
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
+                Some(Ctl::Data(out)) => {
+                    if !data::send(&mut link, out).await {
+                        break Some(("link_closed", Some("io_error")));
+                    }
+                }
                 Some(Ctl::Pair(_)) => {}
                 None => break None,
             },
@@ -982,6 +1000,8 @@ async fn run_trusted(
                         core.incoming_share(id, link.payload_context(), &p)
                     } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
                         core.incoming_calls(id, &p)
+                    } else if data::is_data_kind(&p.kind) {
+                        core.incoming_data(id, &p)
                     } else if bridge_core::clipboard_wire::is_clipboard_kind(&p.kind)
                         || bridge_core::clipboard_wire::is_pull_protocol_kind(&p.kind)
                     {

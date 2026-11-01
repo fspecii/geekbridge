@@ -5,10 +5,18 @@
 use crate::{
     dotmatrix,
     icons::{self, Icon},
-    input,
+    input, localtime,
+    phone_feed::{self, Feed},
+    phone_ui,
     shell::{AppView, Env, central},
     state::{DeviceInfo, DiscoveryModel, Tone},
     theme::{self, ButtonKind, Palette},
+};
+use bridge_core::{
+    ipc::{Feature, Request},
+    phone_view::{
+        ConversationItem, DataDevice, DataState, MessagesView, SelectedThread, SendItem, SendPhase,
+    },
 };
 use eframe::egui::{
     self, Align, CornerRadius, FontFamily, FontId, Layout, Margin, RichText, Sense, Stroke,
@@ -32,6 +40,13 @@ pub struct Messages {
     sidebar_hidden: bool,
     focus: Option<Focus>,
     copied_at: Option<f64>,
+    feed: Option<Feed<MessagesView>>,
+    /// (device id, thread id) shown in the conversation pane.
+    thread: Option<(String, i64)>,
+    reply: String,
+    /// A send was clicked; the draft is cleared only once the service accepted it.
+    awaiting: bool,
+    clicks: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -213,12 +228,13 @@ impl Messages {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.label(theme::overline(pal, "Library"));
                 ui.add_space(4.0);
+                let count = self.view().0.conversations.len().to_string();
                 if theme::sidebar_item(
                     ui,
                     pal,
                     Icon::Chat,
                     "Conversations",
-                    Some("0"),
+                    Some(&count),
                     self.section == Section::Conversations,
                     None,
                 )
@@ -265,35 +281,242 @@ impl Messages {
 
     // ------------------------------------------------------------ content
 
-    fn conversations(&mut self, ui: &mut egui::Ui, pal: &Palette) {
-        // List header in the style of a library column header; these are labels, not sort buttons.
-        let (header, _) = ui.allocate_exact_size(vec2(ui.available_width(), 26.0), Sense::hover());
-        ui.painter()
-            .rect_filled(header, 0.0, pal.toolbar.gamma_multiply(0.6));
-        ui.painter().hline(
-            header.x_range(),
-            header.bottom() - 0.5,
-            Stroke::new(1.0_f32, pal.separator),
-        );
-        let narrow = header.width() < 480.0;
-        for (text, x, align) in [
-            ("Contact", header.left() + 22.0, egui::Align2::LEFT_CENTER),
-            (
-                "Last message",
-                header.left() + header.width() * if narrow { 0.42 } else { 0.34 },
-                egui::Align2::LEFT_CENTER,
-            ),
-            ("Time", header.right() - 22.0, egui::Align2::RIGHT_CENTER),
-        ] {
-            ui.painter().text(
-                egui::pos2(x, header.center().y),
-                align,
-                text.to_uppercase(),
-                FontId::new(10.5, theme::semibold_family()),
-                pal.text3,
-            );
-        }
+    fn view(&self) -> (MessagesView, phone_feed::FeedState<MessagesView>) {
+        let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
+        (state.view.clone().unwrap_or_default(), state)
+    }
 
+    fn submission(&mut self) -> String {
+        self.clicks += 1;
+        let ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        format!("m{ms}-{}", self.clicks)
+    }
+
+    fn run(&self, request: Request) {
+        if let Some(feed) = &self.feed {
+            feed.run(request);
+        }
+    }
+
+    /// The list of conversations from every allowed phone, newest first.
+    fn thread_list(&mut self, ctx: &egui::Context, env: &Env, view: &MessagesView) {
+        let pal = env.pal;
+        let now_ms = now_ms();
+        let offset = localtime::utc_offset_minutes(localtime::now().date);
+        egui::SidePanel::left("threads")
+            .exact_width(310.0)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.surface)
+                    .inner_margin(Margin::symmetric(8, 8)),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("thread-list")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for c in &view.conversations {
+                            let selected = self
+                                .thread
+                                .as_ref()
+                                .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
+                            if thread_row(ui, pal, c, selected, now_ms, offset).clicked() {
+                                self.thread = Some((c.device_id.clone(), c.thread_id));
+                            }
+                        }
+                    });
+            });
+    }
+
+    fn conversations(&mut self, ui: &mut egui::Ui, env: &Env, view: &MessagesView) {
+        let pal = env.pal;
+        let Some((device, thread)) = self.thread.clone() else {
+            return self.conversations_empty(ui, env, view);
+        };
+        let Some(sel) = view
+            .selected
+            .as_ref()
+            .filter(|s| s.device_id == device && s.thread_id == thread)
+        else {
+            ui.centered_and_justified(|ui| {
+                ui.label(theme::secondary(pal, "Loading the conversation ..."));
+            });
+            return;
+        };
+        let conv = view
+            .conversations
+            .iter()
+            .find(|c| c.device_id == device && c.thread_id == thread);
+        let dev = view.devices.iter().find(|d| d.device_id == device);
+        egui::Frame::new()
+            .inner_margin(Margin::symmetric(18, 10))
+            .show(ui, |ui| {
+                ui.label(theme::semibold(
+                    conv.map_or("Conversation", |c| c.title.as_str()),
+                    16.0,
+                ));
+                if let Some(c) = conv
+                    && c.addresses.first().is_some_and(|a| *a != c.title)
+                {
+                    ui.label(theme::caption(pal, c.addresses.join(", ")));
+                }
+            });
+        theme::hairline(ui, pal);
+        let footer = 150.0;
+        let body_h = (ui.available_height() - footer).max(80.0);
+        let offset = localtime::utc_offset_minutes(localtime::now().date);
+        egui::ScrollArea::vertical()
+            .id_salt("thread-scroll")
+            .max_height(body_h)
+            .min_scrolled_height(body_h)
+            .stick_to_bottom(true)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                if sel.may_have_older
+                    && theme::pill_button(ui, pal, "Load older messages", ButtonKind::Plain, true)
+                        .clicked()
+                {
+                    self.run(Request::MessagesRefresh {
+                        device_id: device.clone(),
+                        thread_id: Some(thread),
+                    });
+                }
+                for m in &sel.messages {
+                    bubble(ui, pal, m, offset);
+                }
+                ui.add_space(6.0);
+            });
+        theme::hairline(ui, pal);
+        let mine: Vec<&SendItem> = view
+            .sends
+            .iter()
+            .filter(|s| {
+                s.device_id == device
+                    && conv
+                        .is_some_and(|c| c.addresses.iter().any(|a| same_number(a, &s.recipient)))
+            })
+            .take(3)
+            .collect();
+        for send in mine {
+            self.send_line(ui, pal, send, dev);
+        }
+        self.reply_box(ui, env, dev, conv, sel);
+    }
+
+    fn send_line(
+        &self,
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        send: &SendItem,
+        dev: Option<&DataDevice>,
+    ) {
+        let reports = dev.is_some_and(|d| d.sms_status_reports);
+        let (text, again) = send_phase_text(send, reports);
+        ui.horizontal(|ui| {
+            theme::dot(
+                ui,
+                pal.text3,
+                matches!(send.phase, SendPhase::HandedToPhone | SendPhase::Queued),
+            );
+            ui.add(
+                egui::Label::new(theme::caption(
+                    pal,
+                    format!("\"{}\": {text}", short(&send.text, 28)),
+                ))
+                .wrap(),
+            );
+            if again
+                && theme::pill_button(ui, pal, "Send again", ButtonKind::Plain, true)
+                    .on_hover_text("The recipient may get this twice.")
+                    .clicked()
+            {
+                let submission_id = format!("r{}-{}", send.send_id, now_ms());
+                self.run(Request::MessagesResend {
+                    device_id: send.device_id.clone(),
+                    send_id: send.send_id,
+                    submission_id,
+                });
+            }
+        });
+    }
+
+    fn reply_box(
+        &mut self,
+        ui: &mut egui::Ui,
+        env: &Env,
+        dev: Option<&DataDevice>,
+        conv: Option<&ConversationItem>,
+        sel: &SelectedThread,
+    ) {
+        let pal = env.pal;
+        let ready = dev.is_some_and(|d| d.sms == DataState::Ready);
+        let to = conv.and_then(|c| c.addresses.first().cloned());
+        ui.add_space(6.0);
+        ui.add(
+            egui::TextEdit::multiline(&mut self.reply)
+                .frame(false)
+                .hint_text(egui::RichText::new("Reply").color(pal.text3))
+                .font(FontId::new(15.0, FontFamily::Proportional))
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        );
+        input::limit_chars(&mut self.reply, input::MAX_DRAFT_CHARS);
+        let blocker = if !ready {
+            Some(
+                dev.and_then(|d| phone_ui::state_line(d.sms, "Messages"))
+                    .unwrap_or_else(|| "Messages are not available for this phone.".into()),
+            )
+        } else if to.is_none() {
+            Some("This conversation has no address to reply to.".into())
+        } else {
+            None
+        };
+        if let Some(b) = &blocker {
+            theme::blocked_note(ui, pal, b);
+        }
+        let can = blocker.is_none() && !self.reply.trim().is_empty();
+        ui.horizontal(|ui| {
+            ui.label(theme::caption(
+                pal,
+                format!("{}/{}", self.reply.chars().count(), input::MAX_DRAFT_CHARS),
+            ));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::round_button(
+                    ui,
+                    pal,
+                    34.0,
+                    pal.accent,
+                    Icon::Send,
+                    can,
+                    "Send as text message",
+                )
+                .clicked()
+                    && let (Some(to), Some(d)) = (to, dev)
+                {
+                    let submission_id = self.submission();
+                    self.run(Request::MessagesSend {
+                        device_id: d.device_id.clone(),
+                        recipient: to,
+                        text: self.reply.clone(),
+                        submission_id,
+                    });
+                    self.reply.clear();
+                }
+            });
+        });
+        let _ = sel;
+    }
+
+    fn conversations_empty(&mut self, ui: &mut egui::Ui, env: &Env, view: &MessagesView) {
+        let pal = env.pal;
+        let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
+        let mut action = None;
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.2).clamp(20.0, 90.0));
             let pitch = 6.5;
@@ -303,18 +526,39 @@ impl Messages {
             ui.add_space(14.0);
             ui.label(theme::semibold("No conversations", 17.0));
             ui.add_space(2.0);
-            ui.add(
-                egui::Label::new(theme::secondary(
-                    pal,
-                    "Nothing has been read from a phone yet, so there's nothing to list. You can still write a draft.",
-                ))
-                .wrap(),
-            );
+            let why = if let Some(p) = &state.problem {
+                p.clone()
+            } else if state.view.is_none() {
+                "Looking for your phone's messages ...".into()
+            } else {
+                view.devices
+                    .iter()
+                    .find_map(|d| phone_ui::state_line(d.sms, "Messages"))
+                    .unwrap_or_else(|| "Nothing has been shared from a phone yet.".into())
+            };
+            ui.add(egui::Label::new(theme::secondary(pal, why)).wrap());
+            if let Some(n) = &state.notice {
+                ui.label(theme::caption(pal, n.clone()));
+            }
+            if let Some(r) = phone_ui::allow_buttons(ui, pal, env, Feature::Sms, "Messages") {
+                action = Some(r);
+            }
             ui.add_space(10.0);
             if theme::pill_button(ui, pal, "New Message", ButtonKind::Plain, true).clicked() {
                 self.open_compose();
             }
+            ui.add_space(14.0);
+            ui.add(
+                egui::Label::new(theme::caption(
+                    pal,
+                    "Messages come from the phone's SMS store, only while you allow them and the phone app has SMS access. No RCS or picture messages.",
+                ))
+                .wrap(),
+            );
         });
+        if let Some(r) = action {
+            self.run(r);
+        }
     }
 
     fn compose(&mut self, ui: &mut egui::Ui, env: &Env) {
@@ -380,9 +624,37 @@ impl Messages {
         self.counter(ui, pal);
         ui.add_space(4.0);
 
-        let blocker = env.blocked_line("send");
+        let (view, state) = self.view();
+        if self.awaiting {
+            if state.notice.is_some() {
+                self.draft.clear();
+                self.recipient.clear();
+                self.awaiting = false;
+                self.section = Section::Conversations;
+            } else if state.problem.is_some() {
+                self.awaiting = false;
+            }
+        }
+        let target = view
+            .devices
+            .iter()
+            .find(|d| d.sms == DataState::Ready)
+            .cloned();
+        let own_block = target.is_none().then(|| {
+            view.devices
+                .iter()
+                .find_map(|d| phone_ui::state_line(d.sms, "Messages"))
+                .unwrap_or_else(|| {
+                    "Messages are not allowed for any phone yet. Open Conversations to allow them."
+                        .to_owned()
+                })
+        });
+        let blocker = env.blocked_line("send").or(own_block);
         if let Some(reason) = &blocker {
             theme::blocked_note(ui, pal, reason);
+        }
+        if let Some(why) = &state.problem {
+            theme::blocked_note(ui, pal, why);
         }
         ui.add_space(2.0);
         ui.horizontal(|ui| {
@@ -417,8 +689,16 @@ impl Messages {
                     "Send as text message",
                 )
                 .clicked()
+                    && let Some(d) = &target
                 {
-                    // Reached only once a messaging backend authorizes this phone.
+                    let submission_id = self.submission();
+                    self.run(Request::MessagesSend {
+                        device_id: d.device_id.clone(),
+                        recipient: self.recipient.clone(),
+                        text: self.draft.clone(),
+                        submission_id,
+                    });
+                    self.awaiting = true;
                 }
             });
         });
@@ -511,19 +791,204 @@ impl Messages {
                         "The phone didn't mention messaging".into()
                     },
                 );
-                row(
-                    ui,
-                    "Messages",
-                    "Unavailable. Pairing isn't available yet, so nothing is read from or sent to this phone."
-                        .into(),
-                );
+                let line = self
+                    .view()
+                    .0
+                    .devices
+                    .iter()
+                    .find(|d| d.device_id == device.id)
+                    .map_or_else(
+                        || {
+                            "Not shared. Pair this phone and allow Messages from the Conversations page."
+                                .to_owned()
+                        },
+                        |d| {
+                            phone_ui::state_line(d.sms, "Messages")
+                                .unwrap_or_else(|| "Shared with this computer".into())
+                        },
+                    );
+                row(ui, "Messages", line);
             });
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0))
+}
+
+fn digits(s: &str) -> String {
+    s.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// Same number when the last seven digits agree (country codes and spacing differ between sources).
+fn same_number(a: &str, b: &str) -> bool {
+    let (a, b) = (digits(a), digits(b));
+    let n = 7.min(a.len()).min(b.len());
+    n >= 3 && a[a.len() - n..] == b[b.len() - n..]
+}
+
+fn short(s: &str, max: usize) -> String {
+    let mut out: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
+/// What the user is told about a send, and whether "Send again" is offered. Only the phone's own
+/// reports (or an exact echo of the message in its SMS store) can raise it above "handed to phone".
+fn send_phase_text(send: &SendItem, phone_reports: bool) -> (String, bool) {
+    match send.phase {
+        SendPhase::Queued => ("not sent yet".into(), false),
+        SendPhase::HandedToPhone if phone_reports => {
+            ("handed to the phone, waiting for it to accept".into(), false)
+        }
+        SendPhase::HandedToPhone => (
+            "handed to the phone. This phone does not report back; it counts as sent once the message shows up in the conversation".into(),
+            false,
+        ),
+        SendPhase::AcceptedByPhone => ("accepted by the phone, sending".into(), false),
+        SendPhase::Sent => ("sent from the phone (not a delivery receipt)".into(), false),
+        SendPhase::Delivered => ("delivered".into(), false),
+        SendPhase::Failed => (
+            format!(
+                "failed{}",
+                send.reason.as_ref().map_or(String::new(), |r| format!(" ({r})"))
+            ),
+            true,
+        ),
+        SendPhase::Uncertain => (
+            "unknown: the connection dropped after it was handed over, so it may or may not have been sent".into(),
+            true,
+        ),
+    }
+}
+
+fn thread_row(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    c: &ConversationItem,
+    selected: bool,
+    now_ms: u64,
+    offset: i32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+    let radius = CornerRadius::same(8);
+    if selected {
+        ui.painter().rect_filled(rect, radius, pal.selected_bg);
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, radius, pal.control_hover.gamma_multiply(0.55));
+    }
+    let fg = if selected { pal.selected_fg } else { pal.text };
+    let sub = if selected { pal.selected_fg } else { pal.text2 };
+    let clip = ui.painter().with_clip_rect(rect.shrink2(vec2(6.0, 0.0)));
+    clip.text(
+        rect.left_top() + vec2(14.0, 9.0),
+        egui::Align2::LEFT_TOP,
+        &c.title,
+        FontId::new(14.0, theme::semibold_family()),
+        fg,
+    );
+    let prefix = if c.last_outgoing { "You: " } else { "" };
+    clip.text(
+        rect.left_top() + vec2(14.0, 30.0),
+        egui::Align2::LEFT_TOP,
+        format!("{prefix}{}", short(&c.last_body.replace('\n', " "), 40)),
+        FontId::new(12.5, FontFamily::Proportional),
+        sub,
+    );
+    let when = if now_ms.saturating_sub(c.last_date_ms) < 86_400_000 {
+        localtime::clock_label(i64::try_from(c.last_date_ms).unwrap_or(0), offset)
+    } else {
+        phone_ui::age_label(now_ms, c.last_date_ms)
+    };
+    ui.painter().text(
+        egui::pos2(rect.right() - 12.0, rect.top() + 18.0),
+        egui::Align2::RIGHT_CENTER,
+        when,
+        FontId::new(11.0, FontFamily::Proportional),
+        sub,
+    );
+    if c.unread > 0 {
+        ui.painter().circle_filled(
+            egui::pos2(rect.right() - 16.0, rect.bottom() - 16.0),
+            5.0,
+            pal.accent,
+        );
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            format!("{}: {}", c.title, c.last_body),
+        )
+    });
+    response
+}
+
+fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::MessageItem, offset: i32) {
+    let layout = if m.outgoing {
+        Layout::right_to_left(Align::TOP)
+    } else {
+        Layout::left_to_right(Align::TOP)
+    };
+    ui.with_layout(layout, |ui| {
+        ui.add_space(14.0);
+        let (fill, fg) = if m.outgoing {
+            (pal.accent, pal.on_accent)
+        } else {
+            (pal.control, pal.text)
+        };
+        egui::Frame::new()
+            .fill(fill)
+            .corner_radius(CornerRadius::same(14))
+            .inner_margin(Margin::symmetric(12, 7))
+            .show(ui, |ui| {
+                ui.set_max_width((ui.available_width() * 0.78).max(120.0));
+                let mut text = m.body.clone();
+                if m.attachments > 0 {
+                    text.push_str(&format!("\n[{} attachment(s) not shown]", m.attachments));
+                }
+                ui.add(egui::Label::new(RichText::new(text).color(fg).size(14.0)).wrap());
+                ui.label(
+                    RichText::new(localtime::clock_label(
+                        i64::try_from(m.date_ms).unwrap_or(0),
+                        offset,
+                    ))
+                    .color(fg.gamma_multiply(0.7))
+                    .size(10.5),
+                );
+            });
+    });
+    ui.add_space(3.0);
 }
 
 impl AppView for Messages {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        let request = Request::MessagesView {
+            device_id: self.thread.as_ref().map(|(d, _)| d.clone()),
+            thread_id: self.thread.as_ref().map(|(_, t)| *t),
+        };
+        match &self.feed {
+            Some(feed) => feed.set_params(request),
+            None => {
+                let repaint = ctx.clone();
+                self.feed = Some(phone_feed::messages_feed(
+                    move || repaint.request_repaint(),
+                    request,
+                ));
+            }
+        }
+        let (view, _) = self.view();
+        if self.thread.is_none()
+            && let Some(first) = view.conversations.first()
+        {
+            self.thread = Some((first.device_id.clone(), first.thread_id));
+        }
         self.toolbar(ctx, env);
         self.sidebar(ctx, env);
         // A device that disappeared from the network can't stay selected.
@@ -534,7 +999,12 @@ impl AppView for Messages {
         }
         match self.section.clone() {
             Section::Conversations => {
-                central(ctx, pal, Margin::ZERO, |ui| self.conversations(ui, pal))
+                if !view.conversations.is_empty() {
+                    self.thread_list(ctx, env, &view);
+                }
+                central(ctx, pal, Margin::ZERO, |ui| {
+                    self.conversations(ui, env, &view)
+                })
             }
             Section::Compose => central(
                 ctx,

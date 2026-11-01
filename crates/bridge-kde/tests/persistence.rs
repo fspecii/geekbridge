@@ -11,9 +11,10 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use bridge_kde::fsutil::ensure_private_dir;
 use bridge_kde::fsutil::{
-    MAX_STATE_FILE, atomic_write_private, ensure_private_dir, lock_exclusive,
-    lock_exclusive_timeout, read_private_file,
+    MAX_STATE_FILE, atomic_write_private, lock_exclusive, lock_exclusive_timeout, read_private_file,
 };
 use bridge_kde::{DeviceCredentials, DeviceId, FileTrustStore, KdeError, TrustStore, TrustedPeer};
 

@@ -57,7 +57,9 @@ const PING_EVENT_SPACING_MS: u64 = 1000;
 const CALLING_DEADLINE: Duration = Duration::from_secs(2);
 /// Largest packet line on a trusted link. Clipboard items carry up to two 64 KiB text fields, which
 /// JSON may expand; everything bigger travels as a payload.
-const MAX_PACKET_LINE: usize = bridge_core::clipboard_wire::MAX_ITEM_LINE_BYTES;
+/// Phone data (a conversation page, a batch of vCards) is far larger than a clipboard item. GeekBridge
+/// phones keep every packet under 1 MiB; stock KDE Connect phones may send more, up to this bound.
+const MAX_PACKET_LINE: usize = 2 * 1024 * 1024;
 
 pub struct DaemonOptions {
     pub device_name: String,
@@ -86,6 +88,8 @@ pub struct DaemonOptions {
     pub call_host: Mutex<Option<Box<dyn HostCalls>>>,
     /// Desktop notification with Answer/Decline for a ringing call. `None` shows none.
     pub call_notifier: Option<Arc<dyn CallNotifier>>,
+    /// Desktop notification for a newly arrived text (sender only). `None` shows none.
+    pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
 }
 
 impl DaemonOptions {
@@ -110,6 +114,7 @@ impl DaemonOptions {
             share_notifier: None,
             call_host: Mutex::new(None),
             call_notifier: None,
+            sms_notifier: None,
         }
     }
 }
@@ -181,6 +186,7 @@ pub struct Daemon {
     bound_hotkey: Mutex<Option<String>>,
     share: Arc<ShareManager>,
     calls: Arc<CallHub>,
+    data: Arc<crate::phone_data::PhoneData>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -259,6 +265,10 @@ impl Daemon {
         if let Some(n) = options.share_notifier.take() {
             share.set_notifier(n);
         }
+        let data = crate::phone_data::PhoneData::new();
+        if let Some(n) = options.sms_notifier.take() {
+            data.set_notifier(n);
+        }
         let daemon = Arc::new(Self {
             endpoint,
             store,
@@ -272,6 +282,7 @@ impl Daemon {
             bound_hotkey: Mutex::new(None),
             share,
             calls,
+            data,
         });
         let weak = Arc::downgrade(&daemon);
         daemon.share.set_event_sink(Arc::new(move |device, kind| {
@@ -475,6 +486,49 @@ impl Daemon {
             } => self
                 .share_settings(&device_id, receive, auto_accept)
                 .map(|()| Response::Ack),
+            Request::AgendaView {
+                query,
+                day,
+                utc_offset_minutes,
+            } => self
+                .data
+                .agenda_view(&query, &day, utc_offset_minutes)
+                .map(|v| Response::Agenda(Box::new(v))),
+            Request::AgendaRefresh { device_id } => self
+                .data
+                .refresh_agenda(device_id.as_deref())
+                .map(|()| Response::Ack),
+            Request::MessagesView {
+                device_id,
+                thread_id,
+            } => self
+                .data
+                .messages_view(device_id.as_deref(), thread_id)
+                .map(|v| Response::Messages(Box::new(v))),
+            Request::MessagesRefresh {
+                device_id,
+                thread_id,
+            } => self
+                .data
+                .refresh_messages(&device_id, thread_id)
+                .map(|()| Response::Ack),
+            Request::MessagesSend {
+                device_id,
+                recipient,
+                text,
+                submission_id,
+            } => self
+                .data
+                .send_text(&device_id, &recipient, &text, &submission_id)
+                .map(|send_id| Response::MessageQueued { send_id }),
+            Request::MessagesResend {
+                device_id,
+                send_id,
+                submission_id,
+            } => self
+                .data
+                .resend(&device_id, send_id, &submission_id)
+                .map(|send_id| Response::MessageQueued { send_id }),
             Request::UpdateStatus => Ok(self.update_response()),
             Request::UpdateCheck => {
                 self.options.updates.start_check(true);
@@ -814,6 +868,7 @@ impl Daemon {
 
     fn forget_consent(&self, device_id: &str) -> Result<(), ErrorBody> {
         self.share.forget_device(device_id);
+        self.data.forget(device_id);
         if let Some(clip) = &self.clipboard {
             clip.forget(device_id);
             self.sync_hotkey();
@@ -847,6 +902,7 @@ impl Daemon {
         if feature == Feature::Telephony {
             self.calls.set_enabled(device_id, enabled);
         }
+        self.data.set_enabled(device_id, feature, enabled);
         self.core().emit(
             Some(device_id),
             EventKind::ConsentChanged { feature, enabled },
@@ -1290,6 +1346,7 @@ async fn trusted_loop(
     let share_name = link.info().peer.device_name.clone();
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
     let (mut call_rx, _call_guard) = calls_link(d, id, &link);
+    let (mut data_rx, _data_guard) = data_link(d, id, &link);
     let loss = loop {
         tokio::select! {
             incoming = link.recv() => match incoming {
@@ -1321,6 +1378,20 @@ async fn trusted_loop(
                         }
                         continue;
                     }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::PhoneData {
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        let verdict = if clean {
+                            d.data.on_packet(id, &packet.kind, &packet.body)
+                        } else {
+                            crate::phone_data::Disposition::Invalid
+                        };
+                        if verdict == crate::phone_data::Disposition::Invalid
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
                     if !on_packet(d, id, attempt, &packet, &negotiated_in) {
                         break "too many packets outside the negotiated set".to_owned();
                     }
@@ -1344,6 +1415,11 @@ async fn trusted_loop(
                     bridge_core::calls_link::request_body(&request.request_id, request.action),
                 );
                 if let Err(e) = link.send(&packet).await {
+                    break reason(&e);
+                }
+            },
+            Some(out) = data_rx.recv() => {
+                if let Err(e) = link.send(&kde::Packet::new(out.kind, out.body)).await {
                     break reason(&e);
                 }
             },
@@ -1452,6 +1528,41 @@ fn calls_link(
         rx,
         CallsLinkGuard(Some((d.clone(), id.to_owned(), generation))),
     )
+}
+
+/// Registers a trusted link with the phone-data hub. Requests go out only for features the user
+/// allowed for this device and that the phone declared.
+fn data_link(
+    d: &Arc<Daemon>,
+    id: &str,
+    link: &kde::TrustedLink,
+) -> (mpsc::Receiver<crate::phone_data::Out>, DataLinkGuard) {
+    let peer = &link.info().peer;
+    let caps = crate::phone_data::Caps::from_negotiated(
+        &gate::negotiated_outgoing(peer),
+        &gate::negotiated_incoming(peer),
+    );
+    let c = d.consents();
+    let consents = (
+        c.is_enabled(id, Feature::Contacts),
+        c.is_enabled(id, Feature::Calendar),
+        c.is_enabled(id, Feature::Sms),
+    );
+    drop(c);
+    let (rx, generation) = d.data.link_up(id, &peer.device_name, caps, consents);
+    (
+        rx,
+        DataLinkGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
+}
+
+struct DataLinkGuard(Option<(Arc<Daemon>, String, u64)>);
+impl Drop for DataLinkGuard {
+    fn drop(&mut self) {
+        if let Some((d, id, generation)) = self.0.take() {
+            d.data.link_down(&id, generation);
+        }
+    }
 }
 
 struct CallsLinkGuard(Option<(Arc<Daemon>, String, u64)>);
@@ -1589,7 +1700,7 @@ fn on_packet(
         }
         // Clipboard packets are routed by `route_clipboard` before this function runs; one that
         // reaches here carried a payload it must not have, so it is treated as misbehaviour.
-        Incoming::Clipboard | Incoming::Calls | Incoming::Reject => {
+        Incoming::Clipboard | Incoming::Calls | Incoming::PhoneData | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {
                 events.push_back(event(id, EventKind::PacketRejected));

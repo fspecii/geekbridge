@@ -552,12 +552,14 @@ dependencies = [
  "blocking",
  "bridge-calls",
  "bridge-core",
+ "bridge-kde",
  "bridge-service",
  "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "zbus",
 ]
 
@@ -575,6 +577,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "windows 0.62.2",
 ]
 
 [[package]]

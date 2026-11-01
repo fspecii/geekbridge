@@ -27,6 +27,15 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Optional "Messages" sharing (docs/phone-data-link.md), each behind its own switch in the app and off by
+         default. Google Play only allows these for the default SMS handler, so they are meant for sideloaded
+         / F-Droid builds. GeekBridge is deliberately NOT a default SMS app (no SMS_DELIVER, WAP_PUSH, SENDTO
+         or RESPOND_VIA_MESSAGE components): it never writes to the SMS provider and cannot send or read MMS/RCS. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony.messaging" android:required="false" />
     <!-- Optional, each behind its own setup step and off until the user turns call control on:
          ANSWER_PHONE_CALLS lets a paired computer answer, decline or end a call (TelecomManager);
          READ_CALL_LOG is the only way Android hands this app the caller's number (never the log itself). -->
@@ -114,6 +123,16 @@
         </activity>
 
         <receiver android:name=".ShareActionReceiver" android:exported="false" />
+
+        <!-- Incoming texts for the computer's Messages app; inert unless the user enabled and permitted it. -->
+        <receiver
+            android:name=".SmsReceivedReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Clipboard sync. The phone never sends its clipboard on its own: the computer asks, and Android
              only lets an app read the clipboard while it has focus, so reads happen in these focused,

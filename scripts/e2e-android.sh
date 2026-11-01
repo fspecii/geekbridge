@@ -7,12 +7,12 @@
 # dist/android/logs/e2e-results.tsv):
 #   env        private Xvfb clipboard, desktop service, dedicated emulator, build + install the debug APK
 #   battery    setup wizard and the battery-exemption prompt (Deny, then Allow)
-#   pair       phone dials the desktop, both sides compare the code and approve
+#   pair       desktop dials the phone (adb emu redir), both sides compare the code and approve
 #   reconnect  disconnect + trusted reconnect, app restart
 #   clip_d2p   desktop clipboard -> phone
 #   clip_p2d   phone clipboard -> desktop (30 s window, locked-phone rule)
+#   file_d2p   desktop send-file (+ text) -> phone
 #   file_p2d   Share sheet (adb am start ACTION_SEND) -> desktop
-#   file_d2p   desktop send-file -> phone
 #   update     update check against a local mock release server
 #
 # Isolation: its own AVD (gb36, console port 5594, adb server 16038), its own desktop state dir
@@ -26,7 +26,7 @@ cd "$ROOT"
 # shellcheck disable=SC1091
 source scripts/android-env.sh >/dev/null 2>&1
 
-STAGES_ALL=(env battery pair reconnect clip_d2p clip_p2d file_p2d file_d2p update)
+STAGES_ALL=(env battery pair reconnect clip_d2p clip_p2d file_d2p file_p2d update)
 ONLY="" BUILD=auto
 for a in "$@"; do
   case "$a" in
@@ -37,18 +37,19 @@ for a in "$@"; do
   prev="$a"
 done
 
-RUN="$ROOT/target/e2e-run" SCRATCH="$ROOT/target/e2e-android"
+RUN="${E2E_RUN:-$ROOT/target/e2e-run}" SCRATCH="${E2E_SCRATCH:-$ROOT/target/e2e-android}"
 LOGS="$ROOT/dist/android/logs" SHOTS="$ROOT/dist/screenshots/android"
-RESULTS="$LOGS/e2e-results.tsv"
+RESULTS="${E2E_RESULTS:-$LOGS/e2e-results.tsv}"
 mkdir -p "$RUN" "$LOGS" "$SHOTS"
 chmod 700 "$RUN"
 export ANDROID_ADB_SERVER_PORT="${E2E_ADB_PORT:-16038}"
 AVD="${E2E_AVD:-gb36}" CONSOLE_PORT="${E2E_EMU_PORT:-5594}" SERIAL="emulator-${E2E_EMU_PORT:-5594}"
 export ADB="adb -s $SERIAL"
 PKG=dev.geekbridge.android
-XDISP=:97 CTRL_PORT=17481 API_PORT=17480 DISC_PORT=17416 LISTEN_PORT=1730
-CTL=("$ROOT/target/e2e/release/geekbridge-ctl" --state-dir "$RUN/state" --control-port "$CTRL_PORT")
-SVC="$ROOT/target/e2e/release/geekbridge-service"
+XDISP="${E2E_XDISP:-:97}" CTRL_PORT="${E2E_CTRL_PORT:-17481}" API_PORT="${E2E_API_PORT:-17480}" DISC_PORT="${E2E_DISC_PORT:-17416}" LISTEN_PORT="${E2E_LISTEN_PORT:-1730}"
+E2E_TARGET="${E2E_TARGET:-$ROOT/target/e2e}"
+CTL=("$E2E_TARGET/release/geekbridge-ctl" --state-dir "$RUN/state" --control-port "$CTRL_PORT")
+SVC="$E2E_TARGET/release/geekbridge-service"
 APK="$SCRATCH/dist/geekbridge-debug.apk"
 UI="$ROOT/scripts/e2e/adbui.py"
 MOCK_PORT=18890
@@ -75,11 +76,13 @@ wait_for() { # seconds cmd...  -> 0 when cmd succeeds
 
 # ---------------------------------------------------------------- env
 start_xvfb() {
-  [[ -S /tmp/.X11-unix/X97 ]] && return 0
+  [[ -S /tmp/.X11-unix/X${XDISP#:} ]] && return 0
   (setsid nohup Xvfb "$XDISP" -screen 0 800x600x24 >"$RUN/xvfb.log" 2>&1 &)
-  wait_for 10 test -S /tmp/.X11-unix/X97
+  wait_for 10 test -S /tmp/.X11-unix/X${XDISP#:}
 }
 start_service() {
+  # A service left over from an earlier run may be an older binary: a rebuild replaces it.
+  [[ "$BUILD" == yes ]] && pkill -f "^$SVC --state-dir $RUN/state" 2>/dev/null && sleep 1
   ctl status >/dev/null 2>&1 && return 0
   mkdir -p "$RUN/state"; chmod 700 "$RUN/state"
   # No WAYLAND_DISPLAY / Hyprland: the service then uses xclip on the private Xvfb (never the user's clipboard).
@@ -94,7 +97,7 @@ start_emulator() {
   mkdir -p "$ROOT/.tools/e2e-emu/tmp"
   local envs=(GB_EMU_AVD="$AVD" GB_EMU_PORT="$CONSOLE_PORT" GB_EMU_ADB_PORT="$ANDROID_ADB_SERVER_PORT" GB_EMU_TMPDIR="$ROOT/.tools/e2e-emu/tmp")
   # A transient systemd user unit keeps the emulator out of this process tree (see scripts/emulator-call.sh).
-  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --unit gbe2e-emulator \
+  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --unit "gbe2e-emulator${E2E_TAG:-}" \
        "${envs[@]/#/--setenv=}" "$ROOT/.tools/gbcall/start.sh" >/dev/null 2>&1; then :
   else (env "${envs[@]}" setsid nohup "$ROOT/.tools/gbcall/start.sh" >"$LOGS/e2e-emulator.log" 2>&1 &); fi
   wait_for 300 bash -c "[[ \$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]"
@@ -102,7 +105,7 @@ start_emulator() {
 build_all() {
   if [[ ! -x "$SVC" || "$BUILD" == yes ]]; then
     log "building desktop service/ctl (target/e2e)"
-    CARGO_TARGET_DIR="$ROOT/target/e2e" cargo build --release -p bridge-service --bins >"$LOGS/e2e-build-desktop.log" 2>&1 || return 1
+    CARGO_TARGET_DIR="$E2E_TARGET" cargo build --release -p bridge-service --bins >"$LOGS/e2e-build-desktop.log" 2>&1 || return 1
   fi
   if [[ ! -f "$APK" || "$BUILD" == yes ]]; then
     log "building the debug APK with the native core (scratch copy; target/e2e-android)"
@@ -151,6 +154,8 @@ phone_connect() { # dial the desktop (10.0.2.2 is the emulator's alias for the h
 # ---------------------------------------------------------------- battery / setup wizard
 stage_battery() {
   $ADB shell cmd deviceidle whitelist -$PKG >/dev/null 2>&1
+  # A wiped phone gets a new identity; forget the desktop's trust in earlier test phones.
+  for old in $(paired_ids); do ctl unpair "$old" >/dev/null 2>&1; done
   $ADB shell pm clear $PKG >/dev/null; wake; goto_home
   shot 01-setup-first-launch
   waitui "Step 1 of" 15 || { rec battery FAIL "setup wizard did not open on a fresh install"; return 1; }
@@ -184,11 +189,15 @@ stage_battery() {
 is_paired() { [[ " $(paired_ids) " == *" $PHONE_ID "* ]]; }
 has_unpaired_link() { [[ "$(link_phases)" == *unpaired* ]]; }
 is_connected() { [[ "$(link_phases)" == *connected* ]]; }
-REDIR_PORT=17161
+REDIR_PORT="${E2E_REDIR_PORT:-17161}"
 # The desktop dials the phone through the emulator's port redirection (host :17161 -> guest :1716). The phone sees
 # the NAT gateway 10.0.2.2 as the peer, a private address, so the app's default options (no loopback) work.
 desk_dial() {
   $ADB emu redir add "tcp:$REDIR_PORT:1716" >/dev/null 2>&1
+  # Phone -> desktop file payloads: the phone listens on the first free port of 1739-1764 and the desktop dials it at
+  # 127.0.0.1:<port>, so those host ports are forwarded (E2E-7). The desktop's own payload listener (desktop -> phone)
+  # simply takes the first port after these, and the phone dials it at 10.0.2.2:<port>.
+  for p in 1739 1740 1741 1742; do $ADB emu redir add "tcp:$p:$p" >/dev/null 2>&1; done
   ctl connect "$PHONE_ID" 127.0.0.1 "$REDIR_PORT" >/dev/null
 }
 load_ids() { desk_id; PHONE_ID="$(cat "$RUN/phone-id" 2>/dev/null)"; }
@@ -242,21 +251,42 @@ stage_reconnect() {
 
 # ---------------------------------------------------------------- session helpers for the feature stages
 # A Home-started link (the app starts it for a paired computer) advertises clipboard; the Diagnostics link does not.
+clear_dialogs() { tap Decline >/dev/null 2>&1; tap Close >/dev/null 2>&1; true; }
 ensure_session() {
   load_ids; [[ -n "$PHONE_ID" ]] || return 1
-  is_connected && return 0
+  clear_dialogs
+  # Always redial: after the Share chooser the phone's link is stopped while the desktop still lists it as
+  # connected (E2E-4), so "connected" on the desktop proves nothing.
+  ctl disconnect "$PHONE_ID" >/dev/null 2>&1; sleep 1
   goto_home; sleep 3; desk_dial; wait_for 15 is_connected
 }
 phone_clip_sync_on() {
+  # E2E-6: the switch can read "On" while the clipboard engine ignores pushes and answers pulls with
+  # "Clipboard sync is off in the phone app"; cycling Off -> On re-arms it. Always cycle.
   goto_home; ui scrollto "Clipboard sync" >/dev/null || return 1
-  ui has "Off. Nothing is shared" && { ui taprow "Clipboard sync" 960; sleep 2; }
+  ui has "On. Your computer can ask" && { ui taprow "Clipboard sync" 960; sleep 2; }
+  ui taprow "Clipboard sync" 960; sleep 2
   ui has "On. Your computer can ask"
 }
 phone_copy_nonsensitive() { # text; copy it from a system text field (the app's own Copy marks text sensitive)
   $ADB shell am start -a android.settings.APP_SEARCH_SETTINGS >/dev/null 2>&1; sleep 3
-  $ADB shell input tap 600 220; $ADB shell input text "$1"
+  $ADB shell input tap 600 220
+  $ADB shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_A; $ADB shell input keyevent KEYCODE_DEL  # the field keeps old text
+  $ADB shell input text "$1"
   $ADB shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_A
   $ADB shell input keycombination KEYCODE_CTRL_LEFT KEYCODE_C
+}
+# Desktop "paste from phone": the phone answers at once if it remembered a recent copy while focused, otherwise it
+# posts "tap to send" (the only way a non-focused app may read the clipboard); tap that notification if it shows up.
+pull_with_tap() { # outfile
+  "${CTL[@]}" clipboard paste-from-phone >"$1" 2>&1 & local pid=$!
+  sleep 5
+  if kill -0 $pid 2>/dev/null; then
+    $ADB shell cmd statusbar expand-notifications; sleep 2
+    tap "Your computer wants your clipboard" >/dev/null 2>&1; sleep 5
+    $ADB shell cmd statusbar collapse
+  fi
+  wait_for 20 bash -c "! kill -0 $pid 2>/dev/null"; kill $pid 2>/dev/null; return 0
 }
 desk_clip() { DISPLAY="$XDISP" xclip -selection clipboard -o 2>/dev/null; }
 
@@ -266,7 +296,7 @@ stage_clip_d2p() {
     || { rec clip_d2p FAIL "link did not negotiate clipboard"; return 1; }
   phone_clip_sync_on || { rec clip_d2p FAIL "could not turn on Clipboard sync on the phone"; return 1; }
   shot 18-clipboard-settings
-  ctl consent "$PHONE_ID" clipboard on >/dev/null
+  ctl consent "$PHONE_ID" clipboard on >/dev/null; sleep 3   # the watcher primes its baseline when consent is given
   local t="e2e-d2p-$(date +%s)"
   printf '%s' "$t" | DISPLAY="$XDISP" xclip -selection clipboard -i; sleep 4
   goto_diag; ui scrollto Paste >/dev/null; tap Paste; sleep 2; shot 19-clip-d2p-pasted
@@ -280,9 +310,9 @@ stage_clip_p2d() {
   local t="e2e-p2d-$(date +%s)"
   phone_copy_nonsensitive "$t"; shot 20-phone-copy-source
   goto_home; sleep 3; printf 'stale' | DISPLAY="$XDISP" xclip -selection clipboard -i
-  if timeout 70 "${CTL[@]}" clipboard paste-from-phone >/dev/null 2>&1 && [[ "$(desk_clip)" == "$t" ]]; then
-    rec clip_p2d PASS "fresh item, unlocked phone, pulled onto the desktop clipboard"
-  else rec clip_p2d FAIL "desktop clipboard is '$(desk_clip)' (wanted $t)"; fi
+  pull_with_tap "$RUN/pull-fresh.out"
+  if [[ "$(desk_clip)" == "$t" ]]; then rec clip_p2d PASS "fresh item, unlocked phone, pulled onto the desktop clipboard ($(head -c 60 "$RUN/pull-fresh.out"))"
+  else rec clip_p2d FAIL "desktop clipboard is '$(desk_clip)' (wanted $t); pull said: $(head -c 100 "$RUN/pull-fresh.out")"; fi
   # 30 s window: an item older than the window must not be sent (the phone only asks for a tap, and refuses stale items).
   local old="e2e-old-$(date +%s)"; phone_copy_nonsensitive "$old"; goto_home; sleep 40
   (timeout 80 "${CTL[@]}" clipboard paste-from-phone >"$RUN/pull-stale.out" 2>&1 &); sleep 2
@@ -301,6 +331,8 @@ stage_clip_p2d() {
 
 # Files land in the desktop's real save folder (~/Downloads/GeekBridge); the test removes what it created.
 stage_file_p2d() {
+  # A Share screen left over from an earlier attempt would be reused (singleTop) with its old session; start clean.
+  $ADB shell am force-stop $PKG; sleep 1
   ensure_session || { rec file_p2d SKIP "no paired, connected phone"; return 1; }
   ctl share allow "$PHONE_ID" on >/dev/null; ctl share auto-accept "$PHONE_ID" on >/dev/null
   head -c 200000 /dev/urandom | cat <(printf '\x89PNG\r\n\x1a\n') - >"$RUN/e2e-p2d.png"
@@ -310,19 +342,32 @@ stage_file_p2d() {
   local id; id="$($ADB shell "content query --uri content://media/external/images/media --projection _id --where \"_display_name='e2e-p2d.png'\"" | sed -n 's/.*_id=\([0-9]*\).*/\1/p' | head -1)"
   [[ -n "$id" ]] || { rec file_p2d FAIL "MediaStore did not index the test image"; return 1; }
   goto_home
+  # The chooser's "Just once" picks the first GeekBridge it finds: a leftover build under another package id
+  # (dev.geekbridge.android.me on the old AVD) used to win it, which was the whole of E2E-4. Remove such builds.
+  for other in $($ADB shell pm list packages 2>/dev/null | tr -d '\r' | sed -n 's/^package://p' | grep '^dev\.geekbridge\.' | grep -vx "$PKG"); do
+    $ADB uninstall "$other" >/dev/null 2>&1
+  done
   $ADB shell am start -a android.intent.action.SEND -t image/png --eu android.intent.extra.STREAM "content://media/external/images/media/$id" --grant-read-uri-permission >/dev/null
   sleep 3; shot 25-share-sheet
-  tap "Send to computer" >/dev/null 2>&1; tap "Just once" >/dev/null 2>&1; sleep 10; shot 26-share-sending
+  tap "Send to computer" >/dev/null 2>&1; tap "Just once" >/dev/null 2>&1
+  sleep 10; shot 26-share-sending
   local line; line="$(ctl share | grep 'e2e-p2d.png' | tail -1)"
   local got; got="$(ls -t "$HOME"/Downloads/GeekBridge/e2e-p2d*.png 2>/dev/null | head -1)"
   if [[ -n "$got" && "$(sha256sum "$got" | cut -d' ' -f1)" == "$sum" ]]; then rec file_p2d PASS "Share sheet -> desktop, SHA-256 equal ($got)"; rm -f "$got"
-  else rec file_p2d FAIL "transfer: ${line:-none} (see docs/e2e-findings.md E2E-4: the desktop cannot reach the phone's random payload port through the emulator NAT)"; fi
+  else
+    local why="transfer: ${line:-none}"
+    ui has "The link is not running" && why="Share screen says 'The link is not running' while the desktop still shows the link connected (E2E-4)"
+    rec file_p2d FAIL "$why"
+    tap Cancel >/dev/null 2>&1
+  fi
 }
 
 stage_file_d2p() {
   ensure_session || { rec file_d2p SKIP "no paired, connected phone"; return 1; }
-  head -c 300000 /dev/urandom >"$RUN/e2e-d2p-file.bin"
-  ctl send-file "$PHONE_ID" "$RUN/e2e-d2p-file.bin" >/dev/null; sleep 3; shot 23-file-offer-on-phone
+  goto_home; head -c 300000 /dev/urandom >"$RUN/e2e-d2p-file.bin"
+  ctl send-file "$PHONE_ID" "$RUN/e2e-d2p-file.bin" >/dev/null
+  waitui "wants to send a file" 20 || { rec file_d2p FAIL "no offer dialog on the phone"; return 1; }
+  shot 23-file-offer-on-phone
   tap Accept >/dev/null 2>&1; sleep 15; shot 24-file-received-on-phone
   local line; line="$(ctl share | grep 'e2e-d2p-file.bin' | tail -1)"
   local want; want="$(sha256sum "$RUN/e2e-d2p-file.bin" | cut -d' ' -f1)"
@@ -330,7 +375,7 @@ stage_file_d2p() {
   if [[ -n "$have" && "$have" == "$want" ]]; then rec file_d2p PASS "desktop -> phone, accepted on the phone, SHA-256 equal"
   else rec file_d2p FAIL "transfer: ${line:-none}; phone never opened the payload connection (E2E-5)"; fi
   # Text/link share uses no payload connection and does work: record it separately.
-  ctl send-text "$PHONE_ID" "hello-e2e" >/dev/null; sleep 3; shot 27-text-received
+  goto_home; ctl send-text "$PHONE_ID" "hello-e2e" >/dev/null; sleep 4; shot 27-text-received
   if ui has "hello-e2e"; then rec share_text_d2p PASS "text offer shown on the phone"; tap Close >/dev/null 2>&1
   else rec share_text_d2p FAIL "no text dialog on the phone"; fi
 }
@@ -361,10 +406,11 @@ stage_update() {
 # ---- MAIN
 main() {
   : >"$LOGS/e2e-run.log"
+  [[ -z "$ONLY" ]] && : >"$RESULTS"   # a full run starts a fresh results table; --only appends
   if [[ "${STOP:-}" == 1 ]]; then
-    $ADB emu kill >/dev/null 2>&1; systemctl --user stop gbe2e-emulator >/dev/null 2>&1
+    $ADB emu kill >/dev/null 2>&1; systemctl --user stop "gbe2e-emulator${E2E_TAG:-}" >/dev/null 2>&1
     ctl status >/dev/null 2>&1 && { :; }
-    pkill -f "$SVC" 2>/dev/null; rm -f /tmp/.X11-unix/X97; pkill -f "Xvfb $XDISP" 2>/dev/null; return 0
+    pkill -f "$SVC" 2>/dev/null; rm -f /tmp/.X11-unix/X${XDISP#:}; pkill -f "Xvfb $XDISP" 2>/dev/null; return 0
   fi
   local stages=("${STAGES_ALL[@]}")
   [[ -n "$ONLY" ]] && IFS=, read -r -a stages <<<"$ONLY"
@@ -376,4 +422,6 @@ main() {
   echo; echo "== results =="; column -t -s $'\t' "$RESULTS" | tail -n 40
   ! grep -q $'\tFAIL\t' "$RESULTS"
 }
+# Sourced by other scripts (scripts/e2e-phonedata.sh) to reuse the helpers and stages.
+[[ "${E2E_SOURCE_ONLY:-}" == 1 ]] && return 0
 main

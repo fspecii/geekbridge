@@ -29,7 +29,8 @@ class ShareActivity : Activity() {
     private var uris: List<Uri> = emptyList()
     private val connectTried = HashSet<String>()
     private var asked = false
-    private var holding = false
+    private var restartedAfterStop = false
+    private lateinit var hold: ShareHold
     private var multicast: WifiManager.MulticastLock? = null
     private val main = Handler(Looper.getMainLooper())
 
@@ -37,13 +38,15 @@ class ShareActivity : Activity() {
         super.onCreate(savedInstanceState)
         ui = Ui(this)
         coordinator = ShareCoordinator.get(this)
+        // After a rotation the previous instance hands over its hold; a fresh start makes a new one.
+        hold = lastNonConfigurationInstance as? ShareHold
+            ?: ShareHold({ coordinator.controller.hold() }, { coordinator.controller.release() })
         parse(intent)
         val pad = ui.dp(20)
         box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
         setContentView(ScrollView(this).apply { addView(box) })
         if (savedInstanceState == null && request !is ShareRequest.Invalid) {
-            coordinator.controller.hold()
-            holding = true
+            hold.take()
             startLinkIfNeeded()
         }
         render()
@@ -57,18 +60,21 @@ class ShareActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        coordinator.onChange = { onState() }
+        coordinator.setListener(this) { onState() }
         coordinator.controller.poll()
     }
 
     override fun onStop() {
-        coordinator.onChange = null
+        coordinator.clearListener(this)
         releaseMulticast()
         super.onStop()
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onRetainNonConfigurationInstance(): Any = hold
+
     override fun onDestroy() {
-        if (holding && !isChangingConfigurations) coordinator.controller.release()
+        if (!isChangingConfigurations) hold.giveBack()
         super.onDestroy()
     }
 
@@ -119,6 +125,12 @@ class ShareActivity : Activity() {
     }
 
     private fun onState() {
+        // The link can be mid-stop when this screen opens (Home leaving the foreground); start it once it has stopped.
+        val phase = coordinator.controller.phase
+        if (phase == LinkPhase.Stopped && !restartedAfterStop && request !is ShareRequest.Invalid && !coordinator.sessionActive) {
+            restartedAfterStop = true
+            startLinkIfNeeded()
+        }
         autoConnect()
         syncMulticast(coordinator.controller.snapshot?.discovery?.listening == true)
         render()

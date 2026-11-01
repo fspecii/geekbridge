@@ -17,11 +17,21 @@ pub use bridge_core::calls_link::{
     REQUEST as CALLS_REQUEST, RESULT as CALLS_RESULT, STATE as CALLS_STATE,
 };
 
+pub use bridge_core::phone_link::{
+    CALENDAR_REQUEST, CALENDAR_SYNC, CONTACTS_REQUEST_UIDS, CONTACTS_REQUEST_VCARDS, CONTACTS_UIDS,
+    CONTACTS_VCARDS, SMS_STATUS,
+};
+pub use bridge_kde::sms::{
+    MESSAGES as SMS_MESSAGES, REQUEST as SMS_REQUEST,
+    REQUEST_CONVERSATION as SMS_REQUEST_CONVERSATION,
+    REQUEST_CONVERSATIONS as SMS_REQUEST_CONVERSATIONS,
+};
+
 pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 8] = [
+pub const LOCAL_INCOMING: [&str; 13] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -30,8 +40,13 @@ pub const LOCAL_INCOMING: [&str; 8] = [
     SHARE_REQUEST,
     CALLS_STATE,
     CALLS_RESULT,
+    CONTACTS_UIDS,
+    CONTACTS_VCARDS,
+    CALENDAR_SYNC,
+    SMS_MESSAGES,
+    SMS_STATUS,
 ];
-pub const LOCAL_OUTGOING: [&str; 7] = [
+pub const LOCAL_OUTGOING: [&str; 13] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -39,6 +54,12 @@ pub const LOCAL_OUTGOING: [&str; 7] = [
     CLIPBOARD_ITEM,
     SHARE_REQUEST,
     CALLS_REQUEST,
+    CONTACTS_REQUEST_UIDS,
+    CONTACTS_REQUEST_VCARDS,
+    CALENDAR_REQUEST,
+    SMS_REQUEST_CONVERSATIONS,
+    SMS_REQUEST_CONVERSATION,
+    SMS_REQUEST,
 ];
 
 /// Packet types the peer may send us: its outgoing list intersected with what we declared.
@@ -67,6 +88,12 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::calls_link::is_calls_kind(kind) {
         return Some(Feature::Telephony);
     }
+    if bridge_core::phone_link::is_calendar_kind(kind) {
+        return Some(Feature::Calendar);
+    }
+    if kind == SMS_STATUS {
+        return Some(Feature::Sms);
+    }
     let ns = kind.strip_prefix("kdeconnect.")?;
     let head = ns.split('.').next()?;
     Some(match head {
@@ -81,7 +108,14 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
 
 /// Whether the service has a protocol adapter that handles `feature` packets.
 pub fn adapter_integrated(feature: Feature) -> bool {
-    matches!(feature, Feature::Clipboard | Feature::Telephony)
+    matches!(
+        feature,
+        Feature::Clipboard
+            | Feature::Telephony
+            | Feature::Sms
+            | Feature::Contacts
+            | Feature::Calendar
+    )
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -91,6 +125,9 @@ pub enum Incoming {
     Clipboard,
     /// A `geekbridge.calls.*` packet from the phone. Acted on only for devices with Telephony consent.
     Calls,
+    /// A contacts, calendar or SMS packet from the phone. Acted on only for devices that allowed
+    /// that feature (`phone_data`); otherwise it is dropped unread.
+    PhoneData,
     Reject,
 }
 
@@ -102,6 +139,12 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::Clipboard
     } else if matches!(kind, CALLS_STATE | CALLS_RESULT) && negotiated.iter().any(|k| k == kind) {
         Incoming::Calls
+    } else if matches!(
+        kind,
+        CONTACTS_UIDS | CONTACTS_VCARDS | CALENDAR_SYNC | SMS_MESSAGES | SMS_STATUS
+    ) && negotiated.iter().any(|k| k == kind)
+    {
+        Incoming::PhoneData
     } else {
         Incoming::Reject
     }
@@ -152,14 +195,18 @@ mod tests {
     #[test]
     fn only_declared_and_advertised_types_are_negotiated() {
         let p = peer(
-            &["kdeconnect.ping", "kdeconnect.sms.request"],
+            &["kdeconnect.ping", "kdeconnect.notification.request"],
             &[
                 "kdeconnect.ping",
-                "kdeconnect.sms.messages",
+                "kdeconnect.notification",
                 "kdeconnect.contacts.response_uids_timestamps",
             ],
         );
-        assert_eq!(negotiated_incoming(&p), vec![PING.to_string()]);
+        // Only the intersection with what this build declares: the notification packets are not ours.
+        assert_eq!(
+            negotiated_incoming(&p),
+            vec![PING.to_string(), CONTACTS_UIDS.to_string()]
+        );
         assert_eq!(negotiated_outgoing(&p), vec![PING.to_string()]);
         let silent = peer(&[], &[]);
         assert!(negotiated_incoming(&silent).is_empty());
@@ -183,6 +230,11 @@ mod tests {
             Incoming::Reject
         );
         assert_eq!(classify_incoming(CLIPBOARD, &[]), Incoming::Reject);
+        // Phone data is routed only when negotiated, and only the negotiated kinds.
+        let data = vec![SMS_MESSAGES.to_string()];
+        assert_eq!(classify_incoming(SMS_MESSAGES, &data), Incoming::PhoneData);
+        assert_eq!(classify_incoming(SMS_STATUS, &data), Incoming::Reject);
+        assert_eq!(classify_incoming(SMS_MESSAGES, &[]), Incoming::Reject);
         for kind in [
             "kdeconnect.sms.messages",
             "kdeconnect.contacts.response_vcards",

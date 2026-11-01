@@ -17,6 +17,9 @@ interface ClipboardHost {
      * [maxBytes]. Null if the image can't be read or is too large. The descriptor is closed afterwards.
      */
     fun <T> withImageFd(snapshot: ClipSnapshot, maxBytes: Long, block: (Int) -> T): T?
+
+    /** Delete the image file kept for the clipboard, if any (the link stopped or the setting went off). */
+    fun forgetSpooledImage() {}
 }
 
 /** Result shown to the user after a tap or an explicit send. */
@@ -75,7 +78,9 @@ class ClipboardEngine(
         when {
             v is Verdict.Send -> answer(p, v.snapshot)
             v is Verdict.Refuse && v.reason == "needs_gesture" -> {
-                // Keep the question for a short while: a tap on the notification answers it.
+                // Keep the question for a short while: a tap on the notification answers it. A question it
+                // replaces is refused now rather than left for the computer's own timeout.
+                pending?.let { refuse(it.pull, "expired") }
                 pending = Pending(p, clock() + PENDING_MS)
                 host.askForTap()
             }
@@ -90,7 +95,9 @@ class ClipboardEngine(
     @Synchronized
     fun onGesture(snapshot: ClipSnapshot?): SendResult {
         val s = settings()
-        val waiting = pending?.takeIf { it.expiresAtMs > clock() }?.pull
+        val held = pending
+        val waiting = held?.takeIf { it.expiresAtMs > clock() }?.pull
+        if (held != null && waiting == null) refuse(held.pull, "expired") // lapsed before the tap
         pending = null
         host.dismissTapRequest()
         cache = snapshot
@@ -99,7 +106,7 @@ class ClipboardEngine(
             val own = snapshot?.text != null && snapshot.text == lastApplied
             val v = PullGate.decide(s.enabled, host.isLocked(), if (own) null else snapshot, true, clock(), s.windowMs, waiting.maxAgeMs)
             return when (v) {
-                is Verdict.Send -> SendResult(answer(waiting, v.snapshot), null)
+                is Verdict.Send -> answer(waiting, v.snapshot).let { SendResult(it == null, it) }
                 is Verdict.Refuse -> {
                     refuse(waiting, v.reason)
                     SendResult(false, v.reason)
@@ -120,33 +127,41 @@ class ClipboardEngine(
     private fun sendExplicit(snapshot: ClipSnapshot?): SendResult {
         val s = settings()
         return when (val v = PullGate.decideExplicit(s.enabled, host.isLocked(), snapshot)) {
-            is Verdict.Send -> SendResult(deliver(v.snapshot, null, null), null)
+            is Verdict.Send -> deliver(v.snapshot, null, null).let { SendResult(it == null, it) }
             is Verdict.Refuse -> SendResult(false, v.reason)
         }.let { if (!it.sent && it.reason == null) SendResult(false, "not_connected") else it }
     }
 
-    private fun answer(p: ClipEvent.Pull, snap: ClipSnapshot): Boolean {
-        val ok = deliver(snap, p.requestId, p.connectionId)
-        if (!ok) refuse(p, "too_large")
-        return ok
+    /** Null when the item was handed to the core, else why not. Only reasons the computer understands are refused. */
+    private fun answer(p: ClipEvent.Pull, snap: ClipSnapshot): String? {
+        val why = deliver(snap, p.requestId, p.connectionId) ?: return null
+        if (why in WIRE_REASONS) refuse(p, why)
+        return why
     }
 
     private fun refuse(p: ClipEvent.Pull, reason: String) {
         core(ClipboardProtocol.sendNoneRequest(p.requestId, p.connectionId, reason))
     }
 
-    /** True if the core accepted the item for sending. */
-    private fun deliver(snap: ClipSnapshot, requestId: String?, connectionId: Long?): Boolean {
+    /** Null if the core accepted the item for sending, else the reason it did not. */
+    private fun deliver(snap: ClipSnapshot, requestId: String?, connectionId: Long?): String? {
         val age = (clock() - snap.copiedAtMs).coerceAtLeast(0)
         val outcome = if (snap.kind == ClipKind.Image) {
             host.withImageFd(snap, settings().maxImageBytes) { fd ->
                 core(ClipboardProtocol.sendImageRequest(fd, requestId, connectionId, age))
-            }
+            } ?: return "too_large" // unreadable, or over the limit
         } else {
-            val text = snap.text ?: return false
+            val text = snap.text ?: return "empty"
             core(ClipboardProtocol.sendTextRequest(snap.kind, text, snap.html, requestId, connectionId, age))
         }
-        return outcome is CoreOutcome.Ok
+        return failureReason(outcome)
+    }
+
+    /** What the user (and, if the wire has a word for it, the computer) is told when the core says no. */
+    private fun failureReason(o: CoreOutcome): String? = when (o) {
+        is CoreOutcome.Ok -> null
+        is CoreOutcome.Rejected -> if (o.code in WIRE_REASONS) o.code else "not_connected"
+        else -> "not_connected" // the core is not running or answered garbage
     }
 
     /** The link stopped or the app is shutting down: forget everything held in memory. */
@@ -156,10 +171,14 @@ class ClipboardEngine(
         pending = null
         lastApplied = null
         host.dismissTapRequest()
+        host.forgetSpooledImage()
     }
 
     companion object {
         /** How long a pull waits for the user's tap. The computer gives up on its own at 90 s. */
         const val PENDING_MS = 80_000L
+
+        /** The reasons a computer understands in a "nothing to send" answer. */
+        val WIRE_REASONS = setOf("locked", "expired", "empty", "needs_gesture", "disabled", "too_large", "unsupported", "sensitive")
     }
 }

@@ -10,6 +10,7 @@
 //! Only signalling is simulated. No Bluetooth link, SCO audio or HFP AT command exchange exists
 //! here, so nothing in this crate verifies hardware or audio behaviour.
 
+pub mod data;
 pub mod modem;
 
 #[cfg(target_os = "linux")]

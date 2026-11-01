@@ -16,12 +16,12 @@ class OfferDialogs(private val activity: Activity, private val coordinator: Shar
     private val dismissedText = HashSet<Long>()
 
     fun attach() {
-        coordinator.onChange = { sync() }
+        coordinator.setListener(this) { sync() }
         sync()
     }
 
     fun detach() {
-        coordinator.onChange = null
+        coordinator.clearListener(this)
         dialog?.dismiss()
         dialog = null
         shownKey = null

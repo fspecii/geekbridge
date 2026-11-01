@@ -22,7 +22,7 @@ import java.io.IOException
  */
 class AndroidClipboardHost(private val ctx: Context) : ClipboardHost {
     private val clipboard get() = ctx.getSystemService(ClipboardManager::class.java)
-    private var lastSpooledImage: String? = null
+    private val spool = SpoolKeeper { File(it).delete() }
 
     override fun isLocked(): Boolean {
         val km = ctx.getSystemService(KeyguardManager::class.java)
@@ -42,12 +42,11 @@ class AndroidClipboardHost(private val ctx: Context) : ClipboardHost {
             }
         }
         clipboard.setPrimaryClip(clip)
-        // Only the newest received image is kept; the previous spool file goes away.
-        if (item.kind == ClipKind.Image) {
-            lastSpooledImage?.takeIf { it != item.imagePath }?.let { File(it).delete() }
-            lastSpooledImage = item.imagePath
-        }
+        // Only the newest received image is kept: a text or a newer image replaces it, and the file goes away.
+        spool.received(if (item.kind == ClipKind.Image) item.imagePath else null)
     }
+
+    override fun forgetSpooledImage() = spool.clear()
 
     override fun askForTap() {
         val nm = ctx.getSystemService(NotificationManager::class.java)

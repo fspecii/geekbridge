@@ -30,7 +30,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 22] = [
+pub(crate) const ACTIONS: [&str; 25] = [
     "transport_start",
     "transport_status",
     "transport_stop",
@@ -53,8 +53,13 @@ pub(crate) const ACTIONS: [&str; 22] = [
     "transport_calls_wait",
     "transport_calls_report",
     "transport_calls_result",
+    "transport_data_config",
+    "transport_data_wait",
+    "transport_data_send",
 ];
 
+/// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
+const DATA_PACKET_LINE: usize = 1024 * 1024 + 16 * 1024;
 const DEFAULT_KDE_PORT: u16 = 1716;
 const MAX_STATE_DIR_BYTES: usize = 1024;
 const MAX_DEVICE_NAME_CHARS: usize = 128;
@@ -287,6 +292,8 @@ struct StartArgs {
     clipboard: Option<(bool, u64)>,
     /// `Some(enabled)` when the app wants call-control packets negotiated.
     calls: Option<bool>,
+    /// Phone data features (contacts, calendar, SMS) to negotiate; all off when absent.
+    data: engine::DataFlags,
 }
 
 struct DiscoveryArgs {
@@ -382,6 +389,10 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
             Some(enabled)
         }
     };
+    let data = match f.take_opt_object("data")? {
+        None => engine::DataFlags::default(),
+        Some(mut o) => parse_data_flags(&mut o)?,
+    };
     f.finish()?;
 
     if discovery.announce && listen.is_none() {
@@ -401,7 +412,17 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         allow_loopback,
         clipboard,
         calls,
+        data,
     })
+}
+
+fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
+    let flags = engine::DataFlags {
+        contacts: o.take_opt_bool("contacts")?.unwrap_or(false),
+        calendar: o.take_opt_bool("calendar")?.unwrap_or(false),
+        sms: o.take_opt_bool("sms")?.unwrap_or(false),
+    };
+    Ok(flags)
 }
 
 fn parse_state_dir(s: String) -> Result<PathBuf, ApiError> {
@@ -610,6 +631,33 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let (core, _) = host.running()?;
             core.calls_result(connection_id, &request_id, failure.as_deref())
         }
+        "transport_data_config" => {
+            let (core, _) = host.running()?;
+            let current = core.data().flags();
+            let flags = engine::DataFlags {
+                contacts: f.take_opt_bool("contacts")?.unwrap_or(current.contacts),
+                calendar: f.take_opt_bool("calendar")?.unwrap_or(current.calendar),
+                sms: f.take_opt_bool("sms")?.unwrap_or(current.sms),
+            };
+            f.finish()?;
+            core.data().set_flags(flags);
+            Ok(json!({ "ok": true }))
+        }
+        "transport_data_wait" => {
+            let since = f.take_opt_u64("since")?.unwrap_or(0);
+            let timeout_ms = f.take_opt_u64("timeout_ms")?.unwrap_or(25_000);
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.data().wait(since, Duration::from_millis(timeout_ms)))
+        }
+        "transport_data_send" => {
+            let kind = f.take_string("kind")?;
+            let body = f.take_object("body")?;
+            let connection_id = f.take_opt_u64("connection_id")?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.data_send(&kind, body, connection_id)
+        }
         "transport_unpair" => {
             let device = f.take_string("device_id")?;
             f.finish()?;
@@ -666,7 +714,11 @@ fn announce_target(args: &DiscoveryArgs, policy: &AddressPolicy) -> Result<Socke
 const CLIPBOARD_SUBDIR: &str = "clipboard-cache";
 
 /// Packet types declared in the identity packet.
-fn capabilities(clipboard: bool, calls: bool) -> (Vec<String>, Vec<String>) {
+fn capabilities(
+    clipboard: bool,
+    calls: bool,
+    data: engine::DataFlags,
+) -> (Vec<String>, Vec<String>) {
     let mut incoming = vec![PING.to_owned(), SHARE_REQUEST.to_owned()];
     let mut outgoing = incoming.clone();
     if clipboard {
@@ -677,6 +729,8 @@ fn capabilities(clipboard: bool, calls: bool) -> (Vec<String>, Vec<String>) {
         incoming.extend(engine::calls_incoming_types());
         outgoing.extend(engine::calls_outgoing_types());
     }
+    incoming.extend(engine::data_incoming_types(data));
+    outgoing.extend(engine::data_outgoing_types(data));
     (incoming, outgoing)
 }
 
@@ -700,10 +754,19 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         address_policy: policy.clone(),
         max_unpaired: MAX_UNPAIRED,
         limits: Limits {
-            packet_line: if args.clipboard.is_some() {
-                bridge_core::clipboard_wire::MAX_ITEM_LINE_BYTES
-            } else {
-                MAX_PACKET_LINE
+            packet_line: {
+                let base = if args.clipboard.is_some() {
+                    bridge_core::clipboard_wire::MAX_ITEM_LINE_BYTES
+                } else {
+                    MAX_PACKET_LINE
+                };
+                // The link applies one limit to both directions: phone data packets go out up to
+                // 1 MiB, so the line limit must cover them (and incoming lines may be that long).
+                if args.data == engine::DataFlags::default() {
+                    base
+                } else {
+                    base.max(DATA_PACKET_LINE)
+                }
             },
             ..Limits::default()
         },
@@ -718,8 +781,8 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         Arc::new(creds),
         &args.device_name,
         DeviceType::Phone,
-        capabilities(args.clipboard.is_some(), args.calls.is_some()).0,
-        capabilities(args.clipboard.is_some(), args.calls.is_some()).1,
+        capabilities(args.clipboard.is_some(), args.calls.is_some(), args.data).0,
+        capabilities(args.clipboard.is_some(), args.calls.is_some(), args.data).1,
         store_dyn,
         config,
     )
@@ -808,6 +871,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     if let Some(enabled) = args.calls {
         core.calls().configure(enabled);
     }
+    core.data().set_flags(args.data);
 
     // The TCP listener is bound and listening before any task (or announcement) exists.
     if let Some(listener) = tcp {
@@ -828,7 +892,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         "identity_created": created,
         "listen": core.info.listen.map(|a| json!({ "host": a.ip().to_string(), "port": a.port() })),
         "discovery": core.info.discovery.to_json(),
-        "capabilities": { "incoming": capabilities(clipboard_on, calls_on).0, "outgoing": capabilities(clipboard_on, calls_on).1 },
+        "capabilities": { "incoming": capabilities(clipboard_on, calls_on, args.data).0, "outgoing": capabilities(clipboard_on, calls_on, args.data).1 },
     });
     drop(enter);
     Ok((Running { core, rt }, result))

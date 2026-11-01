@@ -384,3 +384,63 @@ async fn receiver_binds_its_control_link_address() {
     assert!(r.is_err());
     let _ = send.await;
 }
+
+/// E2E-5: a desktop running with the development switch (`any_port`) used to announce a random
+/// ephemeral port. A phone with the real configuration only dials 1739-1764 and silently failed
+/// with `port_rejected`, leaving the desktop at "Waiting 0/N". The announced port must stay inside
+/// the standard range whenever a range port is free, so a strict receiver can always dial it.
+#[tokio::test]
+async fn development_listener_announces_a_port_a_strict_receiver_accepts() {
+    let (a, b) = (creds('a'), creds('b'));
+    let sender = ctx(&a, &b);
+    assert!(sender.config.any_port);
+    let listener = sender.listen().await.unwrap();
+    let port = listener.port();
+    assert!(
+        PAYLOAD_PORTS.contains(&port),
+        "announced {port}, outside {PAYLOAD_PORTS:?}"
+    );
+    let mut strict = ctx(&b, &a);
+    strict.config.any_port = false;
+    let payload = data(70_000);
+    let cancel = CancelToken::new();
+    let (src, c2) = (payload.clone(), cancel.clone());
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(src), 70_000, &mut |_| {}, &c2)
+            .await
+    });
+    let mut out = Vec::new();
+    strict
+        .receive(port, Some(70_000), 1 << 30, &mut out, &mut |_| {}, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(out, payload);
+    send.await.unwrap().unwrap();
+}
+
+/// E2E-5 (second cause): a source address with no route to the peer must not stall the transfer
+/// for the whole connect timeout; the plain route is tried after the short bound attempt.
+#[tokio::test]
+async fn a_blackholed_bound_source_falls_back_to_the_plain_route() {
+    let hang = std::future::pending::<Option<std::io::Result<u8>>>();
+    let started = std::time::Instant::now();
+    let v = first_or_fallback(hang, Duration::from_millis(50), async { Ok(7u8) })
+        .await
+        .unwrap();
+    assert_eq!(v, 7);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // A bound attempt that works is used as is; one that declines or fails falls back.
+    let ok = first_or_fallback(async { Some(Ok(1u8)) }, Duration::from_secs(1), async {
+        Ok(2u8)
+    })
+    .await
+    .unwrap();
+    assert_eq!(ok, 1);
+    for first in [None, Some(Err(std::io::Error::other("unreachable")))] {
+        let v = first_or_fallback(async { first }, Duration::from_secs(1), async { Ok(2u8) })
+            .await
+            .unwrap();
+        assert_eq!(v, 2);
+    }
+}

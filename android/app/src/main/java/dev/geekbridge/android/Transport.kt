@@ -82,6 +82,8 @@ data class StartOptions(
     val clipboard: ClipSettings? = null,
     /** Negotiate the call-control packet types (see CallControlRuntime); null leaves them out entirely. */
     val calls: CallLinkSettings? = null,
+    /** Contacts / calendar / SMS capabilities that are enabled AND permitted (PhoneDataRuntime); null or all-off declares none. */
+    val data: ActiveFeatures? = null,
 )
 
 object TransportProtocol {
@@ -106,6 +108,7 @@ object TransportProtocol {
         if (o.allowLoopback) r.put("allow_loopback", true)
         if (o.clipboard != null) r.put("clipboard", ClipboardProtocol.startObject(o.clipboard))
         if (o.calls != null) r.put("calls", CallsProtocol.startObject(o.calls))
+        o.data?.let { PhoneDataProtocol.startObject(it) }?.let { r.put("data", it) }
         return r.toString()
     }
 

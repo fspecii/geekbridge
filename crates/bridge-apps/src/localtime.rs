@@ -138,6 +138,17 @@ pub fn now() -> Now {
     }
 }
 
+/// The computer's UTC offset in minutes around noon of `date` (0 when the zone cannot be read).
+pub fn utc_offset_minutes(date: Date) -> i32 {
+    utc_offset_seconds(date.to_days() * 86_400 + 43_200).map_or(0, |s| s / 60)
+}
+
+/// `"HH:MM"` of a UTC millisecond instant shown at `offset_minutes`.
+pub fn clock_label(utc_ms: i64, offset_minutes: i32) -> String {
+    let secs = (utc_ms / 1000 + i64::from(offset_minutes) * 60).rem_euclid(86_400);
+    format!("{:02}:{:02}", secs / 3600, secs / 60 % 60)
+}
+
 #[cfg(all(unix, target_pointer_width = "64"))]
 fn utc_offset_seconds(unix_seconds: i64) -> Option<i32> {
     use std::ffi::{c_char, c_int, c_long};

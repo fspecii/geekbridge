@@ -7,6 +7,8 @@ object Limits {
     const val CLIPBOARD_MAX_BYTES = 64 * 1024
     // Matches bridge-android MAX_REQUEST_BYTES (6 x default clipboard limit + 1 KiB).
     const val MAX_REQUEST_CHARS = 6 * CLIPBOARD_MAX_BYTES + 1024
+    // transport_data_send: 1 MiB + 2 KiB, matching the native relay.
+    const val MAX_DATA_REQUEST_CHARS = 1024 * 1024 + 2048
     const val MAX_RESPONSE_CHARS = 64 * 1024
     // transport_status stays well under 100 KiB at the documented limits (docs/android-transport.md).
     const val MAX_TRANSPORT_RESPONSE_CHARS = 160 * 1024

@@ -70,12 +70,11 @@ pub(super) fn list_lines(deadline: Deadline) -> Step<Vec<LineRecord>> {
             PhoneLineWatcher,
             PhoneLineWatcherEventArgs,
         >::new(move |_, args| {
-            if let Some(id) = args.as_ref().and_then(|a| a.LineId().ok()) {
-                if let Ok(mut list) = sink.lock() {
-                    if list.len() < MAX_LINES {
-                        list.push(id);
-                    }
-                }
+            if let Some(id) = args.as_ref().and_then(|a| a.LineId().ok())
+                && let Ok(mut list) = sink.lock()
+                && list.len() < MAX_LINES
+            {
+                list.push(id);
             }
             Ok(())
         }))

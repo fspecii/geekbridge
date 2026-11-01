@@ -21,7 +21,7 @@ object ClipboardRuntime {
     @Volatile var settings: ClipSettings = ClipSettings()
         private set
     @Volatile private var engine: ClipboardEngine? = null
-    private var waiter: Thread? = null
+    private val waiter = WaiterSlot()
     private val core: CoreClient by lazy { CoreClient.native() }
 
     /** Native calls that answer the computer or push settings, off the main thread, in order. */
@@ -88,26 +88,29 @@ object ClipboardRuntime {
             e.reset()
             return
         }
-        if (!settings.enabled || waiter?.isAlive == true) return
-        waiter = Thread({ waitLoop(e) }, "geekbridge-clip-wait").apply { isDaemon = true; start() }
+        if (settings.enabled) startWaiter(e)
     }
 
     /** A setting was switched on while the link is already up. */
     @Synchronized
     fun ensureWaiting() {
         val e = engine ?: return
-        if (settings.enabled && waiter?.isAlive != true) {
-            waiter = Thread({ waitLoop(e) }, "geekbridge-clip-wait").apply { isDaemon = true; start() }
-        }
+        if (settings.enabled) startWaiter(e)
+    }
+
+    private fun startWaiter(e: ClipboardEngine) {
+        if (!waiter.claim()) return
+        // Whatever ends the loop (even an exception), the claim is given back so the next link change can restart it.
+        Thread({ try { waitLoop(e) } finally { leave() } }, "geekbridge-clip-wait").apply { isDaemon = true; start() }
     }
 
     private fun waitLoop(e: ClipboardEngine) {
         var since = 0L
         while (!Thread.currentThread().isInterrupted) {
             val o = core.clipboardAction(ClipboardProtocol.waitRequest(since))
-            if (o !is CoreOutcome.Ok) return // not running: restarted when the link comes back
-            val r = ClipboardProtocol.parseWait(o.result) ?: return
-            if (r.stopped) return
+            if (o !is CoreOutcome.Ok) return leave() // not running: restarted when the link comes back
+            val r = ClipboardProtocol.parseWait(o.result) ?: return leave()
+            if (r.stopped) return leave()
             since = maxOf(since, r.lastSeq) // acknowledges what was just returned
             if (r.events.isNotEmpty()) {
                 try {
@@ -116,7 +119,9 @@ object ClipboardRuntime {
                     // One bad item must not end the loop.
                 }
             }
-            if (!settings.enabled) return
+            if (waiter.leaveUnless { settings.enabled }) return
         }
     }
+
+    private fun leave() { waiter.leaveUnless { false } }
 }

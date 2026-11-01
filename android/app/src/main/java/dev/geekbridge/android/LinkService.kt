@@ -44,7 +44,8 @@ class LinkService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AppState.init(this)
         // startForegroundService() obliges us to call startForeground() within seconds, even if we stop right away.
-        promote()
+        // A sticky restart from the background can be refused on Android 12+; stop quietly rather than crash.
+        if (!ServicePolicy.promoteOrStop(::promote, ::stopSelf)) return START_NOT_STICKY
         if (intent?.action == ACTION_STOP) {
             AppState.keepConnected = false
             stopSelf()

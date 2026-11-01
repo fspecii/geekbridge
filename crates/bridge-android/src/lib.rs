@@ -26,6 +26,6 @@ pub mod mutf8;
 mod transport;
 
 pub use dispatch::{
-    Dispatcher, InputError, MAX_REQUEST_BYTES, REQUEST_VERSION, handle_request,
-    input_error_response,
+    Dispatcher, InputError, MAX_DATA_REQUEST_BYTES, MAX_REQUEST_BYTES, REQUEST_VERSION,
+    handle_request, input_error_response,
 };

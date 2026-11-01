@@ -94,7 +94,7 @@
     <string name="setup_why_phone_state">Lets GeekBridge know whether the phone is idle, ringing or in a call. It never sees phone numbers or call history.</string>
     <string name="setup_why_answer">Lets a paired computer you trust answer, decline or end a call on this phone, so a ringing call can be handled from your desk. GeekBridge cannot hear the call: audio stays on the phone unless the computer is also its Bluetooth hands-free device.</string>
     <string name="setup_why_caller">Android only gives an app the caller\'s number if it can read the call log. Allow this to show who is calling on your computer; with your contacts allowed it also shows the name. Without it the computer shows “Unknown caller”. Read on this phone only; the call log is never read or sent.</string>
-    <string name="setup_why_sms">Android only lets the default messaging app read or send text messages, so GeekBridge does not ask for SMS access in this version. Nothing is read or sent.</string>
+    <string name="setup_why_sms">Optionally share your contacts, calendar and text messages with a paired computer. Everything is off until you switch it on here, and each part needs its own Android permission. Text messages are limited by Android and Google Play; the notes below explain how.</string>
     <string name="setup_why_battery">Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late.</string>
 
     <!-- Pairing panel and prompt -->

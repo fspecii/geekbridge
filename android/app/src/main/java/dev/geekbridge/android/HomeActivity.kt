@@ -205,7 +205,7 @@ class HomeActivity : Activity() {
         )
         kit.divider(feats)
         kit.row(
-            feats, R.drawable.ic_message, getString(R.string.home_messages), getString(R.string.home_messages_sub), kit.chip(getString(R.string.home_chip_unavailable), Tone.Muted), null,
+            feats, R.drawable.ic_message, getString(R.string.home_messages), getString(R.string.pd_home_row_sub), kit.chip(getString(if (PhoneDataRuntime.active().sms) R.string.pd_state_on else R.string.pd_state_off), if (PhoneDataRuntime.active().sms) Tone.Ok else Tone.Muted), null,
         ) { startActivity(SetupActivity.intent(this, step = StepId.Sms)) }
         kit.divider(feats)
         featureRow(feats, R.drawable.ic_calendar, R.string.home_agenda, status(StepId.Calendar), R.string.home_agenda_ok, R.string.home_agenda_todo, StepId.Calendar)

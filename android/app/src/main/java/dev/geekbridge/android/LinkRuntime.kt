@@ -19,6 +19,7 @@ object LinkRuntime {
             c.observers += {
                 ClipboardRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 CallControlRuntime.onLinkChanged(c.phase == LinkPhase.Running)
+                PhoneDataRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 val s = c.snapshot
                 if (s != null && s.isRunning) AppState.recordPaired(s.paired, readable = !s.pairedError)
             }
@@ -36,5 +37,6 @@ object LinkRuntime {
         allowLoopback = false,
         clipboard = ClipboardRuntime.settings,
         calls = CallControlRuntime.settings,
+        data = PhoneDataRuntime.startFeatures(),
     )
 }

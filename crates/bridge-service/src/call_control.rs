@@ -19,7 +19,9 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
-use bridge_core::calls::{CallCommand, CallState, Support};
+#[cfg(target_os = "linux")]
+use bridge_core::calls::Support;
+use bridge_core::calls::{CallCommand, CallState};
 use bridge_core::calls_link::{self as link, LinkAction, LinkCallReport};
 use bridge_core::calls_view::{self as view, ActionTarget, CallsView, ControlPath, SourceSnapshot};
 use bridge_core::ipc::{CallAction, CallsStatus, ErrorBody, ErrorCode};

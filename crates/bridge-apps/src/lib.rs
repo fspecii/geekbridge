@@ -12,6 +12,8 @@ pub mod identity;
 pub mod input;
 pub mod localtime;
 pub mod pace;
+pub mod phone_feed;
+pub mod phone_ui;
 pub mod poller;
 pub mod share_app;
 pub mod shell;

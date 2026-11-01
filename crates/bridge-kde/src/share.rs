@@ -282,6 +282,45 @@ fn temp_path(final_path: &Path) -> PathBuf {
     final_path.with_file_name(format!(".gb-{token}-{short}.part"))
 }
 
+/// Remove what a process that died mid-download left behind: `.gb-*.part` files nobody has touched for
+/// `min_idle`, and the zero-byte reserved file each of them belonged to. Returns how many `.part`
+/// files were removed. A live transfer keeps writing, so its temp file is never old enough.
+pub fn sweep_partials(dir: &Path, min_idle: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name
+            .strip_prefix(".gb-")
+            .and_then(|r| r.strip_suffix(".part"))
+        else {
+            continue;
+        };
+        let Ok(meta) = entry.metadata() else { continue };
+        let idle = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .unwrap_or_default();
+        if !meta.is_file() || idle < min_idle {
+            continue;
+        }
+        if std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+            // `.gb-<pid>-<seq>-<nanos>-<reserved name>.part`: the reserved name is what is left.
+            if let Some(reserved) = rest.splitn(4, '-').nth(3) {
+                let path = dir.join(reserved);
+                if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == 0) {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+    removed
+}
+
 /// Download one offered file into `dir` and return its final path.
 ///
 /// On any failure (including cancellation) neither the temporary file nor the reserved name
@@ -423,6 +462,28 @@ mod tests {
         let long = format!("{}.jpeg", "é".repeat(300));
         let out = sanitize_filename(&long);
         assert!(out.len() <= MAX_FILENAME_BYTES && out.ends_with(".jpeg"));
+    }
+
+    #[test]
+    fn sweep_removes_dead_partials_and_their_empty_reservation_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let reserved = reserve_unique(dir.path(), "movie.mkv").unwrap();
+        let part = temp_path(&reserved.path);
+        std::fs::write(&part, b"half").unwrap();
+        let keep_real = dir.path().join("kept.bin");
+        std::fs::write(&keep_real, b"data").unwrap();
+        // A part file whose reservation holds real data: the part goes, the data stays.
+        let other = dir.path().join(".gb-1-2-3-kept.bin.part");
+        std::fs::write(&other, b"x").unwrap();
+        // Recently written: a transfer in progress.
+        assert_eq!(
+            sweep_partials(dir.path(), std::time::Duration::from_secs(600)),
+            0
+        );
+        assert!(part.exists());
+        assert_eq!(sweep_partials(dir.path(), std::time::Duration::ZERO), 2);
+        assert!(!part.exists() && !reserved.path.exists() && !other.exists());
+        assert_eq!(std::fs::read(&keep_real).unwrap(), b"data");
     }
 
     #[test]

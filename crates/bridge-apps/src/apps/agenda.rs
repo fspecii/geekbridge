@@ -3,8 +3,14 @@
 use crate::{
     icons::{self, Icon},
     localtime::{self, Date, Now},
+    phone_feed::{self, Feed},
+    phone_ui,
     shell::{AppView, Env, central},
-    theme::{self, Palette},
+    theme::{self, ButtonKind, Palette},
+};
+use bridge_core::{
+    ipc::{Feature, Request},
+    phone_view::{AgendaView, EventItem, Person},
 };
 use eframe::egui::{self, Align2, CornerRadius, FontFamily, FontId, Margin, Sense, Stroke, vec2};
 use std::time::Duration;
@@ -22,6 +28,10 @@ pub struct Agenda {
     /// None follows today, including across midnight.
     picked: Option<Date>,
     scroll_to_hour: Option<f32>,
+    feed: Option<Feed<AgendaView>>,
+    query: String,
+    /// (device id, contact id) of the person shown on the right.
+    person: Option<(String, String)>,
 }
 
 const HOUR_HEIGHT: f32 = 52.0;
@@ -69,6 +79,8 @@ impl Agenda {
 
     fn people(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
+        let view = state.view.clone().unwrap_or_default();
         egui::SidePanel::left("people")
             .exact_width(250.0)
             .resizable(false)
@@ -88,35 +100,155 @@ impl Agenda {
                 ui.horizontal(|ui| {
                     ui.label(theme::semibold("All People", 15.0));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(theme::secondary(pal, "0"));
+                        ui.label(theme::secondary(pal, view.people_total.to_string()));
                     });
                 });
-                ui.add_space(14.0);
-                ui.vertical_centered(|ui| {
-                    ui.add_space(20.0);
-                    badge(ui, pal, Icon::Person);
-                    ui.add_space(6.0);
-                    ui.label(theme::semibold("No people yet", 14.0));
-                    ui.add(
-                        egui::Label::new(theme::caption(
-                            pal,
-                            "Nothing has been synced from a phone.",
-                        ))
-                        .wrap(),
-                    );
-                });
+                ui.add_space(8.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.query)
+                        .hint_text("Search")
+                        .desired_width(f32::INFINITY),
+                );
+                crate::input::limit_chars(&mut self.query, 64);
+                ui.add_space(8.0);
+                if view.people.is_empty() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(20.0);
+                        badge(ui, pal, Icon::Person);
+                        ui.add_space(6.0);
+                        ui.label(theme::semibold("No people yet", 14.0));
+                        ui.add(
+                            egui::Label::new(theme::caption(pal, self.empty_people(&state, &view)))
+                                .wrap(),
+                        );
+                    });
+                    return;
+                }
+                egui::ScrollArea::vertical()
+                    .id_salt("people-list")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for p in &view.people {
+                            let selected = self
+                                .person
+                                .as_ref()
+                                .is_some_and(|(d, i)| *d == p.device_id && *i == p.id);
+                            if theme::sidebar_item(
+                                ui,
+                                pal,
+                                Icon::Person,
+                                &p.name,
+                                None,
+                                selected,
+                                None,
+                            )
+                            .clicked()
+                            {
+                                self.person = Some((p.device_id.clone(), p.id.clone()));
+                            }
+                        }
+                        if view.people_total > view.people.len() {
+                            ui.add_space(6.0);
+                            ui.label(theme::caption(
+                                pal,
+                                format!(
+                                    "Showing {} of {}. Search to narrow down.",
+                                    view.people.len(),
+                                    view.people_total
+                                ),
+                            ));
+                        }
+                    });
             });
         central(ctx, pal, Margin::same(24), |ui| {
-            ui.centered_and_justified(|ui| {
-                ui.label(theme::semibold("No Person Selected", 17.0).color(pal.text3));
-            });
+            let chosen = self
+                .person
+                .as_ref()
+                .and_then(|(d, i)| view.people.iter().find(|p| p.device_id == *d && p.id == *i));
+            match chosen {
+                Some(p) => person_card(ui, pal, p),
+                None => {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(theme::semibold("No Person Selected", 17.0).color(pal.text3));
+                    });
+                }
+            }
         });
+    }
+
+    fn empty_people(&self, state: &phone_feed::FeedState<AgendaView>, view: &AgendaView) -> String {
+        if let Some(problem) = &state.problem {
+            return problem.clone();
+        }
+        if state.view.is_none() {
+            return "Looking for your phone's contacts ...".into();
+        }
+        if !self.query.is_empty() && view.devices.iter().any(|d| d.contacts_count > 0) {
+            return "Nobody matches this search.".into();
+        }
+        view.devices
+            .iter()
+            .find_map(|d| phone_ui::state_line(d.contacts, "Contacts"))
+            .unwrap_or_else(|| {
+                "Nothing has been shared from a phone yet. Allow Contacts for a paired phone below."
+                    .into()
+            })
+    }
+
+    /// Bottom strip: sync status, plus the explicit "Allow ..." buttons for phones that have not
+    /// allowed this kind of data yet, plus a refresh button.
+    fn consent_strip(
+        &mut self,
+        ctx: &egui::Context,
+        env: &Env,
+        view: &AgendaView,
+        feature: Feature,
+        noun: &str,
+    ) {
+        let pal = env.pal;
+        let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
+        let mut action = None;
+        egui::TopBottomPanel::bottom("agenda-consent")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.sidebar)
+                    .inner_margin(Margin::symmetric(14, 8)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for d in &view.devices {
+                        ui.label(theme::caption(pal, phone_ui::device_summary(d)));
+                    }
+                    if let Some(n) = state.notice.as_ref().or(state.problem.as_ref()) {
+                        ui.label(theme::caption(pal, n.clone()));
+                    }
+                    if !view.devices.is_empty()
+                        && theme::pill_button(ui, pal, "Refresh", ButtonKind::Plain, true).clicked()
+                    {
+                        action = Some(Request::AgendaRefresh { device_id: None });
+                    }
+                    if let Some(r) = phone_ui::allow_buttons(ui, pal, env, feature, noun) {
+                        action = Some(r);
+                    }
+                });
+            });
+        if let (Some(r), Some(feed)) = (action, &self.feed) {
+            feed.run(r);
+        }
     }
 
     fn day(&mut self, ctx: &egui::Context, env: &Env, now: &Now) {
         let pal = env.pal;
         let shown = self.shown(now);
         let is_today = shown == now.date;
+        let view = self
+            .feed
+            .as_ref()
+            .and_then(|f| f.state().view)
+            .unwrap_or_default();
+        self.consent_strip(ctx, env, &view, Feature::Calendar, "Calendar");
         central(ctx, pal, Margin::ZERO, |ui| {
             egui::Frame::new()
                 .inner_margin(Margin::symmetric(20, 12))
@@ -133,14 +265,18 @@ impl Agenda {
                         });
                     });
                     ui.add_space(4.0);
-                    ui.label(theme::caption(
-                        pal,
-                        if now.local_zone_known {
-                            "No events to show. Calendar sync isn't available yet."
-                        } else {
-                            "No events to show. Dates use UTC because this computer's time zone couldn't be read."
-                        },
-                    ));
+                    let note = day_note(&view, now.local_zone_known);
+                    ui.label(theme::caption(pal, note));
+                    ui.add_space(4.0);
+                    let all_day: Vec<&EventItem> =
+                        view.events.iter().filter(|e| e.all_day).collect();
+                    for e in all_day.iter().take(4) {
+                        ui.horizontal(|ui| {
+                            theme::dot(ui, pal.accent, false);
+                            ui.add(egui::Label::new(theme::semibold(&e.title, 13.0)).truncate());
+                            ui.label(theme::caption(pal, "all day"));
+                        });
+                    }
                     ui.add_space(8.0);
                     self.week_strip(ui, pal, now);
                 });
@@ -183,6 +319,73 @@ impl Agenda {
                     top + 24.0 * HOUR_HEIGHT,
                     Stroke::new(1.0_f32, pal.separator),
                 );
+                let offset = localtime::utc_offset_minutes(shown);
+                let day_start = shown.to_days() * 86_400;
+                let mut timed: Vec<&EventItem> =
+                    view.events.iter().filter(|e| !e.all_day).collect();
+                timed.sort_by_key(|e| e.start_ms);
+                let mut column_ends: Vec<i64> = Vec::new();
+                let placed: Vec<(&EventItem, usize)> = timed
+                    .into_iter()
+                    .map(|e| {
+                        let col = column_ends
+                            .iter()
+                            .position(|end| *end <= e.start_ms)
+                            .unwrap_or_else(|| {
+                                column_ends.push(0);
+                                column_ends.len() - 1
+                            });
+                        column_ends[col] = e.end_ms;
+                        (e, col)
+                    })
+                    .collect();
+                let columns = column_ends.len().max(1) as f32;
+                let left = rect.left() + LABEL_WIDTH + 6.0;
+                let lane = (rect.right() - 14.0 - left) / columns;
+                for (e, col) in placed {
+                    let local_start = e.start_ms / 1000 + i64::from(offset) * 60 - day_start;
+                    let local_end = e.end_ms / 1000 + i64::from(offset) * 60 - day_start;
+                    let y0 = top + (local_start.clamp(0, 86_400) as f32 / 3600.0) * HOUR_HEIGHT;
+                    let y1 = top + (local_end.clamp(0, 86_400) as f32 / 3600.0) * HOUR_HEIGHT;
+                    let block = egui::Rect::from_min_max(
+                        egui::pos2(left + lane * col as f32, y0 + 1.0),
+                        egui::pos2(
+                            left + lane * (col as f32 + 1.0) - 3.0,
+                            (y1 - 1.0).max(y0 + 20.0),
+                        ),
+                    );
+                    painter.rect_filled(
+                        block,
+                        CornerRadius::same(6),
+                        pal.accent.gamma_multiply(0.16),
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(block.min, vec2(3.0, block.height())),
+                        CornerRadius::same(2),
+                        pal.accent,
+                    );
+                    let clip = painter.with_clip_rect(block.shrink(2.0));
+                    clip.text(
+                        block.min + vec2(9.0, 3.0),
+                        Align2::LEFT_TOP,
+                        &e.title,
+                        FontId::new(12.5, theme::semibold_family()),
+                        pal.text,
+                    );
+                    let detail = match &e.location {
+                        Some(l) => {
+                            format!("{} · {}", localtime::clock_label(e.start_ms, offset), l)
+                        }
+                        None => localtime::clock_label(e.start_ms, offset),
+                    };
+                    clip.text(
+                        block.min + vec2(9.0, 19.0),
+                        Align2::LEFT_TOP,
+                        detail,
+                        FontId::new(11.0, FontFamily::Proportional),
+                        pal.text2,
+                    );
+                }
                 if is_today {
                     let y = top + now.seconds_into_day as f32 / 3600.0 * HOUR_HEIGHT;
                     let red = pal.err;
@@ -297,10 +500,86 @@ fn badge(ui: &mut egui::Ui, pal: &Palette, icon: Icon) {
     );
 }
 
+fn day_note(view: &AgendaView, zone_known: bool) -> String {
+    let zone = if zone_known {
+        ""
+    } else {
+        " Dates use UTC because this computer's time zone couldn't be read."
+    };
+    if !view.events.is_empty() {
+        return format!(
+            "{} event{} today.{zone}",
+            view.events.len(),
+            if view.events.len() == 1 { "" } else { "s" }
+        );
+    }
+    let line = view
+        .devices
+        .iter()
+        .find_map(|d| phone_ui::state_line(d.calendar, "Calendar"));
+    match line {
+        Some(l) => format!("No events to show. {l}{zone}"),
+        None if view.devices.is_empty() => {
+            format!("No events to show. Allow Calendar for a paired phone in the People tab.{zone}")
+        }
+        None => format!("No events on this day.{zone}"),
+    }
+}
+
+fn person_card(ui: &mut egui::Ui, pal: &Palette, p: &Person) {
+    ui.label(theme::semibold(&p.name, 24.0));
+    if let Some(o) = &p.organization {
+        ui.label(theme::secondary(pal, o));
+    }
+    ui.add_space(12.0);
+    theme::hairline(ui, pal);
+    ui.add_space(8.0);
+    egui::Grid::new("person-info")
+        .num_columns(2)
+        .spacing([22.0, 10.0])
+        .show(ui, |ui| {
+            for phone in &p.phones {
+                ui.label(theme::overline(pal, "Phone"));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(phone).color(pal.text)).selectable(true),
+                );
+                ui.end_row();
+            }
+            for mail in &p.emails {
+                ui.label(theme::overline(pal, "Email"));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(mail).color(pal.text)).selectable(true),
+                );
+                ui.end_row();
+            }
+        });
+    ui.add_space(14.0);
+    ui.label(theme::caption(
+        pal,
+        "Read-only copy from your phone, kept in memory only.",
+    ));
+}
+
 impl AppView for Agenda {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
         let now = localtime::now();
+        let shown = self.shown(&now);
+        let request = Request::AgendaView {
+            query: self.query.clone(),
+            day: format!("{:04}-{:02}-{:02}", shown.year, shown.month, shown.day),
+            utc_offset_minutes: localtime::utc_offset_minutes(shown),
+        };
+        match &self.feed {
+            Some(feed) => feed.set_params(request),
+            None => {
+                let repaint = ctx.clone();
+                self.feed = Some(phone_feed::agenda_feed(
+                    move || repaint.request_repaint(),
+                    request,
+                ));
+            }
+        }
         // Keep the "now" line and the date honest without repainting every frame.
         ctx.request_repaint_after(Duration::from_secs(20));
         theme::toolbar(ctx, pal, 46.0, |ui| {
