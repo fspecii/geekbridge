@@ -5,22 +5,27 @@
 #   ./install.sh                 per-user install into ~/.local (no root); enables the service at login
 #   sudo ./install.sh --system   install into /usr/local for all users
 #   ./install.sh --prefix DIR    custom prefix (no service enabling)
-#   ./install.sh --uninstall     remove what this script installed (same mode flags)
+#   ./install.sh --uninstall     remove what this script installed (same mode flags); keeps pairing data
+#   ./install.sh --uninstall --purge-data
+#                                also delete the per-user state directory (pairings, identity, settings)
 #
 # The service is enabled through a systemd user unit when systemd is available, and always via an
 # XDG autostart entry (which starts the same unit, or the binary directly without systemd).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mode=user prefix="" uninstall=0
+mode=user prefix="" uninstall=0 purge=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --system) mode=system; shift;;
     --prefix) prefix="$2"; mode=custom; shift 2;;
     --uninstall) uninstall=1; shift;;
-    -h|--help) sed -n '3,11p' "${BASH_SOURCE[0]}"; exit 0;;
+    --purge-data) purge=1; shift;;
+    -h|--help) sed -n '3,13p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done
+if [[ $purge -eq 1 && $uninstall -ne 1 ]]; then echo "--purge-data only makes sense with --uninstall" >&2; exit 64; fi
+statedir="${XDG_STATE_HOME:-$HOME/.local/state}/geekbridge"
 case "$mode" in
   user) prefix="${HOME}/.local"; unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
         autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart";;
@@ -44,7 +49,13 @@ if [[ $uninstall -eq 1 ]]; then
   done
   rm -f "$unitdir/geekbridge-service.service" "$autostart/geekbridge-service.desktop"
   user_systemd && systemctl --user daemon-reload || true
-  echo "Removed. Pairing data in ~/.local/share/geekbridge was left in place."
+  if [[ $purge -eq 1 ]]; then
+    # Only ever the one directory this program owns; never an empty or relative path.
+    if [[ "$statedir" == /*/geekbridge && -d "$statedir" ]]; then rm -rf -- "$statedir"; echo "Removed. Pairing data and settings in $statedir were deleted (--purge-data)."
+    else echo "Removed. No pairing data found in $statedir."; fi
+  else
+    echo "Removed. Pairing data and settings in $statedir were left in place (add --purge-data to delete them)."
+  fi
   exit 0
 fi
 
@@ -68,6 +79,8 @@ sed -i "s|^exec geekbridge-service\$|exec \"$bindir/geekbridge-service\"|" "$bin
 if user_systemd; then
   systemctl --user daemon-reload
   systemctl --user enable --now geekbridge-service.service
+  # An upgrade replaced the binary under a running service: restart it (a no-op when it was not running).
+  systemctl --user try-restart geekbridge-service.service || true
   echo "Service enabled and started (systemd user unit)."
 else
   echo "Service will start at your next login (XDG autostart)."

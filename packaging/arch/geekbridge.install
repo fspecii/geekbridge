@@ -41,6 +41,6 @@ post_remove() {
 GeekBridge was removed. Per-user leftovers are kept; remove them yourself if you want a clean slate:
   geekbridge-ctl autostart disable   (run before removing, or delete ~/.config/autostart/geekbridge-service.desktop)
   systemctl --user disable geekbridge-service.service
-  ~/.local/share/geekbridge   (pairing data)
+  ~/.local/state/geekbridge   (pairing data, settings; $XDG_STATE_HOME/geekbridge)
 MSG
 }

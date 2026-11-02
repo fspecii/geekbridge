@@ -82,7 +82,7 @@ Version: $debversion
 Architecture: amd64
 Maintainer: GeekBridge <noreply@users.noreply.github.com>
 Installed-Size: $size_kb
-Depends: libc6, libgcc-s1, libxkbcommon0, libwayland-client0, libgl1, libx11-6, libxcb1
+Depends: libc6, libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgl1, libx11-6, libxcb1, libxcursor1, libxi6, libxrandr2
 Recommends: wl-clipboard | xclip, xdg-utils, zenity | kdialog
 Section: net
 Priority: optional

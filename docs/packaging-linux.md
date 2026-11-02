@@ -73,6 +73,14 @@ Not done: an actual `pacman -U` / install / uninstall round trip, running the GU
 Run against the existing `target/release` binaries into a scratch `--out`: produced the `.deb` and the installer
 tarball. `.deb`: control file well formed (`Depends: libc6, libgcc-s1, libxkbcommon0, libwayland-client0, libgl1, libx11-6, libxcb1`),
 54 files, unit mode 0644, includes the autostart entry and `geekbridge-service-launch`. Tarball: 26 files
-(`bin/`, `share/`, `install.sh`, README). Its Debian dependency list lacks `libxkbcommon-x11-0`, `libxcursor1`,
-`libxi6` and `libxrandr2`, which the binary also dlopens; add them before shipping the `.deb` (not changed here).
+(`bin/`, `share/`, `install.sh`, README). The Debian dependency list now includes `libxkbcommon-x11-0`, `libxcursor1`, `libxi6` and `libxrandr2`, which the
+binaries also dlopen (fixed 2026-11-02, see [reports/install-upgrade-sandbox.md](reports/install-upgrade-sandbox.md)).
 Note that these artifacts were packaged from the binaries already in `target/release`, not a fresh build.
+
+## Install, upgrade and uninstall
+
+`install.sh` (per user, `~/.local`): upgrading over an existing install restarts a running service
+(`systemctl --user try-restart`). `install.sh --uninstall` removes exactly what it installed and keeps the state
+directory (`$XDG_STATE_HOME/geekbridge`, default `~/.local/state/geekbridge`: pairings, identity, settings);
+`install.sh --uninstall --purge-data` also deletes that directory. The whole flow runs in a sandbox with
+`scripts/e2e/install-sandbox.sh` (fake HOME/XDG, stub `systemctl`).
