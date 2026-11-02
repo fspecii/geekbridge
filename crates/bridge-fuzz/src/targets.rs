@@ -870,6 +870,303 @@ fn cert_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
+// ------------------------------------------------------------- debug link, doctor, reconnect, send ledger
+
+fn debug_link_parse(input: &[u8]) {
+    use bridge_core::debug_link as dl;
+    let (_, body) = kind_and_body(input, &[dl::LOG, dl::STATE]);
+    if let Ok(b) = dl::parse_log(&body) {
+        oracle(b.lines.len() <= dl::MAX_LINES, || {
+            "too many log lines".into()
+        });
+        for l in &b.lines {
+            oracle(l.chars().count() <= dl::MAX_LINE_CHARS, || {
+                "log line too long".into()
+            });
+            no_control(l, "debug log line", false);
+            oracle(!l.chars().any(is_invisible_format), || {
+                format!("debug log line keeps invisible format characters: {l:?}")
+            });
+            oracle(dl::sanitize_line(l) == *l, || {
+                "sanitize_line not idempotent".into()
+            });
+        }
+        bounded(&b, input.len(), "debug log");
+    }
+    if let Ok(r) = dl::parse_state(&body) {
+        oracle(dl::valid_request_id(&r.request_id), || {
+            "bad request id accepted".into()
+        });
+        oracle(r.text.len() <= dl::MAX_STATE_BYTES, || {
+            "state text too large".into()
+        });
+        no_control(&r.text, "debug state text", true);
+        oracle(!r.text.chars().any(is_invisible_format), || {
+            "debug state keeps invisible format characters".into()
+        });
+        bounded(&r, input.len(), "debug state");
+    }
+    let _ = dl::valid_request_id(&text(input));
+    let s = text(input);
+    let cleaned = dl::sanitize_line(&s);
+    oracle(cleaned.chars().count() <= dl::MAX_LINE_CHARS, || {
+        "sanitize_line unbounded".into()
+    });
+}
+
+fn hub_debug(input: &[u8]) {
+    use bridge_core::debug_link as dl;
+    use bridge_service::phone_debug::{Disposition, PhoneDebug};
+    let hub_rt = fresh_rt();
+    let _g = hub_rt.enter();
+    // No state directory: nothing is written, but every gate and counter runs.
+    let hub = PhoneDebug::new(None);
+    let id = "0123456789abcdef0123456789abcdef";
+    let (_rx, gen_) = hub.link_up(id, true);
+    let mut waiting: Option<String> = None;
+    for (i, (kind, body)) in lines(input).enumerate() {
+        let consent = i % 5 != 4;
+        match kind.as_str() {
+            dl::STATE => {
+                let d = hub.on_state(id, consent, &body);
+                if d == Disposition::Accepted {
+                    oracle(waiting.take().is_some(), || {
+                        "state accepted with no request".into()
+                    });
+                }
+            }
+            _ => {
+                let d = hub.on_log(id, consent, &body);
+                oracle(d != Disposition::Accepted, || {
+                    "log accepted with no directory".into()
+                });
+            }
+        }
+        if i % 7 == 0
+            && let Ok((rid, _rx)) = hub.request_state(id, true, true)
+        {
+            waiting = Some(rid);
+        }
+        let _ = hub.lines_received(id);
+    }
+    hub.link_down(id, gen_);
+}
+
+fn doctor_ufw(input: &[u8]) {
+    use bridge_service::doctor::{self, Firewall, Level};
+    let s = text(input);
+    for proto in ["tcp", "udp"] {
+        if doctor::ufw_allows(&s, proto) {
+            oracle(
+                s.lines().any(|l| {
+                    let l = l.trim();
+                    l.starts_with("-A ufw-user-input")
+                        && l.ends_with("-j ACCEPT")
+                        && l.contains(proto)
+                }),
+                || "ufw_allows true without an accepting user-input line".into(),
+            );
+        }
+    }
+    for enabled in [Some(true), Some(false), None] {
+        let fw = Firewall {
+            ufw_enabled: enabled,
+            ufw_rules: Some(s.clone()),
+            firewalld_active: false,
+        };
+        let checks = doctor::run(&doctor::Inputs {
+            status: Err(s.chars().take(200).collect()),
+            clipboard: None,
+            calling: None,
+            data: Vec::new(),
+            session: doctor::SessionEnv::default(),
+            firewall: fw,
+            systemd_unit: false,
+        });
+        let shown = doctor::render(&checks);
+        bounded(&shown, input.len().min(200), "doctor render");
+        let _ = doctor::failures(&checks);
+        let _ = Level::Ok;
+    }
+    let _ = doctor::hint_for_error(&s);
+}
+
+fn reconnect_book(input: &[u8]) {
+    use bridge_service::reconnect::{Book, MAX_TRIES};
+    use std::collections::HashMap;
+    use tokio::time::Instant;
+    let t0 = Instant::now();
+    let mut now = t0;
+    let mut book = Book::default();
+    let ids = ["a", "b", "c"];
+    // Per phone: when we last allowed a dial and how many in a row, reset by anything that forgets it.
+    let mut last: HashMap<&str, Instant> = HashMap::new();
+    let mut run: HashMap<&str, u32> = HashMap::new();
+    for pair in input.chunks(2).take(4096) {
+        let (op, arg) = (pair[0], pair.get(1).copied().unwrap_or(0));
+        let id = ids[(op >> 4) as usize % ids.len()];
+        match op & 7 {
+            0..=2 => {
+                now += Duration::from_millis(u64::from(arg) * 250);
+                let addr = (IpAddr::V4(Ipv4Addr::new(10, 0, 0, arg & 3)), 1716);
+                if book.due(id, addr, now) {
+                    if let Some(prev) = last.insert(id, now) {
+                        oracle(now.duration_since(prev) >= Duration::from_secs(2), || {
+                            format!("redial after only {:?}", now.duration_since(prev))
+                        });
+                    }
+                    let n = run.entry(id).or_insert(0);
+                    *n += 1;
+                    // Address flips grant two more tries each time the cap was reached, so a long run needs
+                    // time to have passed: at most 60 s between tries once the back-off has saturated.
+                    let elapsed = now.duration_since(t0);
+                    oracle(
+                        u64::from(*n) <= u64::from(MAX_TRIES) + elapsed.as_secs() / 2 + 1,
+                        || format!("{n} dials in {elapsed:?}"),
+                    );
+                }
+            }
+            3 => {
+                book.settled(id);
+                last.remove(id);
+                run.remove(id);
+            }
+            4 => {
+                book.pause(id, now);
+                last.remove(id);
+                run.remove(id);
+            }
+            5 => {
+                let keep: Vec<&str> = ids
+                    .iter()
+                    .copied()
+                    .filter(|i| arg & 1 << (ids.iter().position(|x| x == i).unwrap()) != 0)
+                    .collect();
+                book.keep_only(&keep);
+                for i in ids {
+                    if !keep.contains(&i) {
+                        last.remove(i);
+                        run.remove(i);
+                    }
+                }
+            }
+            _ => {
+                let t = book.trying();
+                oracle(t.len() <= ids.len(), || {
+                    "trying() lists unknown phones".into()
+                });
+            }
+        }
+    }
+}
+
+fn send_ledger(input: &[u8]) {
+    use bridge_core::messages::{
+        OutgoingTextIntent, SendEvent, SendId, SendLedger, SendState, SimSelection, SubmissionId,
+        Submit,
+    };
+    const EVENTS: [SendEvent; 8] = [
+        SendEvent::Dispatched,
+        SendEvent::ConnectionLost,
+        SendEvent::AckTimedOut,
+        SendEvent::PhoneAccepted,
+        SendEvent::PhoneSent,
+        SendEvent::PhoneDelivered,
+        SendEvent::PhoneFailed,
+        SendEvent::LocalAbort,
+    ];
+    let mut ledger = SendLedger::new();
+    let mut ids: Vec<SendId> = Vec::new();
+    for pair in input.chunks(2).take(2048) {
+        let (op, arg) = (pair[0], pair.get(1).copied().unwrap_or(0));
+        match op % 4 {
+            0 => {
+                let sub = SubmissionId::new(&format!("s{}", arg % 40)).unwrap();
+                let intent = OutgoingTextIntent::new(
+                    &["+15551234567"],
+                    format!("t{}", arg % 3),
+                    SimSelection::PhoneDefault,
+                )
+                .unwrap();
+                if let Ok(Submit::Created(id) | Submit::Existing(id)) =
+                    ledger.submit(sub, intent, 1)
+                {
+                    ids.push(id);
+                }
+            }
+            1..=2 => {
+                if !ids.is_empty() {
+                    let id = ids[arg as usize % ids.len()];
+                    let _ = ledger.apply(id, EVENTS[(op >> 4) as usize % EVENTS.len()], 2);
+                }
+            }
+            _ => {
+                let keep = arg as usize % 12;
+                let before: Vec<(SendId, SendState)> = ids
+                    .iter()
+                    .filter_map(|i| ledger.get(*i).map(|r| (*i, r.state())))
+                    .collect();
+                let gone = ledger.prune_settled(keep);
+                for g in &gone {
+                    oracle(ledger.get(*g).is_none(), || {
+                        "pruned record still present".into()
+                    });
+                    let was = before.iter().find(|(i, _)| i == g).map(|(_, s)| *s);
+                    oracle(
+                        matches!(
+                            was,
+                            Some(SendState::Sent | SendState::Delivered | SendState::Failed { .. })
+                        ),
+                        || format!("pruned a send that was {was:?}"),
+                    );
+                }
+                for (i, st) in &before {
+                    if !gone.contains(i) {
+                        oracle(ledger.get(*i).map(|r| r.state()) == Some(*st), || {
+                            "prune changed a kept record".into()
+                        });
+                    }
+                }
+                // Either at the limit, or everything left is not settled.
+                if ledger.len() > keep {
+                    oracle(
+                        ids.iter().filter_map(|i| ledger.get(*i)).all(|r| {
+                            !matches!(
+                                r.state(),
+                                SendState::Sent | SendState::Delivered | SendState::Failed { .. }
+                            )
+                        }),
+                        || "prune stopped early with settled sends left".into(),
+                    );
+                }
+                ids.retain(|i| ledger.get(*i).is_some());
+            }
+        }
+    }
+}
+
+fn debug_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"seq":1,"lines":["a","b\u001b[31m","c\u202Ed"]}"#,
+        r#"{"requestId":"st1-2","text":"x\ny\u0000"}"#,
+        r#"{"type":"geekbridge.debug.log","body":{"seq":9,"lines":[]}}"#,
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
+fn ufw_seeds() -> Vec<Vec<u8>> {
+    [
+        "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT\n-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT\n",
+        "-A ufw-user-input -s 192.168.1.0/24 -p tcp --dport 1:65535 -j ACCEPT",
+        "-A ufw-user-input -p tcp --dport 99999999999:1 -j ACCEPT",
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
 macro_rules! t {
     ($name:literal, $run:expr, $kinds:expr, $fx:expr, $seeds:expr) => {
         Target {
@@ -1015,6 +1312,23 @@ pub static TARGETS: &[Target] = &[
         &["kdeconnect.clipboard", "geekbridge.clipboard"],
         none
     ),
+    t!(
+        "debug_link",
+        debug_link_parse,
+        &["geekbridge.debug.log", "geekbridge.debug.state"],
+        &["geekbridge.debug"],
+        debug_seeds
+    ),
+    t!(
+        "hub_debug",
+        hub_debug,
+        &["geekbridge.debug.log", "geekbridge.debug.state"],
+        &["geekbridge.debug"],
+        debug_seeds
+    ),
+    t!("doctor_ufw", doctor_ufw, &[], &[], ufw_seeds),
+    t!("reconnect", reconnect_book, &[], &[], none),
+    t!("send_ledger", send_ledger, &[], &[], none),
 ];
 
 pub fn by_name(name: &str) -> Option<&'static Target> {

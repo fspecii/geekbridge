@@ -61,3 +61,33 @@ fn repeated_uids_do_not_multiply_a_vcard() {
         serde_json::json!({ "id": 1, "type": "kdeconnect.contacts.response_vcards", "body": body });
     run("phone_wire", line.to_string().as_bytes());
 }
+
+#[test]
+fn ufw_rules_with_absurd_ports_and_long_lines_are_handled() {
+    run(
+        "doctor_ufw",
+        b"-A ufw-user-input -p tcp --dport 99999999999999999999:1 -j ACCEPT\n",
+    );
+    run("doctor_ufw", b"-A ufw-user-input -p tcp --dport -j ACCEPT");
+    run("doctor_ufw", b"-A ufw-user-input -p -j ACCEPT");
+    let long = format!("-A ufw-user-input {} -j ACCEPT", "-p tcp ".repeat(100_000));
+    run("doctor_ufw", long.as_bytes());
+}
+
+#[test]
+fn debug_packets_with_hostile_text_are_cleaned() {
+    run(
+        "debug_link",
+        "{\"seq\":18446744073709551615,\"lines\":[\"\u{1b}]0;x\u{7}\",\"\u{202e}a\"]}".as_bytes(),
+    );
+    run("debug_link", br#"{"requestId":"","text":"x"}"#);
+    run("hub_debug", b"{\"seq\":1,\"lines\":[]}\n{\"seq\":1,\"lines\":[]}\n{\"requestId\":\"st1\",\"text\":\"a\"}\n");
+}
+
+#[test]
+fn debug_log_lines_lose_the_deprecated_format_characters() {
+    run(
+        "debug_link",
+        "{\"seq\":1,\"lines\":[\"c\u{206e}d\"]}".as_bytes(),
+    );
+}

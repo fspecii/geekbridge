@@ -159,3 +159,38 @@ test = false
 doc = false
 bench = false
 
+
+[[bin]]
+name = "debug_link"
+path = "fuzz_targets/debug_link.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hub_debug"
+path = "fuzz_targets/hub_debug.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "doctor_ufw"
+path = "fuzz_targets/doctor_ufw.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reconnect"
+path = "fuzz_targets/reconnect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "send_ledger"
+path = "fuzz_targets/send_ledger.rs"
+test = false
+doc = false
+bench = false

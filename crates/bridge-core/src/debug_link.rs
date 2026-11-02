@@ -50,8 +50,8 @@ impl std::fmt::Display for DebugError {
 /// marks, BOM, Arabic letter mark): not "control" to Rust, but a hostile phone could use them to make a log line
 /// read differently from what it holds.
 fn is_spoofing_format(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
-        | '\u{2066}'..='\u{2069}' | '\u{061C}' | '\u{FEFF}')
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}'
+        | '\u{061C}' | '\u{FEFF}')
 }
 
 /// One line made safe to store and print: control characters (including ESC) and invisible bidi/format
@@ -176,6 +176,9 @@ mod tests {
         let body =
             obj(json!({"seq": 1, "lines": ["ok \u{202E}gnirts\u{202C} a\u{200B}b\u{FEFF}"]}));
         assert_eq!(parse_log(&body).unwrap().lines, ["ok ?gnirts? a?b?"]);
+        // The deprecated format characters U+206A..U+206F (swapping, shaping, digit shapes) too.
+        let dep = obj(json!({"seq": 1, "lines": ["c\u{206A}\u{206E}\u{206F}d"]}));
+        assert_eq!(parse_log(&dep).unwrap().lines, ["c???d"]);
         let st = obj(json!({"requestId": "r", "text": "x\u{2066}y\n"}));
         assert_eq!(parse_state(&st).unwrap().text, "x?y\n");
     }

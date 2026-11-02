@@ -639,6 +639,28 @@ pub async fn run(config: config::Config) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_per_datagram_receive_errors_are_skipped() {
+        assert!(is_per_datagram_error(&io::Error::from(
+            io::ErrorKind::ConnectionReset
+        )));
+        assert!(!is_per_datagram_error(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_per_datagram_error(&io::Error::from(
+            io::ErrorKind::InvalidInput
+        )));
+        // WSAEMSGSIZE / WSAECONNRESET codes count on Windows only; elsewhere those numbers mean other things.
+        assert_eq!(
+            is_per_datagram_error(&io::Error::from_raw_os_error(10040)),
+            cfg!(windows)
+        );
+        assert_eq!(
+            is_per_datagram_error(&io::Error::from_raw_os_error(10054)),
+            cfg!(windows)
+        );
+    }
+
     #[tokio::test]
     async fn discovery_socket_shares_its_port_like_stock_kde_connect() {
         let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);

@@ -604,6 +604,32 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
     }
 
+    /// A hostile phone with consent on sends maximum-size packets as fast as it likes: what lands on disk is
+    /// capped by the rate limit and the rotation, and nothing but the newest files is kept.
+    #[test]
+    fn a_flood_of_maximum_packets_keeps_disk_use_bounded() {
+        let t = tempfile::tempdir().unwrap();
+        let h = hub(t.path());
+        let line = "x".repeat(debug_link::MAX_LINE_CHARS);
+        let lines: Vec<String> = vec![line; 60]; // just under MAX_LOG_BYTES
+        let mut accepted = 0u64;
+        for seq in 1..=2000u64 {
+            let body = debug_link::log_body(seq, &lines);
+            if h.on_log(DEV, true, &body) == Disposition::Accepted {
+                accepted += 1;
+            }
+        }
+        // Burst plus whatever refilled while the loop ran; far below the 2000 sent.
+        assert!(accepted <= 10 + 200, "accepted {accepted}");
+        let dir = log_dir(t.path());
+        let total: u64 = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum();
+        assert!(total <= (KEEP_ROTATED as u64 + 1) * (ROTATE_BYTES + 64 * 1024));
+        assert!(fs::read_dir(&dir).unwrap().count() <= KEEP_ROTATED + 1);
+    }
+
     #[tokio::test]
     async fn state_requests_are_answered_once_and_checked() {
         let t = tempfile::tempdir().unwrap();
