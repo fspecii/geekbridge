@@ -83,6 +83,20 @@ class UpdateCheckerTest {
 
     @After fun stop() = listener.close()
 
+    @Test fun prereleaseIsIgnored_andDowngradeIsNotOffered() {
+        fun release(tag: String, pre: Boolean) = """{"tag_name":"$tag","prerelease":$pre,"html_url":"$base/rel","body":"",
+            "assets":[{"name":"geekbridge-android.apk","size":10,"browser_download_url":"$base/dl/geekbridge-android.apk"}]}""".toByteArray()
+        reply(latest, release("v0.9.0-rc.1", true))
+        assertTrue(checker().check(null) !is UpdateCheckResult.Available)
+        reply(latest, release("v0.9.0", true)) // flagged prerelease on the server even with a clean tag
+        assertTrue(checker().check(null) !is UpdateCheckResult.Available)
+        reply(latest, release("v0.0.5", false)) // older than the installed 0.1.0
+        assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
+        reply(latest, release("v0.2.0", false)) // newer semver, but not newer than the installed versionCode
+        val high = UpdateChecker("0.1.0", Int.MAX_VALUE, baseUrl = base, allowLoopback = true, readTimeoutMs = 3_000)
+        assertTrue(high.check(null) is UpdateCheckResult.UpToDate)
+    }
+
     private fun reply(path: String, body: ByteArray, status: Int = 200, vararg extra: Pair<String, String>) {
         routes[path] = { ex ->
             extra.forEach { (k, v) -> ex.responseHeaders.add(k to v) }

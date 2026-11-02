@@ -46,6 +46,7 @@ object A11yLabels {
     }
 
     /** Re-focus the node at [path] (as far as the rebuilt tree still reaches); no-op when [path] is null. */
+    @android.annotation.SuppressLint("AccessibilityFocus") // restores the user's own focus after a rebuild; never moves it elsewhere
     fun restoreFocus(root: ViewGroup, path: List<Int>?) {
         if (path == null) return
         var view: View = root
