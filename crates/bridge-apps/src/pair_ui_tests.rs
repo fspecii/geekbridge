@@ -32,6 +32,7 @@ fn status(paired: &[&str], links: Vec<ipc::LinkStatus>) -> Status {
         event_seq: 0,
         inbound_listener: None,
         reconnecting: vec![],
+        disconnected: vec![],
     }
 }
 
