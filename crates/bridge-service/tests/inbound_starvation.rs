@@ -4,6 +4,9 @@
 //! few unpaired links, and a paired phone that reconnects always gets in, even when the table is
 //! full of strangers from many addresses.
 
+// Dials from several 127/8 source addresses, which only Linux routes (macOS has just 127.0.0.1).
+#![cfg(target_os = "linux")]
+
 use bridge_core::{
     Snapshot,
     ipc::{LinkPhase, Request, Response},

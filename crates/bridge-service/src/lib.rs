@@ -399,6 +399,9 @@ fn bind_discovery(addr: SocketAddr) -> io::Result<UdpSocket> {
         None,
     )?;
     socket.set_reuse_address(true)?;
+    // macOS/BSD only let two UDP sockets share a port when both set SO_REUSEPORT (Qt's ShareAddress sets both there).
+    #[cfg(target_os = "macos")]
+    socket.set_reuse_port(true)?;
     socket.bind(&addr.into())?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket.into())

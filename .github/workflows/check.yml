@@ -28,6 +28,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
+      - name: Raise the macOS UDP datagram limit (discovery tests send the 16 KiB identity cap; the default is 9216)
+        if: runner.os == 'macOS'
+        run: sudo sysctl -w net.inet.udp.maxdgram=65535
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -76,6 +79,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
       - name: Idle service budget (startup, RSS, threads, fds, wakeups, binary size)
+        env:
+          GB_CI: '1'  # slack on the load-dependent rows for shared runners; binary sizes stay strict
         run: scripts/perf-check.sh --build --window 10
 
   cross-targets:
@@ -129,6 +134,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          # The action's default 'tools platform-tools' fails ('Failed to find package tools');
+          # the packages we need are installed explicitly by sdkmanager below.
+          packages: ''
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -205,6 +214,10 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          # The action's default 'tools platform-tools' fails ('Failed to find package tools');
+          # the packages we need are installed explicitly by sdkmanager below.
+          packages: ''
       - name: Linux graphics and private D-Bus test dependencies
         run: |
           sudo apt-get update

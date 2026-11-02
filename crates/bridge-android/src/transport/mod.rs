@@ -1056,6 +1056,8 @@ mod coexist_tests {
         assert!(bind_tcp(LO, base, base).is_err());
     }
 
+    // SO_REUSEADDR shares a UDP port on Linux/Android (the phone); BSD/macOS would need SO_REUSEPORT.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn two_discovery_sockets_can_share_the_port() {
         let a = bind_udp(SocketAddr::new(LO, 0), false).unwrap();

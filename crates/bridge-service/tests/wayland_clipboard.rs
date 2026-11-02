@@ -8,6 +8,7 @@
 //! WLR_BACKENDS=headless WLR_RENDERER=pixman sway -c /dev/null &   # then WAYLAND_DISPLAY=wayland-1
 //! GEEKBRIDGE_TEST_WAYLAND=1 cargo test -p bridge-service --test wayland_clipboard
 //! ```
+#![cfg(unix)]
 use bridge_core::clipboard::{ObserveMode, ReadAccess, Sensitivity};
 use bridge_service::clipboard::{ClipImage, detect_backend};
 use std::process::{Command, Stdio};

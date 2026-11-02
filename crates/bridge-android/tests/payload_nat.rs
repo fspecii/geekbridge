@@ -8,7 +8,8 @@
 //! phone's TCP ignores, which an application sees as silence. A socket on the plain route works.
 //!
 //! `GEEKBRIDGE_CHAOS=soak` uses 500 MiB instead of the short size.
-#![cfg(unix)] // passes raw file descriptors to the Android transport
+// Needs several 127/8 addresses (the phone's "eth0" is its own loopback address), which only Linux routes.
+#![cfg(target_os = "linux")]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::AsRawFd;
 use std::pin::Pin;

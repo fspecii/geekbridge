@@ -62,6 +62,15 @@ struct Phone {
     addr: SocketAddr,
 }
 
+/// Linux routes all of 127/8, so each phone gets its own address; other platforms only have 127.0.0.1.
+fn loopback_host(n: u32) -> String {
+    if cfg!(target_os = "linux") {
+        format!("127.{}.{}.1", std::process::id() % 250 + 2, n)
+    } else {
+        "127.0.0.1".to_owned()
+    }
+}
+
 impl Phone {
     fn start(n: u32) -> Phone {
         let dir = tempfile::tempdir().unwrap();
@@ -71,7 +80,7 @@ impl Phone {
             json!({
                 "state_dir": dir.path().to_str().unwrap(),
                 "device_name": "Chaos Phone",
-                "listen": { "host": format!("127.{}.{}.1", std::process::id() % 250 + 2, n), "port": 0 },
+                "listen": { "host": loopback_host(n), "port": 0 },
                 "allow_loopback": true,
             }),
         ));

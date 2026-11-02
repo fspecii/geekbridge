@@ -265,7 +265,8 @@ fn only_plain_github_https_links_are_openable() {
     assert!(!report::open_in_browser("https://github.com/o r"));
 }
 
-#[cfg(unix)]
+// The stubs stand in for xdg-open / xclip / wl-copy; macOS uses `open` and `pbcopy`, Windows neither.
+#[cfg(target_os = "linux")]
 mod os_tools {
     use super::report;
     use std::{fs, os::unix::fs::PermissionsExt, path::Path};

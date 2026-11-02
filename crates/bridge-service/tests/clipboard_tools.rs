@@ -3,7 +3,8 @@
 //! private PATH instead of a compositor: the stubs record their argv and print canned output, so missing tools, crashes,
 //! hangs, huge or binary output, non-UTF-8 text, image MIME negotiation, password-manager hints, the change-event helper
 //! dying, and loop suppression are all deterministic. Every test takes `ENV` because PATH is process-wide.
-#![cfg(unix)]
+// Models the Linux wl-clipboard / xclip backends; macOS and Windows have their own native ones.
+#![cfg(target_os = "linux")]
 
 use bridge_core::{
     clipboard::{ObserveMode, ReadAccess, Sensitivity},

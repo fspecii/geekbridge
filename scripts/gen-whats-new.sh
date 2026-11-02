@@ -110,7 +110,9 @@ highlights() {
     if [[ -n $o ]]; then printf '%s\n' "$o"; else highlights_pass 0; fi
 }
 
-mapfile -t LINES < <(highlights)
+# (not `mapfile`: macOS ships bash 3.2)
+LINES=()
+while IFS= read -r line; do LINES+=("$line"); done < <(highlights)
 FALLBACK=0
 if ((${#LINES[@]} == 0)); then
     FALLBACK=1

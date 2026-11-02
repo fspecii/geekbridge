@@ -334,6 +334,8 @@ fn only_the_paired_host_gets_a_handshake_slot() {
 
 /// The sender only accepts the paired peer's IP. A receiver that knows its control-link address
 /// binds to it, so it is accepted even when the OS would route the dial from another source.
+// Needs 127.0.0.2/3 as extra local addresses, which only Linux routes.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn receiver_binds_its_control_link_address() {
     let (a, b) = (creds('a'), creds('b'));
@@ -452,6 +454,8 @@ fn the_plain_route_is_tried_before_the_control_link_address() {
 /// A route that connects and then goes silent or resets must not end the transfer: the receiver moves
 /// on inside its handshake budget. The "NAT" kills what comes from the bound address, as the emulator's
 /// default route does; the plain route reaches the sender.
+// Needs 127.0.0.2/3 as extra local addresses, which only Linux routes.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_failing_route_moves_on_only_after_a_real_handshake_attempt() {
     // The other order, plain route dead and bound source alive, is the multi-homed case.
