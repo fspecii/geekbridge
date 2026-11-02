@@ -387,6 +387,13 @@ pub enum Request {
         target: crate::calls_view::ActionTarget,
         action: CallAction,
     },
+    /// Place a call to `number` through `source` (the `dial` the latest `Calls` view offered). The
+    /// service re-checks that it is still offered and that the number is plain digits. The apps
+    /// must have asked the user to confirm first; nothing here dials without that.
+    CallDial {
+        source: String,
+        number: crate::calls::Sensitive,
+    },
     /// Mute or unmute the computer's microphone for the live call (only where offered).
     CallMute {
         source: String,
@@ -714,6 +721,10 @@ pub struct CallsStatus {
     pub notice: Option<String>,
     /// One line per call source saying why it is or is not usable, without numbers or addresses.
     pub sources: Vec<String>,
+    /// Set when calls can be controlled from here but their audio cannot come to this computer
+    /// (for example no Bluetooth controller): what works, what stays on the phone, the next step.
+    #[serde(default)]
+    pub audio_note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

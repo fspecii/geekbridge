@@ -16,8 +16,17 @@ What works, how it is wired, what it needs, and what has **not** been tried on a
 - **Honest controls.** A button exists only if the service offered a target for it (`CallRow.answer/reject/hangup`).
   If a ringing call cannot be answered from here the popup says why ("Answer on the phone. To answer from here, allow
   GeekBridge to answer calls in the phone app's setup.") instead of showing a dead button.
-- **Scripts.** `geekbridge-ctl calls [--reveal]`, `call answer|reject|hangup`, `call mute on|off`, `call audio`
-  (numbers masked unless `--reveal`).
+- **Scripts.** `geekbridge-ctl calls [--reveal]`, `call answer|reject|hangup`, `call mute on|off`, `call audio`,
+  `call dial NUMBER [--yes]` (numbers masked unless `--reveal`).
+- **Dialing.** The keypad's Call button opens a confirmation sheet ("Call +49... with Pixel?", saying where the voice
+  will be); only its Call button sends the request. `geekbridge-ctl call dial NUMBER` asks `[y/N]` on a terminal and
+  refuses without `--yes` when there is none. Digits with an optional leading `+` only: `*` and `#` (USSD/MMI codes)
+  are refused on this path. It is offered only while no call is going on, Telephony is allowed for the phone and the
+  phone reported `canDial` (Android `CALL_PHONE`). When it is not, the Call button and the CLI say which of these is
+  missing.
+- **No Bluetooth controller.** The window shows (and `geekbridge-ctl doctor` / `diagnose` say) that call control works
+  over the phone link but the audio stays on the phone, and that a USB Bluetooth adapter is the way to hear calls
+  here. This is reported as information, not as a fault.
 
 ## Two control paths, merged
 
@@ -56,8 +65,8 @@ when HFP is present but its audio link is closed, offers **Use computer audio**.
 
 | packet | direction | body |
 | --- | --- | --- |
-| `geekbridge.calls.state` | phone → computer | `state` (`idle`/`ringing`/`offhook`), optional `number`, `name` (≤ 128 bytes, no control characters), `canAnswer`, `canEnd` |
-| `geekbridge.calls.request` | computer → phone | `requestId` (`[A-Za-z0-9_-]{1,64}`), `action` (`answer`/`reject`/`hangup`) |
+| `geekbridge.calls.state` | phone → computer | `state` (`idle`/`ringing`/`offhook`), optional `number`, `name` (≤ 128 bytes, no control characters), `canAnswer`, `canEnd`, `canDial` (absent = false) |
+| `geekbridge.calls.request` | computer → phone | `requestId` (`[A-Za-z0-9_-]{1,64}`), `action` (`answer`/`reject`/`hangup`/`dial`); `dial` also carries `number` (`+`? then 1-20 digits) |
 | `geekbridge.calls.result` | phone → computer | `requestId`, `ok`, optional `reason` (`permission_missing`/`no_such_call`/`failed`) |
 
 Rules (service, `gate.rs` + `call_control.rs`):
@@ -136,6 +145,9 @@ Hosts are started only when the service's calling probe is enabled. Their capabi
   block is not compiled on Linux.
 - The `notify-send` Answer/Decline notification depends on the desktop's notification daemon; it was only tested as
   argument construction, not on a live desktop.
-- Not implemented: waiting/second calls over the link (Android reports one current call), hold/swap from the UI, dialling
-  from the keypad (still blocked), a Windows/macOS phone picker, microphone mute on Linux/macOS, an OS notification that
+- Dialing over the link (`dial`, `CALL_PHONE`) is covered by the stand-in phone tests and Rust/Kotlin unit tests only; it
+  has not run on an Android device or emulator (the Android Gradle build was not available when it was written), and no
+  call was placed anywhere.
+- Not implemented: waiting/second calls over the link (Android reports one current call), hold/swap from the UI, DTMF
+  tones, dialing `*`/`#` codes, a Windows/macOS phone picker, microphone mute on Linux/macOS, an OS notification that
   launches the Calls window when none is open (the service notification covers Linux only).

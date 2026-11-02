@@ -25,12 +25,15 @@ data class CallPermissions(
     val answerPhoneCalls: Boolean,
     val readCallLog: Boolean,
     val readContacts: Boolean,
+    /** CALL_PHONE: lets a paired computer ask this phone to place a call (TelecomManager.placeCall). */
+    val callPhone: Boolean = false,
 )
 
 enum class CallAction(val wire: String) {
     Answer("answer"),
     Reject("reject"),
-    Hangup("hangup");
+    Hangup("hangup"),
+    Dial("dial");
 
     companion object {
         fun parse(s: String): CallAction? = entries.firstOrNull { it.wire == s }
@@ -38,8 +41,15 @@ enum class CallAction(val wire: String) {
 }
 
 /** A request from a paired computer, as the native core queued it. */
-data class CallRequest(val seq: Long, val connectionId: Long, val requestId: String, val action: CallAction) {
-    override fun toString() = "CallRequest($seq, ${action.wire})"
+data class CallRequest(
+    val seq: Long,
+    val connectionId: Long,
+    val requestId: String,
+    val action: CallAction,
+    /** Only for [CallAction.Dial]: plain digits with an optional leading +. */
+    val number: String? = null,
+) {
+    override fun toString() = "CallRequest($seq, ${action.wire})" // never the number
 }
 
 data class CallWait(val requests: List<CallRequest>, val lastSeq: Long, val stopped: Boolean, val enabled: Boolean)
@@ -51,8 +61,9 @@ data class CallReport(
     val name: String?,
     val canAnswer: Boolean,
     val canEnd: Boolean,
+    val canDial: Boolean = false,
 ) {
-    override fun toString() = "CallReport($state, answer=$canAnswer, end=$canEnd)" // never the party
+    override fun toString() = "CallReport($state, answer=$canAnswer, end=$canEnd, dial=$canDial)" // never the party
 }
 
 /** Why the phone did not do a request. Fixed vocabulary shared with the computer (`LinkFailure`). */
@@ -72,6 +83,14 @@ object CallRules {
 
     /** Declining and ending use `TelecomManager.endCall()`, which exists from API 28. */
     fun canEnd(sdk: Int, p: CallPermissions) = sdk >= MIN_SDK_END && p.answerPhoneCalls && p.readPhoneState
+
+    /** Placing a call needs CALL_PHONE (any API level that has TelecomManager.placeCall, i.e. 21+). */
+    fun canDial(p: CallPermissions) = p.callPhone
+
+    /** The only numbers this phone dials for a computer: digits, optional leading +. No USSD/MMI (`*`, `#`). */
+    private val dialNumber = Regex("\\+?[0-9]{1,20}")
+
+    fun dialable(raw: String?): Boolean = raw != null && dialNumber.matches(raw)
 
     private val phoneNumber = Regex("[+0-9*#().\\- ]{1,32}")
 
@@ -95,26 +114,41 @@ object CallRules {
         val party = state != CallState.Idle
         val n = if (party && p.readCallLog) cleanField(number) else null
         val nm = if (party && n != null && p.readContacts) cleanField(name) else null
-        return CallReport(state, n, nm, canAnswer(sdk, p), canEnd(sdk, p))
+        return CallReport(state, n, nm, canAnswer(sdk, p), canEnd(sdk, p), canDial(p))
     }
 
     /**
      * Decide and perform one request; null means done, otherwise the failure to report. Everything is
      * checked against the *current* state, so a request that raced a state change does nothing.
      */
-    fun handle(action: CallAction, state: CallState?, sdk: Int, p: CallPermissions, telecom: TelecomPort): CallFailure? {
+    fun handle(
+        action: CallAction,
+        state: CallState?,
+        sdk: Int,
+        p: CallPermissions,
+        telecom: TelecomPort,
+        number: String? = null,
+    ): CallFailure? {
         val allowed = when (action) {
             CallAction.Answer -> canAnswer(sdk, p)
             CallAction.Reject, CallAction.Hangup -> canEnd(sdk, p)
+            CallAction.Dial -> canDial(p)
         }
         if (!allowed) return CallFailure.PermissionMissing
         val fits = when (action) {
             CallAction.Answer, CallAction.Reject -> state == CallState.Ringing
             CallAction.Hangup -> state == CallState.OffHook
+            // Only from a known idle phone: never a second call on top of a ringing or live one.
+            CallAction.Dial -> state == CallState.Idle
         }
         if (!fits) return CallFailure.NoSuchCall
+        if (action == CallAction.Dial && !dialable(number)) return CallFailure.Failed
         return try {
             when (action) {
+                CallAction.Dial -> {
+                    telecom.placeCall(number!!)
+                    null
+                }
                 CallAction.Answer -> {
                     telecom.acceptRingingCall()
                     null
@@ -136,6 +170,9 @@ interface TelecomPort {
 
     /** Declines a ringing call or ends the current one; false if Android did not end anything. */
     fun endCall(): Boolean
+
+    /** Places a call to a plain number. Throws [SecurityException] without CALL_PHONE. */
+    fun placeCall(number: String)
 }
 
 /** Resolves a caller's number to a contact name on this phone (needs READ_CONTACTS), or null. */
@@ -161,7 +198,7 @@ object CallsProtocol {
         val o = base("transport_calls_report").put("state", wire(r.state))
         if (r.number != null) o.put("number", r.number)
         if (r.name != null) o.put("name", r.name)
-        return o.put("can_answer", r.canAnswer).put("can_end", r.canEnd).toString()
+        return o.put("can_answer", r.canAnswer).put("can_end", r.canEnd).put("can_dial", r.canDial).toString()
     }
 
     fun resultRequest(connectionId: Long, requestId: String, failure: CallFailure?): String {
@@ -190,7 +227,9 @@ object CallsProtocol {
             val id = e.optString("request_id", "")
             val action = CallAction.parse(e.optString("action", "")) ?: continue
             if (!idPattern.matches(id)) continue
-            out += CallRequest(seq, conn, id, action)
+            val number = e.optString("number", "").takeIf { it.isNotEmpty() }
+            if (action == CallAction.Dial && !CallRules.dialable(number)) continue
+            out += CallRequest(seq, conn, id, action, if (action == CallAction.Dial) number else null)
         }
         return CallWait(out, o.optLong("last_seq", 0), o.optBoolean("stopped", false), o.optBoolean("enabled", false))
     }
@@ -296,7 +335,7 @@ class CallControlEngine(
     fun onRequests(requests: List<CallRequest>) {
         if (!settings().enabled) return
         for (r in requests) {
-            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom)
+            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number)
             core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
         }
     }

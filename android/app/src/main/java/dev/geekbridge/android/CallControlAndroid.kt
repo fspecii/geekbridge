@@ -28,6 +28,13 @@ class AndroidTelecom(context: Context) : TelecomPort {
         (telecom ?: throw IllegalStateException("No telecom service")).acceptRingingCall()
     }
 
+    @SuppressLint("MissingPermission") // CallRules.handle checks CALL_PHONE first; SecurityException is mapped anyway
+    override fun placeCall(number: String) {
+        val t = telecom ?: throw IllegalStateException("No telecom service")
+        // A tel: URI built from parts, so the number is data and never parsed as anything else.
+        t.placeCall(Uri.fromParts("tel", number, null), android.os.Bundle())
+    }
+
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission", "NewApi") // reachable only when CallRules.canEnd (API 28+) allowed it
     override fun endCall(): Boolean {
@@ -60,6 +67,7 @@ object CallPermissionsReader {
             answerPhoneCalls = has(Manifest.permission.ANSWER_PHONE_CALLS),
             readCallLog = has(Manifest.permission.READ_CALL_LOG),
             readContacts = has(Manifest.permission.READ_CONTACTS),
+            callPhone = has(Manifest.permission.CALL_PHONE),
         )
     }
 }

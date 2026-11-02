@@ -66,6 +66,8 @@
     <string name="setup_required_note">Recommended. You can pair without it, but alerts and the background connection notice will not show.</string>
     <string name="setup_calls_toggle">Share call status with my computer</string>
     <string name="setup_calls_toggle_sub">Paired computers you allow “Calls” for see ringing and in-call, and can answer, decline or end. Off by default.</string>
+    <string name="setup_dial_allow">Allow placing calls from my computer</string>
+    <string name="setup_dial_done">Your computer can ask this phone to place a call (you confirm each one on the computer).</string>
     <string name="setup_calls_audio_note">Call audio does not travel through GeekBridge. It stays on the phone unless your computer is also paired with this phone over Bluetooth as a hands-free device. Needs the Phone state step; declining and ending a call needs Android 9 or newer.</string>
     <string name="setup_battery_optimised">Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.</string>
     <string name="setup_battery_allow">Allow unrestricted battery</string>

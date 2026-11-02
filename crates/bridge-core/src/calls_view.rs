@@ -120,6 +120,16 @@ pub struct MuteView {
     pub muted: Option<bool>,
 }
 
+/// Where a number typed on this computer can be dialed. Offered only while no call is going on
+/// and a source declares it may place calls (for the link: the phone allowed `CALL_PHONE`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DialView {
+    pub source: String,
+    pub path: ControlPath,
+    /// Human name of the phone that would place the call.
+    pub phone: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallsView {
     /// Ringing calls first.
@@ -129,6 +139,9 @@ pub struct CallsView {
     pub mute: Option<MuteView>,
     /// Number of sources that reported at least a link; zero means "no phone available for calls".
     pub sources_up: usize,
+    /// Present only when a number can really be dialed from this computer right now.
+    #[serde(default)]
+    pub dial: Option<DialView>,
 }
 impl CallsView {
     pub fn empty() -> Self {
@@ -141,6 +154,7 @@ impl CallsView {
             },
             mute: None,
             sources_up: 0,
+            dial: None,
         }
     }
     pub fn ringing(&self) -> Option<&CallRow> {
@@ -193,12 +207,40 @@ pub fn build(sources: &[SourceSnapshot]) -> CallsView {
     out.sort_by_key(|r| !r.ringing());
 
     let (audio, mute) = audio_and_mute(&rows);
+    let dial = if out.is_empty() {
+        dial_target(sources)
+    } else {
+        None
+    };
     CallsView {
         rows: out,
         audio,
         mute,
         sources_up,
+        dial,
     }
+}
+
+/// The first source (HFP first: it brings the audio here) whose own pre-flight accepts a dial.
+fn dial_target(sources: &[SourceSnapshot]) -> Option<DialView> {
+    let probe = CallCommand::Dial {
+        number: Sensitive::new("0"),
+    };
+    [true, false].into_iter().find_map(|hfp| {
+        sources
+            .iter()
+            .filter(|s| s.is_hfp() == hfp)
+            .find(|s| s.state.check_command(&s.caps, &probe).is_ok())
+            .map(|s| DialView {
+                source: s.key.clone(),
+                path: if hfp {
+                    ControlPath::Hfp
+                } else {
+                    ControlPath::Link
+                },
+                phone: s.label.clone(),
+            })
+    })
 }
 
 fn row_for(parts: &[Part], sources: &[SourceSnapshot]) -> CallRow {
@@ -417,6 +459,7 @@ mod tests {
             name: name.map(Sensitive::new),
             can_answer,
             can_end: can_answer,
+            can_dial: false,
         };
         let mut state = CallState::default();
         report.apply(&mut state);
@@ -558,5 +601,24 @@ mod tests {
         let json = serde_json::to_string(&v).unwrap();
         assert_eq!(serde_json::from_str::<CallsView>(&json).unwrap(), v);
         assert!(!format!("{v:?}").contains("5550100"));
+    }
+
+    #[test]
+    fn dial_is_offered_only_to_an_idle_phone_that_may_place_calls() {
+        let mut idle = link(PhoneState::Idle, true, None);
+        assert_eq!(build(&[idle.clone()]).dial, None, "phone did not allow it");
+        let mut report = LinkCallReport::idle(true, true);
+        report.can_dial = true;
+        idle.caps = report.capabilities();
+        let d = build(&[idle.clone()]).dial.expect("dial offered");
+        assert_eq!((d.source.as_str(), d.path), ("link:dev", ControlPath::Link));
+        // Never while a call is going on or ringing.
+        let mut busy = link(PhoneState::OffHook, true, None);
+        busy.caps = report.capabilities();
+        assert_eq!(build(&[busy]).dial, None);
+        // A link that is down offers nothing.
+        let mut down = idle;
+        down.state = CallState::default();
+        assert_eq!(build(&[down]).dial, None);
     }
 }

@@ -50,6 +50,9 @@
          READ_CALL_LOG is the only way Android hands this app the caller's number (never the log itself). -->
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Optional: CALL_PHONE lets a paired computer you allowed ask this phone to place a call
+         (TelecomManager.placeCall) for a plain number, after you confirmed it on the computer. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" />
     <!-- Optional: progress/result notifications for sharing. Asked once, when the user sends something;
          sharing works without it. No storage permission: received files go through MediaStore. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

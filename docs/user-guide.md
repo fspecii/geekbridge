@@ -180,6 +180,11 @@ to a bug report).
 ### No call audio / no Bluetooth
 * Answering, declining and hanging up work **over the GeekBridge link without Bluetooth**: switch **Answer from
   computer** on in the phone's Home and allow *Calls* for the phone on the computer. The voice then stays on the phone.
+* **Dialing from the computer** works the same way: type a number on the Calls keypad (or
+  `geekbridge-ctl call dial +15550100`), confirm it, and the phone places the call. It needs *Allow placing calls from
+  my computer* in the phone's Answer calls step. Digits and a leading `+` only.
+* If the computer has **no Bluetooth controller**, `geekbridge-ctl doctor` and the Calls window say so: control works,
+  the audio stays on the phone.
 * Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
   controller (`bluetoothctl show` must list one; many desktops have none; a USB adapter works), the phone paired over
   Bluetooth with "Phone calls" enabled, and an HFP-capable PipeWire/WirePlumber stack. `geekbridge-ctl calling` shows

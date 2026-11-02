@@ -143,6 +143,7 @@ mod tests {
             view: CallsView::empty(),
             notice: None,
             sources: vec![],
+            audio_note: None,
         }
     }
 

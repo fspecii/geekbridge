@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl calls` and `geekbridge-ctl call ...`: the same call controls the Calls window
 //! has, for scripts and the emulated end-to-end checks. Numbers are masked unless `--reveal`.
-use bridge_core::calls::CallPhase;
+use bridge_core::calls::{CallPhase, Sensitive};
 use bridge_core::calls_view::{CallRow, ControlPath};
 use bridge_core::ipc::{self, CallAction, CallsStatus, Request, Response, Token};
+use std::io::{BufRead, IsTerminal, Write};
 
 pub const USAGE: &str = "  calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
+  call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to
+                                      confirm unless --yes. Needs Telephony consent and the phone's permission
   call mute on|off | call audio       mute the computer microphone / move the audio here (only where offered)";
 
 /// Keep the last two digits, like the redacted device reports.
@@ -90,6 +93,46 @@ fn status(port: u16, token: &Token) -> Result<CallsStatus, String> {
     }
 }
 
+/// Why `call dial` has nothing to dial with, from the service's own words.
+pub fn dial_unavailable(s: &CallsStatus) -> String {
+    let mut out = String::from("dialing is not available right now; nothing was dialed.");
+    if !s.view.rows.is_empty() {
+        out.push_str(" A call is already going on.");
+    }
+    for line in &s.sources {
+        out.push_str("\n  ");
+        out.push_str(line);
+    }
+    out.push_str(
+        "\nDialing needs: the phone connected, Telephony allowed for it (geekbridge-ctl consent DEVICE telephony on) and \"make phone calls\" allowed in the phone app.",
+    );
+    out
+}
+
+/// Ask on a terminal; without one only `--yes` confirms. Never dials by default.
+fn confirmed(yes: bool, phone: &str, number: &str) -> Result<(), String> {
+    if yes {
+        return Ok(());
+    }
+    if !std::io::stdin().is_terminal() {
+        return Err(
+            "refusing to dial without confirmation: run it in a terminal or add --yes".into(),
+        );
+    }
+    eprint!("Place a call to {} with {phone}? [y/N] ", mask(number));
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if matches!(line.trim(), "y" | "Y" | "yes") {
+        Ok(())
+    } else {
+        Err("cancelled; nothing was dialed".into())
+    }
+}
+
 pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
     let reveal = args.iter().any(|a| a == "--reveal");
     let words: Vec<&str> = args
@@ -106,6 +149,20 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
             let s = status(port, token)?;
             let (ring, live) = (s.view.ringing(), s.view.live());
             let request = match what {
+                ["dial", number] => {
+                    if !bridge_core::calls_link::valid_dial_number(number) {
+                        return Err(
+                            "that is not a number this computer can dial (digits, optional leading +)"
+                                .into(),
+                        );
+                    }
+                    let dial = s.view.dial.clone().ok_or_else(|| dial_unavailable(&s))?;
+                    confirmed(args.iter().any(|a| a == "--yes"), &dial.phone, number)?;
+                    Request::CallDial {
+                        source: dial.source,
+                        number: Sensitive::new(*number),
+                    }
+                }
                 ["answer"] => Request::CallAction {
                     target: ring
                         .and_then(|r| r.answer.clone())

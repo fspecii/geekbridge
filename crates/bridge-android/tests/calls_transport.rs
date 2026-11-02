@@ -472,3 +472,33 @@ fn a_computer_outside_the_permit_list_is_refused_and_hears_no_call_state() {
     peer.send(REQUEST, wire::request_body("r2", LinkAction::Answer));
     assert_eq!(phone.events(0, 1)[0]["request_id"], "r2");
 }
+
+#[test]
+fn dial_requests_reach_kotlin_with_a_plain_number_and_can_dial_is_reported() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_calls_report",
+        json!({"state": "idle", "can_answer": true, "can_end": true, "can_dial": true}),
+    );
+    let p = peer.recv_kind(STATE);
+    assert!(wire::LinkCallReport::parse(&p.body).unwrap().can_dial);
+
+    // A fictional number: this only reaches the test's event queue, nothing is ever placed.
+    peer.send(REQUEST, wire::dial_request_body("d-1", "+15550100"));
+    let evs = phone.events(0, 1);
+    assert_eq!(evs[0]["action"], "dial");
+    assert_eq!(evs[0]["number"], "+15550100");
+
+    // A USSD-looking dial never becomes an event.
+    peer.send(REQUEST, wire::dial_request_body("d-2", "*#06#"));
+    std::thread::sleep(Duration::from_millis(300));
+    let since = evs[0]["seq"].as_u64().unwrap();
+    assert!(
+        phone.wait_events(since, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}

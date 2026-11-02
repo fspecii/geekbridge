@@ -518,6 +518,10 @@ impl Daemon {
                 let hub = self.calls.clone();
                 blocking(move || hub.act(&target, action)).await
             }
+            Request::CallDial { source, number } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.dial(&source, &number)).await
+            }
             Request::CallMute { source, muted } => {
                 let hub = self.calls.clone();
                 blocking(move || hub.mute(&source, muted)).await
@@ -1787,7 +1791,16 @@ async fn trusted_loop(
             Some(request) = call_rx.recv() => {
                 let packet = kde::Packet::new(
                     gate::CALLS_REQUEST,
-                    bridge_core::calls_link::request_body(&request.request_id, request.action),
+                    match &request.number {
+                        Some(n) => bridge_core::calls_link::dial_request_body(
+                            &request.request_id,
+                            n.expose(),
+                        ),
+                        None => bridge_core::calls_link::request_body(
+                            &request.request_id,
+                            request.action,
+                        ),
+                    },
                 );
                 if let Err(e) = link.send(&packet).await {
                     break reason(&e);

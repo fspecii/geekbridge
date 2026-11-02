@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Calls: a dialer in the style of the macOS phone keypad. The number is local text only;
-//! placing a call stays blocked until a call backend is authorized for a paired phone.
+//! placing a call needs the service to offer it (Telephony allowed, the phone permits it, no call going on)
+//! and the user to confirm the number in a sheet; the service re-checks everything before sending.
 use crate::{
     call_feed::{CallFeed, FeedState},
     call_ui::{self, CallPanel},
@@ -29,6 +30,8 @@ pub struct Calls {
     feed: Option<CallFeed>,
     panel: CallPanel,
     sources: FeedState,
+    /// The number the user pressed Call for; nothing is dialed until they confirm it.
+    confirming: Option<String>,
 }
 
 const KEYS: [[(char, &str); 3]; 4] = [
@@ -128,7 +131,9 @@ fn small_round(
 impl Calls {
     fn keypad(&mut self, ui: &mut egui::Ui, env: &Env) {
         let pal = env.pal;
-        let blocker = env.blocked_line("call");
+        let blocker = env
+            .blocked_line("call")
+            .or_else(|| call_ui::dial_blocker(self.sources.status.as_ref(), &self.number));
         let avail = ui.available_size();
         let note_h = 26.0;
         let display_h = 62.0;
@@ -208,7 +213,8 @@ impl Calls {
             if theme::round_button(ui, pal, d, pal.ok, Icon::Phone, can_call, "Call with phone")
                 .clicked()
             {
-                // Reached only once a call backend authorizes this phone.
+                // Never dials by itself: this opens the confirmation.
+                self.confirming = Some(self.number.clone());
             }
             ui.allocate_ui_with_layout(
                 vec2(d, d),
@@ -234,6 +240,91 @@ impl Calls {
         ui.add_space(2.0);
         if let Some(reason) = blocker {
             ui.vertical_centered(|ui| theme::blocked_note(ui, pal, &reason));
+        }
+        ui.vertical_centered(|ui| call_ui::audio_note(ui, pal, &self.sources));
+    }
+
+    /// "Call +49...?" sheet. Esc or Cancel drops it; only the Call button sends the request.
+    fn confirm_dial(&mut self, ctx: &egui::Context, pal: &Palette, feed: &CallFeed) {
+        let Some(number) = self.confirming.clone() else {
+            return;
+        };
+        let state = feed.state();
+        let dial = state.status.as_ref().and_then(|s| s.view.dial.clone());
+        // The offer can vanish while the sheet is open (call started, phone left): then drop it.
+        let Some(dial) = dial else {
+            self.confirming = None;
+            return;
+        };
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.confirming = None;
+            return;
+        }
+        let (question, consequence) = call_ui::dial_confirmation(&dial, &number);
+        let mut decision = None;
+        egui::Window::new(crate::i18n::tr("call.dial.confirm.title"))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .frame(
+                egui::Frame::new()
+                    .fill(pal.tile)
+                    .stroke(egui::Stroke::new(1.0_f32, pal.separator))
+                    .corner_radius(egui::CornerRadius::same(crate::nothing::R_TILE))
+                    .inner_margin(Margin::same(24)),
+            )
+            .show(ctx, |ui| {
+                ui.set_width(300.0);
+                ui.vertical_centered(|ui| {
+                    ui.add(egui::Label::new(theme::semibold(&question, 20.0)).wrap());
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(theme::secondary(pal, &consequence)).wrap());
+                    ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let w = (ui.available_width() - 12.0) / 2.0;
+                        if theme::pill_button_sized(
+                            ui,
+                            pal,
+                            crate::i18n::tr("call.dial.confirm.cancel"),
+                            theme::ButtonKind::Plain,
+                            true,
+                            w,
+                        )
+                        .clicked()
+                        {
+                            decision = Some(false);
+                        }
+                        if theme::pill_button_sized(
+                            ui,
+                            pal,
+                            crate::i18n::tr("call.dial.confirm.go"),
+                            theme::ButtonKind::Inverse,
+                            true,
+                            w,
+                        )
+                        .clicked()
+                        {
+                            decision = Some(true);
+                        }
+                    });
+                });
+            });
+        match decision {
+            Some(true) => {
+                if let Some(request) = state
+                    .status
+                    .as_ref()
+                    .and_then(|s| call_ui::dial_request(&s.view, &number))
+                {
+                    feed.send(request);
+                    self.number.clear();
+                }
+                self.confirming = None;
+            }
+            Some(false) => self.confirming = None,
+            None => {}
         }
     }
 
@@ -295,6 +386,8 @@ impl Calls {
             );
         });
         ui.add_space(24.0);
+        call_ui::audio_note(ui, pal, &sources);
+        ui.add_space(8.0);
         call_ui::sources(ui, pal, &sources);
     }
 }
@@ -317,6 +410,7 @@ fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
         name: Some(Sensitive::new("Ada Lovelace")),
         can_answer: true,
         can_end: true,
+        can_dial: false,
     };
     let mut state = CallState::default();
     report.apply(&mut state);
@@ -330,6 +424,7 @@ fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
         view,
         notice: None,
         sources: Vec::new(),
+        audio_note: None,
     };
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),
@@ -372,6 +467,7 @@ impl AppView for Calls {
             Tab::Recents => self.recents(ui, env),
         });
         self.panel.popup(ctx, pal, &feed);
+        self.confirm_dial(ctx, pal, &feed);
         self.feed = Some(feed);
     }
 }

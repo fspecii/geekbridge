@@ -10,8 +10,8 @@
 //!
 //! | packet | direction | body |
 //! | --- | --- | --- |
-//! | [`STATE`] | phone to computer | `state` (`idle`, `ringing`, `offhook`), optional `number`/`name`, `canAnswer`, `canEnd` |
-//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`) |
+//! | [`STATE`] | phone to computer | `state` (`idle`, `ringing`, `offhook`), optional `number`/`name`, `canAnswer`, `canEnd`, `canDial` |
+//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`, `dial` with a `number`) |
 //! | [`RESULT`] | phone to computer | `requestId`, `ok`, optional `reason` |
 //!
 //! The phone decides what it may do: `canAnswer` and `canEnd` are true only while Android's
@@ -90,6 +90,8 @@ pub struct LinkCallReport {
     pub can_answer: bool,
     /// The phone can decline a ringing call or end the current one.
     pub can_end: bool,
+    /// The phone can place a call (Android `CALL_PHONE` granted). Absent on older phones: false.
+    pub can_dial: bool,
 }
 impl std::fmt::Debug for LinkCallReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -99,6 +101,7 @@ impl std::fmt::Debug for LinkCallReport {
             .field("name", &self.name.as_ref().map(|_| "<redacted>"))
             .field("can_answer", &self.can_answer)
             .field("can_end", &self.can_end)
+            .field("can_dial", &self.can_dial)
             .finish()
     }
 }
@@ -132,6 +135,7 @@ impl LinkCallReport {
             name: None,
             can_answer,
             can_end,
+            can_dial: false,
         }
     }
 
@@ -146,6 +150,7 @@ impl LinkCallReport {
         }
         m.insert("canAnswer".into(), json!(self.can_answer));
         m.insert("canEnd".into(), json!(self.can_end));
+        m.insert("canDial".into(), json!(self.can_dial));
         m
     }
 
@@ -161,6 +166,7 @@ impl LinkCallReport {
             name: opt_text(body, "name")?,
             can_answer: opt_bool(body, "canAnswer")?,
             can_end: opt_bool(body, "canEnd")?,
+            can_dial: opt_bool(body, "canDial")?,
         };
         if state == PhoneState::Idle {
             // An idle phone has no party; never keep a stale number around.
@@ -171,8 +177,7 @@ impl LinkCallReport {
     }
 
     /// Declared capabilities for this phone. Observation is declared once a report arrived; control
-    /// is declared only for what the phone said it may do. Audio and dialling are not in this
-    /// protocol.
+    /// is declared only for what the phone said it may do. Audio is not in this protocol.
     pub fn capabilities(&self) -> CallCapabilities {
         let mut caps = CallCapabilities::unsupported(
             CallBackend::GeekBridgeLink,
@@ -195,6 +200,7 @@ impl LinkCallReport {
         };
         caps.set(CallFeature::Answer, allowed(self.can_answer));
         caps.set(CallFeature::Hangup, allowed(self.can_end));
+        caps.set(CallFeature::Dial, allowed(self.can_dial));
         caps
     }
 
@@ -250,6 +256,8 @@ pub enum LinkAction {
     Answer,
     Reject,
     Hangup,
+    /// Place a call. The request also carries a `number` ([`dial_request_body`]).
+    Dial,
 }
 impl LinkAction {
     pub fn as_str(self) -> &'static str {
@@ -257,6 +265,7 @@ impl LinkAction {
             Self::Answer => "answer",
             Self::Reject => "reject",
             Self::Hangup => "hangup",
+            Self::Dial => "dial",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -264,6 +273,7 @@ impl LinkAction {
             "answer" => Self::Answer,
             "reject" => Self::Reject,
             "hangup" => Self::Hangup,
+            "dial" => Self::Dial,
             _ => return None,
         })
     }
@@ -274,6 +284,38 @@ pub fn request_body(request_id: &str, action: LinkAction) -> Map<String, Value> 
     m.insert("requestId".into(), json!(request_id));
     m.insert("action".into(), json!(action.as_str()));
     m
+}
+
+/// The longest number a dial request may carry.
+pub const MAX_DIAL_DIGITS: usize = 20;
+
+/// A number the link will dial: digits with an optional leading `+`. No `*`, `#`, spaces or
+/// letters, so a request can never be a USSD/MMI code or a supplementary-service string.
+pub fn valid_dial_number(s: &str) -> bool {
+    let digits = s.strip_prefix('+').unwrap_or(s);
+    !digits.is_empty()
+        && digits.len() <= MAX_DIAL_DIGITS
+        && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A `dial` request: [`request_body`] plus the number. The caller has already validated it.
+pub fn dial_request_body(request_id: &str, number: &str) -> Map<String, Value> {
+    let mut m = request_body(request_id, LinkAction::Dial);
+    m.insert("number".into(), json!(number));
+    m
+}
+
+/// The number of a `dial` request, strictly checked.
+pub fn parse_dial_number(body: &Map<String, Value>) -> Result<Sensitive, WireError> {
+    let n = body
+        .get("number")
+        .and_then(Value::as_str)
+        .ok_or(WireError::Malformed)?;
+    if valid_dial_number(n) {
+        Ok(Sensitive::new(n))
+    } else {
+        Err(WireError::Invalid)
+    }
 }
 
 pub fn parse_request(body: &Map<String, Value>) -> Result<(String, LinkAction), WireError> {
@@ -288,10 +330,11 @@ pub fn parse_request(body: &Map<String, Value>) -> Result<(String, LinkAction), 
         .get("action")
         .and_then(Value::as_str)
         .ok_or(WireError::Malformed)?;
-    Ok((
-        id.to_owned(),
-        LinkAction::parse(action).ok_or(WireError::Invalid)?,
-    ))
+    let action = LinkAction::parse(action).ok_or(WireError::Invalid)?;
+    if action == LinkAction::Dial {
+        parse_dial_number(body)?;
+    }
+    Ok((id.to_owned(), action))
 }
 
 // ---------------------------------------------------------------- results
@@ -299,9 +342,10 @@ pub fn parse_request(body: &Map<String, Value>) -> Result<(String, LinkAction), 
 /// Why the phone did not carry out a request. Fixed vocabulary, never free text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkFailure {
-    /// `ANSWER_PHONE_CALLS` is not granted on the phone.
+    /// `ANSWER_PHONE_CALLS` (or, for dial, `CALL_PHONE`) is not granted on the phone.
     PermissionMissing,
-    /// There was no ringing (answer, reject) or live (hangup) call.
+    /// There was no ringing (answer, reject) or live (hangup) call, or a call is already going on
+    /// (dial).
     NoSuchCall,
     /// Android refused or the call changed in between.
     Failed,
@@ -324,7 +368,9 @@ impl LinkFailure {
     }
     pub fn message(self) -> &'static str {
         match self {
-            Self::PermissionMissing => "The phone has not allowed GeekBridge to answer calls.",
+            Self::PermissionMissing => {
+                "The phone has not allowed GeekBridge to answer or place calls."
+            }
             Self::NoSuchCall => "The call had already changed on the phone.",
             Self::Failed => "The phone could not do that.",
         }
@@ -382,6 +428,7 @@ mod tests {
             name: Some(Sensitive::new("Ada")),
             can_answer: true,
             can_end: true,
+            can_dial: false,
         };
         assert_eq!(LinkCallReport::parse(&r.body()), Ok(r.clone()));
         assert!(!format!("{r:?}").contains("5550100"));
@@ -402,9 +449,49 @@ mod tests {
             json!({"state":"ringing","number":"a".repeat(MAX_FIELD_LEN + 1)}),
             json!({"state":"ringing","name":"x\u{7}y"}),
             json!({"state":"ringing","canAnswer":"yes"}),
+            json!({"state":"idle","canDial":1}),
         ] {
             assert!(LinkCallReport::parse(&obj(bad.clone())).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn dial_requests_carry_only_plain_numbers() {
+        for ok in ["112", "+15550142", "0049301234567"] {
+            assert!(valid_dial_number(ok), "{ok}");
+            let body = dial_request_body("r1", ok);
+            assert_eq!(parse_request(&body), Ok(("r1".into(), LinkAction::Dial)));
+            assert_eq!(parse_dial_number(&body).unwrap().expose(), ok);
+        }
+        // No USSD/MMI codes, no separators, no empty or oversized numbers.
+        for bad in [
+            "",
+            "+",
+            "*#06#",
+            "*21*5550142#",
+            "555 0142",
+            "555-0142",
+            "5550142;1",
+            "abc",
+            "++5",
+            "5+5",
+            &"1".repeat(MAX_DIAL_DIGITS + 1),
+        ] {
+            assert!(!valid_dial_number(bad), "{bad}");
+            assert!(
+                parse_request(&dial_request_body("r1", bad)).is_err(),
+                "{bad}"
+            );
+        }
+        // A dial without a number is malformed; other actions ignore a number.
+        assert_eq!(
+            parse_request(&request_body("r1", LinkAction::Dial)),
+            Err(WireError::Malformed)
+        );
+        assert_eq!(
+            parse_request(&obj(json!({"requestId":"r1","action":"dial","number":5}))),
+            Err(WireError::Malformed)
+        );
     }
 
     #[test]
@@ -419,8 +506,14 @@ mod tests {
         let full = LinkCallReport::idle(true, true).capabilities();
         assert_eq!(full.support(CallFeature::Answer), Support::Declared);
         assert_eq!(full.support(CallFeature::Hangup), Support::Declared);
+        assert!(!full.support(CallFeature::Dial).may_attempt());
+        let mut dialer = LinkCallReport::idle(false, false);
+        dialer.can_dial = true;
+        assert_eq!(
+            dialer.capabilities().support(CallFeature::Dial),
+            Support::Declared
+        );
         for f in [
-            CallFeature::Dial,
             CallFeature::AudioDownlink,
             CallFeature::AudioUplink,
             CallFeature::MuteMicrophone,
@@ -439,6 +532,7 @@ mod tests {
             name: None,
             can_answer: true,
             can_end: true,
+            can_dial: false,
         };
         assert_eq!(ring.apply(&mut s), Applied::Changed);
         assert_eq!(ring.apply(&mut s), Applied::Unchanged);

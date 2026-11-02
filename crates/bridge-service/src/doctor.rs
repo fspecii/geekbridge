@@ -289,17 +289,7 @@ fn capability_checks(i: &Inputs, status: &Status) -> Vec<Check> {
         None => {}
     }
     if let Some(c) = &i.calling {
-        let level = if c.backend == "none" || c.read_only {
-            Level::Warn
-        } else {
-            Level::Ok
-        };
-        out.push(check(
-            level,
-            "Calls",
-            crate::diagnose::scrub(&c.verdict),
-            None,
-        ));
+        out.push(calls_check(c));
     }
     for p in &status.paired {
         let Some(d) = i.data.iter().find(|d| d.device_id == p.device_id) else {
@@ -308,6 +298,29 @@ fn capability_checks(i: &Inputs, status: &Status) -> Vec<Check> {
         out.push(messages_check(d, &p.name));
     }
     out
+}
+
+/// The Bluetooth side of calls in plain words. Having no Bluetooth controller is not a fault: the
+/// phone link still answers, declines, hangs up and dials; only the voice stays on the phone.
+pub fn calls_check(c: &CallingStatus) -> Check {
+    let no_controller =
+        c.verdict == "no_bluetooth_controller" || c.bluetooth_controllers == Some(0);
+    if no_controller {
+        return check(
+            Level::Ok,
+            "Calls",
+            "No Bluetooth controller on this computer. Call control works over the phone link (answer, decline, hang up, dial), but the call audio stays on the phone: you will not hear the other person here.",
+            Some(
+                "to hear calls on this computer add a USB Bluetooth adapter and pair the phone as a hands-free device (docs/call-audio-options.md); otherwise nothing to do",
+            ),
+        );
+    }
+    let level = if c.backend == "none" || c.read_only {
+        Level::Warn
+    } else {
+        Level::Ok
+    };
+    check(level, "Calls", crate::diagnose::scrub(&c.verdict), None)
 }
 
 /// Why Messages is or is not usable for one phone, and the way out.
@@ -679,5 +692,26 @@ mod tests {
         );
         assert!(hint_for_error("GeekBridge service rejected the control token").is_some());
         assert!(hint_for_error("unknown feature").is_none());
+    }
+
+    #[test]
+    fn no_bluetooth_controller_says_control_works_and_audio_stays_on_the_phone() {
+        let mut c = CallingStatus {
+            platform: "linux".into(),
+            backend: "pipewire".into(),
+            verdict: "no_bluetooth_controller".into(),
+            telephony_service_present: true,
+            bluetooth_controllers: Some(0),
+            phones: 0,
+            calls: 0,
+            read_only: true,
+        };
+        let k = calls_check(&c);
+        assert_eq!(k.level, Level::Ok, "not a fault");
+        assert!(k.detail.contains("control works") && k.detail.contains("stays on the phone"));
+        assert!(k.fix.as_deref().is_some_and(|f| f.contains("USB")));
+        c.verdict = "no_phone".into();
+        c.bluetooth_controllers = Some(1);
+        assert!(!calls_check(&c).detail.contains("stays on the phone"));
     }
 }

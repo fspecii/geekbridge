@@ -198,6 +198,7 @@ pub(in crate::transport) struct ReportArgs {
     pub name: Option<String>,
     pub can_answer: bool,
     pub can_end: bool,
+    pub can_dial: bool,
 }
 
 impl Core {
@@ -231,6 +232,7 @@ impl Core {
         }
         body.insert("canAnswer".into(), json!(a.can_answer));
         body.insert("canEnd".into(), json!(a.can_end));
+        body.insert("canDial".into(), json!(a.can_dial));
         // The same parser the computer uses, so what leaves is what it accepts (an idle report
         // drops number and name).
         let report = LinkCallReport::parse(&body)
@@ -284,12 +286,20 @@ impl Core {
             return true;
         };
         if self.calls.enabled() && self.permitted("calls", connection_id) {
-            self.calls.push(json!({
+            let mut event = json!({
                 "kind": "request",
                 "connection_id": connection_id,
                 "request_id": request_id,
                 "action": action.as_str(),
-            }));
+            });
+            if action == wire::LinkAction::Dial {
+                // parse_request already proved the number is present and plain digits.
+                if let (Ok(n), Some(o)) = (wire::parse_dial_number(&p.body), event.as_object_mut())
+                {
+                    o.insert("number".into(), json!(n.expose()));
+                }
+            }
+            self.calls.push(event);
         } else {
             // Off in the app, or not allowed for this computer: refuse at once; Kotlin never hears about it.
             for ctl in self.trusted_ctls(Some(connection_id)) {

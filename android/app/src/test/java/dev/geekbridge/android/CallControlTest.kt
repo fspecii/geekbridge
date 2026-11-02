@@ -24,6 +24,9 @@ class CallControlTest {
             log += "end"
             return endResult
         }
+        override fun placeCall(number: String) {
+            log += "dial"
+        }
     }
 
     // ---- rules
@@ -84,6 +87,24 @@ class CallControlTest {
         assertEquals(CallFailure.NoSuchCall, CallRules.handle(CallAction.Answer, null, 34, all, t))
         assertEquals(CallFailure.PermissionMissing, CallRules.handle(CallAction.Answer, CallState.Ringing, 34, none, t))
         assertEquals(listOf("accept"), t.log) // refusals never reached the telecom service
+    }
+
+    @Test fun dialNeedsPermissionAnIdlePhoneAndAPlainNumber() {
+        val t = FakeTelecom()
+        val may = all.copy(callPhone = true)
+        // Fictional number; FakeTelecom never places anything.
+        assertNull(CallRules.handle(CallAction.Dial, CallState.Idle, 34, may, t, "+15550100"))
+        assertEquals(listOf("dial"), t.log)
+        assertEquals(CallFailure.PermissionMissing, CallRules.handle(CallAction.Dial, CallState.Idle, 34, all, t, "5550100"))
+        assertEquals(CallFailure.NoSuchCall, CallRules.handle(CallAction.Dial, CallState.OffHook, 34, may, t, "5550100"))
+        assertEquals(CallFailure.NoSuchCall, CallRules.handle(CallAction.Dial, CallState.Ringing, 34, may, t, "5550100"))
+        assertEquals(CallFailure.NoSuchCall, CallRules.handle(CallAction.Dial, null, 34, may, t, "5550100"))
+        for (bad in listOf(null, "", "*#06#", "555 0100", "+", "1".repeat(21), "tel:5")) {
+            assertEquals("$bad", CallFailure.Failed, CallRules.handle(CallAction.Dial, CallState.Idle, 34, may, t, bad))
+        }
+        assertEquals(listOf("dial"), t.log) // refusals never reached the telecom service
+        assertTrue(CallRules.report(CallState.Idle, null, null, 34, may).canDial)
+        assertFalse(CallRules.report(CallState.Idle, null, null, 34, all).canDial)
     }
 
     @Test fun rejectNeedsARingingCallAndHangupALiveOne() {

@@ -407,6 +407,7 @@ fn report(state: PhoneState) -> kde::Packet {
         name: ringing.then(|| bridge_core::calls::Sensitive::new("Ada")),
         can_answer: true,
         can_end: true,
+        can_dial: false,
     };
     kde::Packet::new(calls_link::STATE, r.body())
 }

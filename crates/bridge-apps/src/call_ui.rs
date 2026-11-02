@@ -7,13 +7,16 @@
 //! and tested without a window.
 use crate::{
     call_feed::{CallFeed, FeedState},
+    i18n::{tr, tr_args},
     nothing,
     theme::{self, ButtonKind, Palette},
 };
 use bridge_core::{
     calls::CallPhase,
-    calls_view::{AudioRoute, AudioRouteView, CallRow, CallsView, ControlPath},
-    ipc::{CallAction, Request},
+    calls::Sensitive,
+    calls_link::valid_dial_number,
+    calls_view::{AudioRoute, AudioRouteView, CallRow, CallsView, ControlPath, DialView},
+    ipc::{CallAction, CallsStatus, Request},
 };
 use eframe::egui::{self, Align2, Color32, Key, Margin, RichText, vec2};
 use std::{
@@ -62,6 +65,48 @@ pub fn request_for(view: &CallsView, d: Decision) -> Option<Request> {
             source: view.audio.connect.clone()?,
         }),
     }
+}
+
+/// The request that places a call, or `None` unless the service offers dialing and the number is
+/// one it will dial. The caller must have asked the user to confirm first ([`dial_confirmation`]).
+pub fn dial_request(view: &CallsView, number: &str) -> Option<Request> {
+    let dial = view.dial.as_ref()?;
+    valid_dial_number(number).then(|| Request::CallDial {
+        source: dial.source.clone(),
+        number: Sensitive::new(number),
+    })
+}
+
+/// Why the Call button is off, in plain words; `None` when a call can be placed.
+pub fn dial_blocker(status: Option<&CallsStatus>, number: &str) -> Option<String> {
+    let Some(status) = status else {
+        return Some(tr("call.dial.blocked.service").to_owned());
+    };
+    if !number.is_empty() && !valid_dial_number(number) {
+        return Some(tr("call.dial.blocked.chars").to_owned());
+    }
+    if status.view.dial.is_some() {
+        return None;
+    }
+    if !status.view.rows.is_empty() {
+        return Some(tr("call.dial.blocked.busy").to_owned());
+    }
+    Some(tr("call.dial.blocked.setup").to_owned())
+}
+
+/// The confirmation the user must accept before anything is dialed: (question, consequence).
+pub fn dial_confirmation(dial: &DialView, number: &str) -> (String, String) {
+    let consequence = match dial.path {
+        ControlPath::Hfp => tr("call.dial.confirm.hfp"),
+        ControlPath::Link => tr("call.dial.confirm.link"),
+    };
+    (
+        tr_args(
+            "call.dial.confirm.question",
+            &[("number", &number), ("phone", &dial.phone.as_str())],
+        ),
+        consequence.to_owned(),
+    )
 }
 
 /// One line for the audio route, with the honest reason when it is on the phone.
@@ -531,6 +576,15 @@ fn keys_for(
     out
 }
 
+/// The standing explanation when calls can be controlled but their audio cannot come here
+/// (for example no Bluetooth controller). Nothing is drawn when there is nothing to say.
+pub fn audio_note(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
+    if let Some(note) = state.status.as_ref().and_then(|s| s.audio_note.as_deref()) {
+        ui.add_space(4.0);
+        theme::blocked_note(ui, pal, note);
+    }
+}
+
 /// Why calls can or cannot be answered from this computer, one line per source, for the Recents tab.
 pub fn sources(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
     ui.label(theme::overline(pal, "ANSWERING FROM THIS COMPUTER"));
@@ -567,6 +621,7 @@ mod tests {
             name: Some(Sensitive::new("Ada")),
             can_answer: can,
             can_end: can,
+            can_dial: false,
         };
         let mut s = CallState::default();
         r.apply(&mut s);
@@ -576,6 +631,78 @@ mod tests {
             caps: r.capabilities(),
             state: s,
         }])
+    }
+
+    fn idle_view(can_dial: bool) -> CallsView {
+        let mut r = LinkCallReport::idle(true, true);
+        r.can_dial = can_dial;
+        let mut s = CallState::default();
+        r.apply(&mut s);
+        calls_view::build(&[SourceSnapshot {
+            key: "link:d".into(),
+            label: "Pixel".into(),
+            caps: r.capabilities(),
+            state: s,
+        }])
+    }
+
+    fn status_of(view: CallsView) -> CallsStatus {
+        CallsStatus {
+            view,
+            notice: None,
+            sources: Vec::new(),
+            audio_note: None,
+        }
+    }
+
+    #[test]
+    fn dialing_needs_an_offer_a_plain_number_and_is_explained_when_off() {
+        let on = idle_view(true);
+        // Fictional number; this only builds a request value and sends nothing.
+        let Some(Request::CallDial { source, number }) = dial_request(&on, "+15550100") else {
+            panic!("dial should be offered");
+        };
+        assert_eq!((source.as_str(), number.expose()), ("link:d", "+15550100"));
+        assert!(dial_request(&on, "*#06#").is_none());
+        assert!(dial_request(&on, "").is_none());
+        assert!(dial_request(&idle_view(false), "5550100").is_none());
+        assert!(dial_request(&link_view(PhoneState::OffHook, true), "5550100").is_none());
+
+        assert_eq!(dial_blocker(Some(&status_of(on.clone())), "5550100"), None);
+        assert!(
+            dial_blocker(Some(&status_of(on)), "*21#")
+                .unwrap()
+                .contains("digits")
+        );
+        let off = dial_blocker(Some(&status_of(idle_view(false))), "5550100").unwrap();
+        assert!(
+            off.contains("Telephony") && off.contains("phone app"),
+            "{off}"
+        );
+        let busy = dial_blocker(
+            Some(&status_of(link_view(PhoneState::OffHook, true))),
+            "5550100",
+        )
+        .unwrap();
+        assert!(busy.contains("already going on"));
+        assert!(dial_blocker(None, "1").unwrap().contains("service"));
+    }
+
+    #[test]
+    fn the_confirmation_names_the_phone_and_where_the_voice_will_be() {
+        let d = idle_view(true).dial.unwrap();
+        let (q, why) = dial_confirmation(&d, "+15550100");
+        assert!(q.contains("+15550100") && q.contains("Pixel"));
+        assert!(why.contains("stays on the phone"));
+        let hfp = DialView {
+            path: ControlPath::Hfp,
+            ..d
+        };
+        assert!(
+            dial_confirmation(&hfp, "1")
+                .1
+                .contains("comes to this computer")
+        );
     }
 
     #[test]
@@ -767,6 +894,7 @@ mod tests {
             view: link_view(PhoneState::Ringing, true),
             notice: None,
             sources: Vec::new(),
+            audio_note: None,
         };
         let feed = crate::call_feed::CallFeed::spawn_with(
             Duration::from_millis(20),

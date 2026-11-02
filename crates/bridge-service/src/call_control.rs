@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "linux")]
 use bridge_core::calls::Support;
-use bridge_core::calls::{CallCommand, CallState};
+use bridge_core::calls::{CallCommand, CallState, Sensitive};
 use bridge_core::calls_link::{self as link, LinkAction, LinkCallReport};
 use bridge_core::calls_view::{self as view, ActionTarget, CallsView, ControlPath, SourceSnapshot};
 use bridge_core::ipc::{CallAction, CallsStatus, ErrorBody, ErrorCode};
@@ -166,6 +166,8 @@ impl CallNotifier for NotifySendCalls {
 pub struct LinkRequest {
     pub request_id: String,
     pub action: LinkAction,
+    /// The number of a `dial` request.
+    pub number: Option<Sensitive>,
 }
 
 struct LinkPhone {
@@ -415,9 +417,14 @@ impl CallHub {
                         caps: report.capabilities(),
                         state: p.state.clone(),
                     });
-                    if !report.can_answer {
+                    if !report.can_answer && !report.can_dial {
                         lines.push(format!(
-                            "Phone link ({}): calls are visible, but the phone has not allowed GeekBridge to answer them.",
+                            "Phone link ({}): calls are visible, but the phone has not allowed GeekBridge to answer or place them.",
+                            p.name
+                        ));
+                    } else if !report.can_dial {
+                        lines.push(format!(
+                            "Phone link ({}): ready to answer; to dial from here, allow GeekBridge to make phone calls in the phone app's setup.",
                             p.name
                         ));
                     } else {
@@ -452,6 +459,20 @@ impl CallHub {
         (snaps, lines)
     }
 
+    /// Why the voice cannot come to this computer, when control works anyway. Only on Linux, only
+    /// while no hands-free phone is registered (the same facts as the `sources` line).
+    fn audio_note(snaps: &[SourceSnapshot]) -> Option<String> {
+        let _ = snaps;
+        #[cfg(all(target_os = "linux", not(test)))]
+        if !snaps.iter().any(|s| s.key.starts_with("hfp:")) {
+            let r = bridge_calls::readiness::detect();
+            if r != bridge_calls::readiness::Readiness::Ready {
+                return Some(r.line());
+            }
+        }
+        None
+    }
+
     pub fn view(&self) -> CallsView {
         view::build(&self.sources().0)
     }
@@ -462,6 +483,7 @@ impl CallHub {
             view: view::build(&snaps),
             notice: self.inner().notice.clone(),
             sources,
+            audio_note: Self::audio_note(&snaps),
         }
     }
 
@@ -495,7 +517,14 @@ impl CallHub {
             CallAction::Hangup => CallCommand::Hangup { call },
         };
         let result = match target.path {
-            ControlPath::Link => self.send_link(&target.source, action),
+            ControlPath::Link => {
+                let wire = match action {
+                    CallAction::Answer => LinkAction::Answer,
+                    CallAction::Reject => LinkAction::Reject,
+                    CallAction::Hangup => LinkAction::Hangup,
+                };
+                self.send_link(&target.source, wire, None)
+            }
             ControlPath::Hfp => self.send_host(&target.source, &command),
         };
         let mut inner = self.inner();
@@ -525,15 +554,49 @@ impl CallHub {
         self.send_host(source, &CallCommand::ConnectAudio)
     }
 
-    fn send_link(&self, source: &str, action: CallAction) -> Result<(), ErrorBody> {
+    /// Place a call. `source` must be the dial target the current view offers (which already means:
+    /// consent for Telephony is on, the phone reported it may place calls and no call is going on),
+    /// and `number` must be plain digits. Blocking.
+    pub fn dial(self: &Arc<Self>, source: &str, number: &Sensitive) -> Result<(), ErrorBody> {
+        if !link::valid_dial_number(number.expose()) {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "that is not a number this computer can dial (digits, optional leading +)",
+            ));
+        }
+        let offered = self.view().dial.filter(|d| d.source == source);
+        let Some(offered) = offered else {
+            return Err(err(
+                ErrorCode::NotFound,
+                "dialing is not available right now; nothing was sent",
+            ));
+        };
+        let result = match offered.path {
+            ControlPath::Link => self.send_link(source, LinkAction::Dial, Some(number)),
+            ControlPath::Hfp => self.send_host(
+                source,
+                &CallCommand::Dial {
+                    number: number.clone(),
+                },
+            ),
+        };
+        let mut inner = self.inner();
+        match &result {
+            Ok(()) => inner.notice = None,
+            Err(e) => inner.notice = Some(e.message.clone()),
+        }
+        result
+    }
+
+    fn send_link(
+        &self,
+        source: &str,
+        wire: LinkAction,
+        dial: Option<&Sensitive>,
+    ) -> Result<(), ErrorBody> {
         let device_id = source
             .strip_prefix(LINK_PREFIX)
             .ok_or_else(|| err(ErrorCode::BadRequest, "unknown call source"))?;
-        let wire = match action {
-            CallAction::Answer => LinkAction::Answer,
-            CallAction::Reject => LinkAction::Reject,
-            CallAction::Hangup => LinkAction::Hangup,
-        };
         let mut inner = self.inner();
         inner.next_request += 1;
         let request_id = format!("c{}", inner.next_request);
@@ -552,6 +615,7 @@ impl CallHub {
             .try_send(LinkRequest {
                 request_id: request_id.clone(),
                 action: wire,
+                number: dial.cloned(),
             })
             .map_err(|_| err(ErrorCode::NotConnected, "the phone link is busy or closed"))?;
         phone.pending.push((request_id, wire, Instant::now()));

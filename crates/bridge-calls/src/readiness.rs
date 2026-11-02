@@ -56,7 +56,7 @@ impl Readiness {
     pub fn line(self) -> String {
         match self {
             Readiness::NoAdapter => format!(
-                "Call audio on this computer: no Bluetooth adapter found. Answering still works and the voice stays on the phone; add a USB Bluetooth dongle to hear calls here ({DOC})."
+                "Call audio on this computer: no Bluetooth adapter found. Call control works over the phone link (answer, decline, hang up, dial) but the voice stays on the phone; add a USB Bluetooth dongle to hear calls here ({DOC})."
             ),
             Readiness::NoHfpPhone { paired: false } => format!(
                 "Call audio on this computer: Bluetooth adapter found, but the phone is not paired as a hands-free device. Pair it in Bluetooth settings and allow calls ({DOC})."
