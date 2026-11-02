@@ -1674,10 +1674,15 @@ async fn trusted_loop(
     let (mut debug_rx, _debug_guard) = debug_link(d, id, &link);
     // A ping every 20 s keeps access-point / NAT idle timers and the phone's Wi-Fi power saving from
     // dropping a quiet link. The phone judges our silence (it knows what its own sleep looks like); we
-    // never cut a phone off for being quiet, kernel keepalive does that.
+    // never cut a phone off for being quiet, kernel keepalive does that. Stock KDE Connect peers get none: they
+    // show every ping as a notification.
     let pings = gate::negotiated_outgoing(&link.info().peer)
         .iter()
-        .any(|k| k == gate::PING);
+        .any(|k| k == gate::PING)
+        && bridge_core::heartbeat::is_geekbridge_peer(
+            &link.info().peer.incoming_capabilities,
+            &link.info().peer.outgoing_capabilities,
+        );
     let mut beat = bridge_core::heartbeat::Heartbeat::new(std::time::Instant::now());
     let mut tick = tokio::time::interval_at(
         tokio::time::Instant::now() + bridge_core::heartbeat::EVERY,

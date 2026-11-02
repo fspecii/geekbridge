@@ -1,4 +1,4 @@
-version: 0.1.0-rc.1
+version: 0.1.0
 - Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
 - Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
 - Answer or decline phone calls from your computer

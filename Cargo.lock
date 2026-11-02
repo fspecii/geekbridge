@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-android"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-chaos",
  "bridge-core",
@@ -613,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-apps"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-core",
  "bridge-kde",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-calls"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "async-io",
  "bridge-core",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-calls-macos"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-core",
  "objc2 0.6.5",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-calls-windows"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-core",
  "serde",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-chaos"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "socket2",
  "tokio",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-core"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-fuzz"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-android",
  "bridge-core",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-kde"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bridge-core",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-phone-sim"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "blocking",
  "bridge-calls",
@@ -745,7 +745,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-service"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-calls",
  "bridge-calls-windows",
@@ -770,7 +770,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-update"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 dependencies = [
  "bridge-core",
  "getrandom 0.3.4",

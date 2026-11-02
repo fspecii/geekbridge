@@ -1,6 +1,6 @@
 # KDE Connect interoperability: what is verified, what is only spec-checked
 
-Run date: 2026-11-02. This file records the results against stock peers; the stock **desktop** daemon was exercised
+Run date: 2026-11-02 (re-run after the real-device fixes: see the last section). This file records the results against stock peers; the stock **desktop** daemon was exercised
 directly and the stock **Android**
 app was rehearsed on an emulator, see [Stock Android app](#stock-android-app-emulator-rehearsal).
 
@@ -211,3 +211,58 @@ acted on. Behaviour worth knowing, none of it changed:
 Everything under "NOT tested", plus: the app dialling GeekBridge after receiving its UDP broadcast, trusted
 network gating, battery optimisation killing the app's service, real Wi-Fi timing of the 5 s secure-identity
 budget, MMS, and large SMS histories.
+
+## After the real-device session (2026-11-02)
+
+The real-device fixes added an application-level heartbeat (`bridge-core/src/heartbeat.rs`), a PC auto-redial
+(`bridge-service/src/reconnect.rs`), `geekbridge.debug.*` packets, keepalive and capability changes. The matrix
+below was re-run on the current tree against the REAL stock peers (same isolation as above; the stock Android
+APK only ever inside an emulator, in a private `unshare -Urn` namespace together with the emulator, adb server and
+every GeekBridge process, so the owner's live service on 1716 was never involved).
+
+### Regression found and fixed
+
+**The heartbeat pinged stock peers.** The PC (`daemon.rs::trusted_loop`) and the phone (`engine.rs::run_trusted`)
+sent a plain `kdeconnect.ping` every 20 s to *every* peer that listed `kdeconnect.ping`, which is every stock peer.
+Observed against the real desktop daemon: **16 "Ping!" notifications in 330 s** of idle. The link itself was not
+cut. Fix: the periodic ping now only goes to peers that declared a `geekbridge.*` capability
+(`heartbeat::is_geekbridge_peer`, unit test `only_peers_that_declare_a_geekbridge_capability_get_the_heartbeat`);
+the silence limit already never applied to a peer that does not heartbeat. Re-run after the fix: **0** pings and
+0 `geekbridge.*` packets towards the stock daemon and towards the stock app over 330 s.
+
+### Results
+
+Desktop run: `GB_IDLE_SECS=330 scripts/interop-kdeconnect.sh KC_ROOT OUT` (new scenario S8 in
+`scripts/interop-kdeconnect-scenarios.sh`, wire tap via `GEEKBRIDGE_WIRE_TAP_FILE`). Emulator runs were driven by
+hand with `adb`, `scripts/e2e/adbui.py` and `scripts/interop-announce.py` (injects the UDP announcement a LAN
+broadcast would deliver; an emulator cannot carry broadcasts).
+
+| # | Flow | Stock desktop daemon <-> geekbridge-service | Stock Android app (emulator) <-> geekbridge-service | GeekBridge Android debug <-> stock desktop daemon |
+| --- | --- | --- | --- | --- |
+| 1 | Identity (plaintext + secure), TLS | PASS (S1-S7) | PASS (app dials us, we dial the app) | PASS |
+| 2 | Pairing, we/PC request, peer accepts | PASS (S1, S5) | PASS (keys equal `E708F6CF`) | PASS (daemon accepted, keys equal `DC6CB12D`; phone requested) |
+| 3 | Pairing, peer requests, we approve | PASS (S2) | PASS (keys equal `F501CA46`) | not run (daemon-initiated request is never shown by the phone's address-connect; see note) |
+| 4 | Unpair from the peer | PASS (S1) | PASS (`peer_unpaired`) | not run |
+| 5 | Ping both ways | PASS | PASS | PASS daemon -> phone; phone -> daemon not exercised |
+| 6 | Clipboard both ways | PASS | PASS (PC text adopted by the app and echoed back) | NOT RUN (offscreen Qt clipboard, no way to set the phone clipboard) |
+| 7 | Share text/URL | PASS | PASS both ways | PASS both ways (URL daemon -> phone, text phone -> daemon) |
+| 8 | Share file 300 kB, both ways | PASS byte-identical | PASS byte-identical (md5 equal) | NOT RUN |
+| 9 | SMS (`sms.messages`, requests) | n/a (desktop cannot answer) | PASS (injected SMS listed, `rejected_packets` 0) | n/a |
+| 10 | Contacts | n/a | NOT RUN (stock app needs its in-app consent dialog, as documented above) | n/a |
+| 11 | Idle 330 s, peer sends no heartbeat: link NOT cut | PASS | PASS (zero wire traffic, still connected, `rejected_packets` 0) | PASS (still reachable + paired; a URL shared after idle arrived; phone sent 0 pings) |
+| 12 | We send NO `kdeconnect.ping` / `geekbridge.*` to the stock peer in idle | PASS after the fix (FAIL before: 16 pings) | PASS (0 lines on the wire) | PASS (0 `pingReceived` on the daemon) |
+| 13 | Stock peer's own traffic still works after idle | PASS (daemon ping mid-idle and after) | PASS | PASS (daemon ping and URL after idle) |
+| 14 | Unknown `geekbridge.*` packets ignored, link stays | PASS (S1 `ext`, daemon discards) | PASS (not negotiated, none sent) | n/a |
+| 15 | Forced drop, then automatic redial | PASS (S8c, `ss -K`, redial < 1 s) | PASS (link cut with `ss -K`, service redialled the app) | not run |
+| 16 | Cross-dial: peer dials us while we dial it | PASS (3 rounds, exactly one link, stable 20 s) | PASS (the app dialled on every injected announcement for 40 s, one link remained and pinged) | not run |
+| 17 | Wi-Fi flap (`svc wifi/data disable/enable`) | n/a | NOT MEANINGFUL: the emulator's slirp/adb-forward links survive radio toggles, so neither side noticed; the drop was therefore forced at the TCP level (row 15) | not run |
+
+Real-packet fixtures and unit tests: `kdeconnect_real`, `kdeconnect_android_real` (bridge-kde) and
+`android_negotiation` (bridge-service) all PASS; the full `bridge-core`, `bridge-kde`, `bridge-service`,
+`bridge-android` test suites pass (a `share_api` payload-port test failed once under load and passed on rerun),
+fmt and `clippy -D warnings` are clean. No Kotlin was touched.
+
+Note on row 3 / GeekBridge phone with a stock desktop: the phone's *Developer options > Connect* button only
+tests a connection ("this does not pair"); a request from the daemon timed out there. The supported route is the
+setup wizard's **Look for computers**, which lists the stock daemon and pairs with the **Pair** button (works).
+The phone-side prompt must be answered within the daemon's 30 s pairing window.

@@ -3,7 +3,7 @@
 # Inner half of interop-kdeconnect.sh: runs inside the private namespace + D-Bus session.
 set -u
 CLI=$KC_ROOT/usr/bin/kdeconnect-cli
-PROBE=$REPO/target/debug/examples/real_peer_probe
+PROBE=${CARGO_TARGET_DIR:-$REPO/target}/debug/examples/real_peer_probe
 W=$OUT/work; rm -rf "$W"; mkdir -p "$W"
 R=$OUT/results.txt; : > "$R"; : > "$OUT/cli.log"
 CAP=$OUT/captures; rm -rf "$CAP"; mkdir -p "$CAP"
@@ -186,10 +186,10 @@ check "S7 forged certificate never reaches READY (no feature traffic)" bash -c "
 
 # ---------------------------------------------------------------- S5: the shipped service + ctl
 say "== S5: geekbridge-service / geekbridge-ctl (the shipped binaries) against the real daemon"
-SVC=$REPO/target/debug/geekbridge-service; CTL=$REPO/target/debug/geekbridge-ctl
+SVC=${CARGO_TARGET_DIR:-$REPO/target}/debug/geekbridge-service; CTL=${CARGO_TARGET_DIR:-$REPO/target}/debug/geekbridge-ctl
 SD=$W/svc; mkdir -p "$SD"; chmod 700 "$SD"
-"$SVC" --state-dir "$SD" --name GeekBridgeSvc --dev-loopback --no-announce --no-calling-probe \
-    --discovery-port 17160 --api-port 17382 --control-port 17383 --listen-inbound 127.0.0.1:1750 > "$W/svc.log" 2>&1 &
+GEEKBRIDGE_WIRE_TAP_FILE=$OUT/svc-wiretap.log "$SVC" --state-dir "$SD" --name GeekBridgeSvc --dev-loopback --no-announce --no-calling-probe \
+    --discovery-port 17160 --api-port 17382 --control-port 17383 --listen-inbound 10.77.0.2:1750 > "$W/svc.log" 2>&1 &
 SPID=$!
 sleep 2
 ctl() { "$CTL" --state-dir "$SD" --control-port 17383 "$@"; }
@@ -216,6 +216,75 @@ $CLI -d "$SVCID" --ping-msg "to service" >> "$OUT/cli.log" 2>&1; sleep 1
 ctl status > "$W/svc-status.json" 2>&1
 check "S5 service counted the daemon's ping" grep -q '"pings_received": *[1-9]' "$W/svc-status.json"
 check "S5 service link negotiated only ping/clipboard/share with the daemon" grep -q 'kdeconnect.share.request' "$W/svc-status.json"
+
+# ---------------------------------------------------------------- S8: heartbeat / keepalive / redial / cross-dial towards a STOCK peer
+# Runs only with GB_IDLE_SECS=N (idle length in seconds; the dated report used 330).
+if [ "${GB_IDLE_SECS:-0}" -gt 0 ]; then
+say "== S8: $GB_IDLE_SECS s idle with the stock desktop (it sends no heartbeat), then forced drop, redial, cross-dial"
+CTLC="$CTL --state-dir $SD --control-port 17383"
+TAP=$OUT/svc-wiretap.log
+cnt() { grep -c -- "$1" "$2" 2>/dev/null || true; }
+ctl ping "$SELF" >> "$W/ctl.log" 2>&1; sleep 1
+P0=$(cnt pingReceived "$OUT/dbus-monitor.log"); T0=$(wc -l < "$TAP"); OP0=$(cnt '^>> .*"type":"kdeconnect.ping"' "$TAP")
+PR0=$($CTLC status | grep -o '"pings_received": *[0-9]*' | grep -o '[0-9]*$' | head -1)
+HALF=$((GB_IDLE_SECS / 2)); sleep "$HALF"
+$CLI -d "$SVCID" --ping-msg "mid-idle from daemon" >> "$OUT/cli.log" 2>&1
+sleep "$((GB_IDLE_SECS - HALF))"
+P1=$(cnt pingReceived "$OUT/dbus-monitor.log"); OP1=$(cnt '^>> .*"type":"kdeconnect.ping"' "$TAP"); OGB=$(cnt '^>> .*"type":"geekbridge\.' "$TAP")
+$CTLC status > "$W/svc-status2.json" 2>&1
+PR1=$(grep -o '"pings_received": *[0-9]*' "$W/svc-status2.json" | grep -o '[0-9]*$' | head -1)
+say "idle result: daemon 'Ping!' events during idle=$((P1 - P0)); service->daemon kdeconnect.ping lines during idle=$((OP1 - OP0)); geekbridge.* lines sent to stock peer=$OGB; service pings_received $PR0 -> $PR1"
+tail -n +"$((T0 + 1))" "$TAP" | cut -c1-140 | sed 's/^/    tap: /' >> "$R"
+check "S8 link still connected after ${GB_IDLE_SECS}s idle with a stock peer" grep -q '"phase": *"connected"' "$W/svc-status2.json"
+check "S8 daemon still lists the service reachable after idle" bash -c "$CLI -a --id-only | grep -q $SVCID"
+check "S8 service sent NO geekbridge.* packet to the stock peer" test "${OGB:-1}" = 0
+check "S8 service did not spam the stock peer with pings (daemon 'Ping!' events during idle: ${P1:-?}-${P0:-?} <= 1)" test "$((P1 - P0))" -le 1
+check "S8 the stock daemon's mid-idle ping still reached the service ($PR0 -> $PR1)" test "${PR1:-0}" -gt "${PR0:-0}"
+check "S8 service dropped nothing from the stock peer (rejected_packets=0)" grep -q '"rejected_packets": *0' "$W/svc-status2.json"
+B=$(cnt pingReceived "$OUT/dbus-monitor.log"); ctl ping "$SELF" >> "$W/ctl.log" 2>&1; sleep 1
+check "S8 service -> daemon ping still delivered after idle" test "$(cnt pingReceived "$OUT/dbus-monitor.log")" -gt "$B"
+
+say "-- S8c: the stock daemon announces itself (UDP identity), the link is cut, the service redials; then both sides dial at once"
+fake_announce() { # fake_announce DEVICEID TCPPORT DISCOVERYPORT  (what the daemon would broadcast)
+    python3 -I - "$@" <<'PY2'
+import json, socket, sys, time
+did, tcp, port = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+ident = {"id": int(time.time()*1000), "type": "kdeconnect.identity", "body": {
+    "deviceId": did, "deviceName": "StockDesktop", "protocolVersion": 8, "deviceType": "desktop",
+    "incomingCapabilities": ["kdeconnect.ping", "kdeconnect.clipboard", "kdeconnect.clipboard.connect", "kdeconnect.share.request"],
+    "outgoingCapabilities": ["kdeconnect.ping", "kdeconnect.clipboard", "kdeconnect.clipboard.connect", "kdeconnect.share.request"],
+    "tcpPort": tcp}}
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("10.77.0.2", 0))
+s.sendto((json.dumps(ident) + "\n").encode(), ("10.77.0.2", port))
+PY2
+}
+( while :; do fake_announce "$SELF" 1716 17160; sleep 3; done ) & ANN=$!
+sleep 4
+ss -K dst 127.0.0.1 dport = :1716 >/dev/null 2>&1
+ss -K dst 10.77.0.2 dport = :1716 >/dev/null 2>&1
+sleep 1
+for i in $(seq 60); do [ "$($CTLC status | grep -c '"phase": *"connected"')" -ge 1 ] && break; sleep 1; done
+D=$(grep -o '"phase": *"[a-z_]*"' < <($CTLC status) | head -1)
+say "after forced drop: $D (waited up to 60 s for the redial)"
+check "S8c service redialled the stock daemon by itself after the link was cut" bash -c "$CTLC status | grep -q '\"phase\": *\"connected\"'"
+check "S8c daemon sees the redialled link and a ping crosses it" bash -c "B=\$(grep -c pingReceived '$OUT/dbus-monitor.log'); $CTLC ping $SELF >/dev/null 2>&1; sleep 1; [ \$(grep -c pingReceived '$OUT/dbus-monitor.log') -gt \$B ]"
+# cross-dial: the daemon dials us on its UDP trigger while the service also dials it
+for k in 1 2 3; do
+    ss -K dst 10.77.0.2 dport = :1716 >/dev/null 2>&1; ss -K dst 127.0.0.1 dport = :1716 >/dev/null 2>&1
+    fake_announce "$SVCID" 1750 1716 &   # as if the service had announced itself: the daemon dials our inbound port
+    sleep 0.2
+    $CTLC connect "$SELF" 127.0.0.1 1716 >> "$W/ctl.log" 2>&1
+    sleep 6
+done
+sleep 10
+$CTLC status > "$W/svc-status3.json" 2>&1
+CONN=$(grep -c '"phase": *"connected"' "$W/svc-status3.json")
+check "S8c after 3 simultaneous cross-dials exactly one connected link remains" test "$CONN" = 1
+check "S8c the link after the cross-dials is usable (ping to the daemon delivered)" bash -c "B=\$(grep -c pingReceived '$OUT/dbus-monitor.log'); $CTLC ping $SELF >/dev/null 2>&1; sleep 1; [ \$(grep -c pingReceived '$OUT/dbus-monitor.log') -gt \$B ]"
+sleep 20
+check "S8c still one stable link 20 s later (redial did not fight the stock peer)" bash -c "[ \$($CTLC status | grep -c '\"phase\": *\"connected\"') = 1 ]"
+kill "$ANN" 2>/dev/null
+fi
 cp "$W/ctl.log" "$OUT/ctl.log"
 kill "$SPID" 2>/dev/null; wait "$SPID" 2>/dev/null
 

@@ -1062,6 +1062,11 @@ async fn run_trusted(
         core.remove_conn(id, Some(("link_closed", Some("io_error"))));
         return;
     }
+    // Stock KDE Connect shows every ping as a notification: only GeekBridge peers get the heartbeat.
+    let heartbeat_peer = bridge_core::heartbeat::is_geekbridge_peer(
+        &link.info().peer.incoming_capabilities,
+        &link.info().peer.outgoing_capabilities,
+    );
     let mut beat = Heartbeat::new(std::time::Instant::now());
     let mut tick = interval_at(Instant::now() + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1173,7 +1178,7 @@ async fn run_trusted(
                 if beat.peer_silent(now) {
                     break Some(("link_closed", Some("ping_timeout")));
                 }
-                if beat.ping_due(now) {
+                if heartbeat_peer && beat.ping_due(now) {
                     if let Err(e) = link.send(&Packet::new(PING, Map::new())).await {
                         break Some(("link_closed", Some(kde_code(&e))));
                     }

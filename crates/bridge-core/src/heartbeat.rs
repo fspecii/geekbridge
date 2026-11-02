@@ -18,6 +18,15 @@ const TICK_SLACK: Duration = Duration::from_secs(1);
 const HEARTBEAT_GAP_MIN: Duration = Duration::from_secs(10);
 const HEARTBEAT_GAP_MAX: Duration = Duration::from_secs(50);
 
+/// Does this peer take part in our heartbeat? A stock KDE Connect peer shows every `kdeconnect.ping` as a
+/// "Ping!" notification, so the periodic ping only goes to peers that declared a `geekbridge.*` capability.
+pub fn is_geekbridge_peer(incoming: &[String], outgoing: &[String]) -> bool {
+    incoming
+        .iter()
+        .chain(outgoing)
+        .any(|c| c.starts_with("geekbridge."))
+}
+
 #[derive(Debug, Clone)]
 pub struct Heartbeat {
     last_sent: Instant,
@@ -136,5 +145,21 @@ mod tests {
         // Two quick manual pings are not a heartbeat either.
         h.heard(at(t0, 6), true);
         assert!(!h.peer_silent(at(t0, 3600)));
+    }
+
+    #[test]
+    fn only_peers_that_declare_a_geekbridge_capability_get_the_heartbeat() {
+        let caps = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let stock = caps(&[
+            "kdeconnect.ping",
+            "kdeconnect.clipboard",
+            "kdeconnect.share.request",
+        ]);
+        assert!(!is_geekbridge_peer(&stock, &stock));
+        assert!(is_geekbridge_peer(
+            &stock,
+            &caps(&["kdeconnect.ping", "geekbridge.clipboard.pull"])
+        ));
+        assert!(is_geekbridge_peer(&caps(&["geekbridge.debug.log"]), &stock));
     }
 }

@@ -6,7 +6,7 @@
 #   (the extracted directory is then geekbridge-$pkgver as well).
 pkgname=geekbridge
 # Keep in step with [workspace.package] version in Cargo.toml (build-local.sh checks this).
-pkgver=0.1.0_rc.1
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='Bridge between your computer and your Android phone: pairing, clipboard, files, calls'
 arch=('x86_64')
