@@ -187,7 +187,9 @@ async fn a_phone_update_flood_is_applied_in_order_and_survives_a_link_flap() {
         .await
         .unwrap();
     }
-    for _ in 0..200 {
+    // Generous: a loaded macOS runner applied only 173 of the 200 updates in 10 s. The loop exits
+    // as soon as the last one lands, so the bound costs nothing when the machine is healthy.
+    for _ in 0..1200 {
         if clip.text().as_deref() == Some("flood 199") {
             break;
         }
