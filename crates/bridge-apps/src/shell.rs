@@ -1,5 +1,6 @@
 //! What the four apps share: the window setup, background discovery, and a slim connection
 //! strip at the bottom with expandable details. Everything above the strip belongs to the app.
+use crate::a11y::ScrollBars as _;
 use crate::{
     cli::ThemeChoice,
     connection::{Connections, ControlState},
@@ -111,7 +112,9 @@ impl Shell {
             ui.set_height(30.0);
             theme::dot(ui, theme::status_color(pal, strip.tone), strip.hollow);
             let label = RichText::new(&strip.label).size(12.5).color(pal.text2);
-            ui.add(egui::Label::new(label).truncate());
+            // Status changes ("Offline" -> "Connected") are announced without moving focus.
+            let status = ui.add(egui::Label::new(label).truncate());
+            crate::a11y::live_region(ui.ctx(), status.id, crate::a11y::Live::Polite);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (icon, text) = if self.details_open {
                     (Icon::ChevronDown, "Hide details")
@@ -195,7 +198,8 @@ impl Shell {
                         }
                     });
                 ui.add_space(6.0);
-            });
+            })
+            .bars(ui.ctx());
     }
 }
 
@@ -206,6 +210,7 @@ fn strip_height_id() -> egui::Id {
 impl Shell {
     /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
     pub fn frame(&mut self, ctx: &egui::Context) {
+        crate::a11y::window_title(ctx, &identity::window_title(self.app));
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }

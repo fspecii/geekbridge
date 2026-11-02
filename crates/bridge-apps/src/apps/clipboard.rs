@@ -1,6 +1,7 @@
 //! Clipboard: per-phone sync switches and status, "paste from phone", and a small scratchpad.
 //! Computer-to-phone copying is automatic for phones you turn on; phone-to-computer is pulled with a
 //! shortcut because Android does not let apps read the clipboard in the background.
+use crate::a11y::ScrollBars as _;
 use crate::{
     clipboard_link::{self, Action, ClipLink},
     input,
@@ -74,7 +75,7 @@ impl AppView for Clipboard {
                     theme::group(ui, pal, |ui| {
                         let rows =
                             ((ui.ctx().screen_rect().height() - 420.0) / 20.0).clamp(3.0, 24.0);
-                        let edit = ui.add(
+                        let edit = crate::a11y::named(ui.add(
                             egui::TextEdit::multiline(&mut self.text)
                                 .frame(false)
                                 .hint_text(
@@ -84,7 +85,7 @@ impl AppView for Clipboard {
                                 .font(FontId::new(14.5, FontFamily::Proportional))
                                 .desired_rows(rows as usize)
                                 .desired_width(f32::INFINITY),
-                        );
+                        ), "Text to send to the phone");
                         if edit.changed() {
                             input::limit_chars(&mut self.text, input::MAX_CLIPBOARD_CHARS);
                         }
@@ -137,7 +138,7 @@ impl AppView for Clipboard {
 
                     ui.add_space(10.0);
                     sync_section(ui, pal, self.link.as_mut().expect("created above"), &mut self.hotkey_draft);
-                });
+                }).bars(ui.ctx());
         });
     }
 }
@@ -261,7 +262,10 @@ pub(crate) fn sync_body(
         }
         ui.add(egui::Label::new(theme::caption(pal, clipboard_link::hotkey_line(&status))).wrap());
         let mut command: &str = clipboard_link::PASTE_COMMAND;
-        ui.add(egui::TextEdit::singleline(&mut command).desired_width(f32::INFINITY));
+        crate::a11y::named(
+            ui.add(egui::TextEdit::singleline(&mut command).desired_width(f32::INFINITY)),
+            "Paste shortcut command",
+        );
         if let Some(n) = &state.notice {
             ui.add(egui::Label::new(theme::caption(pal, n)).wrap());
         }
@@ -289,7 +293,10 @@ pub(crate) fn sync_body(
         ui.horizontal(|ui| {
             ui.label(theme::caption(pal, "Shortcut"));
             let text = draft.get_or_insert_with(|| status.hotkey.clone());
-            let edit = ui.add(egui::TextEdit::singleline(text).desired_width(150.0));
+            let edit = crate::a11y::named(
+                ui.add(egui::TextEdit::singleline(text).desired_width(150.0)),
+                "Shortcut",
+            );
             if (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 || ui.small_button("Save").clicked()
             {

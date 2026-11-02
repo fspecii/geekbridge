@@ -154,7 +154,7 @@ fail() { # kind detail  -> failures.log with the log tails from both sides
   {
     echo "=== t+$(elapsed)s $(date +%T) $kind: $detail"
     echo "--- desktop service log (last 25 lines)"; tail -n 25 "$OUT/desktop-service.log" 2>/dev/null
-    echo "--- phone logcat, app lines (last 25)"; grep -E 'geekbridge|GeekBridge|AndroidRuntime|FATAL' "$OUT/phone-logcat.log" 2>/dev/null | tail -n 25
+    echo "--- phone logcat, app lines (last 25)"; grep -E 'geekbridge|GeekBridge|AndroidRuntime|FATAL' "$OUT/phone-logcat.log" 2>/dev/null | grep -vE 'PackageConfigPersister|UsageStats|NotifRow' | tail -n 25
     echo "--- link: $(ctl status 2>/dev/null | jget '[(l["phase"],l.get("peer","")) for l in d["links"]]')"
     echo
   } >>"$FAILS"
@@ -176,9 +176,11 @@ start_service_soak() {
   wait_for 20 ctl status
 }
 # Write an Android SharedPreferences file as root (the release build is not debuggable, so no run-as).
-write_pref_root() { # name  (xml on stdin)
-  local uid; uid="$(A shell stat -c %u "/data/data/$PKG" | tr -d '\r')"
-  A shell "mkdir -p /data/data/$PKG/shared_prefs && cat > /data/data/$PKG/shared_prefs/$1.xml && chown $uid:$uid /data/data/$PKG/shared_prefs/$1.xml && chmod 660 /data/data/$PKG/shared_prefs/$1.xml && restorecon /data/data/$PKG/shared_prefs/$1.xml"
+write_pref_root() { # name  (xml on stdin; pushed as a file because `adb shell` does not forward stdin reliably)
+  local uid tmp="$P/pref-$1.xml"; cat >"$tmp"
+  uid="$(A shell stat -c %u "/data/data/$PKG" | tr -d '\r')"
+  A push "$tmp" "/data/local/tmp/$1.xml" >/dev/null
+  A shell "mkdir -p /data/data/$PKG/shared_prefs && cp /data/local/tmp/$1.xml /data/data/$PKG/shared_prefs/$1.xml && chown $uid:$uid /data/data/$PKG/shared_prefs/$1.xml && chmod 660 /data/data/$PKG/shared_prefs/$1.xml && restorecon /data/data/$PKG/shared_prefs/$1.xml; rm -f /data/local/tmp/$1.xml"
 }
 inject_phone_data() {
   local people=("Ada Lovelace|+44 20 7946 0001" "Grace Hopper|+1 555 010 0002" "Alan Turing|+44 20 7946 0003") p
@@ -306,7 +308,8 @@ sampler_loop() {
 }
 
 # ---------------------------------------------------------------- loop tasks
-TASK_N=0 TASK_MAX="${TASK_MAX:-420}"
+TASK_N=0
+declare -A TASK_LIMIT=([clip]=200 [file]=330 [flap]=330 [call]=150 [data]=160 [restart]=150 [idle]=$((IDLE_SECS + 150)))
 declare -A RUNS
 ensure_up() { # link connected, phone awake; redial otherwise. Prints nothing; returns 1 if the link cannot be restored
   link_up && return 0
@@ -316,7 +319,11 @@ ensure_up() { # link connected, phone awake; redial otherwise. Prints nothing; r
   ev recover 0 $(( $(msnow) - t0 )) "redial failed"; fail recover "link could not be restored by a redial"; return 1
 }
 phone_clip_text() { # the phone clipboard through the app's own Paste button in Diagnostics (the only reader allowed in the foreground)
-  goto_diag >/dev/null 2>&1; ui scrollto Paste >/dev/null 2>&1; tap Paste >/dev/null 2>&1; sleep 2; ui dump 2>/dev/null
+  goto_diag >/dev/null 2>&1
+  if ! timeout 45 "$UI" scrollto Paste >/dev/null 2>&1; then   # the page can keep an old scroll offset: go back to the top and retry
+    $ADB shell input swipe 540 600 540 2000 200; $ADB shell input swipe 540 600 540 2000 200; timeout 45 "$UI" scrollto Paste >/dev/null 2>&1
+  fi
+  timeout 45 "$UI" tap Paste >/dev/null 2>&1; sleep 2; timeout 45 "$UI" dump 2>/dev/null
 }
 t_clip() {
   local n=$TASK_N; ensure_up || { ev clip_d2p 0 0 "no link"; ev clip_p2d 0 0 "no link"; return; }
@@ -492,9 +499,9 @@ run_loop() {
         RUNS[$name]=$(( ${RUNS[$name]:-0} + 1 )); TASK_N=${RUNS[$name]}
         ( "t_$name" ) & local tp=$! tstart=$SECONDS
         while kill -0 "$tp" 2>/dev/null; do
-          if ((SECONDS - tstart > TASK_MAX)); then
+          if ((SECONDS - tstart > TASK_LIMIT[$name])); then
             pkill -KILL -P "$tp" 2>/dev/null; kill -KILL "$tp" 2>/dev/null
-            ev "$name" 0 $(( (SECONDS - tstart) * 1000 )) "task exceeded the ${TASK_MAX}s watchdog"; fail "$name" "stuck: killed by the ${TASK_MAX}s task watchdog"
+            ev "$name" 0 $(( (SECONDS - tstart) * 1000 )) "task exceeded the ${TASK_LIMIT[$name]}s watchdog"; fail "$name" "stuck: killed by the ${TASK_LIMIT[$name]}s task watchdog"
             A shell "iptables -D INPUT -j DROP; iptables -D OUTPUT -j DROP" >/dev/null 2>&1; wake; A shell input keyevent KEYCODE_HOME >/dev/null 2>&1; break
           fi
           sleep 1

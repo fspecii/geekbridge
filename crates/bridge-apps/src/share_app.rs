@@ -2,6 +2,7 @@
 //! progress. It is a client of the authenticated control API like the other apps; it never moves
 //! file bytes itself (the service does) and never touches the network on a GUI frame.
 
+use crate::a11y::ScrollBars as _;
 use crate::{
     cli::ThemeChoice,
     icons::Icon,
@@ -485,6 +486,7 @@ impl eframe::App for ShareApp {
 impl ShareApp {
     /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
     pub fn frame(&mut self, ctx: &egui::Context) {
+        crate::a11y::window_title(ctx, "GeekBridge Share");
         crate::pace::observe_focus(ctx);
         if let Some(v) = self.worker.latest() {
             self.view = v;
@@ -538,7 +540,8 @@ impl ShareApp {
                         self.incoming_section(ui, &pal);
                         self.transfers_section(ui, &pal);
                         self.settings_section(ui, &pal, &list);
-                    });
+                    })
+                    .bars(ui.ctx());
             });
         ctx.request_repaint_after(crate::pace::scaled(Duration::from_millis(500)));
     }
@@ -640,11 +643,14 @@ impl ShareApp {
         ui.add_space(22.0);
         ui.label(theme::overline(pal, "Link or text"));
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.text)
-                    .desired_width(ui.available_width() - 190.0)
-                    .margin(Margin::symmetric(8, 4))
-                    .hint_text("Paste a link or type a note"),
+            crate::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.text)
+                        .desired_width(ui.available_width() - 190.0)
+                        .margin(Margin::symmetric(8, 4))
+                        .hint_text("Paste a link or type a note"),
+                ),
+                "Link or note to send",
             );
             let trimmed = self.text.trim().to_owned();
             let is_url = bridge_kde::share::is_openable_url(&trimmed);

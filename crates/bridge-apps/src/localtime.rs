@@ -130,7 +130,7 @@ impl Locale {
             let h = hour % 24;
             format!(
                 "{} {}",
-                if h % 12 == 0 { 12 } else { h % 12 },
+                if h.is_multiple_of(12) { 12 } else { h % 12 },
                 if h < 12 { "AM" } else { "PM" }
             )
         } else {

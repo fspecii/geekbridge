@@ -146,15 +146,18 @@ impl Calls {
             16..=21 => 21.0,
             _ => 17.0,
         };
-        let edit = ui.add_sized(
-            [avail.x, display_h - 8.0],
-            egui::TextEdit::singleline(&mut self.number)
-                .frame(false)
-                .hint_text(egui::RichText::new("Enter a number").color(pal.text3))
-                .font(FontId::new(size, FontFamily::Proportional))
-                .horizontal_align(egui::Align::Center)
-                .vertical_align(egui::Align::Center)
-                .desired_width(f32::INFINITY),
+        let edit = crate::a11y::named(
+            ui.add_sized(
+                [avail.x, display_h - 8.0],
+                egui::TextEdit::singleline(&mut self.number)
+                    .frame(false)
+                    .hint_text(egui::RichText::new("Enter a number").color(pal.text3))
+                    .font(FontId::new(size, FontFamily::Proportional))
+                    .horizontal_align(egui::Align::Center)
+                    .vertical_align(egui::Align::Center)
+                    .desired_width(f32::INFINITY),
+            ),
+            "Phone number",
         );
         if edit.changed() {
             self.number = input::sanitize_dial(&self.number);

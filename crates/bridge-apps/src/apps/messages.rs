@@ -3,6 +3,7 @@
 //! red accent. Conversations, names and unread counts come from the paired phone through the
 //! service (memory only, bounded); sends are shown with the phone's real state and are never
 //! resent on their own. Nothing here is sample data.
+use crate::a11y::ScrollBars as _;
 use crate::{
     dotmatrix,
     icons::{self, Icon},
@@ -335,11 +336,11 @@ impl Messages {
                     .inner_margin(Margin::symmetric(8, 8)),
             )
             .show(ctx, |ui| {
-                ui.add(
+                crate::a11y::named(ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .hint_text(RichText::new("Search messages").color(pal.text3))
                         .desired_width(f32::INFINITY),
-                );
+                ), "Search messages");
                 input::limit_chars(&mut self.search, 64);
                 ui.add_space(4.0);
                 if view.conversations.is_empty() {
@@ -369,7 +370,7 @@ impl Messages {
                                 self.thread = Some((c.device_id.clone(), c.thread_id));
                             }
                         }
-                    });
+                    }).bars(ui.ctx());
             });
     }
 
@@ -489,7 +490,7 @@ impl Messages {
                     bubble(ui, pal, m, offset);
                 }
                 ui.add_space(6.0);
-            });
+            }).bars(ui.ctx());
         theme::hairline(ui, pal);
         for send in mine {
             self.send_line(ui, pal, send, dev);
@@ -548,13 +549,16 @@ impl Messages {
         let ready = dev.is_some_and(|d| send_blocker(d).is_none());
         let to = conv.and_then(|c| c.addresses.first().cloned());
         ui.add_space(6.0);
-        ui.add(
-            egui::TextEdit::multiline(&mut self.reply)
-                .frame(false)
-                .hint_text(egui::RichText::new("Reply").color(pal.text3))
-                .font(FontId::new(15.0, FontFamily::Proportional))
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
+        crate::a11y::named(
+            ui.add(
+                egui::TextEdit::multiline(&mut self.reply)
+                    .frame(false)
+                    .hint_text(egui::RichText::new("Reply").color(pal.text3))
+                    .font(FontId::new(15.0, FontFamily::Proportional))
+                    .desired_rows(2)
+                    .desired_width(f32::INFINITY),
+            ),
+            "Reply",
         );
         input::limit_chars(&mut self.reply, input::MAX_DRAFT_CHARS);
         if let Some(d) = dev {
@@ -712,13 +716,16 @@ impl Messages {
         // To: [number]
         ui.horizontal(|ui| {
             ui.add_sized([34.0, 28.0], egui::Label::new(theme::overline(pal, "To")));
-            let to = ui.add(
-                egui::TextEdit::singleline(&mut self.recipient)
-                    .frame(false)
-                    .hint_text(RichText::new("Phone number").color(pal.text3))
-                    .font(FontId::new(16.0, FontFamily::Proportional))
-                    .vertical_align(Align::Center)
-                    .desired_width(f32::INFINITY),
+            let to = crate::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.recipient)
+                        .frame(false)
+                        .hint_text(RichText::new("Phone number").color(pal.text3))
+                        .font(FontId::new(16.0, FontFamily::Proportional))
+                        .vertical_align(Align::Center)
+                        .desired_width(f32::INFINITY),
+                ),
+                "Recipient phone number",
             );
             if to.changed() {
                 self.recipient = input::sanitize_dial(&self.recipient);
@@ -746,13 +753,16 @@ impl Messages {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let rows = (body_h / 22.0).floor().max(3.0) as usize;
-                let body = ui.add(
-                    egui::TextEdit::multiline(&mut self.draft)
-                        .frame(false)
-                        .hint_text(RichText::new("Write a message").color(pal.text3))
-                        .font(FontId::new(15.0, FontFamily::Proportional))
-                        .desired_rows(rows)
-                        .desired_width(f32::INFINITY),
+                let body = crate::a11y::named(
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.draft)
+                            .frame(false)
+                            .hint_text(RichText::new("Write a message").color(pal.text3))
+                            .font(FontId::new(15.0, FontFamily::Proportional))
+                            .desired_rows(rows)
+                            .desired_width(f32::INFINITY),
+                    ),
+                    "Message text",
                 );
                 if body.changed() {
                     input::limit_chars(&mut self.draft, input::MAX_DRAFT_CHARS);
@@ -761,7 +771,8 @@ impl Messages {
                     body.request_focus();
                     self.focus = None;
                 }
-            });
+            })
+            .bars(ui.ctx());
 
         theme::hairline(ui, pal);
         ui.add_space(8.0);

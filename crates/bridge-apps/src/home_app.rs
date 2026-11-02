@@ -1,6 +1,7 @@
 //! The single entry window (`geekbridge`). It owns no protocol logic: pairing is the shared
 //! `Connections` panel, clipboard sync is the Clipboard app's `sync_section`, updates are
 //! `Updates`, and sending files hands them to `geekbridge-share`.
+use crate::a11y::ScrollBars as _;
 use crate::{
     apps::clipboard::sync_body,
     call_feed::CallFeed,
@@ -787,6 +788,7 @@ impl eframe::App for HomeApp {
 impl HomeApp {
     /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
     pub fn frame(&mut self, ctx: &egui::Context) {
+        crate::a11y::window_title(ctx, "GeekBridge");
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }
@@ -849,7 +851,8 @@ impl HomeApp {
                             ui.add_space(S2);
                             ui.add(egui::Label::new(RichText::new(n).color(pal.text2)).wrap());
                         }
-                    });
+                    })
+                    .bars(ui.ctx());
             });
         self.connections.dialogs(ctx, &pal);
     }

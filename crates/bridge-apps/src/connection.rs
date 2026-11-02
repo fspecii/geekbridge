@@ -369,10 +369,13 @@ impl Connections {
         ui.label(theme::overline(pal, "This computer's name"));
         let mut save = false;
         ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(draft)
-                    .char_limit(bridge_kde::identity::MAX_USER_NAME_CHARS)
-                    .desired_width(220.0),
+            crate::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(draft)
+                        .char_limit(bridge_kde::identity::MAX_USER_NAME_CHARS)
+                        .desired_width(220.0),
+                ),
+                "Your computer name",
             );
             let problem = name_problem(draft);
             let changed = draft.trim() != saved;
@@ -505,15 +508,21 @@ impl Connections {
                 pal,
                 "Use the address and device ID shown on the phone.",
             ));
-            ui.add(
-                egui::TextEdit::singleline(&mut self.manual_address)
-                    .hint_text("Phone IP:port")
-                    .char_limit(80),
+            crate::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.manual_address)
+                        .hint_text("Phone IP:port")
+                        .char_limit(80),
+                ),
+                "Phone IP address and port",
             );
-            ui.add(
-                egui::TextEdit::singleline(&mut self.manual_id)
-                    .hint_text("Device ID")
-                    .char_limit(38),
+            crate::a11y::named(
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.manual_id)
+                        .hint_text("Device ID")
+                        .char_limit(38),
+                ),
+                "Phone device ID",
             );
             if ui
                 .add_enabled(enabled, egui::Button::new("Connect to this phone"))
@@ -564,11 +573,11 @@ impl Connections {
                         ))
                         .wrap(),
                     );
-                    ui.add(
+                    crate::a11y::named(ui.add(
                         egui::TextEdit::singleline(&mut self.entered_code)
                             .hint_text("Code from phone")
                             .char_limit(8),
-                    );
+                    ), "Pairing code from the phone");
                     ui.horizontal(|ui| {
                         let enabled = !self.state.busy && challenge.expires_in_ms > 0;
                         if ui

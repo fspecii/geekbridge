@@ -1,6 +1,7 @@
 //! Contacts: the phone's phonebook on the computer. Alphabetical with letter sections, search,
 //! a details pane with Call / Message / Copy, and nothing stored: the list is a bounded view of
 //! what the phone shared, held in memory by the helper service.
+use crate::a11y::ScrollBars as _;
 use crate::{
     icons::{self, Icon},
     localtime,
@@ -161,11 +162,14 @@ impl Contacts {
                     });
                 });
                 ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .hint_text("Search name, number or email")
-                        .margin(Margin::symmetric(8, 4))
-                        .desired_width(f32::INFINITY),
+                crate::a11y::named(
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .hint_text("Search name, number or email")
+                            .margin(Margin::symmetric(8, 4))
+                            .desired_width(f32::INFINITY),
+                    ),
+                    "Search contacts",
                 );
                 crate::input::limit_chars(&mut self.query, 64);
                 ui.add_space(8.0);
@@ -234,7 +238,8 @@ impl Contacts {
                             }
                         }
                     });
-                });
+                })
+                .bars(ui.ctx());
             });
         // Letter rail: only the letters that exist; click to jump.
         if view.people.is_empty() {

@@ -18,7 +18,8 @@ pub struct Tree {
 
 /// Roles a screen reader announces as something to operate; each needs a name.
 fn is_control(node: &Node) -> bool {
-    node.supports_action(Action::Click)
+    // Selectable text is clickable (to place a caret) but is read as text, not as a control.
+    (node.supports_action(Action::Click) && !matches!(node.role(), Role::Label))
         || matches!(
             node.role(),
             Role::Button
@@ -54,7 +55,13 @@ impl Tree {
             .filter(|n| is_control(n) && name(n).is_empty())
             .map(|n| {
                 let b = n.bounds().map(|b| (b.x0 as i32, b.y0 as i32));
-                format!("{:?} at {:?}", n.role(), b)
+                format!(
+                    "{:?} at {:?} focus={} bounds={:?}",
+                    n.role(),
+                    b,
+                    n.supports_action(Action::Focus),
+                    n.bounds()
+                )
             })
             .collect();
         bad.sort();
@@ -67,6 +74,10 @@ impl Tree {
 
     pub fn find(&self, label: &str) -> Option<&Node> {
         self.nodes.values().find(|n| name(n) == label)
+    }
+
+    pub fn has_name_starting(&self, prefix: &str) -> bool {
+        self.nodes.values().any(|n| name(n).starts_with(prefix))
     }
 
     /// Indented outline: role, name, state. Used for docs/accessibility.md.
@@ -184,8 +195,25 @@ fn every_control_in_the_shell_apps_has_a_name() {
             ),
         ] {
             let tree = shell_tree(app, details, model);
-            assert!(tree.controls() >= 2, "{app:?}: connection strip controls exist");
-            assert!(tree.find("Check again").is_some(), "{app:?}: refresh button is named");
+            assert!(
+                tree.controls() >= 2,
+                "{app:?}: connection strip controls exist"
+            );
+            assert_eq!(
+                tree.nodes[&tree.root].label(),
+                Some(crate::identity::window_title(app).as_str()),
+                "{app:?}: the window is named"
+            );
+            assert!(
+                tree.nodes
+                    .values()
+                    .any(|n| n.live() == Some(eframe::egui::accesskit::Live::Polite)),
+                "{app:?}: the connection status is a polite live region"
+            );
+            assert!(
+                tree.find("Check again").is_some(),
+                "{app:?}: refresh button is named"
+            );
             for c in tree.unnamed_controls() {
                 problems.push(format!("{app:?} details={details}: {c}"));
             }
@@ -193,7 +221,11 @@ fn every_control_in_the_shell_apps_has_a_name() {
     }
     problems.sort();
     problems.dedup();
-    assert!(problems.is_empty(), "unnamed controls:\n{}", problems.join("\n"));
+    assert!(
+        problems.is_empty(),
+        "unnamed controls:\n{}",
+        problems.join("\n")
+    );
 }
 
 #[test]
@@ -243,4 +275,74 @@ fn dump_outlines() {
     let mut home = HomeApp::new(1, &ctx);
     let tree = capture(egui::vec2(960.0, 680.0), move |ctx| home.frame(ctx));
     println!("== Home\n{}", tree.outline());
+}
+
+/// Names of the controls Tab visits, in order, until it wraps.
+fn tab_stops(app: AppKind) -> Vec<String> {
+    let ctx = egui::Context::default();
+    theme::install_fonts(&ctx);
+    ctx.enable_accesskit();
+    let mut shell = Shell::new(app, 1, ctx.clone(), apps::view_for(app));
+    theme::apply(&ctx, app);
+    let mut stops: Vec<String> = Vec::new();
+    let mut seen: Vec<NodeId> = Vec::new();
+    for step in 0..300 {
+        let mut events = Vec::new();
+        if step >= 3 {
+            events.push(egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 640.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        shell.model = DiscoveryModel::Checking;
+        let out = ctx.run(input, |ctx| shell.frame(ctx));
+        let update = out.platform_output.accesskit_update.unwrap();
+        let focus = update.focus;
+        let Some((_, node)) = update.nodes.iter().find(|(n, _)| *n == focus) else {
+            continue;
+        };
+        let label = name(node).to_owned();
+        if step < 3
+            || node.role() == Role::Window
+            || label.is_empty()
+            || seen.last() == Some(&focus)
+        {
+            continue;
+        }
+        if seen.contains(&focus) {
+            break;
+        }
+        seen.push(focus);
+        stops.push(label);
+    }
+    stops
+}
+
+#[test]
+fn tab_reaches_the_app_before_the_connection_strip() {
+    for app in SHELL_APPS {
+        let stops = tab_stops(app);
+        let check = stops.iter().position(|s| s == "Check again");
+        let details = stops.iter().position(|s| s == "Details");
+        assert!(stops.len() >= 3, "{app:?}: {stops:?}");
+        assert!(
+            check.is_some() && details.is_some(),
+            "{app:?}: strip is reachable: {stops:?}"
+        );
+        assert!(
+            check.unwrap() >= stops.len() - 2 && details.unwrap() >= stops.len() - 2,
+            "{app:?}: the strip must be the last two stops, got {stops:?}"
+        );
+    }
 }

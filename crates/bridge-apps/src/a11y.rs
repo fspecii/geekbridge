@@ -43,3 +43,39 @@ pub fn describe(ctx: &egui::Context, id: egui::Id, name: &str, value: Option<&st
     #[cfg(not(feature = "accesskit"))]
     let _ = (ctx, id, name, value);
 }
+
+/// Names a text field for a screen reader (egui does not use the hint text as its name) and
+/// hands the response back so it can wrap `ui.add(TextEdit...)` in place.
+pub fn named(response: egui::Response, name: &str) -> egui::Response {
+    describe(&response.ctx, response.id, name, None);
+    response
+}
+
+/// egui's scroll bars take Tab focus and carry no name; this names the bars of a scroll area.
+pub trait ScrollBars {
+    fn bars(self, ctx: &egui::Context) -> Self;
+}
+
+impl<R> ScrollBars for egui::scroll_area::ScrollAreaOutput<R> {
+    fn bars(self, ctx: &egui::Context) -> Self {
+        for (axis, name) in ["Horizontal scroll bar", "Vertical scroll bar"]
+            .into_iter()
+            .enumerate()
+        {
+            // egui derives the bar's id as `area_id.with(axis)`; it only exists when drawn.
+            let id = self.id.with(axis);
+            if ctx.read_response(id).is_some() {
+                describe(ctx, id, name, None);
+            }
+        }
+        self
+    }
+}
+
+/// Names the top-level window for a screen reader (egui leaves the root node unnamed).
+pub fn window_title(ctx: &egui::Context, title: &str) {
+    #[cfg(feature = "accesskit")]
+    ctx.accesskit_node_builder(egui::accesskit_root_id(), |node| node.set_label(title));
+    #[cfg(not(feature = "accesskit"))]
+    let _ = (ctx, title);
+}

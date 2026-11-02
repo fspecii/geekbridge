@@ -222,6 +222,8 @@ impl CallPanel {
         let screen = ctx.screen_rect();
         egui::Area::new(egui::Id::new("incoming-backdrop"))
             .order(egui::Order::Middle)
+            // Paint only: an interactive zero-size area would be an unnamed Tab stop.
+            .interactable(false)
             .fixed_pos(screen.min)
             .show(ctx, |ui| {
                 ui.painter().rect_filled(
@@ -736,5 +738,49 @@ mod tests {
         assert_eq!(clock(0), "00:00");
         assert_eq!(clock(187), "03:07");
         assert_eq!(via_label(ControlPath::Link), "phone link");
+    }
+
+    /// The ringing sheet is announced: an alert dialog with the caller's name, assertive live
+    /// region, and Decline / Answer are named buttons.
+    #[cfg(feature = "accesskit")]
+    #[test]
+    fn incoming_call_sheet_is_an_announced_alert() {
+        use eframe::egui::accesskit::{Live, Role};
+        let status = bridge_core::ipc::CallsStatus {
+            view: link_view(PhoneState::Ringing, true),
+            notice: None,
+            sources: Vec::new(),
+        };
+        let feed = crate::call_feed::CallFeed::spawn_with(
+            Duration::from_millis(20),
+            move || Ok(status.clone()),
+            |_| Ok(()),
+            || {},
+        );
+        for _ in 0..200 {
+            if feed.state().status.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut panel = CallPanel::default();
+        let tree = crate::a11y_tests::capture(egui::vec2(700.0, 500.0), |ctx| {
+            crate::theme::apply(ctx, bridge_core::AppKind::Calls);
+            let pal = crate::theme::current(ctx, bridge_core::AppKind::Calls);
+            panel.popup(ctx, &pal, &feed);
+        });
+        let sheet = tree
+            .find("Incoming call from Ada")
+            .unwrap_or_else(|| panic!("{}", tree.outline()));
+        assert_eq!(sheet.role(), Role::AlertDialog);
+        assert_eq!(sheet.live(), Some(Live::Assertive));
+        for button in ["Answer", "Decline"] {
+            assert!(
+                tree.has_name_starting(button),
+                "{button}\n{}",
+                tree.outline()
+            );
+        }
+        assert_eq!(tree.unnamed_controls(), Vec::<String>::new());
     }
 }

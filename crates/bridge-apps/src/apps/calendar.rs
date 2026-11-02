@@ -2,6 +2,7 @@
 //! Calendar shows up here because Google accounts sync into the phone's calendar provider; this
 //! app never talks to Google. Reading is the default. Creating, changing and deleting events is
 //! a separate per-phone permission and always names the calendar it writes to.
+use crate::a11y::ScrollBars as _;
 use crate::{
     calendar_model::{self as model, Fields},
     icons::Icon,
@@ -552,7 +553,8 @@ impl Calendar {
                                 }
                             }
                         }
-                    });
+                    })
+                    .bars(ui.ctx());
             });
         if let Some(r) = action {
             self.run(r);
@@ -921,7 +923,7 @@ impl Calendar {
             .fixed_size(vec2(420.0, 0.0))
             .show(ctx, |ui| {
                 let f = &mut ed.fields;
-                ui.add(egui::TextEdit::singleline(&mut f.title).hint_text("Title").desired_width(f32::INFINITY));
+                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.title).hint_text("Title").desired_width(f32::INFINITY)), "Event title");
                 crate::input::limit_chars(&mut f.title, 200);
                 ui.add_space(8.0);
                 if creating {
@@ -948,15 +950,15 @@ impl Calendar {
                 ui.add_space(4.0);
                 egui::Grid::new("editor-times").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label(theme::caption(pal, "Starts"));
-                    ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.start_date).hint_text("YYYY-MM-DD"));
+                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.start_date).hint_text("YYYY-MM-DD")), "Start date, YYYY-MM-DD");
                     if !f.all_day {
-                        ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.start_time).hint_text("HH:MM"));
+                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.start_time).hint_text("HH:MM")), "Start time, HH:MM");
                     }
                     ui.end_row();
                     ui.label(theme::caption(pal, if f.all_day { "Last day" } else { "Ends" }));
-                    ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.end_date).hint_text("YYYY-MM-DD"));
+                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.end_date).hint_text("YYYY-MM-DD")), "End date, YYYY-MM-DD");
                     if !f.all_day {
-                        ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.end_time).hint_text("HH:MM"));
+                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.end_time).hint_text("HH:MM")), "End time, HH:MM");
                     }
                     ui.end_row();
                 });
@@ -974,10 +976,10 @@ impl Calendar {
                     ui.add(egui::Label::new(theme::caption(pal, note)).wrap());
                 }
                 ui.add_space(8.0);
-                ui.add(egui::TextEdit::singleline(&mut f.location).hint_text("Location").desired_width(f32::INFINITY));
+                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.location).hint_text("Location").desired_width(f32::INFINITY)), "Event location");
                 crate::input::limit_chars(&mut f.location, 200);
                 ui.add_space(6.0);
-                ui.add(egui::TextEdit::multiline(&mut f.notes).hint_text("Notes").desired_rows(3).desired_width(f32::INFINITY));
+                crate::a11y::named(ui.add(egui::TextEdit::multiline(&mut f.notes).hint_text("Notes").desired_rows(3).desired_width(f32::INFINITY)), "Event notes");
                 crate::input::limit_chars(&mut f.notes, model_notes_limit());
                 ui.add_space(6.0);
                 egui::ComboBox::from_id_salt("editor-reminder")
@@ -1461,7 +1463,8 @@ impl Calendar {
                 let hour = (((p.y - top) / HOUR_HEIGHT).floor().max(0.0) as u32).min(23);
                 acts.new_at = Some((days[col], hour));
             }
-        });
+        })
+        .bars(ui.ctx());
     }
 
     fn list(
@@ -1564,7 +1567,8 @@ impl Calendar {
                         ui.label(theme::semibold("Nothing coming up", 15.0).color(pal.text3))
                     });
                 }
-            });
+            })
+            .bars(ui.ctx());
     }
 }
 

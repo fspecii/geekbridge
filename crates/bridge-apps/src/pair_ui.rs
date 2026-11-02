@@ -299,12 +299,12 @@ impl Connections {
                         );
                         egui::CollapsingHeader::new("Can't scan? Use the link").show(ui, |ui| {
                             let mut text = q.payload.clone();
-                            ui.add(
+                            crate::a11y::named(ui.add(
                                 egui::TextEdit::multiline(&mut text)
                                     .desired_rows(3)
                                     .desired_width(300.0)
                                     .font(egui::TextStyle::Monospace),
-                            );
+                            ), "Pairing link");
                             if ui.button("Copy link").clicked() {
                                 ui.ctx().copy_text(q.payload.clone());
                             }

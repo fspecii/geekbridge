@@ -55,7 +55,19 @@ pub fn dot_text(ui: &mut Ui, pal: &Palette, text: &str, pitch: f32, color: Color
     let origin = pos2(rect.left() + pitch * 0.4, rect.top() + pitch * 0.4);
     let off = grid.then_some(pal.dot_off);
     dotmatrix::paint(ui.painter(), origin, text, pitch, color, off);
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, spoken(text)));
+}
+
+/// What a screen reader says for a dot run: the words themselves, but placeholder runs such as
+/// "---" (no value) and "..." (still loading) are said as what they mean, not as punctuation.
+pub fn spoken(text: &str) -> &str {
+    if text.len() > 1 && text.chars().all(|c| c == '-') {
+        "not available"
+    } else if text.len() > 1 && text.chars().all(|c| c == '.') {
+        "loading"
+    } else {
+        text
+    }
 }
 
 /// Like [`dot_text`], but picks the longest candidate that fits `max_width`.
@@ -204,5 +216,14 @@ mod tests {
         assert_eq!(columns_for(5000.0, 220.0, 12.0), 4);
         let w = tile_width(480.0, 2, 12.0);
         assert!((w * 2.0 + 12.0 - 480.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn placeholder_dots_are_spoken_as_meaning() {
+        assert_eq!(spoken("---"), "not available");
+        assert_eq!(spoken("..."), "loading");
+        assert_eq!(spoken("-"), "-");
+        assert_eq!(spoken("Missed call"), "Missed call");
+        assert_eq!(spoken("07"), "07");
     }
 }
