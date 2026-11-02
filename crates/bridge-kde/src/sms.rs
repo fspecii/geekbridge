@@ -1,7 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The stock KDE Connect SMS packets (`kdeconnect.sms.*`), as the desktop side speaks them.
 //!
-//! Field names and quirks come from `docs/architecture.md` (read from the pinned kdeconnect-android
-//! and kdeconnect-kde sources). The phone never acknowledges `kdeconnect.sms.request`; the
+//! Field names and quirks follow the stock KDE Connect SMS plugin as observed on the wire
+//! (see `docs/phone-data-link.md`). The phone never acknowledges `kdeconnect.sms.request`; the
 //! GeekBridge phone additionally sends `geekbridge.sms.status` keyed by the `requestId` this module
 //! adds to the request (stock phones ignore unknown fields). Incoming data is untrusted: it is
 //! bounded and converted with [`bridge_core::messages::Message::from_wire`].
@@ -148,7 +149,7 @@ pub fn parse_sims(body: &Map<String, Value>) -> Option<Vec<bridge_core::phone_vi
             .and_then(Value::as_str)
             .unwrap_or("")
             .chars()
-            .filter(|c| !c.is_control())
+            .filter(|c| !c.is_control() && !crate::identity::is_invisible_format(*c))
             .take(24)
             .collect();
         out.push(SimItem {
@@ -223,6 +224,12 @@ mod tests {
             parse_messages(&obj(json!({"version": 2, "messages": many}))).unwrap_err(),
             SmsWireError::TooManyMessages
         );
+    }
+
+    #[test]
+    fn sim_labels_lose_direction_overrides_and_zero_width_characters() {
+        let b = obj(json!({"sims": [{"id": 3, "slot": 1, "label": "Ev\u{202e}il\u{200b}SIM"}]}));
+        assert_eq!(parse_sims(&b).unwrap()[0].label, "EvilSIM");
     }
 
     #[test]

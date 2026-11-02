@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Translation between this adapter's Windows vocabulary and `bridge-core::calls`.
 //!
 //! `bridge-core` is the neutral call domain; this module feeds it ([`CoreProjector`] turns

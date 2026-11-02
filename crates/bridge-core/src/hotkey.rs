@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The "paste from phone" hotkey: parsing, validation and the strings other tools need.
 //!
 //! A global hotkey must include a modifier, so plain typing is never hijacked. The normalized form

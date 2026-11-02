@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What `gate` negotiates with the REAL stock KDE Connect Android app (identity captured from
 //! 1.37.0, F-Droid build, see `crates/bridge-kde/tests/fixtures/kdeconnect-android-real/`).
 

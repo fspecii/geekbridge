@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Desktop notifications with action buttons through `notify-send --wait` (libnotify >= 0.8):
 //! "file received" (Open / Show in folder) and "update available" (Update), plus the helpers the
 //! call and share notifications use for a plain click on the body.

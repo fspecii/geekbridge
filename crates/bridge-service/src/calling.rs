@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only view of the host's Bluetooth calling backend (`bridge-calls`).
 //!
 //! Only counts and a verdict are reported: no phone numbers, caller names or Bluetooth addresses

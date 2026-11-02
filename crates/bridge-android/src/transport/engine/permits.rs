@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Which paired computers may use the phone-side opt-ins (call control, contacts, calendar, calendar editing, SMS).
 //!
 //! The app's switches say *what* the phone may share; this says *with which computer*. Until the app sends a

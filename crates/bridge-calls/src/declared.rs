@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What the PipeWire telephony D-Bus API *declares*, and what that licenses.
 //!
 //! Sources, in decreasing order of weight:

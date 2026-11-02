@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone data relay: contacts, calendar and SMS packets between the trusted link and Kotlin.
 //!
 //! Contract: `docs/phone-data-link.md`. Rust does not interpret any of this data. It
@@ -28,8 +29,9 @@ const EVENT_TTL: Duration = Duration::from_secs(60);
 /// Largest serialized body `transport_data_send` accepts.
 pub(in crate::transport) const MAX_SEND_BODY_BYTES: usize = 1024 * 1024;
 const RATE_BURST: f64 = 20.0;
-/// 20 packets per 10 s sustained.
-const RATE_PER_SEC: f64 = 2.0;
+/// 8 packets per second sustained: a 5,000-contact sync is 200 vCard answers, which 2/s made a 100 s crawl
+/// (and the burst of 20 alone stalled it); the app waits and retries a rate-limited answer.
+const RATE_PER_SEC: f64 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::transport) enum Feature {

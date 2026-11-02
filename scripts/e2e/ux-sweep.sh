@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # UX sweep of the reskinned app on the emulator: for each configuration (theme, font scale, orientation, RTL) open
 # Home, Diagnostics (MainActivity) and the QR-pair screen, walk down each page and run scripts/e2e/a11y-audit.py
 # (touch targets < 48dp, unlabeled controls, clipped/off-screen nodes, overlapping controls). Screenshots of the

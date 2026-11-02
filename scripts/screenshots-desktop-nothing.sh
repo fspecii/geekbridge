@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Light and dark screenshots of every desktop screen in the Nothing-inspired look, from the real
 # windows against a scripted phone (crates/bridge-phone-sim/examples/data_sim.rs). Private Xvfb and
 # private service state; nothing touches the user's session.

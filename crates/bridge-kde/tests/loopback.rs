@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Loopback integration tests with generated certificates.
 //!
 //! The "peer" in most tests is a hand-written raw rustls endpoint that does not

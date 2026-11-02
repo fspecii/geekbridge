@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-neutral snapshot and control types. Nothing here touches a bus.
 
 use bridge_core::calls::{

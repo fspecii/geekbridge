@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Newline-delimited JSON packets with hard size, depth and time bounds.
 //!
 //! Any framing or parse failure is fatal for the connection: the reader never

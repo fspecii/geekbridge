@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Vectors captured from the REAL stock KDE Connect Android app (1.37.0, F-Droid build) talking to
 //! `geekbridge-service` in an emulator. See `tests/fixtures/kdeconnect-android-real/README.md`.
 

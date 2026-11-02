@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! D-Bus objects of the simulated `org.pipewire.Telephony` service: the object manager at the
 //! root, and per phone (`ag1`) the `AudioGateway1`, `AudioGatewayTransport1` and per-phone
 //! `ObjectManager` interfaces; `Call1` lives on `ag1/call<N>`.

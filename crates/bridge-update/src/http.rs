@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A deliberately small blocking HTTP/1.1 GET client (rustls + the bundled Mozilla roots).
 //!
 //! Only what the updater needs: GET, `Connection: close`, identity encoding, Content-Length or

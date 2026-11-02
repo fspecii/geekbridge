@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The tray's pure model: what the service knows ([`TrayInput`]), the one icon state it maps to,
 //! and the menu ([`menu`]). No I/O and no platform types, so every backend (StatusNotifierItem,
 //! Shell_NotifyIcon, NSStatusItem) draws the same thing and the mapping is unit-tested once.

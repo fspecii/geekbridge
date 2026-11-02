@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Finding the graphical session when the service was started by `systemd --user` before the
 //! compositor exported its environment.
 //!

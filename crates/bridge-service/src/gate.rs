@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Which packet types may cross a trusted link, and when.
 //!
 //! The service declares exactly the capabilities it has working code for: `kdeconnect.ping` and the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The Windows implementation of [`CallsPlatform`] over `Windows.ApplicationModel.Calls`.
 //!
 //! Everything here runs on the service's actor thread inside a multithreaded WinRT apartment that

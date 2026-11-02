@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Fuzz-ish tests for the service's other untrusted-input parsers: UDP discovery announcements,
 //! the clipboard wire format and the control-API hello line. Fixed-seed xorshift, no extra crates;
 //! `GEEKBRIDGE_FUZZ_ITERS` raises the count. The property is "no panic, and anything accepted

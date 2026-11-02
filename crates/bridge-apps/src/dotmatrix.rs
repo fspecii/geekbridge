@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A tiny 5x7 dot-matrix display drawn with plain circles. Original glyphs, no font files.
 //!
 //! Used sparingly by Messages for its status display and counters. Text is upper-cased;

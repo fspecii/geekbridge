@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Desktop -> phone payloads through a model of the emulator's two networks (docs/e2e-findings.md E2E-14).
 //!
 //! The control link arrives on one interface (`adb emu redir` -> eth0, here a redirect proxy to the phone's

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use bridge_service::config::{self, Parsed};
 
 /// Workers for the async runtime. The service is I/O bound (a handful of sockets and small JSON

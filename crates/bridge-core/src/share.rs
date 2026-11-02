@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Wire types of the file / link / text sharing feature on the local control API.
 //!
 //! The service moves the bytes; clients only start transfers, answer offers and read progress.

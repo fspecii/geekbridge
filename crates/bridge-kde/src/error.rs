@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Error type shared by every layer of the transport.
 //!
 //! Messages never contain key material. Certificate problems carry fingerprints
@@ -47,6 +48,10 @@ pub enum KdeError {
     Store(String),
     #[error("trust store at {path} is corrupt: {reason}")]
     StoreCorrupt { path: PathBuf, reason: String },
+    #[error(
+        "{path} was written by a newer version (format {found}); it is left untouched and changes are not saved until you update"
+    )]
+    StoreNewer { path: PathBuf, found: u32 },
     #[error("{what} is not private enough: {detail}")]
     InsecurePermissions { what: String, detail: String },
     #[error("unsupported platform: {0}")]

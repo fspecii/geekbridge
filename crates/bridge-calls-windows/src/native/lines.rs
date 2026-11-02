@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone lines and calls: snapshot enumeration, dialing and in-call operations.
 use super::wait::{await_op, classify};
 use crate::model::*;

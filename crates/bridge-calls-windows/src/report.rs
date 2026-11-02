@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Redacted rendering of snapshots and command results for the CLI and logs.
 //!
 //! Phone numbers, contact names, Bluetooth addresses and device interface paths never appear in

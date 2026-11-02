@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! macOS Bluetooth hands-free calling for the call hub, through the `geekbridge-macos-calls`
-//! helper process (JSON lines, protocol v1; see `docs/architecture.md`).
+//! helper process (JSON lines, protocol v1; see `packaging/macos/README.md`).
 //!
 //! IOBluetooth objects must live on the main thread of a process with a run loop, so the service
 //! never links the adapter: it spawns the helper, sends `core_command` requests and folds the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Bluetooth cellular-call backends for GeekBridge.
 //!
 //! The Linux adapter drives PipeWire's `org.pipewire.Telephony` D-Bus service, which makes this
@@ -14,7 +15,7 @@
 //! * [`audio`]: call-audio routing (phone HFP voice <-> local speakers/microphone), a separate
 //!   explicit step after call control.
 //!
-//! See `docs/architecture.md` and `docs/architecture.md`.
+//! See `docs/call-control.md` and `docs/call-audio-options.md`.
 
 pub mod audio;
 pub mod backend;

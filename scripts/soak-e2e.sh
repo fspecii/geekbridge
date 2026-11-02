@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Multi-hour stability soak: release desktop service + release (R8) Android APK on an emulator, a realistic
 # loop of clipboard / file / link-flap / call / phone-data / app-restart / screen-off events, and a sample of
 # memory, threads, descriptors, wake locks and alarms on both sides every SAMPLE_EVERY seconds.
@@ -34,7 +35,7 @@ while (($#)); do
     --no-build) SOAK_BUILD=no ;;
     --report-only) REPORT_ONLY="$2"; shift ;;
     --stop) STOP=1 ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,26p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -99,6 +100,8 @@ if ((STOP)); then trap - EXIT; teardown; exit 0; fi
 # ---------------------------------------------------------------- pre-flight: nothing of ours may collide with other agents
 preflight() {
   local port busy=0
+  # A stale adb server of an earlier run on our private port (no emulator behind it) is ours to stop.
+  if ss -ltn "sport = :$PERF_ADB_PORT" 2>/dev/null | grep -q LISTEN && ! pgrep -af "qemu-system.*-avd $PERF_AVD " >/dev/null; then adb kill-server >/dev/null 2>&1; sleep 1; fi
   for port in "$PERF_EMU_PORT" $((PERF_EMU_PORT + 1)) "$PERF_ADB_PORT" "$PERF_CTRL_PORT" "$PERF_API_PORT" "$PERF_LISTEN_PORT" "$PERF_REDIR_PORT"; do
     if ss -ltn "sport = :$port" 2>/dev/null | grep -q LISTEN; then log "port $port is already in use"; busy=1; fi
   done
@@ -155,7 +158,7 @@ desk_dial() {
     if $ADB emu redir list 2>/dev/null | grep -q "tcp:$p  *=> *$p"; then mine=1
     elif $ADB emu redir add "tcp:$p:$p" 2>&1 | grep -q '^OK'; then mine=1
     else   # a port another emulator owns on the host: occupy it in the guest for good (a looping nc), so the phone cannot pick it
-      $ADB shell "pgrep -f 'nc -l -p $p' >/dev/null || setsid sh -c 'while :; do nc -l -p $p </dev/null >/dev/null 2>&1; sleep 1; done' </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+      $ADB shell "[ -e /dev/gbblock$p ] || { touch /dev/gbblock$p; setsid sh -c 'while :; do nc -l -p $p </dev/null >/dev/null 2>&1; sleep 1; done' </dev/null >/dev/null 2>&1 & }" >/dev/null 2>&1   # marker in tmpfs: gone after a reboot, like the loops
     fi
   done
   ctl connect "$PHONE_ID" 127.0.0.1 "$REDIR_PORT" >/dev/null
@@ -522,7 +525,7 @@ declare -A NEXT EVERY
 schedule() { NEXT[$1]=$2; EVERY[$1]=$3; }
 run_loop() {
   schedule clip 15 "$CLIP_EVERY"; schedule file 60 "$FILE_EVERY"; schedule flap 150 "$FLAP_EVERY"
-  schedule data 240 "$DATA_EVERY"; schedule call 420 "$CALL_EVERY"; schedule restart $((RESTART_EVERY / 2)) "$RESTART_EVERY"
+  schedule data 240 "$DATA_EVERY"; schedule call $((CALL_EVERY / 3)) "$CALL_EVERY"; schedule restart $((RESTART_EVERY / 2)) "$RESTART_EVERY"
   schedule idle "$IDLE_EVERY" "$IDLE_EVERY"
   local order=(idle restart call flap data file clip) name
   while (($(elapsed) < DURATION)) && [[ ! -e "$OUT/abort" ]]; do

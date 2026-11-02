@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Calendar: month, week, day and agenda-list views of the calendars the phone exposes. Google
 //! Calendar shows up here because Google accounts sync into the phone's calendar provider; this
 //! app never talks to Google. Reading is the default. Creating, changing and deleting events is
@@ -116,7 +117,7 @@ pub fn window(mode: Mode, shown: Date) -> (Date, u32) {
         Mode::Day => (shown.add_days(-1), 3),
         Mode::Week => (shown.week_start().add_days(-1), 9),
         Mode::Month => (model::month_grid(shown)[0][0].add_days(-1), 44),
-        Mode::List => (shown, 56),
+        Mode::List => (shown.add_days(-1), 56),
     }
 }
 
@@ -235,9 +236,9 @@ impl Calendar {
                     format!(
                         "{} {} – {} {} {}",
                         a.day,
-                        &a.month_name()[..3],
+                        crate::calendar_model::month_abbr(a.month_name()),
                         b.day,
-                        &b.month_name()[..3],
+                        crate::calendar_model::month_abbr(b.month_name()),
                         b.year
                     )
                 }
@@ -720,6 +721,13 @@ impl Calendar {
                             ));
                         }
                         ui.label(theme::caption(pal, line));
+                    }
+                    if view.devices.iter().any(|d| d.calendar_truncated) {
+                        ui.label(theme::caption(
+                            pal,
+                            "Showing the events nearest today (up to 12 months back and 24 months ahead). \
+                             Farther ones stay on the phone.",
+                        ));
                     }
                     if view.events_truncated {
                         ui.label(theme::caption(
@@ -1482,7 +1490,8 @@ impl Calendar {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let mut any = false;
-                for n in 0..56 {
+                // The window is 56 days starting a day early, so 55 are listed.
+                for n in 0..55 {
                     let d = first.add_days(n);
                     let list = model::on_day(events, d, &off);
                     if list.is_empty() {
@@ -1753,6 +1762,8 @@ mod tests {
             calendar_names: vec![],
             calendar_writable: writable,
             calendar_truncated: false,
+            contacts_capped: false,
+            threads_on_phone: None,
             contacts_synced_unix_ms: None,
             calendar_synced_unix_ms: None,
             sms_status_reports: false,
@@ -1819,6 +1830,16 @@ mod tests {
         assert_eq!(first, d(2026, 10, 25));
         assert!(first.add_days(i64::from(days)).to_days() > d(2026, 12, 6).to_days());
         assert_eq!(window(Mode::Week, shown).0, d(2026, 11, 8));
+        // Every mode has a day of slack before the first visible day, the agenda list included:
+        // the request carries one UTC offset, so events near the first edge must not depend on it.
+        for m in [Mode::Day, Mode::Week, Mode::Month, Mode::List] {
+            let visible_first = match m {
+                Mode::Day | Mode::List => shown,
+                Mode::Week => shown.week_start(),
+                Mode::Month => model::month_grid(shown)[0][0],
+            };
+            assert_eq!(window(m, shown).0, visible_first.add_days(-1), "{m:?}");
+        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # End-to-end for the newer features on the emulator: pairing failure hints, call answer/reject over the link,
 # incoming-SMS desktop notification, calendar events in the desktop agenda, Diagnostics "Copy report" privacy.
 #

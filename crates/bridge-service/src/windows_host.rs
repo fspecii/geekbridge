@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Windows Bluetooth hands-free calling for the call hub, through `bridge-calls-windows`.
 //!
 //! Windows owns the HFP link and the call audio; this adapter only observes (`watch`) and executes
 //! the user's decisions as `bridge_core` commands. It never registers, connects or requests access:
-//! those are explicit setup steps (see `docs/architecture.md`), so until
+//! those are explicit setup steps (see `packaging/windows/README.md`), so until
 //! they are done the hub reports the first blocker in plain words instead of offering controls. The
 //! crate compiles everywhere; off Windows its port reports `NotWindows`, and tests drive it with the
 //! in-memory port.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Bounded waiting on WinRT asynchronous operations, and HRESULT classification.
 use crate::model::{PlatformError, PlatformErrorKind};
 use crate::platform::Deadline;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Check on the JVM's modified UTF-8 (JNI `GetStringUTFChars`) before it is decoded to UTF-8.
 //!
 //! Java strings are UTF-16 and may hold unpaired surrogates, which MUTF8 encodes as lone

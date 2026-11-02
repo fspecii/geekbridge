@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Inner launcher: runs the headless emulator in the foreground (exec). Normally started by
 # scripts/emulator-call.sh inside its own transient systemd user unit; run it directly only to debug.
 # Extra arguments are passed to `emulator` (for example -wipe-data).

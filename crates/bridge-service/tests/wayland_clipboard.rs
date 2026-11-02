@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The wl-clipboard backend against a real Wayland compositor. Opt-in: it reads and overwrites the
 //! clipboard of whatever `WAYLAND_DISPLAY` points at, so it only runs when `GEEKBRIDGE_TEST_WAYLAND=1`
 //! and should be pointed at a throwaway headless compositor:

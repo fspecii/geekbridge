@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Native-feeling look for the four apps: macOS-style light and dark palettes, system fonts,
 //! and the small set of controls they share. Navigation never lives here.
 //!
@@ -241,8 +242,44 @@ fn read_font(candidates: &[PathBuf]) -> Option<Vec<u8>> {
     })
 }
 
+/// Fonts embedded in the binary (egui's `default_fonts` feature is off so no Ubuntu Font Licence
+/// font is shipped). Licences and provenance: third_party/fonts/README.md.
+const EMBEDDED_FONTS: [(&str, &[u8]); 4] = [
+    (
+        "noto-sans",
+        include_bytes!("../../../third_party/fonts/NotoSans-Regular-subset.ttf"),
+    ),
+    (
+        "noto-emoji",
+        include_bytes!("../../../third_party/fonts/NotoEmoji-Regular.ttf"),
+    ),
+    (
+        "emoji-icon-font",
+        include_bytes!("../../../third_party/fonts/emoji-icon-font.ttf"),
+    ),
+    (
+        "hack",
+        include_bytes!("../../../third_party/fonts/Hack-Regular.ttf"),
+    ),
+];
+
+/// Registers the embedded fonts: Noto Sans (Latin, Greek, Cyrillic subset) behind any system face,
+/// Hack for monospace, and the monochrome emoji/icon fonts as last-resort fallbacks.
+fn embed_fonts(fonts: &mut FontDefinitions) {
+    for (name, bytes) in EMBEDDED_FONTS {
+        fonts
+            .font_data
+            .insert(name.into(), Arc::new(FontData::from_static(bytes)));
+    }
+    let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
+    proportional.extend(["noto-sans", "noto-emoji", "emoji-icon-font"].map(String::from));
+    let monospace = fonts.families.entry(FontFamily::Monospace).or_default();
+    monospace.extend(["hack", "noto-sans", "noto-emoji", "emoji-icon-font"].map(String::from));
+}
+
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
+    embed_fonts(&mut fonts);
     let mut regular_name = None;
     let mut bold_name = None;
     for face in candidate_faces() {
@@ -1028,5 +1065,23 @@ mod contrast_tests {
         assert_eq!(focused, [Some(0), Some(1), Some(2)]);
         frame(vec![tab(true)]);
         assert_eq!(frame(vec![]), Some(1));
+    }
+
+    #[test]
+    fn embedded_fonts_cover_latin_greek_cyrillic_and_monospace() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let _ = ctx.run(Default::default(), |ctx| {
+            ctx.fonts(|f| {
+                for family in [FontFamily::Proportional, FontFamily::Monospace] {
+                    for c in ['a', 'É', 'ž', 'Ж', 'ω', '€', '—'] {
+                        assert!(
+                            f.has_glyph(&FontId::new(14.0, family.clone()), c),
+                            "{c} in {family:?}"
+                        );
+                    }
+                }
+            });
+        });
     }
 }

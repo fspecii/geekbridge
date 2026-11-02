@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.Manifest
@@ -121,6 +122,7 @@ object CallControlRuntime {
         val e = engine ?: return
         settings = CallLinkSettings(enabled = on)
         prefs?.edit()?.putBoolean("enabled", on)?.apply()
+        app?.let { WidgetUpdater.refreshAll(it) }
         async { core.transportAction(CallsProtocol.configRequest(on)) }
         if (on) {
             if (linkRunning) startObserving(e)
@@ -134,7 +136,14 @@ object CallControlRuntime {
     @Synchronized
     fun onLinkChanged(running: Boolean) {
         val e = engine ?: return
+        val was = linkRunning
         linkRunning = running
+        // The status observer fires every couple of seconds with the same phase. A repeat must not reset the engine:
+        // that wiped the state of a ringing call and made every Answer fail with "no such call" (soak finding).
+        if (running == was) {
+            if (running && settings.enabled) ensureWaiter(e)
+            return
+        }
         if (!running) {
             stopObserving()
             async { e.reset() }
@@ -163,11 +172,15 @@ object CallControlRuntime {
                 registrar = TelephonyRegistrar(a),
                 executor = CallStateExecutor.create(),
                 postToMain = { main.post(it) },
-                onState = { s -> async { e.onState(s) } },
+                onState = { s -> WidgetUpdater.onCall(s == CallState.Ringing); async { e.onState(s) } },
             )
             if (m.start() !is MonitorStart.Failed) monitor = m
         }
         if (receiver == null && perms.readCallLog && perms.readPhoneState) registerNumberReceiver(a, e)
+        ensureWaiter(e)
+    }
+
+    private fun ensureWaiter(e: CallControlEngine) {
         if (waiter?.isAlive != true) {
             waiter = Thread({ waitLoop(e) }, "geekbridge-calls-wait").apply { isDaemon = true; start() }
         }

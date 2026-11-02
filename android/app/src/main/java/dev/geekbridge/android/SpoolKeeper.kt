@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 /** Remembers the one received-image file kept for the clipboard and deletes it as soon as nothing refers to it. */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unix backend: mode 0600/0700, owner checks and `flock`, all on open file
 //! descriptors (`O_NOFOLLOW` + `fstat`) so that a path swapped after a check
 //! cannot redirect what we read or write.
@@ -147,14 +148,40 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<()> {
             .open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
+        bridge_core::statefile::failpoint("before_rename");
         fs::rename(&tmp, path)?;
         dir_fd.sync_all()?;
         Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
+    } else {
+        sweep_stale_temps(dir, name);
     }
     result
+}
+
+/// Remove leftovers of writers that died between creating the temp file and renaming it (a crash
+/// or kill). Only files an hour old go, so a concurrent writer's live temp file is never touched.
+fn sweep_stale_temps(dir: &Path, name: &str) {
+    let prefix = format!(".{name}.tmp.");
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if !e.file_name().to_string_lossy().starts_with(&prefix) {
+            continue;
+        }
+        let old = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > Duration::from_secs(3600));
+        if old {
+            let _ = fs::remove_file(e.path());
+        }
+    }
 }
 
 fn rand_suffix() -> u64 {

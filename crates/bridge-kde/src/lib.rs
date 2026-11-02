@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! KDE Connect protocol 8 LAN transport with explicit, certificate-pinned pairing.
 //!
 //! * [`Endpoint`] performs the TCP/TLS handshake in either role (the TCP
@@ -9,8 +10,8 @@
 //!   on that connection.
 //! * Discovery is out of scope and never confers trust.
 //!
-//! Interop with real KDE Connect Android/desktop devices has **not** been
-//! exercised; see `docs/architecture.md`.
+//! Interop with stock KDE Connect Android/desktop devices is documented in
+//! `docs/kdeconnect-interop.md`.
 
 pub mod cert;
 pub mod error;

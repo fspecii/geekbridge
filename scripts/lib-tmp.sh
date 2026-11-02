@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # shellcheck shell=bash
 # Scratch-space helper for GeekBridge scripts (source it; do not run it).
 #   GB_TMP   where scripts put scratch files (default: $TMPDIR, else /tmp). When set, TMPDIR and

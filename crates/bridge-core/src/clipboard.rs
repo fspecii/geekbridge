@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard sync policy and reducer for the custom GeekBridge protocol.
 //!
 //! This module is pure: it never reads or writes an OS clipboard, never reads a clock, never does
@@ -7,7 +8,7 @@
 //! confirmation; other state is limited to short-lived fingerprints (see [`ClipboardSync`]).
 //!
 //! Stock KDE Connect has no item ids, sensitivity flag, TTL, or size limit. See
-//! [`kde_connect_should_apply`] and `docs/architecture.md` for what is and is not preserved
+//! [`kde_connect_should_apply`] and `docs/clipboard-sync.md` for what is and is not preserved
 //! when talking to a stock peer.
 use serde::{Deserialize, Serialize};
 use std::{

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install the project-local JDK 17, Gradle, Rust (rustup + Android targets) and
 # Android SDK/NDK under ./.tools. Idempotent. No sudo, no global changes.
 #
@@ -20,7 +21,7 @@ WITH_EMULATOR=0
 for arg in "$@"; do
     case "$arg" in
         --with-emulator) WITH_EMULATOR=1 ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,13p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done

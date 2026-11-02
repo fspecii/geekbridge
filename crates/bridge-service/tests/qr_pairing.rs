@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! QR pairing against a real service: the phone side is a `bridge_kde` endpoint that dials the
 //! service's inbound listener with the token it "scanned". Covers redemption, reuse, a wrong
 //! token, revocation, and that a token-less request still needs the normal explicit approval.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! First-time pairing on the computer: the "Pair a phone" card, the QR window, one-tap Pair, the
 //! plain-language problem line, "Test connection" and the "what to do next" card.
 //!

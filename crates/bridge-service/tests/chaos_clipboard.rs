@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard sync under rapid updates and a degraded link: bursts of local copies collapse (the
 //! watcher polls), the phone only ever sees real changes, and echoes that arrive late - after a
 //! newer local copy - do not start a send loop.

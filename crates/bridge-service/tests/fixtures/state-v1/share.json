@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "devices": {
+    "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2": { "receive": true, "auto_accept": false }
+  }
+}

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Desktop-side end-to-end scenarios: the real `bridge-calls` Session over PipeWireBackend, against
 //! the simulator service on a private `dbus-daemon`, with an in-memory `FakeModem` as the phone.
 //!

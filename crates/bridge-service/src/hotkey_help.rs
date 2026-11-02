@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Printed instructions for binding "paste from phone" on desktops where GeekBridge does not edit
 //! a config file (GNOME, KDE, sway/i3, X11), and the key spellings those need.
 use bridge_core::hotkey::Hotkey;

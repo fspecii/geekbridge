@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Opt-in, read-only check of the real libpulse adapter against this host's audio server:
 //! `cargo test -p bridge-calls --test audio_live_inventory -- --ignored --nocapture`.
 //!

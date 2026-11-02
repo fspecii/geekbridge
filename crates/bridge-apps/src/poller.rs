@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Background discovery polling. All blocking network I/O stays on the worker thread.
 use crate::state::DiscoveryModel;
 use bridge_core::{AppKind, Snapshot, fetch_snapshot};

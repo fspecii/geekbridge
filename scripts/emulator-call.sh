@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Manage the dedicated headless Android emulator (AVD "gbcall") that provides the simulated
 # cellular modem for the GeekBridge emulated-call checks.
 #
@@ -39,7 +40,7 @@
 # a random localhost port and crashes (SIGSEGV after "Error reading from client fd") when such a
 # connection is opened and closed repeatedly. Launching in its own transient unit
 # (systemd-run --user) keeps it out of that process tree. Without systemd the script falls back to
-# setsid + nohup and prints a warning. See `docs/architecture.md`.
+# setsid + nohup and prints a warning. See docs/emulated-calls.md.
 #
 # Safety: `stop` only ever signals the PID recorded in emulator.pid, and only after checking that
 # /proc/<pid>/cmdline is this AVD's emulator. It never uses pkill/killall and never touches another
@@ -135,7 +136,7 @@ diagnose_exit() {
     if grep -qiE 'quota exceeded|No space left' "$LOG_FILE"; then
       why="disk quota or no space left (check df of /tmp and $TMP_DIR)"
     elif grep -qE 'no stack mapping|Error reading from client fd' "$LOG_FILE"; then
-      why="qemu crashed (SIGSEGV); known emulator bug when the modem port is port-probed; see `docs/architecture.md` and coredumpctl list"
+      why="qemu crashed (SIGSEGV); known emulator bug when the modem port is port-probed; see docs/emulated-calls.md and coredumpctl list"
     elif grep -qE '^unknown option' "$LOG_FILE"; then
       why="$(grep -E '^unknown option' "$LOG_FILE" | tail -n 1)"
     elif grep -qiE 'PANIC|FATAL|ERROR *\|' "$LOG_FILE"; then
@@ -174,7 +175,7 @@ launch() {
     [ -n "$pid" ] && [ "$pid" != 0 ] || return 1
     printf '%s\n' "$pid" > "$PID_FILE"
   else
-    say "warning: no systemd user session; falling back to setsid/nohup (the emulator may be killed by host port-probing, see `docs/architecture.md`)"
+    say "warning: no systemd user session; falling back to setsid/nohup (the emulator may be killed by host port-probing, see docs/emulated-calls.md)"
     : > "$LOG_FILE"
     setsid nohup "$ROOT/scripts/emulator-call-launch.sh" "${args[@]}" >> "$LOG_FILE" 2>&1 < /dev/null 9>&- &
     printf '%s\n' "$!" > "$PID_FILE"

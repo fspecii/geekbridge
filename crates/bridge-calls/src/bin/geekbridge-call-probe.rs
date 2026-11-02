@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-call-probe`: read-only inventory of the host's Bluetooth call backend.
 //!
 //! Prints structured evidence (JSON by default) about the telephony service, Bluetooth
 //! controllers, phones, calls and declared capabilities. It never invokes a control method; see
-//! `docs/architecture.md`.
+//! `docs/call-control.md`.
 
 use bridge_calls::probe::{self, BusChoice, ProbeOptions};
 

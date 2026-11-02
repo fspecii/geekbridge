@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Run the emulated-call end-to-end check against an isolated D-Bus session bus.
 #
 #   scripts/emulate-call.sh fake     [options]   CI-safe: scripted fake modem, no emulator

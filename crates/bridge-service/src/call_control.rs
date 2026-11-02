@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Answering, declining and ending phone calls from this computer.
 //!
 //! The hub merges every place that can see or control a call into the one view the apps show

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared harness for the lifecycle and leak tests: a real service core (`prepare_control`) with
 //! the control API on loopback, and stand-in phones that are real `bridge_kde` endpoints with
 //! freshly generated certificates. No LAN, phone, Bluetooth or system bus is involved.
@@ -70,7 +71,14 @@ impl Rig {
     }
 
     pub async fn start_with(configure: impl FnOnce(&mut DaemonOptions)) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        Self::start_in(tempfile::tempdir().unwrap(), configure).await
+    }
+
+    /// Start on `<tmp>/state`, which may already hold state (an upgrade from older files).
+    pub async fn start_in(
+        tmp: tempfile::TempDir,
+        configure: impl FnOnce(&mut DaemonOptions),
+    ) -> Self {
         let state_dir = tmp.path().join("state");
         let discovery: SharedState = Arc::new(RwLock::new(Snapshot::empty(1716)));
         let mut options = DaemonOptions::new("Test Desktop", Arc::new(NoProbe));
@@ -207,7 +215,21 @@ pub struct Phone {
 
 impl Phone {
     pub fn new() -> Arc<Self> {
-        let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+        Self::with_credentials(
+            Arc::new(kde::DeviceCredentials::generate().unwrap()),
+            vec![],
+        )
+    }
+
+    /// A phone with a fixed identity that already trusts `trusted` (an earlier pairing).
+    pub fn with_credentials(
+        creds: Arc<kde::DeviceCredentials>,
+        trusted: Vec<kde::TrustedPeer>,
+    ) -> Arc<Self> {
+        let store = Arc::new(kde::MemoryTrustStore::new());
+        for p in trusted {
+            kde::TrustStore::insert(&*store, p).unwrap();
+        }
         let mut config = kde::TransportConfig::default();
         config.address_policy.loopback = true;
         let ping = vec!["kdeconnect.ping".to_string()];
@@ -217,7 +239,7 @@ impl Phone {
             kde::DeviceType::Phone,
             ping.clone(),
             ping,
-            Arc::new(kde::MemoryTrustStore::new()),
+            store,
             config,
         )
         .unwrap();

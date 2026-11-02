@@ -3,6 +3,8 @@ name = "bridge-phone-sim"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Simulated phone for end-to-end call testing: serves org.pipewire.Telephony on D-Bus and drives an Android emulator modem (no Bluetooth)"
 
 [[bin]]

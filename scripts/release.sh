@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Prepare a release: bump the single version source, move CHANGELOG "Unreleased" under the new version,
 # and print the exact git steps. It never commits, tags or pushes.
 #
@@ -22,7 +23,7 @@ for arg in "$@"; do
     case "$arg" in
         --dry-run) DRY=1 ;;
         --skip-tests) TESTS=0 ;;
-        -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,13p' "${BASH_SOURCE[0]}"; exit 0 ;;
         -*) echo "unknown option: $arg" >&2; exit 2 ;;
         *) [[ -z "$VERSION" ]] || { echo "only one version expected" >&2; exit 2; }; VERSION="$arg" ;;
     esac
@@ -56,7 +57,7 @@ fi
 # 3. CHANGELOG needs something to release.
 grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "CHANGELOG.md has no '## [Unreleased]' section" >&2; exit 1; }
 if [[ "$DRY" == 1 ]]; then
-    echo "dry run: would bump $current -> $VERSION in Cargo.toml, Cargo.lock and CHANGELOG.md"
+    echo "dry run: would bump $current -> $VERSION in Cargo.toml, Cargo.lock, CHANGELOG.md and packaging/arch/PKGBUILD"
     exit 0
 fi
 
@@ -70,14 +71,28 @@ awk -v v="$VERSION" '/^\[workspace.package\]/{s=1} /^\[/ && !/^\[workspace.packa
 cat "$tmp" > Cargo.toml
 awk -v v="$VERSION" -v d="$today" '/^## \[Unreleased\]/ {print; print ""; print "## [" v "] - " d; next} {print}' CHANGELOG.md > "$tmp"
 cat "$tmp" > CHANGELOG.md
-cargo update --workspace --offline >/dev/null 2>&1 || cargo check --workspace --offline >/dev/null 2>&1 || true
+# The Arch package version must equal the Cargo one (packaging/arch/build-local.sh refuses otherwise). A hyphen is
+# not allowed in a pkgver, so a prerelease (X.Y.Z-rc.1) is left for the maintainer to map by hand.
+if [[ "$VERSION" != *-* ]]; then
+    sed -i -e "s/^pkgver=.*/pkgver=$VERSION/" -e 's/^pkgrel=.*/pkgrel=1/' packaging/arch/PKGBUILD
+else
+    echo "note: packaging/arch/PKGBUILD pkgver not changed ('-' is not allowed there); set it by hand if you package this prerelease." >&2
+fi
+# Cargo.lock must carry the new version; if neither command works the bump is incomplete, so say so.
+if ! cargo update --workspace --offline >/dev/null 2>&1; then
+    cargo check --workspace --offline >/dev/null 2>&1 || {
+        echo "error: could not refresh Cargo.lock for $VERSION ('cargo update --workspace --offline' and 'cargo check --offline' both failed)." >&2
+        echo "       Cargo.toml, CHANGELOG.md and PKGBUILD were already changed; fix the cargo problem, run 'cargo update --workspace', then review 'git diff'." >&2
+        exit 1
+    }
+fi
 
 echo
-echo "Bumped $current -> $VERSION (Cargo.toml, Cargo.lock, CHANGELOG.md). Nothing is committed, tagged or pushed."
+echo "Bumped $current -> $VERSION (Cargo.toml, Cargo.lock, CHANGELOG.md, packaging/arch/PKGBUILD). Nothing is committed, tagged or pushed."
 echo "Review CHANGELOG.md, then run these yourself:"
 echo
 echo "  git diff"
-echo "  git add Cargo.toml Cargo.lock CHANGELOG.md"
+echo "  git add Cargo.toml Cargo.lock CHANGELOG.md packaging/arch/PKGBUILD"
 echo "  git commit -m \"Release v$VERSION\""
 echo "  git push origin main            # the tag must be reachable from main"
 echo "  git tag -a v$VERSION -m \"GeekBridge v$VERSION\""

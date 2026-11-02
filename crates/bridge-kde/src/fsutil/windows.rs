@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Windows backend.
 //!
 //! "Private" means: the object is owned by the current user and its DACL is
@@ -9,7 +10,7 @@
 //! reparse point is seen as itself and refused rather than followed.
 //!
 //! This code has been type-checked against the Windows target but **not run on
-//! Windows hardware**; see `docs/architecture.md`.
+//! Windows hardware** (see `docs/platform-status.md`).
 //!
 //! References: `CreateFileW`, `CreateDirectoryW`, `GetSecurityInfo`,
 //! `GetSecurityDescriptorControl`, `GetAce`, `MoveFileExW`, `LockFileEx`,

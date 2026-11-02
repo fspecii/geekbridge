@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Private `dbus-daemon` plus a mock `org.pipewire.Telephony` service that records every method
 //! call it receives. No Bluetooth, no phone: the mock only answers the declared D-Bus API.
 #![allow(dead_code)]

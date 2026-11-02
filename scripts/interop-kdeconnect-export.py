@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn the captures of scripts/interop-kdeconnect.sh into sanitised test fixtures.
 
     python3 -I scripts/interop-kdeconnect-export.py OUTDIR FIXTURE_DIR

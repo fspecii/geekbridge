@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -83,8 +84,9 @@ kotlin {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
-    // android.jar's org.json is a stub that throws in JVM unit tests; use the real one there.
-    testImplementation("org.json:json:20250517")
+    // android.jar's org.json is a stub that throws in JVM unit tests. This is AOSP's own org.json, repackaged
+    // (Apache-2.0, test scope only, never packaged), so tests run the exact implementation the app sees on a phone.
+    testImplementation("com.vaadin.external.google:android-json:0.0.20131108.vaadin1")
 }
 
 // ---------------------------------------------------------------------------------------------

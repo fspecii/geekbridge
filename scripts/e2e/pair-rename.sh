@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Rename scenarios for scripts/e2e/pair-lifecycle.sh (sourced by it; not run on its own).
 #
 #   rename_good      phone renamed in Settings > "This phone's name", computer renamed with `geekbridge-ctl rename`;

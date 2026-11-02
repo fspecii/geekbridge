@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard on the phone transport, through the public request interface, against a real
 //! `bridge_kde` endpoint playing the desktop. Nothing here runs on Android or talks to a real
 //! desktop app; Kotlin's side of the contract (unlock/age decisions) is tested in the JVM tests.

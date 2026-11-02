@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Protocol 8 connection establishment and the links it produces.
 //!
 //! Roles (the inverse of what intuition suggests):

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Scratch space for tests that move big payloads. Payloads are generated, not stored, wherever
 //! possible; where a real file is unavoidable it lives under `GEEKBRIDGE_TEST_TMP` (default: the
 //! system temp dir), and a test that cannot get the room because the *environment* is full (a
@@ -48,7 +49,9 @@ pub fn shortfall(dir: &Path, bytes: u64) -> Option<String> {
     }
 }
 
-#[cfg(unix)]
+// macOS has no posix_fallocate: there the file is only extended (sparse), which is enough to probe
+// quota-style errors but not a full disk.
+#[cfg(target_os = "linux")]
 fn reserve(f: &std::fs::File, bytes: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd;
     // posix_fallocate returns the errno itself (EOPNOTSUPP on some filesystems: not a shortage).
@@ -57,7 +60,7 @@ fn reserve(f: &std::fs::File, bytes: u64) -> io::Result<()> {
         n => Err(io::Error::from_raw_os_error(n)),
     }
 }
-#[cfg(not(unix))]
+#[cfg(not(target_os = "linux"))]
 fn reserve(f: &std::fs::File, bytes: u64) -> io::Result<()> {
     f.set_len(bytes)
 }

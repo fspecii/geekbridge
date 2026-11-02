@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End to end over a real pinned-TLS KDE link on loopback: the desktop service, a scripted phone
 //! (`bridge_phone_sim::data::PhoneScript`), and the control API the Agenda and Messages windows use.
 //! Covers consent gating, contacts/calendar/SMS import, send status and erasure on consent-off.
@@ -105,6 +106,7 @@ impl Rig {
                 device_id: device,
                 thread_id: thread,
                 query: None,
+                message_limit: 0,
             })
             .await
         {
@@ -354,6 +356,7 @@ async fn consent_gates_every_feature_and_data_flows_end_to_end() {
             device_id: None,
             thread_id: None,
             query: Some("verification".into()),
+            message_limit: 0,
         })
         .await
     {

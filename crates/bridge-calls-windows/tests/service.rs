@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Actor behaviour: bounded queue, deadlines, cancelled-while-queued guarantee, watch and events.
 use bridge_calls_windows::engine::*;
 use bridge_calls_windows::model::*;

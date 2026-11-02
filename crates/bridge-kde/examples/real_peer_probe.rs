@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Interop probe: one GeekBridge link to a REAL KDE Connect peer, driven line by line from stdin.
 //!
 //! Developer tool for `scripts/interop-kdeconnect.sh`. It records every packet line (as seen after

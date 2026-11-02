@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! An in-memory [`CallsPlatform`] for tests on any host, including the daemon's.
 //!
 //! [`MockPlatform`] is a cloneable handle onto shared state, so a test can keep one clone to change

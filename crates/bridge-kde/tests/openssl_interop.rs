@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Drives the real `geekbridge-pair` binary against an independent OpenSSL-backed peer
 //! (Python `ssl`). Opt-in because it needs `python3` and the `openssl` CLI:
 //!

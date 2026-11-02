@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Change notifications. Observation only: handlers forward a payload-free [`Signal`] and the
 //! engine re-reads state, because the events carry no call identity worth trusting.
 use super::devices::bluetooth_selector;

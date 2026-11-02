@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Per-app, per-state memory of the desktop GUI apps from /proc/PID/smaps_rollup.
 #
 #   scripts/ui-mem.sh [--bin-dir DIR] [--apps "home calls ..."] [--wayland]

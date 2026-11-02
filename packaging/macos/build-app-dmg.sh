@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build GeekBridge.app (entry app + service + apps) and a .dmg. macOS only; written without a Mac.
 #
 #   packaging/macos/build-app-dmg.sh --bin-dir DIR --out DIR [--version X.Y.Z] [--arch aarch64|x86_64] [--adhoc-sign]
@@ -22,7 +23,7 @@ while [[ $# -gt 0 ]]; do
     --version) version="$2"; shift 2;;
     --arch) arch="$2"; shift 2;;
     --adhoc-sign) sign=1; shift;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! JSON line protocol between the daemon and the helper executable (one JSON object per line on
 //! stdin/stdout). All input is bounded: a line longer than [`MAX_LINE`] bytes is discarded without
 //! being buffered, and a request that fails to parse yields an error response, never a panic.

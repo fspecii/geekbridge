@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! QR / link pairing: one-time tokens and the payload a computer shows and a phone scans.
 //!
 //! The QR code carries what the phone needs to *pin* the computer before it talks to it: the

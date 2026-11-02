@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Local dry run of .github/workflows/release.yml: the shell steps are extracted from the YAML and executed in
 # throw-away directories with fake tags/binaries (no GitHub, no network, no artifacts of the working tree touched).
 #   scripts/e2e/release-dryrun.sh

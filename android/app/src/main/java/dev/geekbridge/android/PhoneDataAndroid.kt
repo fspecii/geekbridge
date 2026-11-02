@@ -1,9 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
+import android.content.ContentProviderOperation
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
@@ -17,6 +19,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.CancellationSignal
 import android.os.Looper
 import android.provider.CalendarContract
 import android.provider.ContactsContract
@@ -63,30 +66,39 @@ class SmsPartTracker(private val parts: Int, private val listener: SmsStatusList
     }
 }
 
-class AndroidContactsPort(context: Context) : ContactsPort {
+class AndroidContactsPort(context: Context, private val cancel: QueryCancel = QueryCancel()) : ContactsPort {
     private val resolver: ContentResolver = context.applicationContext.contentResolver
+    /** Timestamps of the last listing, so a vCard fetch does not query the provider for each one again. */
+    private var listing: Map<String, String> = emptyMap()
 
     override fun listUids(max: Int): List<Pair<String, String>>? {
         return try {
-        val out = ArrayList<Pair<String, String>>()
-        resolver.query(
-            ContactsContract.Contacts.CONTENT_URI,
-            arrayOf(ContactsContract.Contacts.LOOKUP_KEY, ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP),
-            null, null, "${ContactsContract.Contacts._ID} ASC",
-        )?.use { c ->
-            while (c.moveToNext() && out.size < max) {
-                val key = c.getString(0) ?: continue
-                out += key to c.getLong(1).toString()
-            }
-        } ?: return null
-        out
-    } catch (_: SecurityException) {
-        null
-    }
+            val out = ArrayList<Pair<String, String>>()
+            val signal = CancellationSignal()
+            cancel.guard({ signal.cancel() }) {
+                resolver.query(
+                    ContactsContract.Contacts.CONTENT_URI,
+                    arrayOf(ContactsContract.Contacts.LOOKUP_KEY, ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP),
+                    null, null, "${ContactsContract.Contacts._ID} ASC", signal,
+                )?.use { c ->
+                    while (c.moveToNext() && out.size < max) {
+                        cancel.check()
+                        val key = c.getString(0) ?: continue
+                        out += key to c.getLong(1).toString()
+                    }
+                } ?: return@guard null
+                out
+            }?.also { l -> listing = l.toMap() }
+        } catch (_: SecurityException) {
+            null
+        } catch (_: android.os.OperationCanceledException) {
+            throw QueryCancelled()
+        }
     }
 
     override fun vcard(uid: String): Pair<String, String>? = try {
-        val ts = resolver.query(
+        cancel.check()
+        val ts = listing[uid] ?: resolver.query(
             Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_LOOKUP_URI, Uri.encode(uid)),
             arrayOf(ContactsContract.Contacts.CONTACT_LAST_UPDATED_TIMESTAMP), null, null, null,
         )?.use { if (it.moveToFirst()) it.getLong(0).toString() else null }
@@ -118,7 +130,7 @@ class AndroidContactsPort(context: Context) : ContactsPort {
     }
 }
 
-class AndroidCalendarPort(context: Context) : CalendarPort {
+class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = QueryCancel()) : CalendarPort {
     private val resolver: ContentResolver = context.applicationContext.contentResolver
 
     override fun calendars(): List<CalendarInfo> = try {
@@ -148,40 +160,61 @@ class AndroidCalendarPort(context: Context) : CalendarPort {
         emptyList()
     }
 
-    override fun instances(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int): List<CalInstance>? {
+    override fun instances(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int): List<CalInstance>? =
+        query(calendarIds, fromMs, toMs, max, descending = false)?.let(::withDetails)
+
+    /**
+     * The Instances table is ordered by start, so one query over a wide window returns the far past first. Two
+     * bounded reads from the pivot, forward and backward, return the nearest [max] on each side instead, and a
+     * cursor is never read past that (the provider can hold tens of thousands of rows for a long series).
+     */
+    override fun instancesAround(calendarIds: Set<String>, fromMs: Long, toMs: Long, pivotMs: Long, max: Int): List<CalInstance>? {
+        val pivot = pivotMs.coerceIn(fromMs, toMs)
+        val ahead = query(calendarIds, pivot, toMs, max, descending = false) ?: return null
+        val behind = query(calendarIds, fromMs, pivot, max, descending = true) ?: return null
+        return withDetails(ahead + behind)
+    }
+
+    private fun query(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int, descending: Boolean): List<CalInstance>? {
         val ids = calendarIds.filter { id -> id.all { it.isDigit() } && id.length in 1..18 }
         if (ids.isEmpty()) return emptyList()
         val builder = CalendarContract.Instances.CONTENT_URI.buildUpon()
         ContentUris.appendId(builder, fromMs)
         ContentUris.appendId(builder, toMs)
         val placeholders = ids.joinToString(",") { "?" }
+        val signal = CancellationSignal()
         return try {
-            val out = ArrayList<CalInstance>()
-            resolver.query(
-                builder.build(),
-                arrayOf(
-                    CalendarContract.Instances.EVENT_ID, CalendarContract.Instances.BEGIN, CalendarContract.Instances.END,
-                    CalendarContract.Instances.TITLE, CalendarContract.Instances.ALL_DAY,
-                    CalendarContract.Instances.EVENT_TIMEZONE, CalendarContract.Instances.EVENT_LOCATION,
-                    CalendarContract.Instances.DESCRIPTION, CalendarContract.Instances.CALENDAR_ID,
-                    CalendarContract.Events.RRULE, CalendarContract.Events.RDATE, CalendarContract.Events.ORIGINAL_ID,
-                ),
-                "${CalendarContract.Instances.CALENDAR_ID} IN ($placeholders)", ids.toTypedArray(),
-                "${CalendarContract.Instances.BEGIN} ASC",
-            )?.use { c ->
-                while (c.moveToNext() && out.size < max) {
-                    val recurring = !c.getString(9).isNullOrBlank() || !c.getString(10).isNullOrBlank() || !c.isNull(11)
-                    out += CalInstance(
-                        eventId = c.getLong(0).toString(), begin = c.getLong(1), end = c.getLong(2),
-                        title = c.getString(3), allDay = c.getInt(4) == 1, timeZone = c.getString(5),
-                        location = c.getString(6), description = c.getString(7), calendarId = c.getLong(8).toString(),
-                        recurring = recurring,
-                    )
-                }
-            } ?: return null
-            withDetails(out)
+            cancel.guard({ signal.cancel() }) {
+                val out = ArrayList<CalInstance>()
+                resolver.query(
+                    builder.build(),
+                    arrayOf(
+                        CalendarContract.Instances.EVENT_ID, CalendarContract.Instances.BEGIN, CalendarContract.Instances.END,
+                        CalendarContract.Instances.TITLE, CalendarContract.Instances.ALL_DAY,
+                        CalendarContract.Instances.EVENT_TIMEZONE, CalendarContract.Instances.EVENT_LOCATION,
+                        CalendarContract.Instances.DESCRIPTION, CalendarContract.Instances.CALENDAR_ID,
+                        CalendarContract.Events.RRULE, CalendarContract.Events.RDATE, CalendarContract.Events.ORIGINAL_ID,
+                    ),
+                    "${CalendarContract.Instances.CALENDAR_ID} IN ($placeholders)", ids.toTypedArray(),
+                    "${CalendarContract.Instances.BEGIN} ${if (descending) "DESC" else "ASC"}", signal,
+                )?.use { c ->
+                    while (c.moveToNext() && out.size < max) {
+                        cancel.check()
+                        val recurring = !c.getString(9).isNullOrBlank() || !c.getString(10).isNullOrBlank() || !c.isNull(11)
+                        out += CalInstance(
+                            eventId = c.getLong(0).toString(), begin = c.getLong(1), end = c.getLong(2),
+                            title = c.getString(3), allDay = c.getInt(4) == 1, timeZone = c.getString(5),
+                            location = c.getString(6), description = c.getString(7), calendarId = c.getLong(8).toString(),
+                            recurring = recurring,
+                        )
+                    }
+                } ?: return@guard null
+                out
+            }
         } catch (_: SecurityException) {
             null
+        } catch (_: android.os.OperationCanceledException) {
+            throw QueryCancelled()
         }
     }
 
@@ -192,6 +225,7 @@ class AndroidCalendarPort(context: Context) : CalendarPort {
         val counts = HashMap<String, Int>()
         val names = HashMap<String, MutableList<String>>()
         for (batch in ids.chunked(PhoneDataLimits.DETAIL_BATCH)) {
+            cancel.check()
             val marks = batch.joinToString(",") { "?" }
             val args = batch.toTypedArray()
             try {
@@ -277,33 +311,68 @@ class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
         put(CalendarContract.Events.HAS_ALARM, if (d.reminderMin != null) 1 else 0)
     }
 
-    private fun setReminder(eventId: Long, minutes: Int?) {
-        resolver.delete(CalendarContract.Reminders.CONTENT_URI, "${CalendarContract.Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()))
-        if (minutes != null) {
-            resolver.insert(
-                CalendarContract.Reminders.CONTENT_URI,
-                ContentValues().apply {
-                    put(CalendarContract.Reminders.EVENT_ID, eventId)
-                    put(CalendarContract.Reminders.MINUTES, minutes)
-                    put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
-                },
-            )
-        }
+    private fun reminderValues(minutes: Int) = ContentValues().apply {
+        put(CalendarContract.Reminders.MINUTES, minutes)
+        put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
     }
 
+    private fun remindersOf(eventId: Long): List<ExistingReminder> {
+        val out = ArrayList<ExistingReminder>()
+        resolver.query(
+            CalendarContract.Reminders.CONTENT_URI,
+            arrayOf(CalendarContract.Reminders._ID, CalendarContract.Reminders.MINUTES, CalendarContract.Reminders.METHOD),
+            "${CalendarContract.Reminders.EVENT_ID} = ?", arrayOf(eventId.toString()),
+            "${CalendarContract.Reminders._ID} ASC",
+        )?.use { c ->
+            while (c.moveToNext()) {
+                out += ExistingReminder(c.getLong(0), c.getInt(1), c.getInt(2) == CalendarContract.Reminders.METHOD_ALERT)
+            }
+        }
+        return out
+    }
+
+    // The event and its reminder are written in one provider batch (CalendarProvider runs a batch in a single
+    // transaction), so a failure leaves nothing behind and a retry with a new op id cannot duplicate the event.
     override fun insert(calendarId: String, draft: EventDraft): String? {
         val v = values(draft).apply { put(CalendarContract.Events.CALENDAR_ID, calendarId.toLong()) }
-        val uri = resolver.insert(CalendarContract.Events.CONTENT_URI, v) ?: return null
-        val id = ContentUris.parseId(uri)
-        if (draft.reminderMin != null) setReminder(id, draft.reminderMin)
-        return id.toString()
+        val ops = ArrayList<ContentProviderOperation>()
+        ops += ContentProviderOperation.newInsert(CalendarContract.Events.CONTENT_URI).withValues(v).build()
+        if (draft.reminderMin != null) {
+            ops += ContentProviderOperation.newInsert(CalendarContract.Reminders.CONTENT_URI)
+                .withValues(reminderValues(draft.reminderMin))
+                .withValueBackReference(CalendarContract.Reminders.EVENT_ID, 0)
+                .build()
+        }
+        val uri = resolver.applyBatch(CalendarContract.AUTHORITY, ops).firstOrNull()?.uri ?: return null
+        return ContentUris.parseId(uri).toString()
     }
 
+    // Reminders are changed in place (see ReminderPlan): the old one is never deleted before the new one exists,
+    // and reminders the editor does not show stay.
     override fun update(eventId: String, draft: EventDraft): Boolean {
         val id = eventId.toLongOrNull() ?: return false
-        val n = resolver.update(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id), values(draft), null, null)
-        if (n > 0) setReminder(id, draft.reminderMin)
-        return n > 0
+        val existing = remindersOf(id)
+        val plan = ReminderPlan.of(existing, draft.reminderMin)
+        val v = values(draft).apply {
+            put(CalendarContract.Events.HAS_ALARM, if (plan.hasAlarmAfter(existing, draft.reminderMin)) 1 else 0)
+        }
+        val eventUri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id)
+        val ops = ArrayList<ContentProviderOperation>()
+        ops += ContentProviderOperation.newUpdate(eventUri).withValues(v).build()
+        if (plan.updateId != null && plan.updateMinutes != null) {
+            ops += ContentProviderOperation.newUpdate(ContentUris.withAppendedId(CalendarContract.Reminders.CONTENT_URI, plan.updateId))
+                .withValues(reminderValues(plan.updateMinutes)).build()
+        }
+        if (plan.insert != null) {
+            ops += ContentProviderOperation.newInsert(CalendarContract.Reminders.CONTENT_URI)
+                .withValues(reminderValues(plan.insert).apply { put(CalendarContract.Reminders.EVENT_ID, id) })
+                .build()
+        }
+        if (plan.deleteId != null) {
+            ops += ContentProviderOperation.newDelete(ContentUris.withAppendedId(CalendarContract.Reminders.CONTENT_URI, plan.deleteId)).build()
+        }
+        val results = resolver.applyBatch(CalendarContract.AUTHORITY, ops)
+        return (results.firstOrNull()?.count ?: 0) > 0
     }
 
     override fun delete(eventId: String): Boolean {
@@ -312,7 +381,7 @@ class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
     }
 }
 
-class AndroidSmsPort(context: Context) : SmsPort {
+class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCancel()) : SmsPort {
     private val resolver: ContentResolver = context.applicationContext.contentResolver
 
     private val columns = arrayOf(
@@ -324,25 +393,31 @@ class AndroidSmsPort(context: Context) : SmsPort {
         val q = Bundle().apply {
             if (selection != null) putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
             if (args != null) putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(Telephony.Sms.DATE))
+            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(Telephony.Sms.DATE, Telephony.Sms._ID))
             putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
             putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
         }
-        val out = ArrayList<SmsRow>()
-        resolver.query(Telephony.Sms.CONTENT_URI, columns, q, null)?.use { c ->
-            while (c.moveToNext()) {
-                val type = c.getInt(5)
-                if (type !in 1..6) continue
-                out += SmsRow(
-                    id = c.getLong(0), threadId = c.getLong(1), address = c.getString(2).orEmpty(),
-                    body = c.getString(3).orEmpty(), date = c.getLong(4), type = type, read = c.getInt(6) != 0,
-                    subId = c.getInt(7),
-                )
+        val signal = CancellationSignal()
+        cancel.guard({ signal.cancel() }) {
+            val out = ArrayList<SmsRow>()
+            resolver.query(Telephony.Sms.CONTENT_URI, columns, q, signal)?.use { c ->
+                while (c.moveToNext() && out.size < limit) {
+                    cancel.check()
+                    val type = c.getInt(5)
+                    if (type !in 1..6) continue
+                    out += SmsRow(
+                        id = c.getLong(0), threadId = c.getLong(1), address = c.getString(2).orEmpty(),
+                        body = c.getString(3).orEmpty(), date = c.getLong(4), type = type, read = c.getInt(6) != 0,
+                        subId = c.getInt(7),
+                    )
+                }
             }
+            out
         }
-        out
     } catch (_: SecurityException) {
         emptyList()
+    } catch (_: android.os.OperationCanceledException) {
+        throw QueryCancelled()
     }
 
     private val appContext = context.applicationContext
@@ -364,23 +439,49 @@ class AndroidSmsPort(context: Context) : SmsPort {
             putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${Telephony.Sms.READ} = 0 AND ${Telephony.Sms.TYPE} = 1")
             putInt(ContentResolver.QUERY_ARG_LIMIT, 5000)
         }
-        val out = HashMap<Long, Int>()
-        resolver.query(Telephony.Sms.CONTENT_URI, arrayOf(Telephony.Sms.THREAD_ID), q, null)?.use { c ->
-            while (c.moveToNext()) out.merge(c.getLong(0), 1, Int::plus)
+        val signal = CancellationSignal()
+        cancel.guard({ signal.cancel() }) {
+            val out = HashMap<Long, Int>()
+            resolver.query(Telephony.Sms.CONTENT_URI, arrayOf(Telephony.Sms.THREAD_ID), q, signal)?.use { c ->
+                var n = 0
+                while (c.moveToNext() && n++ < 5000) out.merge(c.getLong(0), 1, Int::plus)
+            }
+            out
         }
-        out
     } catch (_: SecurityException) {
         emptyMap()
+    } catch (_: android.os.OperationCanceledException) {
+        throw QueryCancelled()
     }
 
-    override fun latestPerThread(max: Int): List<SmsRow> {
-        val seen = HashSet<Long>()
-        val out = ArrayList<SmsRow>()
-        for (r in query(null, null, 2000)) {
-            if (seen.add(r.threadId)) out += r
-            if (out.size >= max) break
+    /**
+     * Newest message of each thread. Pages through the provider newest-first by (date, id) instead of one fixed-size
+     * read: a phone with 800 threads and 20 000 texts has recent bursts in a few chatty threads, and the newest 2000
+     * rows alone would miss most of the quieter threads.
+     */
+    override fun latestPerThread(max: Int): List<SmsRow> = SmsPaging.latestPerThread(max) { date, id, limit ->
+        query(
+            "(${Telephony.Sms.DATE} < ? OR (${Telephony.Sms.DATE} = ? AND ${Telephony.Sms._ID} < ?))",
+            arrayOf(date.toString(), date.toString(), id.toString()), limit,
+        )
+    }
+
+    /** Distinct threads in the newest [PhoneDataLimits.SMS_SCAN_ROWS] rows; one narrow column, no bodies. */
+    override fun threadCount(): Int? = try {
+        val q = Bundle().apply { putInt(ContentResolver.QUERY_ARG_LIMIT, PhoneDataLimits.SMS_SCAN_ROWS) }
+        val signal = CancellationSignal()
+        cancel.guard({ signal.cancel() }) {
+            val threads = HashSet<Long>()
+            resolver.query(Telephony.Sms.CONTENT_URI, arrayOf(Telephony.Sms.THREAD_ID), q, signal)?.use { c ->
+                var n = 0
+                while (c.moveToNext() && n++ < PhoneDataLimits.SMS_SCAN_ROWS) threads += c.getLong(0)
+            }
+            threads.size
         }
-        return out
+    } catch (_: SecurityException) {
+        null
+    } catch (_: android.os.OperationCanceledException) {
+        throw QueryCancelled()
     }
 
     override fun thread(threadId: Long, rangeStartMs: Long?, limit: Int): List<SmsRow> =
@@ -394,18 +495,30 @@ class AndroidSmsPort(context: Context) : SmsPort {
 
 /** `SmsManager` behind [SmsSender]. Requires SEND_SMS (a SecurityException is mapped by the engine). */
 @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
+/** An unguessable part of a status action name: below API 33 the receivers cannot be marked not-exported. */
+internal fun smsActionToken(random: java.security.SecureRandom = java.security.SecureRandom()): String {
+    val b = ByteArray(12)
+    random.nextBytes(b)
+    return b.joinToString("") { "%02x".format(it) }
+}
+
 class AndroidSmsSender(context: Context) : SmsSender {
     private val app = context.applicationContext
-    private val main = Handler(Looper.getMainLooper())
-    private val counter = AtomicInteger()
+    // Status callbacks run here, never on the main thread: the listener takes the engine lock, which the
+    // worker holds during provider reads.
+    private val callbacks = Handler(
+        android.os.HandlerThread("geekbridge-sms-status").apply { start() }.looper,
+    )
+    private val requestCodes = java.security.SecureRandom()
 
     override fun send(address: String, text: String, subId: Int?, listener: SmsStatusListener) {
         val manager = if (subId != null) SmsManager.getSmsManagerForSubscriptionId(subId)
         else app.getSystemService(SmsManager::class.java)
         val parts = manager.divideMessage(text)
-        val n = counter.incrementAndGet()
-        val sentAction = "${app.packageName}.SMS_SENT.$n"
-        val deliveredAction = "${app.packageName}.SMS_DELIVERED.$n"
+        val token = smsActionToken()
+        val n = requestCodes.nextInt()
+        val sentAction = "${app.packageName}.SMS_SENT.$token"
+        val deliveredAction = "${app.packageName}.SMS_DELIVERED.$token"
         val tracker = SmsPartTracker(parts.size, listener)
         val receivers = ArrayList<BroadcastReceiver>(2)
         fun register(action: String, onResult: (Int) -> Boolean) {
@@ -417,13 +530,13 @@ class AndroidSmsSender(context: Context) : SmsSender {
             }
             receivers += r
             val filter = IntentFilter(action)
-            if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
-            else app.registerReceiver(r, filter)
+            if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, filter, null, callbacks, Context.RECEIVER_NOT_EXPORTED)
+            else app.registerReceiver(r, filter, null, callbacks)
         }
         register(sentAction) { tracker.onSent(it) }
         register(deliveredAction) { tracker.onDelivered(it) }
         // Never leave receivers behind if a report never comes (delivery reports are optional for carriers).
-        main.postDelayed({ receivers.forEach { try { app.unregisterReceiver(it) } catch (_: IllegalArgumentException) { } } }, 15 * 60_000L)
+        callbacks.postDelayed({ receivers.forEach { try { app.unregisterReceiver(it) } catch (_: IllegalArgumentException) { } } }, 15 * 60_000L)
         fun intents(action: String) = ArrayList<PendingIntent>(parts.size).also { l ->
             repeat(parts.size) {
                 l += PendingIntent.getBroadcast(
@@ -484,22 +597,24 @@ object PhoneDataRuntime {
             calendarEdit = p.getBoolean("calendar_edit", false),
             smsSpecialNumbers = p.getBoolean("sms_special", false),
         )
-        val sms = AndroidSmsPort(a)
+        val cancel = QueryCancel()
+        val sms = AndroidSmsPort(a, cancel)
         smsPort = sms
         engine = PhoneDataEngine(
+            cancel = cancel,
             core = { core.dataAction(it) },
             features = { active() },
             calendarIds = { settings.calendarIds },
-            contacts = AndroidContactsPort(a),
-            calendar = AndroidCalendarPort(a),
+            contacts = AndroidContactsPort(a, cancel),
+            calendar = AndroidCalendarPort(a, cancel),
             sms = sms,
             sender = AndroidSmsSender(a),
             calendarWriter = CalendarWriter(
                 AndroidCalendarWriteStore(a),
-                OpLedger(object : BlobStore {
-                    override fun read() = p.getString("calendar_ops", "") ?: ""
-                    override fun write(text: String) {
-                        p.edit().putString("calendar_ops", text).apply()
+                OpLedger(BackedBlob(StateMigrations.kv(p), "calendar_ops", BackedBlob::jsonArray).let { b ->
+                    object : BlobStore {
+                        override fun read() = b.read()
+                        override fun write(text: String) = b.write(text)
                     }
                 }),
             ) { settings.calendarIds },
@@ -584,6 +699,7 @@ object PhoneDataRuntime {
         val e = engine ?: return
         if (!running) {
             stopObserving()
+            e.cancelInFlight() // a long provider read has nowhere to send its answer any more
             worker.execute { e.reset() }
         } else {
             worker.execute { e.reset() }
@@ -636,37 +752,61 @@ object PhoneDataRuntime {
 
     private fun waitLoop(e: PhoneDataEngine) {
         var since = 0L
+        var odd = 0
         while (!Thread.currentThread().isInterrupted) {
             val o = core.dataAction(PhoneDataProtocol.waitRequest(since))
             if (o !is CoreOutcome.Ok) return // not running: restarted when the link comes back
-            val r = PhoneDataProtocol.parseWait(o.result) ?: return
+            val r = PhoneDataProtocol.parseWait(o.result)
+            if (r == null) {
+                // An answer in a shape this build does not know: start over from the beginning of the core's
+                // log (requests are idempotent) instead of ending the waiter until the next link change.
+                if (++odd > 5) return
+                since = 0L
+                try { Thread.sleep(1000L * odd) } catch (_: InterruptedException) { return } // this thread's own, not the worker
+                continue
+            }
+            odd = 0
             if (r.stopped) return
-            since = maxOf(since, r.seq, r.events.maxOfOrNull { it.seq } ?: 0L)
+            since = PhoneDataProtocol.nextSince(since, r)
             if (r.events.isNotEmpty()) e.onEvents(r.events)
             if (!linkRunning || !active().any) return
         }
     }
 
-    /** Incoming text: wait for Android's SMS provider to store it (the default app writes it), then push it. */
+    // Retries for an incoming text are scheduled, not slept: the shared worker also runs provider reads and sends.
+    private val retries = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "geekbridge-data-retry").apply { isDaemon = true }
+    }
+
+    /**
+     * Incoming text: poll Android's SMS provider (the default app writes the row) at 1.5 s, 3 s and 4.5 s without
+     * holding the worker, then push it. If no row matches, the computer's conversation list is refreshed instead
+     * so the text is not lost.
+     */
     fun onIncomingBroadcast(address: String, body: String, done: () -> Unit) {
         val e = engine
         val port = smsPort
         if (e == null || port == null || !linkRunning || !active().sms) return done()
-        worker.execute {
-            try {
-                repeat(3) {
-                    Thread.sleep(1500)
+        fun attempt(n: Int) {
+            worker.execute {
+                var finished = false
+                try {
                     val row = port.findIncoming(address, body)
                     if (row != null) {
                         e.onIncomingSms(row)
-                        return@execute
+                        finished = true
+                    } else if (n >= 3) {
+                        e.refreshConversations()
+                        finished = true
                     }
+                } catch (_: RuntimeException) {
+                    finished = true
+                } finally {
+                    if (finished) done() else retries.schedule({ attempt(n + 1) }, 1500, java.util.concurrent.TimeUnit.MILLISECONDS)
                 }
-            } catch (_: InterruptedException) {
-            } finally {
-                done()
             }
         }
+        retries.schedule({ attempt(1) }, 1500, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     /** Calendars for the picker (needs READ_CALENDAR). Off the main thread. */

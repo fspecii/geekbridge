@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Walks the AccessKit tree each desktop screen produces and checks that every control a screen
 //! reader can focus or activate has a name. Run headless: egui builds the tree as soon as
 //! `enable_accesskit` is called, no window system or assistive technology is involved.

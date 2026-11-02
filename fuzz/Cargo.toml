@@ -1,0 +1,161 @@
+[package]
+name = "geekbridge-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+# Coverage-guided libFuzzer targets (cargo-fuzz layout). Not part of the main workspace: it needs
+# the sanitizer flags, so it builds only through scripts/fuzz.sh. The targets themselves live in
+# crates/bridge-fuzz/src/targets.rs and are shared with the deterministic fuzzer run by `cargo test`.
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bridge-fuzz = { path = "../crates/bridge-fuzz" }
+
+[workspace]
+
+[profile.release]
+debug = 1
+[[bin]]
+name = "packet_line"
+path = "fuzz_targets/packet_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identity_line"
+path = "fuzz_targets/identity_line.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "udp_discovery"
+path = "fuzz_targets/udp_discovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "line_reader"
+path = "fuzz_targets/line_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing"
+path = "fuzz_targets/pairing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qrpair"
+path = "fuzz_targets/qrpair.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "share"
+path = "fuzz_targets/share.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sms"
+path = "fuzz_targets/sms.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "phone_wire"
+path = "fuzz_targets/phone_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vcard"
+path = "fuzz_targets/vcard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "calls_wire"
+path = "fuzz_targets/calls_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clipboard"
+path = "fuzz_targets/clipboard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "messages_wire"
+path = "fuzz_targets/messages_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ipc"
+path = "fuzz_targets/ipc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "android_dispatch"
+path = "fuzz_targets/android_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "update"
+path = "fuzz_targets/update.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cert"
+path = "fuzz_targets/cert.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hub_phone_data"
+path = "fuzz_targets/hub_phone_data.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hub_calls"
+path = "fuzz_targets/hub_calls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hub_clipboard"
+path = "fuzz_targets/hub_clipboard.rs"
+test = false
+doc = false
+bench = false
+

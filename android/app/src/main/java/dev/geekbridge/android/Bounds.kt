@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 /** Size limits shared by the UI and the JNI request builders. Mirrors bridge-core defaults. */

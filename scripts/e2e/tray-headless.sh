@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Headless check of the Linux tray on a private session bus (no desktop, no phone, nothing on the
 # user's bar): the real geekbridge-service against a fake StatusNotifierWatcher.
 #

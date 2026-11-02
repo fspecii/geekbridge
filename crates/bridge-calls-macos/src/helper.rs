@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The helper executable's brain: request dispatch and event push over a line sink, generic over
 //! the run-loop slice so the same code runs on a Mac (CFRunLoop) and in host tests (no-op).
 //!

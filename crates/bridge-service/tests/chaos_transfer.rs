@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Failure injection on file transfers: a 200 MB file cancelled from either side, a peer that goes
 //! silent or resets mid-stream, two transfers at once, and the guarantees that no partial file or
 //! descriptor survives. Payload sockets go through the fault proxy.

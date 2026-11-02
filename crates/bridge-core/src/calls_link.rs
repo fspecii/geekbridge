@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Call control over the paired GeekBridge/KDE link (`geekbridge.calls.*` packets).
 //!
 //! This is a complement to the Bluetooth HFP backends, not a replacement. It carries **signalling

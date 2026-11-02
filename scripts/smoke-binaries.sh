@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Smoke-test the built desktop binaries on the host OS (Linux, macOS, or Windows under Git Bash).
 #
 #   scripts/smoke-binaries.sh [--bin-dir DIR] [--live]

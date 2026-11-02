@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.app.Application
@@ -7,8 +8,11 @@ import android.os.StrictMode
 class GeekBridgeApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Before anything reads a preferences file: bring saved state to this build's format (or note a downgrade).
+        StateMigrations.run(this)
         CrashNote.install(this, BuildConfig.VERSION_NAME)
         warmPrivateStorage()
+        WidgetUpdater.attach(this)
         if (BuildConfig.DEBUG) {
             StrictMode.setThreadPolicy(StrictMode.ThreadPolicy.Builder().detectAll().penaltyLog().build())
             StrictMode.setVmPolicy(StrictMode.VmPolicy.Builder().detectAll().penaltyLog().build())
@@ -25,6 +29,7 @@ class GeekBridgeApp : Application() {
             filesDir
             cacheDir
             for (name in PREFS) getSharedPreferences(name, MODE_PRIVATE)
+            WidgetUpdater.onProcessStart(this)
         }, "geekbridge-warm").apply { isDaemon = true; start() }
     }
 

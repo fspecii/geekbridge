@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only inventory of what can take part in call audio, derived from one snapshot.
 
 use serde::Serialize;

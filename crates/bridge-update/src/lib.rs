@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Update checking against the latest GitHub Release.
 //!
 //! What it does, and what it deliberately does not:
@@ -17,6 +18,13 @@ mod version;
 
 pub use release::{Asset, Platform, Release, select_asset};
 pub use version::Version;
+
+/// The untrusted-input parsers, exposed only so `crates/bridge-fuzz` can drive them.
+#[doc(hidden)]
+pub mod fuzzing {
+    pub use crate::http::{Policy, Url};
+    pub use crate::release::{clean_notes, find_checksum, safe_file_name, url_allowed};
+}
 
 use bridge_core::ipc::{UpdateRelease, UpdateState, UpdateStatus};
 use release::{MAX_ASSET_BYTES, clean_notes, find_checksum, find_sums_asset, safe_file_name};
@@ -40,7 +48,6 @@ pub use bridge_core::ipc::UPDATE_NO_PUBLIC_RELEASE as NO_PUBLIC_RELEASE;
 const API_BASE: &str = "https://api.github.com";
 const MAX_API_BYTES: u64 = 1024 * 1024;
 const MAX_SUMS_BYTES: u64 = 64 * 1024;
-const MAX_STATE_BYTES: u64 = 256 * 1024;
 const NOT_PUBLIC_COOLDOWN: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -211,6 +218,11 @@ struct Persisted {
     skipped_version: Option<String>,
     #[serde(default)]
     etag: Option<String>,
+    /// The running version the cached release (asset, checksum) was prepared for. The cached
+    /// offer depends on it (only a release newer than the running build gets an asset), so after
+    /// an upgrade or downgrade the ETag is not sent and the release is fetched again.
+    #[serde(default)]
+    checked_for: Option<String>,
     #[serde(default)]
     last_checked_unix: Option<u64>,
     #[serde(default)]
@@ -230,6 +242,7 @@ impl Default for Persisted {
             enabled: true,
             skipped_version: None,
             etag: None,
+            checked_for: None,
             last_checked_unix: None,
             release: None,
             no_public_release: false,
@@ -274,6 +287,25 @@ pub struct Updater {
     current: Version,
     client: http::Client,
     state: Mutex<Runtime>,
+}
+
+/// Clears a `Runtime` busy flag when dropped, so a panicking worker cannot leave "checking" or
+/// "downloading" set forever.
+struct FlagGuard<'a> {
+    up: &'a Updater,
+    flag: fn(&mut Runtime) -> &mut bool,
+}
+
+impl<'a> FlagGuard<'a> {
+    fn new(up: &'a Updater, flag: fn(&mut Runtime) -> &mut bool) -> Self {
+        Self { up, flag }
+    }
+}
+
+impl Drop for FlagGuard<'_> {
+    fn drop(&mut self) {
+        *(self.flag)(&mut self.up.lock()) = false;
+    }
 }
 
 fn now_unix() -> u64 {
@@ -326,13 +358,17 @@ impl Updater {
     }
 
     fn persist(&self, rt: &Runtime) {
-        if let Some(path) = &self.cfg.state_file {
-            let Ok(json) = serde_json::to_vec_pretty(&rt.persisted) else {
-                return;
-            };
-            let tmp = path.with_extension("tmp");
-            if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, path).is_err() {
-                let _ = std::fs::remove_file(&tmp);
+        if let Some(path) = &self.cfg.state_file
+            && let Ok(serde_json::Value::Object(known)) = serde_json::to_value(&rt.persisted)
+        {
+            // Only our fields are replaced: anything a newer build added stays in the file, and a
+            // file from a newer format is left untouched. A failed save is only a missed cache.
+            let result = state_file(path).update(|body| {
+                body.extend(known);
+                true
+            });
+            if let Err(e) = result {
+                bridge_core::statefile::note(format!("update-state.json: not saved: {e}"));
             }
         }
     }
@@ -458,12 +494,14 @@ impl Updater {
         } else {
             self.cfg.manual_cooldown
         };
+        // A stored time ahead of the clock (clock set back) counts as "never": it must not freeze checks.
         if manual
             && rt.error.is_none()
             && rt
                 .persisted
                 .last_checked_unix
-                .is_some_and(|t| now.saturating_sub(t) < cooldown.as_secs())
+                .filter(|t| *t <= now)
+                .is_some_and(|t| now - t < cooldown.as_secs())
         {
             return Ok(None);
         }
@@ -473,11 +511,14 @@ impl Updater {
             .persisted
             .release
             .as_ref()
+            .filter(|_| rt.persisted.checked_for.as_deref() == Some(&self.cfg.current_version))
             .and_then(|_| rt.persisted.etag.clone());
         Ok(Some(etag))
     }
 
     fn finish_check(&self, etag: Option<&str>) -> Result<(), Error> {
+        // Declared before the lock below so the flag is cleared after it is released, also on panic.
+        let _reset = FlagGuard::new(self, |rt| &mut rt.checking);
         let result = self.fetch_latest(etag);
         let mut rt = self.lock();
         rt.checking = false;
@@ -503,6 +544,7 @@ impl Updater {
                 rt.persisted.last_checked_unix = Some(now);
                 rt.persisted.no_public_release = false;
                 rt.persisted.etag = etag;
+                rt.persisted.checked_for = Some(self.cfg.current_version.clone());
                 rt.persisted.release = Some(cached);
             }
             Err(e) => {
@@ -675,11 +717,13 @@ impl Updater {
 
     fn finish_download(&self, job: (Cached, Asset, String)) -> Result<PathBuf, Error> {
         let (cached, asset, sha) = job;
+        let _reset = FlagGuard::new(self, |rt| &mut rt.downloading);
         let result = self.download_verified(&asset, &sha);
         let mut rt = self.lock();
         rt.downloading = false;
         match result {
             Ok((dir, file)) => {
+                touch_dir(&dir);
                 rt.downloaded = Some(Downloaded {
                     dir,
                     file: file.clone(),
@@ -770,6 +814,9 @@ impl Updater {
                 .ok_or(Error::NothingToDownload("no installer has been downloaded"))?;
             (d.file.clone(), d.sha256.clone())
         };
+        if let Some(dir) = file.parent() {
+            touch_dir(dir);
+        }
         let mut f = std::fs::File::open(&file).map_err(|e| Error::Io(e.to_string()))?;
         let mut hasher = Sha256::new();
         let mut buf = vec![0_u8; 64 * 1024];
@@ -795,16 +842,23 @@ impl Updater {
         } else {
             self.cfg.interval
         };
+        let now = now_unix();
         let last = rt
             .persisted
             .last_checked_unix
             .into_iter()
             .chain(rt.last_attempt_unix)
+            .filter(|t| *t <= now) // a time ahead of the clock (clock set back) is ignored
             .max();
-        rt.persisted.enabled && last.is_none_or(|t| now_unix().saturating_sub(t) >= gap.as_secs())
+        rt.persisted.enabled && last.is_none_or(|t| now - t >= gap.as_secs())
     }
 
     fn scheduler_tick(&self, first: bool) {
+        // Keep a downloaded installer looking recent: another instance's startup sweep removes
+        // old directories, and an installer kept for days is still in use.
+        if let Some(d) = self.lock().downloaded.as_ref() {
+            touch_dir(&d.dir);
+        }
         if self.check_due(first) {
             let _ = self.check(false);
             // A failed check retries at the next interval, not on every tick. This is remembered
@@ -837,14 +891,24 @@ impl Updater {
     }
 }
 
+/// `update-state.json`: the updater's settings, ETag and last answer. Format 1 is the fields of
+/// [`Persisted`] (older files have no `version` and count as 1). It is only a cache plus the
+/// "automatic checks" switch, so a damaged file without backup just starts from the defaults.
+pub static STATE_SPEC: bridge_core::statefile::Spec = bridge_core::statefile::Spec {
+    name: "update-state.json",
+    current: 1,
+    migrations: &[],
+    validate: None,
+    on_corrupt: bridge_core::statefile::Corrupt::Reset,
+};
+
+fn state_file(path: &Path) -> bridge_core::statefile::StateFile<bridge_core::statefile::PlainIo> {
+    bridge_core::statefile::StateFile::new(bridge_core::statefile::PlainIo, path, &STATE_SPEC)
+}
+
 fn load_persisted(path: &Path) -> Option<Persisted> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX_STATE_BYTES)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let loaded = state_file(path).load().ok()?;
+    serde_json::from_value(serde_json::Value::Object(loaded.body)).ok()
 }
 
 const DIR_PREFIX: &str = "geekbridge-update-";
@@ -871,6 +935,13 @@ fn user_state_dir() -> Option<PathBuf> {
         env("XDG_STATE_HOME").or_else(|| env("HOME").map(|h| h.join(".local/state")))?
     };
     Some(base.join("geekbridge").join("updates"))
+}
+
+/// Mark a download directory as in use (its modified time is what the sweep goes by).
+fn touch_dir(dir: &Path) {
+    if let Ok(f) = std::fs::File::open(dir) {
+        let _ = f.set_modified(SystemTime::now());
+    }
 }
 
 /// Remove `geekbridge-update-*` directories under `root` last modified more than `min_age` ago.
@@ -954,6 +1025,65 @@ mod tests {
     }
 
     #[test]
+    fn a_touched_download_directory_survives_the_sweep() {
+        let root = tempfile::tempdir().unwrap();
+        let used = root.path().join("geekbridge-update-used");
+        let old = root.path().join("geekbridge-update-old");
+        std::fs::create_dir_all(&used).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        let ancient = SystemTime::now() - Duration::from_secs(7200);
+        for d in [&used, &old] {
+            std::fs::File::open(d)
+                .unwrap()
+                .set_modified(ancient)
+                .unwrap();
+        }
+        // The other instance still uses `used`: it refreshes the directory.
+        touch_dir(&used);
+        sweep_stale_downloads(root.path(), STALE_DOWNLOAD_AGE);
+        assert!(used.exists(), "a recently used installer must stay");
+        assert!(!old.exists());
+    }
+
+    #[test]
+    fn a_new_running_version_drops_the_cached_etag() {
+        let up = Updater::new(Config::github("0.1.0")).unwrap();
+        let cached = Cached {
+            version: "0.2.0".into(),
+            tag: "v0.2.0".into(),
+            notes: String::new(),
+            release_url: String::new(),
+            asset: None,
+            sha256: None,
+        };
+        {
+            let mut rt = up.lock();
+            rt.persisted.release = Some(cached);
+            rt.persisted.etag = Some("\"abc\"".into());
+            // Prepared while 0.3.0 was running (a downgrade since): no asset was attached then.
+            rt.persisted.checked_for = Some("0.3.0".into());
+        }
+        assert_eq!(up.begin_check(true).unwrap(), Some(None));
+        up.lock().checking = false;
+        up.lock().persisted.checked_for = Some("0.1.0".into());
+        assert_eq!(up.begin_check(true).unwrap(), Some(Some("\"abc\"".into())));
+    }
+
+    #[test]
+    fn busy_flags_clear_when_the_worker_panics() {
+        let up = Updater::new(Config::github("0.1.0")).unwrap();
+        up.lock().checking = true;
+        up.lock().downloading = true;
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _a = FlagGuard::new(&up, |rt| &mut rt.checking);
+            let _b = FlagGuard::new(&up, |rt| &mut rt.downloading);
+            panic!("worker died");
+        }));
+        assert!(r.is_err());
+        assert!(!up.lock().checking && !up.lock().downloading);
+    }
+
+    #[test]
     fn a_failed_scheduled_check_does_not_claim_up_to_date() {
         let mut cfg = Config::github("0.1.0");
         cfg.base_url = "http://127.0.0.1:1".into(); // loopback, nothing listening
@@ -1001,6 +1131,31 @@ mod tests {
             up.verified_installer(),
             Err(Error::NothingToDownload(_))
         ));
+    }
+
+    #[test]
+    fn a_last_check_time_in_the_future_does_not_freeze_or_hammer_checks() {
+        let up = Updater::new(Config::github("0.1.0")).unwrap();
+        // The wall clock was set back after a check: the stored time is a year ahead.
+        let future = now_unix() + 365 * 24 * 3600;
+        {
+            let mut rt = up.lock();
+            rt.persisted.last_checked_unix = Some(future);
+            rt.persisted.release = None;
+        }
+        // Never checked "recently": the scheduler must be due, and a manual check must hit the network.
+        assert!(
+            up.check_due(false),
+            "a future timestamp must not postpone checks"
+        );
+        assert!(matches!(up.begin_check(true), Ok(Some(_))));
+        up.lock().checking = false;
+        // After a failed attempt the retry is spaced by the interval, not made on every tick.
+        up.lock().last_attempt_unix = Some(now_unix());
+        assert!(
+            !up.check_due(false),
+            "a failed attempt must not be retried every tick"
+        );
     }
 
     #[test]

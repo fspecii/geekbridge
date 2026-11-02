@@ -69,7 +69,7 @@ The desktop declares the mirror image (it needs `kdeconnect.sms.messages` etc. i
 ```
 
 * The phone reads `CalendarContract.Instances` (recurrences already expanded, so a weekly series arrives as one
-  instance per date, each flagged `recurring: true`) for the window `[now - 12 months, now + 24 months]` (nearest to now kept when more than the cap; see docs/reports/scale-report.md), only for
+  instance per date, each flagged `recurring: true`) for the window `[now - 12 months, now + 24 months]` (nearest to now kept when more than the cap; see docs/scale-report.md), only for
   calendars the user ticked in the app (default: none). **Reading is the default; writing needs the separate
   switch below.** Every calendar the Calendar Provider exposes can be ticked, which includes the Google accounts
   synced on the phone: that is how the desktop calendar is shared with Google, with no Google API key, OAuth or

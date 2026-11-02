@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Incoming-call answering through the REAL desktop UI (not just `geekbridge-ctl call answer`).
 #
 #   scripts/e2e/call-ui.sh [--stop] [STAGE[,STAGE...]]     stages: env pair notify popup   (default: all)
@@ -32,7 +33,7 @@ STOPPING=0
 for a in "$@"; do
   case "$a" in
     --stop) STOPPING=1 ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) STAGES="$a" ;;
   esac
 done

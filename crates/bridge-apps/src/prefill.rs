@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Hand-off between the apps: Contacts opens the dialer or a new message with a number already
 //! typed. The number travels in an environment variable of the new process, never on a command
 //! line (visible to other users) and never over the network.

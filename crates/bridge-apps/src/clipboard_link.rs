@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard sync state for the clipboard app: a small background worker that asks the service for
 //! the clipboard bridge status once a second and forwards the user's actions. The view-model text
 //! lives here, in pure functions, so what the window promises is tested.

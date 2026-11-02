@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl hotkey`: install or remove the Hyprland binding and window rules, and print the
 //! equivalent steps for other desktops. Pure over an [`Env`] so tests run in a temp directory; the
 //! binary builds the real `Env` from `$HOME` / `$XDG_CONFIG_HOME`.

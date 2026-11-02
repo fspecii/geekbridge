@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Tray icons drawn from code: a 5x7 dot-matrix "G" (the letter of `assets/icon.svg`) on an 8x8
 //! dot grid, with a 3x3 state overlay in the bottom-right corner. Drawing them here means the
 //! tray needs no PNG decoder and no embedded image files, and the same tables write the committed

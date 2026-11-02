@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl status --waybar`: one line of JSON for a waybar `custom` module (or any bar that
 //! reads the same `text` / `tooltip` / `class` / `alt` shape).
 //!

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Start everything the desktop side needs for a real-phone session, in one command.
 #
 #   scripts/run-desktop.sh [--fresh] [--name NAME] [--no-ui] [--qr] [--default-state]
@@ -47,7 +48,7 @@ while (($#)); do
     --status) MODE=status ;;
     --stop) MODE=stop ;;
     --env) MODE=env ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "unknown argument: $1 (try --help)" ;;
   esac
   shift

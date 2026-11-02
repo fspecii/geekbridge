@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # GeekBridge <-> REAL KDE Connect desktop daemon interop run (no phone, no root, no LAN traffic).
 #
 #   scripts/interop-kdeconnect.sh /path/to/extracted/kdeconnect/root OUTDIR

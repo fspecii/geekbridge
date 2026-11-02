@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! KDE Connect `share` plugin: packets, filename hygiene and safe file reception.
 //!
 //! * `kdeconnect.share.request` carries one of `filename` (+ `payloadSize` and
@@ -192,6 +193,10 @@ pub fn sanitize_filename(raw: &str) -> String {
     if name.is_empty() {
         name = "file".into();
     }
+    // Cut to length first (one byte of headroom for the `_` below): the cut can leave a trailing
+    // space or dot, and a space-padded `CON` + 250 spaces + `x` becomes the device name `CON`.
+    name = truncate_name(&name, MAX_FILENAME_BYTES - 1);
+    name.truncate(name.trim_end_matches(['.', ' ']).len());
     // Windows device names are reserved with or without an extension.
     // Trailing spaces and dots before the extension do not stop `CON .txt` from being the device.
     let stem = name
@@ -207,7 +212,7 @@ pub fn sanitize_filename(raw: &str) -> String {
     if reserved {
         name.insert(0, '_');
     }
-    truncate_name(&name, MAX_FILENAME_BYTES)
+    name
 }
 
 fn truncate_name(name: &str, max: usize) -> String {

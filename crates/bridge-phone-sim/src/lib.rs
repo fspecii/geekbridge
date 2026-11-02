@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Simulated phone for end-to-end call testing without Bluetooth.
 //!
 //! * [`modem`] (portable): the [`Modem`] / [`RemoteParty`] traits, an in-memory [`FakeModem`] and

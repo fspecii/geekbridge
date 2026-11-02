@@ -1,0 +1,14 @@
+{
+  "peers": [
+    {
+      "cert_der_base64": "MIIBqTCCAU6gAwIBAgIQfaN7jHgBqTW7zQxg4iz3qDAKBggqhkjOPQQDAjBVMSkwJwYDVQQDDCBiMmIyYjJiMmIyYjJiMmIyYjJiMmIyYjJiMmIyYjJiMjETMBEGA1UECwwKR2Vla0JyaWRnZTETMBEGA1UECgwKR2Vla0JyaWRnZTAgFw0yNjExMDEwNjA2NDBaGA8yMTI2MTAwOTA2MDY0MFowVTEpMCcGA1UEAwwgYjJiMmIyYjJiMmIyYjJiMmIyYjJiMmIyYjJiMmIyYjIxEzARBgNVBAsMCkdlZWtCcmlkZ2UxEzARBgNVBAoMCkdlZWtCcmlkZ2UwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASZRVTPEmw27HbHEtQYp+De5Yh5ZGVYeI6MPnWY+/DhPLjIvMkmhKSWYc4Oe6kO41w2DBEJubXiAPV1XE7wDb/eMAoGCCqGSM49BAMCA0kAMEYCIQCs5qoarMqwhffKghISYSd1LTtSMxWyJ7dDOhd6oj/g3QIhANEIIVdkFPkTZTbiuIykyrRJqYaidY526YKG8xZ9wKcv",
+      "cert_sha256": "effcf55193f882ddeb7475694c195f6a0947d710f279e705ec6cfb75a07dcb01",
+      "device_id": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "device_type": "phone",
+      "name": "Fixture Phone",
+      "paired_at_unix": 1700000000,
+      "protocol_version": 8
+    }
+  ],
+  "version": 1
+}

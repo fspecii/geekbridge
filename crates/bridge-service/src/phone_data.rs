@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Contacts, calendar and SMS from a paired phone, held in memory for the Agenda and Messages
 //! windows. The wire contract is `docs/phone-data-link.md`.
 //!
@@ -21,10 +22,10 @@ use bridge_core::{
     phone_link::{self as wire, SmsPhase},
     phone_view::{
         AgendaView, CalendarEditAction, CalendarItem, ConversationItem, DataDevice, DataState,
-        EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_PER_PHONE,
-        MAX_MESSAGES_PER_THREAD, MAX_MESSAGES_SHOWN, MAX_PEOPLE_LIMIT, MAX_PEOPLE_SHOWN,
-        MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem, MessagesView, Person, SelectedThread,
-        SendItem, SendPhase, SimItem,
+        EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_LIMIT,
+        MAX_MESSAGES_PER_PHONE, MAX_MESSAGES_PER_THREAD, MAX_MESSAGES_SHOWN, MAX_PEOPLE_LIMIT,
+        MAX_PEOPLE_SHOWN, MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem, MessagesView, Person,
+        SelectedThread, SendItem, SendPhase, SimItem,
     },
 };
 use bridge_kde::sms;
@@ -114,6 +115,7 @@ const MAX_THREADS: usize = 300;
 const MAX_MESSAGES_TOTAL: usize = MAX_MESSAGES_PER_PHONE;
 const MAX_SEARCH_CHARS: usize = 64;
 const MAX_PENDING_VCARDS: usize = 5000;
+const VCARD_RETRY_MS: u64 = 15_000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
 const SENDS_PER_MINUTE: usize = 10;
@@ -211,8 +213,14 @@ struct Dev {
     listing: HashMap<String, String>,
     pending: VecDeque<String>,
     inflight: HashSet<String>,
+    /// When the vCard batch in flight was asked for; a batch nobody answered is asked again.
+    inflight_ms: u64,
     contacts_synced: Option<u64>,
     contacts_asked_ms: u64,
+    /// The phone listed its maximum number of contacts: more may exist than were shared.
+    contacts_capped: bool,
+    /// Threads the phone reported holding (GeekBridge phones add `threadsTotal` to the conversation list).
+    threads_on_phone: Option<usize>,
 
     calendar_requested: bool,
     cal_token: Option<String>,
@@ -271,8 +279,11 @@ impl Dev {
             listing: HashMap::new(),
             pending: VecDeque::new(),
             inflight: HashSet::new(),
+            inflight_ms: 0,
             contacts_synced: None,
             contacts_asked_ms: 0,
+            contacts_capped: false,
+            threads_on_phone: None,
             calendar_requested: false,
             cal_token: None,
             cal_names: Vec::new(),
@@ -345,6 +356,7 @@ impl Dev {
                 self.inflight.clear();
                 self.contacts_requested = false;
                 self.contacts_synced = None;
+                self.contacts_capped = false;
             }
             CALENDAR => {
                 self.agenda.events = Store::default();
@@ -358,6 +370,7 @@ impl Dev {
             }
             _ => {
                 self.threads.clear();
+                self.threads_on_phone = None;
                 self.sims.clear();
                 self.sms_requested = false;
                 self.sms_listed = false;
@@ -415,6 +428,22 @@ impl Dev {
         }
     }
 
+    /// A vCard batch the phone never answered (dropped answer, busy phone) is asked for again, so a
+    /// long contact sync cannot stall for good on one lost packet.
+    fn retry_stalled_vcards(&mut self, now: u64) {
+        if !self.inflight.is_empty()
+            && self.connected()
+            && now.saturating_sub(self.inflight_ms) > VCARD_RETRY_MS
+        {
+            let mut again: Vec<String> = self.inflight.drain().collect();
+            again.sort();
+            for uid in again.into_iter().rev() {
+                self.pending.push_front(uid);
+            }
+            self.next_vcard_batch();
+        }
+    }
+
     fn next_vcard_batch(&mut self) {
         if !self.inflight.is_empty() {
             return;
@@ -431,6 +460,7 @@ impl Dev {
             wire::request_vcards_body(&batch),
         ) {
             self.inflight = batch.into_iter().collect();
+            self.inflight_ms = now_ms();
         } else {
             self.pending.clear();
         }
@@ -467,6 +497,7 @@ impl Dev {
         for gone in &plan.absent {
             let _ = self.agenda.contacts.mark_deleted(gone, now);
         }
+        self.contacts_capped = remote.len() >= wire::MAX_CONTACT_UIDS;
         self.listing = remote.into_iter().collect();
         self.pending = plan
             .fetch
@@ -551,6 +582,9 @@ impl Dev {
             self.sims = sims;
         }
         let phone_unread = sms::parse_unread(body);
+        if let Some(n) = body.get("threadsTotal").and_then(Value::as_u64) {
+            self.threads_on_phone = Some(usize::try_from(n.min(1_000_000)).unwrap_or(0));
+        }
         let total: usize = self.threads.values().map(|t| t.conv.len()).sum();
         let mut room = MAX_MESSAGES_TOTAL.saturating_sub(total);
         let mut notify = Vec::new();
@@ -618,6 +652,8 @@ impl Dev {
         for (tid, n) in phone_unread {
             if let Some(t) = self.threads.get_mut(&tid) {
                 t.phone_unread = Some(n);
+                // Read on the phone since the mark: the baseline can only fall with the count.
+                t.unread_at_mark = t.unread_at_mark.min(n);
             }
         }
         self.correlate(&fresh, now);
@@ -1293,6 +1329,8 @@ impl PhoneData {
                 events_count: d.agenda.events.live().count(),
                 calendar_names: d.cal_names.clone(),
                 calendar_truncated: d.cal_truncated,
+                contacts_capped: d.contacts_capped,
+                threads_on_phone: d.threads_on_phone,
                 contacts_synced_unix_ms: d.contacts_synced,
                 calendar_synced_unix_ms: d.cal_synced,
                 sms_status_reports: d.caps.sms_status,
@@ -1334,6 +1372,7 @@ impl PhoneData {
         let mut g = self.lock();
         // Opening the window refreshes at most every five minutes; no background timer exists.
         for d in g.devices.values_mut() {
+            d.retry_stalled_vcards(now);
             if d.connected() {
                 if now.saturating_sub(d.contacts_asked_ms) > REFRESH_AFTER_MS {
                     d.ask_contacts(now);
@@ -1408,6 +1447,22 @@ impl PhoneData {
         thread: Option<i64>,
         query: Option<&str>,
     ) -> Result<MessagesView, ErrorBody> {
+        self.messages_view_window(device, thread, query, 0)
+    }
+
+    /// Like [`Self::messages_view`], with the newest `message_limit` messages of the selected thread
+    /// (0 = `MAX_MESSAGES_SHOWN`), cut to a byte budget so the reply always fits one response.
+    pub fn messages_view_window(
+        &self,
+        device: Option<&str>,
+        thread: Option<i64>,
+        query: Option<&str>,
+        message_limit: usize,
+    ) -> Result<MessagesView, ErrorBody> {
+        let message_limit = match message_limit {
+            0 => MAX_MESSAGES_SHOWN,
+            n => n.min(MAX_MESSAGES_LIMIT),
+        };
         let needle: Option<String> = query
             .map(|q| q.trim().chars().take(MAX_SEARCH_CHARS).collect::<String>())
             .filter(|q| !q.is_empty())
@@ -1435,8 +1490,9 @@ impl PhoneData {
             }
             let names = name_index(d);
             for t in d.threads.values() {
-                let ordered = t.conv.ordered();
-                let Some(last) = ordered.last() else { continue };
+                let Some(last) = t.conv.newest() else {
+                    continue;
+                };
                 let addrs: Vec<String> = last
                     .addresses
                     .iter()
@@ -1453,8 +1509,10 @@ impl PhoneData {
                         || addrs.iter().any(|a| a.to_lowercase().contains(q.as_str()));
                     if !in_title {
                         // Newest matching message gives the snippet.
-                        let hit = ordered
-                            .iter()
+                        let hit = t
+                            .conv
+                            .ordered()
+                            .into_iter()
                             .rev()
                             .find(|m| m.body.to_lowercase().contains(q.as_str()));
                         match hit {
@@ -1477,7 +1535,7 @@ impl PhoneData {
                     last_date_ms: last.date_ms,
                     last_outgoing: last.direction() == Direction::Outgoing,
                     unread: t.unread(),
-                    message_count: ordered.len(),
+                    message_count: t.conv.len(),
                 });
             }
             for r in d.requests.values().filter_map(|s| d.ledger.get(*s)) {
@@ -1499,6 +1557,7 @@ impl PhoneData {
             }
         }
         conversations.sort_by_key(|c| std::cmp::Reverse(c.last_date_ms));
+        let conversations_total = conversations.len();
         conversations.truncate(MAX_CONVERSATIONS_SHOWN);
         sends.sort_by_key(|s| std::cmp::Reverse(s.created_unix_ms));
         sends.truncate(MAX_SENDS_SHOWN);
@@ -1506,13 +1565,13 @@ impl PhoneData {
             (Some(dev), Some(t)) => g.devices.get(dev).filter(|d| d.consent[SMS]).and_then(|d| {
                 let th = d.threads.get(&ThreadId(t))?;
                 let all = th.conv.ordered();
-                let skip = all.len().saturating_sub(MAX_MESSAGES_SHOWN);
-                Some(SelectedThread {
-                    device_id: dev.to_owned(),
-                    thread_id: t,
-                    messages: all[skip..]
-                        .iter()
-                        .map(|m| MessageItem {
+                let skip = all.len().saturating_sub(message_limit);
+                let mut bytes = 0;
+                let mut messages: Vec<MessageItem> = all[skip..]
+                    .iter()
+                    .rev()
+                    .map_while(|m| {
+                        let item = MessageItem {
                             uid: m.key.uid,
                             mms: m.key.transport == bridge_core::messages::Transport::Mms,
                             outgoing: m.direction() == Direction::Outgoing,
@@ -1520,8 +1579,18 @@ impl PhoneData {
                             date_ms: m.date_ms,
                             attachments: m.attachment_count,
                             sub_id: m.subscription.map(SubscriptionId::get),
-                        })
-                        .collect(),
+                        };
+                        bytes += 120 + item.body.len();
+                        // The newest message is always included, whatever its size.
+                        (bytes <= VIEW_MESSAGES_BYTES || m.key == all[all.len() - 1].key)
+                            .then_some(item)
+                    })
+                    .collect();
+                messages.reverse();
+                Some(SelectedThread {
+                    device_id: dev.to_owned(),
+                    thread_id: t,
+                    messages,
                     held: all.len(),
                     capped: th.capped,
                     may_have_older: !th.exhausted && !th.capped,
@@ -1532,6 +1601,7 @@ impl PhoneData {
         Ok(MessagesView {
             devices,
             conversations,
+            conversations_total,
             selected,
             sends,
         })
@@ -1688,6 +1758,7 @@ fn person(device: &str, rec: &Record<Contact>, c: &Contact) -> Person {
 /// Budgets that keep every reply under `ipc::MAX_RESPONSE_BYTES` (256 KiB) with room to spare.
 const VIEW_PEOPLE_BYTES: usize = 90 * 1024;
 const VIEW_EVENTS_BYTES: usize = 110 * 1024;
+const VIEW_MESSAGES_BYTES: usize = 150 * 1024;
 
 fn approx_person_bytes(p: &Person) -> usize {
     160 + p.name.len()
@@ -1977,6 +2048,31 @@ mod tests {
                 .people
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn an_unanswered_vcard_batch_is_asked_for_again() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, false, false));
+        drain(&mut rx);
+        let uids = obj(json!({"uids": ["a", "b"], "a": "1", "b": "1"}));
+        h.on_packet(ID, wire::CONTACTS_UIDS, &uids);
+        assert_eq!(drain(&mut rx), vec![wire::CONTACTS_REQUEST_VCARDS]);
+        // Nothing answers; a poll before the timeout does nothing, one after it re-sends the same batch.
+        h.lock()
+            .devices
+            .get_mut(ID)
+            .unwrap()
+            .retry_stalled_vcards(now_ms());
+        assert!(drain(&mut rx).is_empty());
+        h.lock()
+            .devices
+            .get_mut(ID)
+            .unwrap()
+            .retry_stalled_vcards(now_ms() + VCARD_RETRY_MS + 1);
+        let again = rx.try_recv().expect("batch asked again");
+        assert_eq!(again.kind, wire::CONTACTS_REQUEST_VCARDS);
+        assert_eq!(again.body["uids"], json!(["a", "b"]));
     }
 
     #[test]
@@ -2719,5 +2815,22 @@ mod tests {
         );
         h.on_packet(ID, sms::MESSAGES, &b2);
         assert_eq!(unread(&h), 2);
+    }
+
+    #[test]
+    fn reading_on_the_phone_lowers_the_mark_so_later_texts_are_still_counted() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        let list =
+            |m: Value, n: u32| obj(json!({"version": 2, "messages": [m], "unread": {"4": n}}));
+        let unread =
+            |h: &PhoneData| h.messages_view(None, None, None).unwrap().conversations[0].unread;
+        h.on_packet(ID, sms::MESSAGES, &list(msg(4, 9, 1, "a", now - 3000), 5));
+        h.mark_read(ID, 4).unwrap();
+        // The user then reads the thread on the phone: its count falls to 0 ...
+        h.on_packet(ID, sms::MESSAGES, &list(msg(4, 9, 1, "a", now - 3000), 0));
+        // ... and two new texts arrive (the list carries only the newest of the thread).
+        h.on_packet(ID, sms::MESSAGES, &list(msg(4, 11, 1, "b", now), 2));
+        assert_eq!(unread(&h), 2, "the stale mark of 5 must not hide them");
     }
 }

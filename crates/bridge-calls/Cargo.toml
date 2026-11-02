@@ -3,6 +3,8 @@ name = "bridge-calls"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Bluetooth HFP call-control backends (Linux: PipeWire org.pipewire.Telephony; other platforms: explicit unavailable backend)"
 
 [[bin]]

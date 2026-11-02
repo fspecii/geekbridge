@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Fuzz-ish property tests for packet parsing and line framing.
 //!
 //! No external fuzzing crate: a fixed-seed xorshift generator drives the cases, so every failure

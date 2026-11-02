@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Desktop clipboard bridge between this computer and paired phones.
 //!
 //! * **Computer -> phone** is automatic: the OS clipboard is watched and every change is sent as a stock
@@ -636,6 +637,20 @@ pub fn detect_backend() -> Option<Arc<dyn ClipboardBackend>> {
 
 // ---------------------------------------------------------------------------- settings
 
+/// Format of `clipboard-settings.json`: version 1 is the three fields of [`Settings`] (files
+/// written before the `version` field existed count as 1). Damaged without backup: defaults.
+pub static SETTINGS_SPEC: bridge_core::statefile::Spec = bridge_core::statefile::Spec {
+    name: SETTINGS_FILE,
+    current: 1,
+    migrations: &[],
+    validate: None,
+    on_corrupt: bridge_core::statefile::Corrupt::Reset,
+};
+
+fn settings_file(path: &std::path::Path) -> bridge_kde::fsutil::PrivateStateFile {
+    bridge_kde::fsutil::PrivateStateFile::new(bridge_kde::fsutil::PrivateIo, path, &SETTINGS_SPEC)
+}
+
 /// The only clipboard state that is stored on disk. Never any content.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -848,8 +863,8 @@ impl ClipboardService {
     ) -> Arc<Self> {
         let settings = settings_path
             .as_deref()
-            .and_then(|p| bridge_kde::fsutil::read_private_file(p).ok().flatten())
-            .and_then(|bytes| serde_json::from_slice::<Settings>(&bytes).ok())
+            .and_then(|p| settings_file(p).load().ok())
+            .and_then(|l| serde_json::from_value::<Settings>(Value::Object(l.body)).ok())
             .unwrap_or_default()
             .sanitized();
         Arc::new(Self {
@@ -931,9 +946,16 @@ impl ClipboardService {
             g.settings.clone()
         };
         if let Some(path) = &self.settings_path
-            && let Ok(bytes) = serde_json::to_vec(&snapshot)
+            && let Ok(Value::Object(known)) = serde_json::to_value(&snapshot)
         {
-            let _ = bridge_kde::fsutil::atomic_write_private(path, &bytes);
+            // Only our fields are replaced; anything a newer build added stays in the file, and a
+            // newer-format file is left untouched.
+            if let Err(e) = settings_file(path).update(|body| {
+                body.extend(known);
+                true
+            }) {
+                bridge_core::statefile::note(format!("{SETTINGS_FILE}: not saved: {e}"));
+            }
         }
         Ok(snapshot)
     }

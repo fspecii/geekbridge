@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Link lifecycle: dial or accept, TLS handshake, explicit pairing, trusted sessions.
 //!
 //! Invariants (each is exercised by `tests/control_api.rs`):
@@ -599,9 +600,15 @@ impl Daemon {
                 device_id,
                 thread_id,
                 query,
+                message_limit,
             } => self
                 .data
-                .messages_view(device_id.as_deref(), thread_id, query.as_deref())
+                .messages_view_window(
+                    device_id.as_deref(),
+                    thread_id,
+                    query.as_deref(),
+                    message_limit,
+                )
                 .map(|v| Response::Messages(Box::new(v))),
             Request::MessagesRefresh {
                 device_id,

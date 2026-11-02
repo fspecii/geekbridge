@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Plain banner notifications for Windows and macOS, so an incoming call, a file offer and a new
 //! text are not Linux-only (Linux uses `notify-send` with buttons, see `desktop_notify`).
 //!

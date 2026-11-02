@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Call-audio routing: connecting the phone's duplex HFP/SCO audio to this computer's speakers
 //! and microphone.
 //!
 //! This is the layer *after* call control. Orchestration, in order (details and the exact service
-//! integration are in `docs/architecture.md`):
+//! integration are in `docs/call-audio-options.md`):
 //!
 //! 1. The call adapter (`CallBackend`) invokes `AudioGatewayTransport1.Activate` (the explicit
 //!    `ConnectAudio` action). That only asks PipeWire to open the SCO/eSCO transport. It does not

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Per-app identity: every app is its own executable, window, and desktop app ID.
 use bridge_core::AppKind;
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # QR / link pairing end to end: Android emulator app <-> desktop geekbridge-service (see docs/pairing.md).
 #
 #   scripts/e2e-qr-pairing.sh [--no-restart]

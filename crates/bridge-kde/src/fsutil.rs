@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Private-file helpers. Secrets and trust records are only written where the
 //! OS lets us restrict them to the current user; elsewhere we refuse.
 //!
@@ -5,7 +6,7 @@
 //!   checked on the open descriptor (`O_NOFOLLOW` + `fstat`); `flock` locks.
 //! * Windows: owner = current user and a protected DACL granting only that
 //!   user and LocalSystem, checked on the open handle; reparse points refused;
-//!   `LockFileEx` locks. See `docs/architecture.md`.
+//!   `LockFileEx` locks.
 //! * Anything else: refuses with [`KdeError::UnsupportedPlatform`].
 
 use std::path::Path;
@@ -72,6 +73,49 @@ pub fn lock_exclusive(path: &Path) -> Result<FileLock> {
 /// [`lock_exclusive`] with an explicit timeout.
 pub fn lock_exclusive_timeout(path: &Path, timeout: Duration) -> Result<FileLock> {
     imp::lock_private_file(path, timeout)
+}
+
+/// Owner-only storage backend for [`bridge_core::statefile`]: every read, write and lock goes
+/// through this module's permission checks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PrivateIo;
+
+impl bridge_core::statefile::StateIo for PrivateIo {
+    type Err = crate::error::KdeError;
+
+    fn read(&self, path: &Path) -> Result<Option<Vec<u8>>> {
+        read_private_file(path)
+    }
+    fn write_atomic(&self, path: &Path, data: &[u8]) -> Result<()> {
+        atomic_write_private(path, data)
+    }
+    fn lock(&self, lock_path: &Path) -> Result<Box<dyn Send>> {
+        Ok(Box::new(lock_exclusive(lock_path)?))
+    }
+    fn is_recoverable(&self, err: &crate::error::KdeError) -> bool {
+        use crate::error::KdeError;
+        // Oversized counts as damaged; loose permissions, links and an unreadable file
+        // (`PermissionDenied`: intact but not ours to read) are refusals, so nothing replaces it.
+        matches!(err, KdeError::Store(m) if m.contains("larger than"))
+    }
+}
+
+/// A [`bridge_core::statefile::StateFile`] on owner-only storage.
+pub type PrivateStateFile = bridge_core::statefile::StateFile<PrivateIo>;
+
+impl From<bridge_core::statefile::Error<crate::error::KdeError>> for crate::error::KdeError {
+    fn from(e: bridge_core::statefile::Error<crate::error::KdeError>) -> Self {
+        use bridge_core::statefile::Error;
+        match e {
+            Error::Io(e) => e,
+            Error::Corrupt { path, reason } => {
+                crate::error::KdeError::StoreCorrupt { path, reason }
+            }
+            Error::ReadOnly { path, found, .. } => {
+                crate::error::KdeError::StoreNewer { path, found }
+            }
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

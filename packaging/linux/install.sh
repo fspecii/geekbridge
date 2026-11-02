@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install GeekBridge from the extracted installer tarball.
 #
 #   ./install.sh                 per-user install into ~/.local (no root); enables the service at login
@@ -16,7 +17,7 @@ while [[ $# -gt 0 ]]; do
     --system) mode=system; shift;;
     --prefix) prefix="$2"; mode=custom; shift 2;;
     --uninstall) uninstall=1; shift;;
-    -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '3,11p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done

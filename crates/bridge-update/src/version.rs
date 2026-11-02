@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Semantic version parsing and ordering (semver 2.0 precedence; build metadata is ignored).
 
 use std::{cmp::Ordering, fmt};

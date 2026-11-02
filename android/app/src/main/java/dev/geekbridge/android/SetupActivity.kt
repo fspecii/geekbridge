@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.Manifest
@@ -65,6 +66,7 @@ class SetupActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        WidgetUpdater.refreshAll(this)
         render()
     }
 
@@ -115,6 +117,7 @@ class SetupActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        WidgetUpdater.refreshAll(this) // widgets show calendar access and the answer switch
         CallControlRuntime.onPermissionsChanged()
         PhoneDataRuntime.resync()
         render()

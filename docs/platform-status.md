@@ -10,7 +10,7 @@ Levels (a row can have several):
 * **unit**: a host test exercises the logic with injected inputs (pure command-line builders, path rules, parsers),
   so it also runs on Linux. The OS call itself is not exercised.
 * **CI**: `.github/workflows/check.yml` runs it on a `windows-latest` / `macos-latest` runner (build, `cargo test
-  --workspace`, `scripts/smoke-binaries.sh`). **CI is configured but has not run yet** on these runners; until the
+  --workspace`, `scripts/smoke-binaries.sh`). **CI is configured but has not run yet** on these runners (GitHub started no job on 2026-11-02: annotation "recent account payments have failed or your spending limit needs to be increased"; fix the account's Billing & plans, or make the repository public, which has free Actions minutes); until the
   first green run a CI cell means "will be exercised", and the first failures are expected to be informative, not
   surprising. Update this file after the first run.
 * **device**: tried by a person on real hardware. Nothing below has this level for Windows or macOS.

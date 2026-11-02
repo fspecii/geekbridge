@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared domain types and a bounded, read-only local discovery API.
 pub mod agenda;
 pub mod calls;
@@ -5,6 +6,7 @@ pub mod calls_link;
 pub mod calls_view;
 pub mod clipboard;
 pub mod clipboard_wire;
+pub mod collate;
 pub mod hotkey;
 pub mod ipc;
 pub mod messages;
@@ -12,6 +14,7 @@ pub mod pairing_help;
 pub mod phone_link;
 pub mod phone_view;
 pub mod share;
+pub mod statefile;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},

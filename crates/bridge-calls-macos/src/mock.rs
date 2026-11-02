@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Scripted ports for host tests. Behaviour is only what a test configures; nothing here claims
 //! to reproduce a real IOBluetooth or CoreAudio stack.
 use crate::model::{

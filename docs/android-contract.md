@@ -100,6 +100,6 @@ Wire contract: `docs/phone-data-link.md`. Rust relays an allow-listed set of pac
   contacts, calendar, sms}`. Desktop requests of enabled features; queue of 64, oldest dropped, events expire after 60 s
   and are never delivered twice (so a restarted waiter cannot replay an SMS send).
 * `transport_data_send {kind, body, connection_id?}` -> `{queued}`. Errors: `kind_not_allowed`, `data_disabled`,
-  `too_large` (serialized body > 1 MiB), `not_connected`, `rate_limited` (burst 20, 2/s sustained), `busy`.
+  `too_large` (serialized body > 1 MiB), `not_connected`, `rate_limited` (burst 20, 8/s sustained), `busy`.
   This is the only request allowed above the 16 KiB transport cap (`MAX_DATA_REQUEST_BYTES` = 1 MiB + 2 KiB, also the
   JNI input bound). While any data feature is on, the link packet-line limit is 1 MiB + 16 KiB in both directions.

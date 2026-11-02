@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A scripted phone for the desktop apps: pairs with a running `geekbridge-service` (it approves
 //! the code itself), allows Contacts, Calendar, Calendar editing and Calendar alerts for it, and then
 //! answers like the Android app (`bridge_phone_sim::data::PhoneScript`) until stopped. It is how the

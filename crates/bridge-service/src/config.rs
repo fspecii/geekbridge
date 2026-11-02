@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Service configuration: command-line flags with environment fallbacks for the state directory
 //! and control port (the same lookups `bridge_core::ipc` offers to clients).
 

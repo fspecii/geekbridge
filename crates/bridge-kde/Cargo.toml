@@ -3,10 +3,16 @@ name = "bridge-kde"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "KDE Connect protocol 8 TCP/TLS transport with explicit, certificate-pinned pairing"
 
 [lib]
 name = "bridge_kde"
+
+[features]
+# Crash-injection hook for the persistence tests (GB_FAILPOINT=<name> aborts the process there).
+failpoints = ["bridge-core/failpoints"]
 
 [[bin]]
 name = "geekbridge-pair"
@@ -48,4 +54,5 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3"
+bridge-kde = { path = ".", features = ["failpoints"] }
 tokio = { version = "1", features = ["test-util"] }

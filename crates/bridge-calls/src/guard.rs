@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pre-dispatch checks, pure over a *fresh* [`PhoneSnapshot`].
 //!
 //! A control call is only sent after the target phone and call have been re-read from the bus and

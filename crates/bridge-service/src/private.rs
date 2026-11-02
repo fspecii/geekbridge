@@ -1,11 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The daemon's private state: its own TLS identity, the trust store, per-device feature consent
 //! and the control token. Everything lives in one owner-only directory and is opened through
 //! `bridge_kde::fsutil`, which refuses loose permissions and symlinks. If any piece cannot be
 //! opened safely the protected API is *unavailable*; nothing falls back to weaker storage.
 
 use bridge_core::ipc::{self, Feature, Token};
-use bridge_kde::{DeviceCredentials, DeviceId, FileTrustStore, KdeError, TrustStore, fsutil};
-use serde::{Deserialize, Serialize};
+use bridge_core::statefile::{Corrupt, Spec, Status};
+use bridge_kde::{
+    DeviceCredentials, DeviceId, FileTrustStore, KdeError, TrustStore, fsutil,
+    fsutil::PrivateStateFile,
+};
+use serde_json::{Map, Value};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -34,6 +39,10 @@ impl Unavailable {
                 code: "platform_unsupported",
                 message: "owner-only state storage is not implemented on this platform",
             },
+            KdeError::StoreNewer { .. } => Self {
+                code: "state_newer",
+                message: "a state file was written by a newer version; it is left untouched and changes are not saved",
+            },
             KdeError::StoreCorrupt { .. } => Self {
                 code: "trust_store_corrupt",
                 message: "the trust store is unreadable and was left untouched",
@@ -51,38 +60,72 @@ impl Unavailable {
 }
 
 pub struct ConsentStore {
-    path: PathBuf,
+    file: PrivateStateFile,
     enabled: BTreeMap<String, Vec<Feature>>,
+    /// The file is from a newer build: readable, never rewritten.
+    newer: Option<u32>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct ConsentFile {
-    version: u32,
-    devices: BTreeMap<String, Vec<Feature>>,
+/// `consent.json`: `{"version": 1, "devices": {"<device id>": ["Sms", ...]}}`. Unknown fields and
+/// feature names from a newer build are ignored for decisions and kept on rewrite. A damaged file
+/// without a usable backup means every feature is off (consent is opt-in), never an error.
+pub static CONSENT_SPEC: Spec = Spec {
+    name: CONSENT_FILE,
+    current: 1,
+    migrations: &[],
+    validate: Some(validate_consent),
+    on_corrupt: Corrupt::Reset,
+};
+
+fn validate_consent(body: &Map<String, Value>) -> Result<(), String> {
+    let Some(Value::Object(devices)) = body.get("devices") else {
+        return Err("no devices object".into());
+    };
+    if devices.len() > MAX_CONSENT_DEVICES {
+        return Err("too many entries".into());
+    }
+    for (id, v) in devices {
+        DeviceId::parse(id).map_err(|_| "invalid device id".to_string())?;
+        if !v.is_array() {
+            return Err("feature list is not an array".into());
+        }
+    }
+    Ok(())
+}
+
+fn known_features(body: &Map<String, Value>) -> BTreeMap<String, Vec<Feature>> {
+    let mut out = BTreeMap::new();
+    if let Some(Value::Object(devices)) = body.get("devices") {
+        for (id, v) in devices {
+            let mut list: Vec<Feature> = v
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| serde_json::from_value(f.clone()).ok())
+                .collect();
+            list.sort();
+            list.dedup();
+            if !list.is_empty() {
+                out.insert(id.clone(), list);
+            }
+        }
+    }
+    out
 }
 
 impl ConsentStore {
     pub fn open(dir: &Path) -> Result<Self, KdeError> {
-        let path = dir.join(CONSENT_FILE);
-        let enabled = match fsutil::read_private_file(&path)? {
-            None => BTreeMap::new(),
-            Some(bytes) => {
-                let corrupt = |reason: &str| KdeError::StoreCorrupt {
-                    path: path.clone(),
-                    reason: reason.into(),
-                };
-                let file: ConsentFile =
-                    serde_json::from_slice(&bytes).map_err(|_| corrupt("unreadable JSON"))?;
-                if file.version != 1 || file.devices.len() > MAX_CONSENT_DEVICES {
-                    return Err(corrupt("unsupported version or too many entries"));
-                }
-                for id in file.devices.keys() {
-                    DeviceId::parse(id).map_err(|_| corrupt("invalid device id"))?;
-                }
-                file.devices
-            }
+        let file = PrivateStateFile::new(fsutil::PrivateIo, dir.join(CONSENT_FILE), &CONSENT_SPEC);
+        let loaded = file.load()?;
+        let newer = match loaded.status {
+            Status::Newer { found } => Some(found),
+            _ => None,
         };
-        Ok(Self { path, enabled })
+        Ok(Self {
+            enabled: known_features(&loaded.body),
+            file,
+            newer,
+        })
     }
 
     /// Consent is opt-in: anything not recorded is off.
@@ -128,12 +171,43 @@ impl ConsentStore {
     }
 
     fn persist(&self, devices: &BTreeMap<String, Vec<Feature>>) -> Result<(), KdeError> {
-        let bytes = serde_json::to_vec_pretty(&ConsentFile {
-            version: 1,
-            devices: devices.clone(),
-        })
-        .map_err(|e| KdeError::Store(e.to_string()))?;
-        fsutil::atomic_write_private(&self.path, &bytes)
+        let locked = self.file.lock()?;
+        let loaded = locked.load()?;
+        if let Some(found) = self.newer.or(match loaded.status {
+            Status::Newer { found } => Some(found),
+            _ => None,
+        }) {
+            return Err(KdeError::StoreNewer {
+                path: self.file.path().to_owned(),
+                found,
+            });
+        }
+        let mut body = loaded.body;
+        let old = match body.remove("devices") {
+            Some(Value::Object(m)) => m,
+            _ => Map::new(),
+        };
+        let mut out = Map::new();
+        for (id, features) in devices {
+            // Feature names this build does not know stay as they were.
+            let mut list: Vec<Value> = old
+                .get(id)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|f| serde_json::from_value::<Feature>((*f).clone()).is_err())
+                .cloned()
+                .collect();
+            for f in features {
+                if let Ok(v) = serde_json::to_value(f) {
+                    list.push(v);
+                }
+            }
+            out.insert(id.clone(), Value::Array(list));
+        }
+        body.insert("devices".into(), Value::Object(out));
+        locked.save(&body)?;
+        Ok(())
     }
 }
 
@@ -155,13 +229,6 @@ impl PrivateState {
         let consents = ConsentStore::open(dir).map_err(fail)?;
         let token = load_or_create_token(dir).map_err(|e| match e {
             TokenProblem::Kde(e) => fail(e),
-            TokenProblem::Invalid => (
-                Unavailable {
-                    code: "token_invalid",
-                    message: "the control token file is malformed; delete it to create a new one",
-                },
-                KdeError::Store("control token file is malformed".into()),
-            ),
             TokenProblem::Random => (
                 Unavailable {
                     code: "random_unavailable",
@@ -182,7 +249,6 @@ impl PrivateState {
 
 enum TokenProblem {
     Kde(KdeError),
-    Invalid,
     Random,
 }
 
@@ -190,17 +256,22 @@ fn load_or_create_token(dir: &Path) -> Result<Token, TokenProblem> {
     let _lock =
         fsutil::lock_exclusive(&dir.join("control-token.lock")).map_err(TokenProblem::Kde)?;
     let path = ipc::token_path(dir);
-    match fsutil::read_private_file(&path).map_err(TokenProblem::Kde)? {
-        Some(bytes) => Token::parse(&bytes).map_err(|_| TokenProblem::Invalid),
-        None => {
-            let mut bytes = [0_u8; ipc::TOKEN_BYTES];
-            getrandom::fill(&mut bytes).map_err(|_| TokenProblem::Random)?;
-            let token = Token::from_bytes(bytes);
-            let contents = token.to_file_contents();
-            fsutil::atomic_write_private(&path, contents.as_bytes()).map_err(TokenProblem::Kde)?;
-            Ok(token)
+    // The token only guards the local control API and holds nothing worth recovering: a missing,
+    // empty or damaged file is replaced (clients re-read it), with a diagnostics line.
+    if let Some(bytes) = fsutil::read_private_file(&path).map_err(TokenProblem::Kde)? {
+        match Token::parse(&bytes) {
+            Ok(token) => return Ok(token),
+            Err(_) => bridge_core::statefile::note(
+                "ipc-token was damaged; created a new control token".into(),
+            ),
         }
     }
+    let mut bytes = [0_u8; ipc::TOKEN_BYTES];
+    getrandom::fill(&mut bytes).map_err(|_| TokenProblem::Random)?;
+    let token = Token::from_bytes(bytes);
+    let contents = token.to_file_contents();
+    fsutil::atomic_write_private(&path, contents.as_bytes()).map_err(TokenProblem::Kde)?;
+    Ok(token)
 }
 
 /// 128 random bits as hex, for challenge ids and the like.
@@ -283,18 +354,72 @@ mod tests {
     }
 
     #[test]
-    fn malformed_token_is_reported_not_regenerated() {
+    fn damaged_token_is_replaced_not_a_brick() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("state");
-        PrivateState::open(&dir).unwrap_or_else(|e| panic!("{}", e.1));
+        let first = PrivateState::open(&dir).unwrap_or_else(|e| panic!("{}", e.1));
         let token = ipc::token_path(&dir);
-        std::fs::write(&token, b"not hex").unwrap();
-        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(
-            PrivateState::open(&dir).err().unwrap().0.code,
-            "token_invalid"
+        for bad in [&b"not hex"[..], b""] {
+            std::fs::write(&token, bad).unwrap();
+            std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let again = PrivateState::open(&dir).unwrap_or_else(|e| panic!("{}", e.1));
+            assert_ne!(again.token, first.token);
+            assert_eq!(
+                again.credentials.device_id(),
+                first.credentials.device_id(),
+                "the identity is untouched"
+            );
+        }
+    }
+
+    #[test]
+    fn consent_file_keeps_unknown_data_and_never_clobbers_a_newer_format() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("state");
+        fsutil::ensure_private_dir(&dir).unwrap();
+        let id = "b2".repeat(16);
+        let path = dir.join(CONSENT_FILE);
+        let put = |text: String| {
+            fsutil::atomic_write_private(&path, text.as_bytes()).unwrap();
+        };
+        // The golden format-1 file (plus a feature name and a field only a later build knows).
+        put(format!(
+            r#"{{"version":1,"extra":{{"a":1}},"devices":{{"{id}":["sms","clipboard","hologram"]}}}}"#
+        ));
+        let mut store = ConsentStore::open(&dir).unwrap();
+        assert!(store.is_enabled(&id, Feature::Sms));
+        assert!(store.is_enabled(&id, Feature::Clipboard));
+        store.set(&id, Feature::Contacts, true).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["extra"]["a"], 1);
+        let list = v["devices"][&id].as_array().unwrap();
+        assert!(list.iter().any(|f| f == "hologram"), "{list:?}");
+        assert!(list.iter().any(|f| f == "contacts"));
+        // Newer format: readable, refuses to write, file untouched.
+        put(format!(r#"{{"version":4,"devices":{{"{id}":["sms"]}}}}"#));
+        let before = std::fs::read(&path).unwrap();
+        let mut store = ConsentStore::open(&dir).unwrap();
+        assert!(store.is_enabled(&id, Feature::Sms));
+        assert!(matches!(
+            store.set(&id, Feature::Contacts, true),
+            Err(KdeError::StoreNewer { found: 4, .. })
+        ));
+        assert!(
+            !store.is_enabled(&id, Feature::Contacts),
+            "memory unchanged on failure"
         );
-        assert_eq!(std::fs::read(&token).unwrap(), b"not hex");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // Damage falls back to the previous generation, else to "everything off".
+        put(format!(r#"{{"version":1,"devices":{{"{id}":["sms"]}}}}"#));
+        let mut store = ConsentStore::open(&dir).unwrap();
+        store.set(&id, Feature::Contacts, true).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
+        assert!(store.is_enabled(&id, Feature::Sms) && !store.is_enabled(&id, Feature::Contacts));
+        let _ = std::fs::remove_file(dir.join("consent.json.bak"));
+        let store = ConsentStore::open(&dir).unwrap();
+        assert!(!store.is_enabled(&id, Feature::Sms));
     }
 
     #[test]

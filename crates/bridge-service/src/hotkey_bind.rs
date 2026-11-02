@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! System-wide binding of the "paste from phone" hotkey.
 //!
 //! A global shortcut needs a compositor, window-system or portal facility, and there is no portable

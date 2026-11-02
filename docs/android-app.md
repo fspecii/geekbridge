@@ -3,7 +3,7 @@
 Project: `android/` (Gradle, single `:app` module, package `dev.geekbridge.android`). Pins follow
 [android-contract.md](android-contract.md): AGP 8.13.2, Gradle 8.13, Kotlin 2.2.21, JDK 17, compile/target
 SDK 36, min SDK 26. UI uses platform widgets only (no AndroidX, no Compose); the only dependencies are
-JUnit and `org.json` for JVM tests.
+JUnit and AOSP's `org.json` (`android-json`, Apache-2.0) for JVM tests.
 
 ## Screens and background connection
 
@@ -130,6 +130,52 @@ What changed and how it was checked (screenshots: `dist/screenshots/android/poli
   (`MainActivity`, `LinkSection`, `UpdateSection`, clipboard settings). Moving those needs the models to return
   string ids and is a separate change. Lint's `SetTextI18n` still flags `MainActivity.kt:275` for that reason.
 
+## Home-screen widgets
+
+Three small widgets, platform `RemoteViews` only (no AndroidX, no Compose), in the same Nothing-style tokens as the app
+(white / `#121212` cards from `colors.xml`, ink dots, one red dot, launcher corner radius on Android 12+).
+
+| Widget | Size | Shows | Taps |
+| --- | --- | --- | --- |
+| **Connection** | 2x1 | Paired computer name and `CONNECTED` / `OFFLINE` / `RINGING` (or `NOT PAIRED`) in dots, a red dot when connected | Opens GeekBridge (pairing when unpaired) |
+| **Quick actions** | 2x2 | Send file, Send clipboard, Paste from computer, Answer: ON/OFF | Send file: file picker, then the Share flow to the computer. Send clipboard: the same focused read as the Quick Settings tile (opens Diagnostics' clipboard switch while sync is off). Answer: ON turns it off; OFF opens the setup step (turning it on needs the permission and the per-computer grant, so it is never switched on silently). Dimmed, and each button opens pairing, while nothing is paired |
+| **Agenda** | 4x2 | Today's next three events (timed ones by start, ongoing ones included, then all-day ones), times in dots, a red today dot. Without READ_CALENDAR: "Allow calendar" | Opens GeekBridge, or the Calendar setup step when access is missing |
+
+"Paste from computer" cannot pull: the protocol has no phone-initiated clipboard request, the computer pushes. The button
+therefore explains that (a toast: send the clipboard from the computer, it lands on this phone, then paste) and, while
+Clipboard sync is off, opens the switch for it.
+
+**Updates, no polling.** `updatePeriodMillis=0`. `WidgetUpdater` pushes when something changes: the link observer
+(`LinkRuntime`, deduplicated so an unchanged state costs nothing), the call state (`RINGING`, only while answer-from-computer
+is on and phone-state access is granted), the answer switch and Setup screen, and for the Agenda a `ContentObserver` on the
+Calendar provider (debounced 2 s) plus one inexact `AlarmManager.set` for the earlier of the next shown event's end and
+00:01 local, so it also rolls over at midnight, on time-zone and clock changes (`TIMEZONE_CHANGED`, `TIME_SET`, `DATE_CHANGED`).
+The observer and the alarm exist only while an Agenda widget does (`AgendaWidget.onDisabled` removes both; the observer is
+restored at process start only if one exists). No foreground service; work is one daemon worker thread with no core pool
+(it does not stay alive idle), requests coalesce, calendar reads are bounded (64 rows) and never logged; the only log line is
+an exception class name. A widget that is not refreshed (process dead) keeps its last view; the next link or calendar event,
+a launcher update, or boot refreshes it.
+
+**Works with the app process dead.** Every tap is an immutable `PendingIntent` to a non-exported activity or receiver of this
+app (`FLAG_IMMUTABLE`), so a widget can start the app cold. The three providers and the `WidgetSendFileActivity` helper are
+`exported="false"`; the system still delivers updates and the time broadcasts.
+
+**Dot text** is drawn once into an `ALPHA_8` mask (about 24 KB for `CONNECTED`) with the shared `DotFont` and tinted by the
+`ImageView` with a colour resource, so light and dark follow the system without a second bitmap. TalkBack never hears dots:
+each widget has one content description in words ("Connected to Studio PC. Tap to open GeekBridge.", "Today, Monday 2 November.
+9:30 AM, Team sync. ..."). Text is in `sp` and clips with an ellipsis at font scale 2.0
+(`dist/screenshots/android/widget-fontscale-2.0-light.png`); layouts use start/end for RTL. Resizable both ways; each widget has a
+`previewImage` (`drawable-nodpi/widget_preview_*.png`, real captures) and `targetCellWidth/Height` on Android 12+.
+
+Pure logic with JVM tests (`WidgetModelTest`): connection word mapping, answer-tap rule, day bounds (23/25-hour DST days,
+other zones), all-day events as UTC dates, event selection and ordering, next-refresh time, dot/spoken time labels.
+
+Emulator check (Android 16, light and dark, font scale 2.0, calendar insert refreshing the Agenda by itself):
+`dist/screenshots/android/widget-light.png`, `widget-dark.png`, `widget-fontscale-2.0-light.png`; two are in
+`docs/img/android-widgets-*.png`. Debug builds only: `adb shell am start -n dev.geekbridge.android/.DebugPinWidgetActivity -e w connection|quick|agenda`
+asks the launcher to pin a widget (`-e demo connected|ringing|offline` pushes a fake state for screenshots). Not verified: a
+real launcher other than the emulator's, RTL on a device, a real ringing call, and a paired computer showing `CONNECTED` outside the fake demo state.
+
 ## What does not work (by design, for now)
 
 - **No unauthenticated surface.** Pairing, discovery and the link to a computer are done by the Rust core (setup
@@ -161,17 +207,22 @@ alignment (already set in `scripts/android-env.sh`).
 
 ## Build and test
 
+Prerequisites: JDK 17, the Android SDK (platform 36, build-tools 36.0.0, NDK 30.0.16248370) and the native libraries
+in `src/main/jniLibs` (built by `scripts/build-android.sh`, or `make android`). `scripts/dev-setup.sh` checks all of it.
+
 ```sh
-source scripts/android-env.sh
 cd android
-echo "sdk.dir=$ANDROID_HOME" > local.properties   # git-ignored
-gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+echo "sdk.dir=/path/to/Android/Sdk" > local.properties   # git-ignored; or export ANDROID_HOME
+./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 # APK: android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-There is no Gradle wrapper (the toolchain provides Gradle 8.13). `gradle.properties` sets
-`kotlin.compiler.execution.strategy=in-process`, which avoids Kotlin-daemon RMI noise here. The unsigned
-`assembleRelease` output is not signed or tested; release signing is not configured.
+`./gradlew` is the documented path: it fetches Gradle 8.13 and checks its SHA-256 (`gradle/wrapper/gradle-wrapper.properties`),
+and `gradle/verification-metadata.xml` verifies every dependency artefact ([supply-chain.md](supply-chain.md)). On the
+maintainer machine the project-local toolchain works offline instead: `source scripts/android-env.sh`, then
+`gradle --offline :app:testDebugUnitTest ...` in `android/`. `gradle.properties` sets
+`kotlin.compiler.execution.strategy=in-process`, which avoids Kotlin-daemon RMI noise. The unsigned
+`assembleRelease` output is not signed or tested; release signing is described in [builds.md](builds.md).
 
 ## Validation performed
 

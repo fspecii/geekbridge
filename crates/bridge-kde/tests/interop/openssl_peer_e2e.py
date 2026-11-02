@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """End-to-end check of `geekbridge-pair` against an independent OpenSSL-backed peer.
 
 The peer is Python's `ssl` module (OpenSSL), not rustls, and computes the pairing

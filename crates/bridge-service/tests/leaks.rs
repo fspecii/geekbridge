@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Leak and growth assertions across many reconnect / pair / junk cycles.
 //!
 //! The service core and the stand-in phones share this test process, so after each cycle every

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Opt-in phone transport: KDE Connect protocol 8 over TCP/TLS using `bridge-kde`.
 //!
 //! Nothing here runs until a `transport_start` request. That request creates one small tokio
@@ -769,6 +770,10 @@ fn state_error(e: KdeError) -> ApiError {
         ),
         KdeError::Certificate(_) => err("identity_unusable", "the stored identity is unusable"),
         KdeError::StoreCorrupt { .. } => err("state_corrupt", "the trust store is corrupt"),
+        KdeError::StoreNewer { .. } => err(
+            "state_newer",
+            "the saved state was written by a newer app version and is left untouched",
+        ),
         KdeError::UnsupportedPlatform(_) => err(
             "unsupported_platform",
             "private storage is not supported here",

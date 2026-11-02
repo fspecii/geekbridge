@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only facts about the process and the OS: build, contract versions, package identity and
 //! the Phone calls privacy capability.
 use crate::model::*;

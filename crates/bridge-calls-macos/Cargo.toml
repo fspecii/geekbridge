@@ -3,6 +3,8 @@ name = "bridge-calls-macos"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "macOS Bluetooth HFP hands-free call adapter (IOBluetoothHandsFreeDevice) with an explicit-unsupported host build"
 
 [lib]

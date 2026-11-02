@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! State orchestration for one phone link: connect/disconnect lifecycle, generation binding of
 //! native callbacks, command planning and dispatch, confirmation by observed effect, timeouts,
 //! link loss, and the neutral `bridge_core::calls` event stream.

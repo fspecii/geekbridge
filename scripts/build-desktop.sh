@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the Linux desktop binaries (release) and copy them to dist/linux/.
 #
 #   scripts/build-desktop.sh [--locked]
@@ -26,7 +27,7 @@ CARGO_FLAGS=()
 for arg in "$@"; do
     case "$arg" in
         --locked) CARGO_FLAGS+=(--locked) ;;
-        -h|--help) sed -n '2,8p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,9p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done

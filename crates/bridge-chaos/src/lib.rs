@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A small TCP fault proxy for failure-injection tests.
 //!
 //! `FaultProxy::start(target)` listens on a loopback port and forwards every connection to

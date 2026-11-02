@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Wire helpers for phone data over the paired link: contacts, calendar and SMS status.
 //!
 //! The contract is `docs/phone-data-link.md`. Everything parsed here is untrusted phone input:
@@ -124,6 +125,11 @@ pub fn parse_vcards(body: &Map<String, Value>) -> Result<Vec<(String, String)>, 
         let uid = uid.as_str().ok_or(WireError::Malformed)?;
         if uid.is_empty() || uid.len() > 512 || uid == "uids" {
             return Err(WireError::Malformed);
+        }
+        // A uid listed twice must not clone its vCard twice: 100 repeats of one large vCard would
+        // multiply the packet size by 100.
+        if out.iter().any(|(seen, _)| seen == uid) {
+            continue;
         }
         if let Some(Value::String(v)) = body.get(uid) {
             out.push((uid.to_owned(), v.clone()));

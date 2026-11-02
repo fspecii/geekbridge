@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the Arch package from the working tree, entirely inside a scratch directory.
 #
 #   packaging/arch/build-local.sh [--out DIR] [--offline]
@@ -18,7 +19,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) out="$2"; shift 2;;
     --offline) offline=1; shift;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '3,13p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done
@@ -28,8 +29,9 @@ done
 
 cargo_ver="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' "$ROOT/Cargo.toml")"
 pkg_ver="$(sed -n "s/^pkgver=//p" "$ROOT/packaging/arch/PKGBUILD" | head -n1)"
-[[ -n "$cargo_ver" && "$cargo_ver" == "$pkg_ver" ]] \
-  || { echo "PKGBUILD pkgver '$pkg_ver' != Cargo.toml version '$cargo_ver'" >&2; exit 65; }
+# pkgver may not contain '-', so a prerelease 0.2.0-rc.1 is packaged as 0.2.0_rc.1 (the Arch convention).
+[[ -n "$cargo_ver" && "${cargo_ver//-/_}" == "$pkg_ver" ]] \
+  || { echo "PKGBUILD pkgver '$pkg_ver' != Cargo.toml version '$cargo_ver' (a '-' becomes '_')" >&2; exit 65; }
 
 work="$(gb_mktemp arch -d)"
 [[ -n "$out" ]] || out="$work/out"
@@ -37,13 +39,13 @@ mkdir -p "$out"
 echo "scratch: $work"
 build="$work/build"; mkdir -p "$build"
 
-echo "== source tarball geekbridge-$cargo_ver.tar.gz"
+echo "== source tarball geekbridge-$pkg_ver.tar.gz"
 ( cd "$ROOT" && git ls-files -z --cached --others --exclude-standard \
     | while IFS= read -r -d '' f; do [[ -e "$f" ]] && printf '%s\0' "$f"; done \
-    | tar --null -T - --transform "s|^|geekbridge-$cargo_ver/|" --owner=0 --group=0 --numeric-owner \
-        -czf "$build/geekbridge-$cargo_ver.tar.gz" )
+    | tar --null -T - --transform "s|^|geekbridge-$pkg_ver/|" --owner=0 --group=0 --numeric-owner \
+        -czf "$build/geekbridge-$pkg_ver.tar.gz" )
 cp "$ROOT/packaging/arch/PKGBUILD" "$ROOT/packaging/arch/geekbridge.install" "$build/"
-sum="$(sha256sum "$build/geekbridge-$cargo_ver.tar.gz" | cut -d' ' -f1)"
+sum="$(sha256sum "$build/geekbridge-$pkg_ver.tar.gz" | cut -d' ' -f1)"
 sed -i "s|^sha256sums=.*|sha256sums=('$sum')|" "$build/PKGBUILD"
 echo "sha256 $sum"
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone-line transport devices: enumeration, state reads and the explicit register/connect actions.
 use super::wait::{await_op, classify};
 use crate::model::*;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The port between the calling engine and the operating system.
 //!
 //! [`CallsPlatform`] is the only seam to Windows. The real implementation

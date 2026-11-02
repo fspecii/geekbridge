@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Linux tray: a StatusNotifierItem (`org.kde.StatusNotifierItem`) with a `com.canonical.dbusmenu`
 //! menu, hand-written on the `zbus` the call backend already links. Waybar's `tray` module, KDE
 //! Plasma, GNOME with the AppIndicator extension, XFCE and swaync all host this pair.

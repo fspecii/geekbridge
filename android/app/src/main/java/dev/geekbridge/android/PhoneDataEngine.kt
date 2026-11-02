@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import org.json.JSONArray
@@ -14,6 +15,13 @@ interface ContactsPort {
 
 interface CalendarPort {
     fun instances(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int): List<CalInstance>?
+    /**
+     * Up to [max] instances on each side of [pivotMs] inside the window, nearest the pivot first on both sides
+     * (the provider's own order is by start, which would hand back the far past when the window holds more than
+     * [max]). Ports that cannot do better fall back to [instances].
+     */
+    fun instancesAround(calendarIds: Set<String>, fromMs: Long, toMs: Long, pivotMs: Long, max: Int): List<CalInstance>? =
+        instances(calendarIds, fromMs, toMs, max)
     fun calendars(): List<CalendarInfo>
 }
 
@@ -27,6 +35,8 @@ interface SmsPort {
     fun unreadCounts(): Map<Long, Int> = emptyMap()
     /** Newest message of each thread, newest thread first. */
     fun latestPerThread(max: Int): List<SmsRow>
+    /** How many threads the phone holds (at least; a bounded scan), or null if unknown. Sent so the computer can say "newest N of M". */
+    fun threadCount(): Int? = null
     /** Messages of one thread with `date <= rangeStartMs` (inclusive, null = newest), newest first, at most [limit]. */
     fun thread(threadId: Long, rangeStartMs: Long?, limit: Int): List<SmsRow>
 }
@@ -38,6 +48,70 @@ interface SmsSender {
 
 interface SmsStatusListener {
     fun onStatus(state: String, reason: String? = null)
+}
+
+private const val RATE_RETRIES = 25
+private const val RATE_RETRY_MS = 120L
+
+/** Paging rule for "newest message of each thread", independent of Android so it is unit-tested at 20 000 rows. */
+object SmsPaging {
+    /**
+     * [page] returns up to `limit` rows strictly older than the (date, id) cursor, newest first. Stops at [max] threads,
+     * an empty page, or [PhoneDataLimits.SMS_SCAN_ROWS] rows scanned.
+     */
+    fun latestPerThread(max: Int, page: (date: Long, id: Long, limit: Int) -> List<SmsRow>): List<SmsRow> {
+        val seen = HashSet<Long>()
+        val out = ArrayList<SmsRow>()
+        var scanned = 0
+        var lastDate = Long.MAX_VALUE
+        var lastId = Long.MAX_VALUE
+        while (out.size < max && scanned < PhoneDataLimits.SMS_SCAN_ROWS) {
+            val rows = page(lastDate, lastId, PhoneDataLimits.SMS_SCAN_CHUNK)
+            if (rows.isEmpty()) break
+            for (r in rows) if (out.size < max && seen.add(r.threadId)) out += r
+            scanned += rows.size
+            lastDate = rows.last().date
+            lastId = rows.last().id
+        }
+        return out
+    }
+}
+
+/** Raised inside a provider read when the link went away: the answer would have nowhere to go. */
+class QueryCancelled : RuntimeException("cancelled")
+
+/**
+ * One switch shared by the engine and the Android ports. [cancel] fires the provider's own CancellationSignal (so a
+ * long query stops inside the provider) and makes every later [check] throw until [rearm]. Thread safe.
+ */
+class QueryCancel {
+    @Volatile var cancelled = false
+        private set
+    @Volatile private var hook: (() -> Unit)? = null
+
+    fun cancel() {
+        cancelled = true
+        hook?.invoke()
+    }
+
+    fun rearm() {
+        cancelled = false
+    }
+
+    fun check() {
+        if (cancelled) throw QueryCancelled()
+    }
+
+    /** Runs [body] with [onCancel] armed (fired at once if already cancelled). */
+    fun <T> guard(onCancel: () -> Unit, body: () -> T): T {
+        hook = onCancel
+        try {
+            if (cancelled) onCancel()
+            return body()
+        } finally {
+            hook = null
+        }
+    }
 }
 
 /**
@@ -59,6 +133,9 @@ class PhoneDataEngine(
     private val calendarWriter: CalendarWriter? = null,
     private val allowSpecialNumbers: () -> Boolean = { false },
     private val smsLedger: RequestLedger = RequestLedger(),
+    private val cancel: QueryCancel = QueryCancel(),
+    /** Waits between retries of a rate-limited packet; injected so tests do not sleep. */
+    private val pause: (Long) -> Unit = { Thread.sleep(it) },
 ) {
     // calendar sync state for the current link
     private var calToken: String? = null
@@ -71,9 +148,16 @@ class PhoneDataEngine(
     private val smsHourTimes = ArrayDeque<Long>()
     private var backoffUntil = 0L
 
+    /**
+     * Link went down: stop whatever provider read is running. Not synchronized on purpose, it must get past a long
+     * read that holds the engine lock; [reset] re-arms once it has the lock.
+     */
+    fun cancelInFlight() = cancel.cancel()
+
     /** Link went down or features changed: the next link starts from scratch. */
     @Synchronized
     fun reset() {
+        cancel.rearm()
         calToken = null
         calCounter = 0
         calSent = emptyMap()
@@ -102,7 +186,7 @@ class PhoneDataEngine(
             PhoneDataKinds.CALENDAR_WRITE -> if (f.calendar && f.calendarEdit) calendarWrite(e.body)
             PhoneDataKinds.SMS_REQ_CONVERSATIONS -> if (f.sms) {
                 smsRequested = true
-                pushSms(sms.latestPerThread(PhoneDataLimits.MAX_SMS_PER_PACKET * 2), withUnread = true)
+                pushSms(sms.latestPerThread(PhoneDataLimits.SMS_THREADS_LISTED), withUnread = true)
             }
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
             PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
@@ -118,13 +202,23 @@ class PhoneDataEngine(
         if (now < backoffUntil) return false
         val request = PhoneDataProtocol.sendRequest(kind, body)
         if (Bounds.utf8Size(request) > PhoneDataLimits.MAX_PACKET_BYTES + 512) return false
-        return when (val o = core(request)) {
-            is CoreOutcome.Ok -> true
-            is CoreOutcome.Rejected -> {
-                if (o.code == "rate_limited") backoffUntil = now + 10_000
-                false
+        // A rate-limited answer is retried for a few seconds (the core refills 8 packets a second): dropping it
+        // would leave the computer waiting for a reply that never comes. Only after that does it back off.
+        var tries = 0
+        while (true) {
+            when (val o = core(request)) {
+                is CoreOutcome.Ok -> return true
+                is CoreOutcome.Rejected -> {
+                    if (o.code != "rate_limited") return false
+                    if (++tries > RATE_RETRIES) {
+                        backoffUntil = now + 10_000
+                        return false
+                    }
+                    cancel.check()
+                    pause(RATE_RETRY_MS)
+                }
+                else -> return false
             }
-            else -> false
         }
     }
 
@@ -180,7 +274,8 @@ class PhoneDataEngine(
         val from = now - PhoneDataLimits.WINDOW_PAST_MS
         val to = now + PhoneDataLimits.WINDOW_FUTURE_MS
         val raw = if (chosen.isEmpty()) emptyList() else
-            calendar.instances(chosen.map { it.id }.toSet(), from, to, PhoneDataLimits.MAX_EVENTS * 2) ?: return false
+            // One more than the cap per side, so a side that holds more than the cap shows up as truncated.
+            calendar.instancesAround(chosen.map { it.id }.toSet(), from, to, now, PhoneDataLimits.MAX_EVENTS + 1) ?: return false
         // One row per (calendar, event, begin): the same instance twice must not eat the cap or be sent twice.
         val unique = raw.distinctBy { Triple(it.calendarId, it.eventId, it.begin) }
         val truncated0 = unique.size > PhoneDataLimits.MAX_EVENTS
@@ -282,11 +377,14 @@ class PhoneDataEngine(
         var batch = JSONArray()
         var bytes = 0
         var unread: JSONObject? = if (withUnread) PhoneDataProtocol.unreadJson(sms.unreadCounts()) else null
+        var threads: Int? = if (withUnread) sms.threadCount() else null
         fun flush() {
             emit(PhoneDataKinds.SMS_MESSAGES, JSONObject().put("version", 2).put("messages", batch).also {
                 addSims(it)
                 unread?.let { u -> it.put("unread", u) }
+                threads?.let { n -> it.put("threadsTotal", n) }
                 unread = null // once per list, on its first packet
+                threads = null
             })
             batch = JSONArray()
             bytes = 0
@@ -308,6 +406,13 @@ class PhoneDataEngine(
         pushSms(listOf(row))
     }
 
+    /** Re-push the newest message of every thread (when the computer asked for messages on this link). */
+    @Synchronized
+    fun refreshConversations() {
+        if (!features().sms || !smsRequested) return
+        pushSms(sms.latestPerThread(PhoneDataLimits.SMS_THREADS_LISTED), withUnread = true)
+    }
+
     private fun status(requestId: String?, state: String, reason: String? = null) {
         if (requestId != null) emit(PhoneDataKinds.SMS_STATUS, PhoneDataProtocol.smsStatus(requestId, state, reason))
     }
@@ -318,7 +423,9 @@ class PhoneDataEngine(
             is PhoneDataProtocol.SmsParse.Ok -> {
                 // A repeated request id is the same send: never text twice (its first status is already on its way).
                 if (p.requestId != null && !smsLedger.firstTime(p.requestId)) return
-                if (SmsDestination.check(p.address) != SmsDestination.Verdict.Ok && !allowSpecialNumbers()) {
+                val verdict = SmsDestination.check(p.address)
+                // "Allow short codes" never covers a destination that is not a number at all.
+                if (verdict != SmsDestination.Verdict.Ok && (!allowSpecialNumbers() || verdict == SmsDestination.Verdict.Invalid)) {
                     return status(p.requestId, "failed", "blocked_number")
                 }
                 val now = clock()

@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! SMS domain model: conversations, messages, SIM selection, validated outgoing text and a
 //! send lifecycle that never resends automatically once a send might have reached the phone.
 //!
 //! Std + serde only, no I/O and no clock: callers pass `now_ms`. Nothing here talks to a phone.
-//! The pinned KDE Android SMS plugin has no send acknowledgement at all (see `docs/architecture.md`),
+//! The pinned KDE Android SMS plugin has no send acknowledgement at all (see `docs/phone-data-link.md`),
 //! so `AcceptedByPhone`/`Sent`/`Delivered` are states of this model, not things KDE can report today.
 //! MMS attachments and RCS are out of scope: MMS messages parse (text part only, `attachment_count`
 //! kept) but nothing here sends them.
@@ -475,6 +476,10 @@ impl Conversation {
         let mut v: Vec<&Message> = self.messages.values().collect();
         v.sort_by_key(|m| (m.date_ms, m.key));
         v
+    }
+    /// The latest message (same order as [`Self::ordered`]) without sorting the thread: O(n), no allocation.
+    pub fn newest(&self) -> Option<&Message> {
+        self.messages.values().max_by_key(|m| (m.date_ms, m.key))
     }
     pub fn oldest_date_ms(&self) -> Option<u64> {
         self.messages.values().map(|m| m.date_ms).min()

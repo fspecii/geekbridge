@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The Linux tray against a private session bus with a fake `org.kde.StatusNotifierWatcher`: what the
 //! item registers, which properties and menu layout a host (waybar, Plasma, the GNOME AppIndicator
 //! extension) reads from it, which signals a state change emits, and that a click reaches the
@@ -68,6 +69,15 @@ async fn item_proxy<'a>(c: &'a Connection, name: &'a str) -> zbus::Proxy<'a> {
         .await
         .unwrap()
 }
+/// A round trip to the item from a second connection: once it answers, the item has handled
+/// everything it had queued before (no fixed sleep needed before asserting that nothing more
+/// happened).
+async fn settle(bus: &PrivateBus, sni: &Sni) {
+    let client = bus.connect().await;
+    let item = item_proxy(&client, &sni.bus_name).await;
+    let _: String = item.get_property("Id").await.unwrap();
+}
+
 async fn menu_proxy<'a>(c: &'a Connection, name: &'a str) -> zbus::Proxy<'a> {
     zbus::Proxy::new(c, name, MENU_PATH, "com.canonical.dbusmenu")
         .await
@@ -132,7 +142,7 @@ async fn registers_with_a_watcher_that_is_already_there() {
     let seen = until(|| log.lock().unwrap().first().cloned()).await;
     assert_eq!(seen, sni.bus_name);
     assert!(seen.starts_with("org.kde.StatusNotifierItem-"));
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    settle(&bus, &sni).await;
     assert_eq!(log.lock().unwrap().len(), 1, "registered exactly once");
 }
 
@@ -142,7 +152,7 @@ async fn no_watcher_is_silent_and_a_late_or_restarted_watcher_gets_the_item() {
         return;
     };
     let (sni, _) = start(&bus, &TrayInput::default()).await;
-    tokio::time::sleep(Duration::from_millis(300)).await; // no host: nothing happens, nothing fails
+    settle(&bus, &sni).await; // no host: the item answers, nothing fails
     {
         let (w, log) = watcher(&bus).await;
         let first = until(|| log.lock().unwrap().first().cloned()).await;

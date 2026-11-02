@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Windows 11 cellular-call adapter over the public `Windows.ApplicationModel.Calls` phone-line
 //! APIs (Bluetooth Hands-Free Profile, the PC as hands-free unit and the Android phone as audio
 //! gateway).

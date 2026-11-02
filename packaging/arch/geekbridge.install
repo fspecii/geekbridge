@@ -21,7 +21,7 @@ GeekBridge is installed. Nothing was enabled or changed in your home directory. 
 
 Optional packages: wl-clipboard or xclip (clipboard), libnotify + mako (notifications),
 bluez + pipewire-pulse (call audio). See `pacman -Qi geekbridge`.
-Licence: none chosen yet; see /usr/share/licenses/geekbridge/LICENSE-PLACEHOLDER.txt.
+Licence: GPL-3.0-or-later; see /usr/share/licenses/geekbridge/LICENSE.
 
 MSG
 }

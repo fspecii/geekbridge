@@ -3,6 +3,7 @@ name = "bridge-chaos"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Test utility: an in-process TCP fault proxy (latency, bandwidth cap, loss, resets, half-open silence, fragmentation, slow handshakes) for failure-injection tests"
 publish = false
 

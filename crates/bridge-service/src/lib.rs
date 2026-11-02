@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! GeekBridge helper service.
 //!
 //! * Public, read-only discovery API ([`serve_api`]): untrusted announcement metadata only.

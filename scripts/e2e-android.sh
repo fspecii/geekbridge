@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Real end-to-end test: Android emulator app <-> desktop geekbridge-service on this host.
 #
 #   scripts/e2e-android.sh [--only STAGE[,STAGE...]] [--no-build] [--rebuild] [--stop]
@@ -31,7 +32,7 @@ ONLY="" BUILD=auto
 for a in "$@"; do
   case "$a" in
     --only) ;; --no-build) BUILD=no ;; --rebuild) BUILD=yes ;; --stop) STOP=1 ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,25p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) if [[ "${prev:-}" == --only ]]; then ONLY="$a"; else echo "unknown argument $a" >&2; exit 2; fi ;;
   esac
   prev="$a"

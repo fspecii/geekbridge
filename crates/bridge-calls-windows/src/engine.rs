@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The calling engine: selection, refresh, gating and command dispatch over a [`CallsPlatform`].
 //!
 //! The engine is single-threaded (`&mut self`); [`crate::service`] runs it on one actor thread

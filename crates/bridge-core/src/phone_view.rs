@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Bounded, content-bearing views of phone data that the service hands to the Agenda and Messages
 //! windows over the authenticated control channel (`Request::AgendaView` / `Request::MessagesView`).
 //!
@@ -12,6 +13,8 @@ pub const MAX_VIEW_DAYS: u32 = 56;
 pub const MAX_EDITS_SHOWN: usize = 20;
 pub const MAX_CONVERSATIONS_SHOWN: usize = 100;
 pub const MAX_MESSAGES_SHOWN: usize = 100;
+/// The most a thread view may ask for (the reply is also cut to a byte budget, so it always fits one response).
+pub const MAX_MESSAGES_LIMIT: usize = 2000;
 pub const MAX_SENDS_SHOWN: usize = 20;
 /// In-memory cap per conversation and over all conversations of one phone (service side).
 pub const MAX_MESSAGES_PER_THREAD: usize = 2000;
@@ -35,7 +38,7 @@ pub enum DataState {
     Ready,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DataDevice {
     pub device_id: String,
     pub name: String,
@@ -52,6 +55,12 @@ pub struct DataDevice {
     #[serde(default)]
     pub calendar_writable: bool,
     pub calendar_truncated: bool,
+    /// The phone listed exactly its per-link maximum of contacts, so it probably has more than it shared.
+    #[serde(default)]
+    pub contacts_capped: bool,
+    /// Conversations the phone says it holds (a bounded count; GeekBridge phones only).
+    #[serde(default)]
+    pub threads_on_phone: Option<usize>,
     pub contacts_synced_unix_ms: Option<u64>,
     pub calendar_synced_unix_ms: Option<u64>,
     /// The phone sends `geekbridge.sms.status`, so sent/delivered are real signals. Stock KDE
@@ -213,7 +222,7 @@ pub struct AgendaView {
     pub events_truncated: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConversationItem {
     pub device_id: String,
     pub thread_id: i64,
@@ -296,6 +305,9 @@ pub struct SendItem {
 pub struct MessagesView {
     pub devices: Vec<DataDevice>,
     pub conversations: Vec<ConversationItem>,
+    /// Conversations this computer holds that match (before the list is cut to `MAX_CONVERSATIONS_SHOWN`).
+    #[serde(default)]
+    pub conversations_total: usize,
     pub selected: Option<SelectedThread>,
     pub sends: Vec<SendItem>,
 }

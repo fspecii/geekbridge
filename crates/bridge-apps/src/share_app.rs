@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The Share window: pick or drop files for a connected phone, answer incoming offers, watch
 //! progress. It is a client of the authenticated control API like the other apps; it never moves
 //! file bytes itself (the service does) and never touches the network on a GUI frame.

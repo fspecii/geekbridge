@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Generates the Android RELEASE keystore for GeekBridge (once, ever) and prints what to do next.
 #
 #   scripts/make-keystore.sh                       interactive: asks for the two output paths
@@ -33,7 +34,7 @@ while [[ $# -gt 0 ]]; do
     --dname) dname="${2:?}"; shift 2 ;;
     --repo) repo="${2:?}"; shift 2 ;;
     --non-interactive) interactive=0; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,21p' "$0"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
 done

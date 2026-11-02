@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Real-phone test session helper (see docs/real-device-quickstart.md).
 #
 #   scripts/realdevice.sh [--serial SERIAL] [--adb-port PORT] [--dry-run] COMMAND [ARGS]
@@ -56,7 +57,7 @@ while (($#)); do
     --serial) shift; SERIAL="${1:?--serial needs a value}" ;;
     --adb-port) shift; export ANDROID_ADB_SERVER_PORT="${1:?--adb-port needs a value}" ;;
     --dry-run) DRY=1 ;;
-    -h|--help|help) sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help|help) sed -n '3,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
     --) shift; break ;;
     -*) die "unknown option $1 (try --help)" ;;
     *) break ;;
@@ -64,7 +65,7 @@ while (($#)); do
   shift
 done
 CMD="${1:-}"; shift || true
-[[ -n $CMD ]] || { sed -n '2,29p' "${BASH_SOURCE[0]}"; exit 2; }
+[[ -n $CMD ]] || { sed -n '3,30p' "${BASH_SOURCE[0]}"; exit 2; }
 
 # --------------------------------------------------------------------------- helpers
 find_adb() {

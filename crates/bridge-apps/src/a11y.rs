@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Screen-reader details egui's `widget_info` cannot express: live regions and a name for widgets
 //! that draw no text. All of it is a no-op unless the `accesskit` feature is built in and an
 //! assistive technology is attached (egui only builds the accessibility tree on request).

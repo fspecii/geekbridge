@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! macOS menu-bar item: an `NSStatusItem` with an `NSMenu`, the icon a template image (the system
 //! tints it for light and dark menu bars).
 //!

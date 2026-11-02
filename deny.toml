@@ -1,7 +1,7 @@
 # cargo-deny policy for GeekBridge. See docs/supply-chain.md.
 #   cargo deny check            (all four sections)
 #   cargo deny check licenses   (just one)
-# CI runs this as a non-blocking job (.github/workflows/check.yml, job "supply-chain").
+# CI (.github/workflows/check.yml, job "supply-chain"): bans/licenses/sources block; advisories are report-only.
 
 [graph]
 all-features = true
@@ -18,6 +18,15 @@ ignore = [
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained notice; transitive via zbus, no vulnerability" },
     # egui 0.31 -> epaint -> ab_glyph -> owned_ttf_parser. Revisit when egui is upgraded.
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained notice; transitive via egui/ab_glyph, fonts are our own bundled ones" },
+    # Reviewed 2026-11-02 (advisory-db of that day). eframe 0.31 -> egui-winit -> accesskit_winit 0.23 -> accesskit_unix 0.13 ->
+    # atspi 0.22 -> zbus-lockstep -> zbus_xml 4.0 -> quick-xml 0.30. zbus_xml 4 pins quick-xml 0.30; the fix (>= 0.41) needs a
+    # new accesskit/atspi/zbus_xml line, i.e. an egui upgrade. Linux desktop UI only. The only XML parsed is D-Bus
+    # introspection data from the local AT-SPI/session bus (our own session, never network input), so the CPU/memory DoS
+    # needs an already-hostile local bus peer. Re-check when egui is upgraded; remove then.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.30 quadratic attribute check via zbus_xml/atspi (accessibility); only local D-Bus introspection XML, fix needs egui upgrade; review by 2027-02-01" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.30 NsReader unbounded namespaces via zbus_xml/atspi (accessibility); only local D-Bus introspection XML, fix needs egui upgrade; review by 2027-02-01" },
+    # accesskit_windows 0.24 (Windows accessibility only). Compile-time proc-macro helper, no runtime code or vulnerability.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; compile-time macro only via accesskit_windows, no vulnerability; review by 2027-02-01" },
 ]
 
 [licenses]
@@ -42,12 +51,22 @@ allow = [
     "Ubuntu-font-1.0",  # Ubuntu Light inside epaint_default_fonts (see docs/licence-decision.md)
 ]
 confidence-threshold = 0.9
+# Our own workspace crates (unpublished, `publish = false`, GPL-3.0-or-later) are not checked, whether or not they
+# declare a licence yet. GPL stays off the allow list so no third-party GPL crate can slip in.
+[licenses.private]
+ignore = true
+
+[[licenses.clarify]]
+# Dual "(MIT OR Apache-2.0) OR LGPL-2.1-or-later": take the permissive option.
+name = "r-efi"
+expression = "MIT OR Apache-2.0"
+license-files = []
 
 [bans]
 multiple-versions = "warn"   # about 30 duplicated crates, mostly winit/egui vs newer stacks; informational
 # Our unpublished workspace crates depend on each other by path without a version, which counts as a
-# wildcard while `publish` is unset. Set `publish = false` on them (or version the path deps) and switch to "deny".
-wildcards = "warn"
+# wildcard unless `publish = false` (set) or allow-wildcard-paths applies.
+wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
 

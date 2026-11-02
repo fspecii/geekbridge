@@ -37,6 +37,14 @@
     <string name="home_name_save">Save</string>
     <string name="home_setup_row">Setup &amp; permissions</string>
     <string name="home_setup_row_sub">Review every step</string>
+    <string name="about_licence_title">About and licence</string>
+    <string name="about_licence_summary">GeekBridge is free software, licensed under GPL-3.0-or-later. You may use, study, change and share it under the terms of the GNU General Public License, version 3 or any later version. It comes with no warranty.</string>
+    <string name="about_licence_spdx">GPL-3.0-or-later</string>
+    <string name="about_source_url">https://github.com/fspecii/geekbridge</string>
+    <string name="about_source_button">Source code</string>
+    <string name="about_licence_button">Licence text</string>
+    <string name="about_licence_url">https://www.gnu.org/licenses/gpl-3.0.html</string>
+    <string name="about_thirdparty">Third-party components and their licences are listed in THIRD_PARTY_NOTICES.md in the source repository.</string>
     <string name="home_diag_row">Diagnostics &amp; about</string>
     <string name="home_diag_row_sub">Version %1$s, updates, technical details</string>
     <string name="home_not_available_now">Not available right now.</string>

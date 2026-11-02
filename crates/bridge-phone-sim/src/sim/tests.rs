@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Unit tests for reconciliation, and service tests over a private `dbus-daemon`. The bus tests
 //! check the simulated service from a second connection with plain zbus calls; nothing touches
 //! the user's session or system bus.

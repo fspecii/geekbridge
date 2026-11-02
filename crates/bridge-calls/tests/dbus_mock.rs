@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end tests of the Linux adapter against a mock `org.pipewire.Telephony` service on a
 //! private `dbus-daemon`. They place no calls: the mock only records what it receives.
 #![cfg(target_os = "linux")]

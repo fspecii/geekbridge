@@ -1,10 +1,5 @@
 # Maintainer: GeekBridge <noreply@users.noreply.github.com>
 #
-# LICENCE: the project has not chosen a licence yet (docs/licence-decision.md), and this file does
-# not invent one. `license=('custom')` is a placeholder; the package ships a note saying so in
-# /usr/share/licenses/geekbridge/. Replace it with the real SPDX id and install the LICENSE file once
-# the owner decides.
-#
 # Local build:  packaging/arch/build-local.sh   (creates the source tarball, runs makepkg in a scratch dir)
 # Release build: point `source` at the tag archive and fill in the checksum, e.g.
 #   source=("$pkgname-$pkgver.tar.gz::https://github.com/fspecii/geekbridge/archive/refs/tags/v$pkgver.tar.gz")
@@ -16,7 +11,7 @@ pkgrel=1
 pkgdesc='Bridge between your computer and your Android phone: pairing, clipboard, files, calls'
 arch=('x86_64')
 url='https://github.com/fspecii/geekbridge'
-license=('custom')
+license=('GPL-3.0-or-later')
 # The GUI loads these with dlopen at run time, so ldd on the binaries lists only glibc and libgcc.
 depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'libx11' 'libxcb' 'libxcursor' 'libxi' 'libxrandr')
 makedepends=('cargo' 'pkgconf' 'librsvg')
@@ -72,5 +67,6 @@ package() {
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_NOTICES.md"
   install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
-  install -Dm644 packaging/arch/LICENSE-PLACEHOLDER.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-PLACEHOLDER.txt"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY_NOTICES.md"
 }

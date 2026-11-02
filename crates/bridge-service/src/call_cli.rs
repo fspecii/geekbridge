@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl calls` and `geekbridge-ctl call ...`: the same call controls the Calls window
 //! has, for scripts and the emulated end-to-end checks. Numbers are masked unless `--reveal`.
 use bridge_core::calls::CallPhase;

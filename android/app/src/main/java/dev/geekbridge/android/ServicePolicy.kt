@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 /** When the background connection service should hold sockets. Pure so the rule is unit-tested. */

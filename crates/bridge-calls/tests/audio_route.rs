@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! API-mock tests for call-audio routing. They use only the private in-memory server in
 //! `audio_support`; nothing here connects to a real sound server or plays audio.
 

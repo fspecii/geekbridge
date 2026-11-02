@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Calls: a dialer in the style of the macOS phone keypad. The number is local text only;
 //! placing a call stays blocked until a call backend is authorized for a paired phone.
 use crate::{

@@ -17,6 +17,8 @@ AppName=GeekBridge
 AppVersion={#AppVersion}
 AppPublisher=GeekBridge
 AppPublisherURL=https://github.com/fspecii/geekbridge
+AppCopyright=Copyright (C) 2026 fspecii and GeekBridge contributors. GPL-3.0-or-later.
+LicenseFile=..\..\LICENSE
 DefaultDirName={autopf}\GeekBridge
 DefaultGroupName=GeekBridge
 PrivilegesRequired=lowest
@@ -46,6 +48,8 @@ Source: "{#BinDir}\geekbridge-agenda.exe"; DestDir: "{app}"; Flags: ignoreversio
 Source: "{#BinDir}\geekbridge-contacts.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\geekbridge-share.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\GeekBridge"; Filename: "{app}\geekbridge.exe"

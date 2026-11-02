@@ -3,6 +3,8 @@ name = "bridge-calls-windows"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Windows 11 Bluetooth HFP calling adapter over the public Windows.ApplicationModel.Calls phone-line APIs"
 
 [lib]

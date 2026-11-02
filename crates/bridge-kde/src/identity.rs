@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Device identity packets (`kdeconnect.identity`) and their validation.
 //!
 //! Everything in an identity is attacker-controlled until it has been checked
@@ -60,7 +61,7 @@ impl fmt::Debug for DeviceId {
 
 /// Zero-width, bidirectional-format and similar invisible characters: they can reorder or hide the text around a
 /// name (`U+202E` makes "Evil" display as "live"), so a name never keeps them (the phone app strips the same set).
-fn is_invisible_format(c: char) -> bool {
+pub fn is_invisible_format(c: char) -> bool {
     matches!(
         c,
         '\u{200B}'..='\u{200F}'

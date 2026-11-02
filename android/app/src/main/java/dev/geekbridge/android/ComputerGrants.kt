@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.annotation.SuppressLint
@@ -44,7 +45,11 @@ data class ComputerGrants(val byDevice: Map<String, Set<GrantFeature>> = emptyMa
 
     /** The `permits` object of `transport_start` / `transport_permits`: all five features, empty = nobody. */
     fun permitsObject(): JSONObject = JSONObject().also { o ->
-        for (f in GrantFeature.entries) o.put(f.key, JSONArray(devicesFor(f).sorted().take(MAX_PER_FEATURE)))
+        for (f in GrantFeature.entries) {
+            // Editing needs reading, whatever a stored or migrated list says (set() only enforces it when reading is withdrawn).
+            val devices = if (f == GrantFeature.CalendarEdit) devicesFor(f) intersect devicesFor(GrantFeature.Calendar) else devicesFor(f)
+            o.put(f.key, JSONArray(devices.sorted().take(MAX_PER_FEATURE)))
+        }
     }
 
     fun permitsRequest(): String =
@@ -102,6 +107,7 @@ object ComputerGrantsRuntime {
     private const val FILE = "geekbridge_grants"
 
     @Volatile private var prefs: SharedPreferences? = null
+    @Volatile private var blob: BackedBlob? = null
     private val core: CoreClient by lazy { CoreClient.native() }
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-grants").apply { isDaemon = true } }
 
@@ -112,7 +118,8 @@ object ComputerGrantsRuntime {
         if (prefs != null) return
         val p = ctx.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         prefs = p
-        GrantsHolder.current = ComputerGrants.fromJson(p.getString("grants", null))
+        blob = BackedBlob(StateMigrations.kv(p), "grants", BackedBlob::jsonObject)
+        GrantsHolder.current = ComputerGrants.fromJson(blob?.read()?.ifEmpty { null })
     }
 
     @Synchronized
@@ -120,7 +127,7 @@ object ComputerGrantsRuntime {
         val g = change(GrantsHolder.current)
         if (g == GrantsHolder.current) return
         GrantsHolder.current = g
-        prefs?.edit()?.putString("grants", g.toJson())?.apply()
+        blob?.write(g.toJson())
         worker.execute { core.transportAction(g.permitsRequest()) }
     }
 

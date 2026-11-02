@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Black-box tests of the passive discovery pipeline: UDP identity datagram -> bounded cache ->
 //! loopback HTTP/1.0 snapshot API -> `bridge_core::fetch_snapshot`.
 //!
@@ -5,7 +6,7 @@
 //! paired device, and nothing asserts that pairing or any phone feature exists.
 //!
 //! Tests named `*_known_gap_*` are `#[ignore]`d: they state the behaviour we *want* and currently
-//! fail. They are tracked in `docs/architecture.md`; un-ignore them when fixed.
+//! fail. Un-ignore them when fixed.
 //! Run them with `cargo test -p bridge-service --test discovery_api -- --ignored`.
 use bridge_core::{ConnectionState, Device, MAX_API_BYTES, MAX_DEVICES, Snapshot, fetch_snapshot};
 use bridge_service::{
@@ -883,7 +884,7 @@ async fn flood_with_heavy_devices_after(service: &Service, sender: &UdpSocket, c
 
 #[test]
 fn parser_accepts_identity_variants_the_kde_reference_accepts() {
-    // the KDE Connect sources core/deviceinfo.h: toUdpDiscoveryPacket() sends ONLY
+    // KDE Connect desktop's UDP discovery packet (observed on the wire) carries ONLY
     // deviceId/deviceName/protocolVersion/tcpPort; DeviceType::FromString maps "smartphone" to phone
     // and anything unknown to Unknown rather than rejecting the packet; filterName() truncates.
     let src: IpAddr = "192.168.1.8".parse().unwrap();
@@ -913,7 +914,7 @@ fn parser_accepts_identity_variants_the_kde_reference_accepts() {
 
 #[test]
 fn parser_accepts_what_current_android_actually_broadcasts() {
-    // Shape taken from the KDE Connect sources DeviceInfo.toIdentityPacket() + LanLinkProvider
+    // Shape of the identity packet stock Android KDE Connect broadcasts, as captured
     // (tcpPort added, LF terminated, numeric ms `id`, unknown extra body keys must be tolerated).
     let mut value = identity_json("_a1b2c3d4_e5f6_4789_abcd_ef0123456789", "Pixel 8 Pro");
     value["body"]["someFutureField"] = serde_json::json!({"nested": [1, 2, 3]});

@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Inner half of interop-kdeconnect.sh: runs inside the private namespace + D-Bus session.
 set -u
 CLI=$KC_ROOT/usr/bin/kdeconnect-cli

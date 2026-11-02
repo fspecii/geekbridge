@@ -32,15 +32,15 @@ makepkg also emitted `geekbridge-debug-0.1.0-1-x86_64.pkg.tar.zst` (18 KB, debug
 * `/usr/share/applications/dev.geekbridge.{GeekBridge,Calls,Messages,Agenda,Contacts,Clipboard,Share,PasteFromPhone}.desktop`.
 * Icons for the same 8 names in `hicolor/{scalable (svg),48x48,128x128,256x256}/apps`: 32 files.
 * `/usr/share/doc/geekbridge/{README.md,THIRD_PARTY_NOTICES.md,CHANGELOG.md}` and
-  `/usr/share/licenses/geekbridge/LICENSE-PLACEHOLDER.txt`.
+  `/usr/share/licenses/geekbridge/{LICENSE,THIRD_PARTY_NOTICES.md}`.
 * `.INSTALL`: refreshes icon/desktop caches and prints first-run hints. It enables nothing, touches no home directory.
 
 Differences from the `.deb`: no `/etc/xdg/autostart` entry and no `geekbridge-service-launch` (autostart is the
 user's choice: `geekbridge-ctl autostart enable` or `systemctl --user enable --now geekbridge-service.service`);
-adds CHANGELOG, THIRD_PARTY_NOTICES and the licence placeholder.
+adds CHANGELOG and THIRD_PARTY_NOTICES (the `.deb` carries `copyright` in DEP-5 format and the full GPL text).
 
-**Licence:** the project has none yet ([licence-decision.md](licence-decision.md)); the PKGBUILD says
-`license=('custom')` and ships a note saying so. Replace both when the owner decides.
+**Licence:** GPL-3.0-or-later ([licence-decision.md](licence-decision.md)); the PKGBUILD says
+`license=('GPL-3.0-or-later')` and installs `LICENSE`.
 
 ### Dependencies
 

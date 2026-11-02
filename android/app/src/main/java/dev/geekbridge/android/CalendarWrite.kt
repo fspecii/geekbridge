@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import org.json.JSONArray
@@ -98,6 +99,39 @@ object CalendarWriteProtocol {
             if (o.eventId != null) it.put("eventId", o.eventId)
             if (duplicate) it.put("duplicate", true)
         }
+}
+
+/** A reminder row of an event as the provider holds it. */
+data class ExistingReminder(val id: Long, val minutes: Int, val alert: Boolean)
+
+/**
+ * What to change so the event's reminder equals [wanted]. The editor owns one reminder (the first alert);
+ * further reminders (other methods, or more than the five that are shown) are never deleted. The first
+ * alert is changed in place, so there is no moment without a reminder.
+ */
+data class ReminderPlan(
+    val updateId: Long? = null,
+    val updateMinutes: Int? = null,
+    val insert: Int? = null,
+    val deleteId: Long? = null,
+) {
+    fun isEmpty() = this == ReminderPlan()
+
+    /** Whether the event still has any reminder once the plan is applied. */
+    fun hasAlarmAfter(existing: List<ExistingReminder>, wanted: Int?): Boolean =
+        wanted != null || existing.any { it.id != deleteId }
+
+    companion object {
+        fun of(existing: List<ExistingReminder>, wanted: Int?): ReminderPlan {
+            val first = existing.filter { it.alert }.minByOrNull { it.id }
+            return when {
+                first == null -> if (wanted != null) ReminderPlan(insert = wanted) else ReminderPlan()
+                wanted == null -> ReminderPlan(deleteId = first.id)
+                first.minutes == wanted -> ReminderPlan()
+                else -> ReminderPlan(updateId = first.id, updateMinutes = wanted)
+            }
+        }
+    }
 }
 
 /** What the provider says about one calendar / event; the writer decides from this, never from the packet. */

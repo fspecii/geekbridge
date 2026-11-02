@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.Manifest
@@ -110,6 +111,7 @@ class MainActivity : Activity() {
 
         buildHeader(root)
         buildStatusCard(root)
+        buildAboutCard(root)
         link = LinkSection(
             this, ui,
             // The native core is first touched on the transport worker thread, never on the main thread.
@@ -246,6 +248,21 @@ class MainActivity : Activity() {
                 Tone.Muted,
             ),
             LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP),
+        )
+    }
+
+    private fun buildAboutCard(root: LinearLayout) {
+        val card = ui.card(root, getString(R.string.about_licence_title))
+        ui.row(card, 0, "Licence", getString(R.string.about_licence_spdx), Tone.Normal)
+        ui.body(card, getString(R.string.about_licence_summary), Tone.Muted)
+        ui.body(card, getString(R.string.about_thirdparty), Tone.Muted)
+        val open = { url: Int ->
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(url)))) }
+        }
+        ui.buttonRow(
+            card,
+            getString(R.string.about_source_button) to { open(R.string.about_source_url); Unit },
+            getString(R.string.about_licence_button) to { open(R.string.about_licence_url); Unit },
         )
     }
 

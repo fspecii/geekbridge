@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The effortless-pairing parts of the daemon: QR tokens, the "Test connection" check, and the LAN
 //! announcement that lets phones list this computer by name. A child module of `daemon`, so it can
 //! use the daemon's private state without widening it.
@@ -251,8 +252,9 @@ impl Daemon {
         if socket.set_broadcast(true).is_err() {
             return;
         }
-        let line = self.announcement(listener.port());
-        loop {
+        let port = listener.port();
+        let socket = &socket;
+        self.announce_every(port, ANNOUNCE_EVERY, |line| async move {
             let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, discovery_port))];
             for ip in lan_addresses() {
                 if let IpAddr::V4(v4) = ip {
@@ -266,7 +268,20 @@ impl Daemon {
             for target in targets {
                 let _ = socket.send_to(&line, target).await;
             }
-            tokio::time::sleep(ANNOUNCE_EVERY).await;
+        })
+        .await
+    }
+
+    /// Hand `send` a fresh announcement every `every`, for ever. Built each time, so a rename
+    /// (`SetDeviceName`) shows up in the next announcement and not only after a restart.
+    pub async fn announce_every<F, Fut>(&self, tcp_port: u16, every: Duration, mut send: F)
+    where
+        F: FnMut(Vec<u8>) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        loop {
+            send(self.announcement(tcp_port)).await;
+            tokio::time::sleep(every).await;
         }
     }
 }

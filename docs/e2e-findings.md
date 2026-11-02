@@ -244,6 +244,8 @@ After pairing and an app restart, the Home "Clipboard sync" switch showed "On. Y
 desktop's pushes were ignored and `paste-from-phone` answered "Clipboard sync is off in the phone app." Toggling the
 switch Off and On again re-armed it. Repro: pair, force-stop the app, reopen Home, enable Clipboard sync, push text from
 the desktop. The script always cycles the switch.
+Fixed 2026-11-02 (soak, `docs/soak-report.md` finding 2): the native core starts with clipboard sync off and nothing re-sent the saved
+setting after the process was killed; `ClipboardRuntime` now pushes it once whenever its waiter starts.
 
 ### E2E-7 (fixed in the harness) Phone -> desktop payload port unreachable through the emulator NAT
 The phone listens on the first free port of 1739-1764 and the desktop dials `127.0.0.1:<port>`; no redirect existed.
@@ -433,6 +435,38 @@ plain-http host), `crates/bridge-service/src/lib.rs`.
   load reached 50+, uiautomator calls timed out and my emulator was killed three times; the script therefore polls for
   expected text rather than sleeping, and `adbui.py` honours `ADBUI_TIMEOUT`.
 
+## Updater with real release artifacts (2026-11-02)
+Full write-up, commands and the list of checks: [updater-e2e.md](updater-e2e.md). Two real versions of every desktop
+package (installer tarball, `.deb`, Arch `.pkg.tar.zst`) and a debug-signed APK pair (versionCode 10099 / 10199, same key)
+were built from scratch copies of this tree (0.1.1 bumped with `scripts/release.sh --skip-tests` in the copy), published
+into a replica of GitHub's REST API / download hosts (`scripts/e2e/github_replica.py`, payload checked against the
+`github/rest-api-description` schema by `scripts/e2e/validate_release_payload.py`), and the installed v0.1.0 service and the
+v0.1.0 Android app were driven through check, offer, download, verification and install.
+
+| Run | Result |
+| --- | --- |
+| `scripts/e2e/updater-real.sh all` (replica fidelity + installed v0.1.0 desktop service: auto check, 304, prerelease handling, offer, 5 download faults, verified download, manual install, state-dir survival, 404/403/429/502 states) | all PASS in the final run |
+| `scripts/e2e/update-install.sh android` with `E2E_UPD_REPLICA` (real 4.7 MB APK pair; signer pre-check; "No public release found"; rate limit) | see the table in updater-e2e.md |
+
+### E2E-R1 The Linux installer tarball outranked the documented update archive -- Medium (fixed)
+With the real release asset set, `select_asset` tied `geekbridge-linux-x86_64.tar.gz` and
+`geekbridge-0.1.1-linux-x86_64-installer.tar.gz` on extension and broke the tie alphabetically, so the offer pointed at
+the installer tarball, contradicting `package-linux.sh`'s "deliberately differs" note and the documented naming. Mock
+tests (one asset per platform) could not see it. Now the shortest (canonical) name wins; regression test
+`real_release_asset_set_picks_the_canonical_archive`. See updater-e2e.md for the open product question.
+
+### E2E-R2 (fixed) `release.sh` left `packaging/arch/PKGBUILD` at the old version -- Low
+`build-local.sh` then refused ("pkgver != Cargo.toml version"). `release.sh` now bumps `pkgver` for stable versions.
+
+### E2E-R3 (fixed) `ctl update status` said "unknown (no check has completed)" after a check that found no stable release -- Low
+
+### Notes
+* `0.1.1-test` is a semver prerelease: it can never be an update target (not offered by the app, not returned by GitHub's
+  `/releases/latest`); the e2e uses 0.1.1 for the offer and `v0.1.1-test` as the negative case.
+* The Android notes card shows release-body markdown literally.
+* The Android card ignores a tap on **Download and verify** while a check is running (it still shows the previous
+  result's text then); the script retries.
+
 ## Release workflow dry run (`scripts/e2e/release-dryrun.sh`)
 `act` and `actionlint` are not installed. The script extracts each shell step from `.github/workflows/release.yml` with
 PyYAML and runs it in a scratch directory: YAML structure and every action pinned to a commit SHA; the version gate
@@ -531,3 +565,20 @@ scripts/e2e/release-dryrun.sh                 # release.yml shell steps in a scr
 
 Needs the `.tools` toolchain (`scripts/bootstrap-android.sh`), AVD `gb36`, `xclip`, `Xvfb`, `rsync`, `python3`.
 File transfers to the desktop write to the real `~/Downloads/GeekBridge`; the script removes what it creates.
+
+## Android state survives an APK upgrade (2026-11-02)
+
+`E2E_UPD_REBUILD=1 scripts/e2e/update-install.sh android` (emulator gb36u, API 36; v0.1.0 and v0.2.0 both built from the
+current working tree, so both contain `StateMigrations`). Before the upgrade the script sets: clipboard sync on, the device
+renamed to "Upgrade Test Phone", a paired computer (a real v1 `files/kde/trusted_peers.json` with a throwaway certificate, plus
+its `geekbridge_state` / `geekbridge_grants` contacts opt-in / `share_policy` auto-accept entries), and pins the Quick actions
+widget. It then deletes `gb_state.xml` so the data looks like it came from a build that predates versioning.
+
+Result: 26 of 26 checks PASS (one SKIP by design). After the upgrade through the real package installer: clipboard sync still on,
+name kept, pairing, the per-computer opt-in and the auto-accept kept (the app re-derives "paired" from the trust file and would
+have dropped the opt-ins otherwise), the widget still registered, `gb_state.xml` now holds `schema_version=1`, and the file
+hashes of `files/` and the other `shared_prefs/` were unchanged before the first start of the new build.
+
+Harness lessons: two copies of the script on one emulator interleave their taps (a toggled clipboard switch, a reinstall that
+removed the widget) and produce false failures; and `adb shell run-as pkg sh -c "a && b"` runs `b` as the shell user, so chains
+need the single-quote form `adb shell "run-as pkg sh -c 'a && b'"`.

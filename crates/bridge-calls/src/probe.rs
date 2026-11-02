@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only inventory: which call backends, controllers, phones and calls exist right now, and
 //! what each declares. Produces structured evidence; never calls a control method.
 //!

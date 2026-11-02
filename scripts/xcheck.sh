@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Type-check the whole workspace (all targets, tests included) for the Windows and macOS targets
 # from a Linux machine, so Linux-only code that slipped into shared crates is caught without a
 # Windows or Mac at hand.

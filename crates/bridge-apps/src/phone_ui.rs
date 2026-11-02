@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Small pieces shared by the Agenda and Messages windows for phone data: what to tell the user
 //! when nothing is shown, and the explicit "Allow ... from <phone>" buttons. Consent is never
 //! switched on by anything but a click on one of these (or `geekbridge-ctl consent`).

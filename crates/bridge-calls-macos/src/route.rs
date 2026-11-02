@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Explicit, reversible call-audio routing through CoreAudio default devices.
 //!
 //! macOS decides whether HFP voice appears as a CoreAudio device at all; this crate cannot

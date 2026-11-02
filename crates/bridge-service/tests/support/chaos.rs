@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Helpers shared by the chaos tests: a stand-in phone that sits behind a fault proxy and survives
 //! failed handshakes, and the short / soak switch.
 #![allow(dead_code)]

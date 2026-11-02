@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard on the phone transport. Rust owns the wire; Kotlin owns the Android clipboard and every
 //! decision about *whether* to hand something over (unlocked? fresh? sensitive? enabled?).
 //!

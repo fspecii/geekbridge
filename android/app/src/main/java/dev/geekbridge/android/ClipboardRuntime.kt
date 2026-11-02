@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.annotation.SuppressLint
@@ -92,13 +93,7 @@ object ClipboardRuntime {
             e.reset()
             return
         }
-        // The native core starts with clipboard sync off: after the process was killed the saved "On" must be pushed again,
-        // or the UI reads On while the core ignores the computer (soak finding, E2E-6).
-        if (settings.enabled) {
-            val s = settings
-            async { core.clipboardAction(ClipboardProtocol.configRequest(s.enabled, s.maxImageBytes)) }
-            startWaiter(e)
-        }
+        if (settings.enabled) startWaiter(e)
     }
 
     /** A setting was switched on while the link is already up. */
@@ -110,6 +105,10 @@ object ClipboardRuntime {
 
     private fun startWaiter(e: ClipboardEngine) {
         if (!waiter.claim()) return
+        // The native core starts with clipboard sync off: after the process was killed the saved "On" must be pushed again,
+        // or the UI reads On while the core ignores the computer (soak finding, E2E-6). Once per waiter, not per refresh.
+        val s = settings
+        async { core.clipboardAction(ClipboardProtocol.configRequest(s.enabled, s.maxImageBytes)) }
         // Whatever ends the loop (even an exception), the claim is given back so the next link change can restart it.
         Thread({ try { waitLoop(e) } finally { leave() } }, "geekbridge-clip-wait").apply { isDaemon = true; start() }
     }

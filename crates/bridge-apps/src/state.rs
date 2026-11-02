@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Honest view of what the discovery service reported. Discovery is never pairing.
 use crate::identity::{capability_prefix, feature_label};
 use bridge_core::{AppKind, Snapshot};

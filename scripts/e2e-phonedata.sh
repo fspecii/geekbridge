@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Real end-to-end for contacts, calendar and SMS: Android emulator app <-> desktop geekbridge-service
 # <-> the real Agenda and Messages windows (under a private Xvfb), with data injected into the
 # emulator's own providers.

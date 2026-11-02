@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Device certificates: parsing peer certificates, generating our own, and
 //! persisting the private identity.
 
@@ -161,6 +162,12 @@ impl DeviceCredentials {
     /// Fails if the key does not belong to the certificate, the common name is
     /// not a valid device id, or the certificate is outside its validity.
     pub fn from_pem(pem: &[u8], now_unix: i64) -> Result<Self> {
+        Self::parse_pem(pem, Some(now_unix))
+    }
+
+    /// [`Self::from_pem`]; with `None` the validity period is not checked (to tell a damaged file
+    /// from a good key whose certificate the clock currently calls expired).
+    fn parse_pem(pem: &[u8], now_unix: Option<i64>) -> Result<Self> {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
             .collect::<std::result::Result<_, _>>()
             .map_err(|_| {
@@ -174,11 +181,13 @@ impl DeviceCredentials {
         })?;
         let info = CertInfo::parse(cert.as_ref())?;
         let device_id = DeviceId::parse(info.common_name())?;
-        info.check_validity(now_unix).map_err(|e| {
-            KdeError::Certificate(format!(
-                "own certificate unusable ({e}); it is never rotated silently"
-            ))
-        })?;
+        if let Some(now_unix) = now_unix {
+            info.check_validity(now_unix).map_err(|e| {
+                KdeError::Certificate(format!(
+                    "own certificate unusable ({e}); it is never rotated silently"
+                ))
+            })?;
+        }
         let signing = provider()
             .key_provider
             .load_private_key(key)
@@ -195,20 +204,107 @@ impl DeviceCredentials {
     }
 
     /// Load `<dir>/identity.pem`, or create it atomically with mode 0600 if absent.
-    /// Never regenerates an existing identity: an unusable one is an error.
+    ///
+    /// A good identity is never regenerated: one whose certificate the clock calls expired is an
+    /// error, not a reason to rotate. A one-generation copy lives in `identity.pem.bak` (owner-only
+    /// like the original). If the file is missing or its *content* is damaged (empty, truncated,
+    /// not a certificate and key) the backup is restored; only when there is no usable backup is a
+    /// new identity generated (the damaged file is kept as `identity.pem.corrupt`, and a diagnostics
+    /// line says that every device must be paired again). An unreadable file is an error.
     pub fn load_or_create(dir: &Path) -> Result<(Self, bool)> {
         fsutil::ensure_private_dir(dir)?;
         // Serialize the check/create sequence across daemon, CLI and mobile startup.
         // Atomic rename alone cannot stop two callers from returning different identities.
         let _lock = fsutil::lock_exclusive(&dir.join("identity.pem.lock"))?;
         let path = identity_path(dir);
-        if let Some(bytes) = fsutil::read_private_file(&path)? {
-            return Ok((Self::from_pem(&bytes, unix_now())?, false));
+        let bak = bridge_core::statefile::backup_path(&path);
+        let now = unix_now();
+        let mut damaged = None;
+        match fsutil::read_private_file(&path) {
+            Ok(Some(bytes)) => match Self::from_pem(&bytes, now) {
+                Ok(c) => {
+                    // Keep the rollback copy current (installs from before it existed get one).
+                    if fsutil::read_private_file(&bak).ok().flatten().as_deref()
+                        != Some(bytes.as_slice())
+                    {
+                        let _ = fsutil::atomic_write_private(&bak, &bytes);
+                    }
+                    return Ok((c, false));
+                }
+                // Good key, wrong clock (or similar): never rotate.
+                Err(e) if Self::parse_pem(&bytes, None).is_ok() => return Err(e),
+                Err(e) => damaged = Some((Some(bytes), e.to_string())),
+            },
+            Ok(None) => {}
+            // Unreadable is not the same as gone: the key may be fine, so do not replace it.
+            Err(e @ (KdeError::Io(_) | KdeError::InsecurePermissions { .. })) => {
+                if let Ok(Some(b)) = fsutil::read_private_file(&bak)
+                    && let Ok(c) = Self::from_pem(&b, now)
+                {
+                    bridge_core::statefile::note(format!(
+                        "identity.pem is unreadable ({e}); using identity.pem.bak for this run"
+                    ));
+                    return Ok((c, false));
+                }
+                return Err(e);
+            }
+            Err(e) => return Err(e),
+        }
+        if let Ok(Some(b)) = fsutil::read_private_file(&bak)
+            && let Ok(c) = Self::from_pem(&b, now)
+        {
+            if let Some((Some(bad), _)) = &damaged {
+                let _ =
+                    fsutil::atomic_write_private(&bridge_core::statefile::corrupt_path(&path), bad);
+            }
+            fsutil::atomic_write_private(&path, &b)?;
+            bridge_core::statefile::note(match &damaged {
+                Some((_, why)) => format!(
+                    "identity.pem was damaged ({why}); restored from identity.pem.bak, pairings are kept"
+                ),
+                None => {
+                    "identity.pem was missing; restored from identity.pem.bak, pairings are kept"
+                        .into()
+                }
+            });
+            return Ok((c, false));
+        }
+        if let Some((bytes, why)) = damaged {
+            let blank = bytes
+                .as_ref()
+                .is_none_or(|b| b.iter().all(u8::is_ascii_whitespace));
+            if !blank && let Some(b) = &bytes {
+                let _ =
+                    fsutil::atomic_write_private(&bridge_core::statefile::corrupt_path(&path), b);
+            }
+            bridge_core::statefile::note(format!(
+                "identity.pem was damaged ({why}) and no backup exists; generated a new identity. \
+                 Every device must be paired again{}",
+                if blank {
+                    ""
+                } else {
+                    " (the damaged file is kept as identity.pem.corrupt)"
+                }
+            ));
         }
         let id = random_device_id()?;
         let generated = generate_pem(&id, time::OffsetDateTime::now_utc())?;
         fsutil::atomic_write_private(&path, generated.pem.as_bytes())?;
+        let _ = fsutil::atomic_write_private(&bak, generated.pem.as_bytes());
         Ok((Self::from_pem(generated.pem.as_bytes(), unix_now())?, true))
+    }
+
+    /// Test fixtures only: PEM (certificate + private key) for `id` that stays valid for
+    /// `valid_years`, so golden files do not expire under the test suite.
+    #[doc(hidden)]
+    pub fn fixture_pem(id: &DeviceId, valid_years: i64) -> Result<String> {
+        let now = time::OffsetDateTime::now_utc();
+        let g = generate_pem_between(
+            id,
+            now - time::Duration::days(1),
+            now + time::Duration::days(365 * valid_years),
+        )?;
+        Ok(g.pem.as_str().to_owned())
     }
 
     /// Test/dev helper: generate with a chosen device id.
@@ -243,6 +339,19 @@ fn random_device_id() -> Result<DeviceId> {
 }
 
 fn generate_pem(id: &DeviceId, now: time::OffsetDateTime) -> Result<GeneratedIdentity> {
+    // Same validity convention as stock peers: a year of backdating, ten years forward.
+    generate_pem_between(
+        id,
+        now - time::Duration::days(365),
+        now + time::Duration::days(3650),
+    )
+}
+
+fn generate_pem_between(
+    id: &DeviceId,
+    not_before: time::OffsetDateTime,
+    not_after: time::OffsetDateTime,
+) -> Result<GeneratedIdentity> {
     use rcgen::{
         CertificateParams, DistinguishedName, DnType, KeyPair, PKCS_ECDSA_P256_SHA256, SerialNumber,
     };
@@ -254,9 +363,8 @@ fn generate_pem(id: &DeviceId, now: time::OffsetDateTime) -> Result<GeneratedIde
     dn.push(DnType::OrganizationalUnitName, "GeekBridge");
     dn.push(DnType::OrganizationName, "GeekBridge");
     params.distinguished_name = dn;
-    // Same validity convention as stock peers: a year of backdating, ten years forward.
-    params.not_before = now - time::Duration::days(365);
-    params.not_after = now + time::Duration::days(3650);
+    params.not_before = not_before;
+    params.not_after = not_after;
     let mut serial = [0u8; 16];
     random_bytes(&mut serial)?;
     serial[0] &= 0x7f;
@@ -323,6 +431,73 @@ mod tests {
             DeviceCredentials::from_pem(fresh.pem.as_bytes(), unix_now() - 3 * 365 * 86400)
                 .is_err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identity_survives_damage_through_its_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("state");
+        let (first, created) = DeviceCredentials::load_or_create(&dir).unwrap();
+        assert!(created);
+        let path = identity_path(&dir);
+        let bak = bridge_core::statefile::backup_path(&path);
+        assert_eq!(std::fs::read(&path).unwrap(), std::fs::read(&bak).unwrap());
+        let good = std::fs::read(&path).unwrap();
+        for bad in [&b""[..], b"-----BEGIN CERT", b"garbage\n"] {
+            std::fs::write(&path, bad).unwrap();
+            let (again, created) = DeviceCredentials::load_or_create(&dir).unwrap();
+            assert!(!created);
+            assert_eq!(again.cert().fingerprint(), first.cert().fingerprint());
+            assert_eq!(std::fs::read(&path).unwrap(), good, "primary repaired");
+        }
+        std::fs::remove_file(&path).unwrap();
+        let (again, _) = DeviceCredentials::load_or_create(&dir).unwrap();
+        assert_eq!(again.cert().fingerprint(), first.cert().fingerprint());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn damaged_identity_without_backup_is_replaced_loudly_and_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("state");
+        let (first, _) = DeviceCredentials::load_or_create(&dir).unwrap();
+        let path = identity_path(&dir);
+        std::fs::remove_file(bridge_core::statefile::backup_path(&path)).unwrap();
+        std::fs::write(&path, b"half a key").unwrap();
+        let (second, created) = DeviceCredentials::load_or_create(&dir).unwrap();
+        assert!(created);
+        assert_ne!(second.cert().fingerprint(), first.cert().fingerprint());
+        assert_eq!(
+            std::fs::read(bridge_core::statefile::corrupt_path(&path)).unwrap(),
+            b"half a key"
+        );
+        assert!(
+            bridge_core::statefile::notes()
+                .iter()
+                .any(|n| n.contains("paired again"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_expired_but_intact_identity_is_never_rotated() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("state");
+        fsutil::ensure_private_dir(&dir).unwrap();
+        let id = DeviceId::parse(&"d".repeat(32)).unwrap();
+        let old = generate_pem(
+            &id,
+            time::OffsetDateTime::now_utc() - time::Duration::days(4000),
+        )
+        .unwrap();
+        let path = identity_path(&dir);
+        fsutil::atomic_write_private(&path, old.pem.as_bytes()).unwrap();
+        assert!(matches!(
+            DeviceCredentials::load_or_create(&dir),
+            Err(KdeError::Certificate(_))
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), old.pem.as_bytes());
     }
 
     #[cfg(unix)]

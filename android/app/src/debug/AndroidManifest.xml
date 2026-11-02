@@ -2,8 +2,16 @@
 <!-- Debug builds only: lets the update check talk plain http to a local mock release server (see
      UpdateChecker.forBuild and scripts/e2e-android.sh). Release builds keep Android's default of no cleartext. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Debug only: the scale seeder (ScaleSeedReceiver) writes made-up contacts and events into the emulator's providers. -->
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
     <application android:networkSecurityConfig="@xml/debug_network_security">
         <!-- Debug only: design gallery for screenshots (see DesignGalleryActivity). -->
         <activity android:name=".DesignGalleryActivity" android:exported="true" android:theme="@style/Theme.GeekBridge" />
+        <!-- Debug only: `adb shell am start -n dev.geekbridge.android/.DebugPinWidgetActivity -e w connection|quick|agenda`
+             asks the launcher to pin a widget (widget screenshots). Not in release builds. -->
+        <activity android:name=".DebugPinWidgetActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Debug only: seeds made-up contacts and events for scripts/scale-e2e.sh (see ScaleSeedReceiver for the adb command). -->
+        <receiver android:name=".ScaleSeedReceiver" android:exported="true" />
     </application>
 </manifest>

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Mock GitHub release server for the Android update-check e2e.
 
 Serves GET /repos/fspecii/geekbridge/releases/latest (a newer release), /SHA256SUMS and the APK asset

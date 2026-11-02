@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Tiny uiautomator driver for the e2e script (stdlib only).
 
   adbui.py dump                      print visible texts / descriptions / ids, one per line

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Install a PRIVATE Rust toolchain with the Apple std targets for type-checking bridge-calls-macos
 # on a non-Mac host. Everything lives under <repo>/.tools/macos-calls-check/ (git-ignored):
 # its own RUSTUP_HOME and CARGO_HOME, so the shared Android rustup under .tools/rustup and the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Argument handling shared by the four executables. Each binary parses its own arguments.
 use crate::{identity::binary_name, state::DiscoveryModel};
 use bridge_core::{AppKind, DEFAULT_API_PORT};

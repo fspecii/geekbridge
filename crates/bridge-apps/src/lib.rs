@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared implementation for the four separate GeekBridge app executables.
 pub mod a11y;
 #[cfg(all(test, feature = "accesskit"))]

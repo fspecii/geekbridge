@@ -199,5 +199,32 @@
             android:authorities="${applicationId}.clipimg"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!-- Home-screen widgets (RemoteViews, no AndroidX). Not exported: the system delivers widget updates and
+             system time broadcasts; every tap is an immutable PendingIntent to one of this app's own components. -->
+        <receiver android:name=".ConnectionWidget" android:exported="false" android:label="@string/widget_connection_label">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_connection_info" />
+        </receiver>
+        <receiver android:name=".QuickActionsWidget" android:exported="false" android:label="@string/widget_quick_label">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_quick_info" />
+        </receiver>
+        <receiver android:name=".AgendaWidget" android:exported="false" android:label="@string/widget_agenda_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.DATE_CHANGED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_agenda_info" />
+        </receiver>
+        <!-- "Send file" from the Quick actions widget: file picker, then the normal share flow. -->
+        <activity
+            android:name=".WidgetSendFileActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
     </application>
 </manifest>

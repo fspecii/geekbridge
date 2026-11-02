@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Optional LAN discovery: KDE Connect identity datagrams over UDP.
 //!
 //! Discovery only ever *lists* what was heard; it never connects, pairs or trusts. Whoever heard

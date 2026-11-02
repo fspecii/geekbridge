@@ -1,7 +1,9 @@
 name: Release
 
-# Runs when a version tag is pushed (git tag vX.Y.Z && git push origin vX.Y.Z). The tag must equal
-# [workspace.package] version in Cargo.toml (the single version source; see docs/builds.md).
+# OPTIONAL. Official releases are built locally with scripts/release-local.sh and uploaded with
+# `gh release create` (docs/builds.md), so nothing here depends on GitHub Actions minutes. This workflow only
+# runs when started by hand (Actions tab > Run workflow, choosing the tag as the ref); pushing a tag does not
+# start it. The tag must equal [workspace.package] version in Cargo.toml (the single version source).
 # Artifact names are what the in-app update checkers look for:
 #   geekbridge-<linux|windows|macos>-<x86_64|aarch64>.<tar.gz|zip>, geekbridge-android.apk, SHA256SUMS
 #
@@ -11,8 +13,7 @@ name: Release
 # apps must then be built with the same repo (GEEKBRIDGE_RELEASE_REPO / -Pgb.releaseRepo; docs/builds.md).
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,6 +22,7 @@ jobs:
   version:
     name: Check tag against Cargo.toml
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
@@ -83,7 +85,7 @@ jobs:
           for bin in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
             cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
           done
-          cp README.md "$out/" || true
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$out/"
           name="geekbridge-${{ matrix.name }}.${{ matrix.archive }}"
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
             if [[ "${{ runner.os }}" == "Windows" ]]; then
@@ -108,9 +110,13 @@ jobs:
       - name: Installer (Windows Inno Setup)
         if: runner.os == 'Windows'
         shell: bash
+        env:
+          # Git Bash would rewrite the "/D..." switches below into Windows paths.
+          MSYS2_ARG_CONV_EXCL: '*'
         run: |
           set -euo pipefail
-          choco install innosetup -y --no-progress
+          # Pinned: the install path below is Inno Setup 6's.
+          choco install innosetup --version 6.7.1 -y --no-progress
           "C:/Program Files (x86)/Inno Setup 6/ISCC.exe" \
             "/DAppVersion=${{ needs.version.outputs.version }}" \
             "/DBinDir=$(cygpath -w "$PWD/target/${{ matrix.target }}/release")" \
@@ -152,12 +158,6 @@ jobs:
         with:
           toolchain: stable
           targets: aarch64-linux-android,x86_64-linux-android
-      - name: Install Gradle 8.13
-        run: |
-          curl -fsSL -o gradle.zip https://services.gradle.org/distributions/gradle-8.13-bin.zip
-          echo "20f1b1176237254a6fc204d8434196fa11a4cfb387567519c61556e8710aed78  gradle.zip" | sha256sum -c -
-          unzip -q gradle.zip -d "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/gradle-8.13/bin" >> "$GITHUB_PATH"
       - name: Install SDK packages and NDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
@@ -185,7 +185,8 @@ jobs:
           set -euo pipefail
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cd android
-          gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+          ../scripts/version-code.sh --self-test
+          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
       - name: Sign APK (release keystore if the secrets exist, else debug-signed prerelease)
         id: sign
         shell: bash
@@ -225,6 +226,9 @@ jobs:
             echo "::warning::No release keystore secrets: the APK is DEBUG-signed. Phones cannot update it over an APK signed with a different key."
           fi
           verify="$("$bt/apksigner" verify --verbose --print-certs ../dist/geekbridge-android.apk)"
+          want_code="$(../scripts/version-code.sh --code)"
+          got_code="$("$bt/aapt2" dump badging ../dist/geekbridge-android.apk | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p")"
+          [[ "$got_code" == "$want_code" ]] || { echo "::error::signed APK versionCode $got_code differs from scripts/version-code.sh ($want_code)"; exit 1; }
           echo "$verify"
           signer="$(echo "$verify" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -n1 | tr 'A-F' 'a-f')"
           [[ "$signer" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::could not read the signer certificate from apksigner"; exit 1; }
@@ -256,6 +260,7 @@ jobs:
     name: Publish GitHub Release
     needs: [version, desktop, android]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     steps:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A scripted phone that answers the contacts, calendar and SMS requests of the desktop service
 //! (`docs/phone-data-link.md`) the way the GeekBridge Android app does. Pure: packets in, packets
 //! out, no sockets, so tests and the `geekbridge-phone-data-sim` binary can drive it over any link.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 /** A set of ids that forgets the oldest once it holds more than [max]; for "have I seen this" bookkeeping that must not grow for the life of the process. */

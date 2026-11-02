@@ -1,0 +1,35 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: GeekBridge
+Upstream-Contact: https://github.com/fspecii/geekbridge/issues
+Source: https://github.com/fspecii/geekbridge
+Comment: The binaries statically link third-party Rust crates, all under licences that
+ can be combined with GPL-3+ (MIT, Apache-2.0, BSD, ISC, Zlib, Unicode-3.0 and similar).
+ They are listed with their licence texts in THIRD_PARTY_NOTICES.md.
+
+Files: *
+Copyright: 2026 fspecii and GeekBridge contributors
+License: GPL-3+
+
+Files: third_party/fonts/NotoSans-Regular-subset.ttf third_party/fonts/NotoEmoji-Regular.ttf
+Copyright: The Noto Project Authors
+License: OFL-1.1
+ Licence text: see THIRD_PARTY_NOTICES.md and third_party/fonts/ in the source.
+
+Files: third_party/fonts/Hack-Regular.ttf third_party/fonts/emoji-icon-font.ttf
+Copyright: 2018 Source Foundry Authors; Bitstream Inc. (Vera); the emoji-icon-font authors
+License: Expat
+ Licence text: see THIRD_PARTY_NOTICES.md and third_party/fonts/ in the source.
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify it under
+ the terms of the GNU General Public License as published by the Free Software
+ Foundation, either version 3 of the License, or (at your option) any later
+ version.
+ .
+ This program is distributed in the hope that it will be useful, but WITHOUT
+ ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in /usr/share/common-licenses/GPL-3, and it is also
+ shipped as /usr/share/doc/geekbridge/LICENSE.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What the four apps share: the window setup, background discovery, and a slim connection
 //! strip at the bottom with expandable details. Everything above the strip belongs to the app.
 use crate::a11y::ScrollBars as _;

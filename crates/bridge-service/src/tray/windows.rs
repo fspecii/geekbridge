@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Windows tray: a notification-area icon through `Shell_NotifyIconW` on its own thread, with a
 //! message-only window as the callback target and a popup menu drawn by `TrackPopupMenu`. The
 //! thread blocks in `GetMessageW`; state changes arrive as a posted message, so nothing polls.
@@ -179,8 +180,16 @@ fn tip(input: &TrayInput) -> [u16; 128] {
     let (title, body) = input.tooltip();
     let text = format!("GeekBridge \u{2013} {title}: {body}");
     let mut out = [0_u16; 128];
-    for (slot, unit) in out.iter_mut().take(127).zip(text.encode_utf16()) {
-        *slot = unit;
+    let mut at = 0;
+    // Whole characters only: a cut must not end in half a surrogate pair.
+    for c in text.chars() {
+        let mut buf = [0_u16; 2];
+        let units = c.encode_utf16(&mut buf);
+        if at + units.len() > 127 {
+            break;
+        }
+        out[at..at + units.len()].copy_from_slice(units);
+        at += units.len();
     }
     out
 }
@@ -213,7 +222,9 @@ fn make_icon(input: &TrayInput) -> HICON {
     // Windows wants BGRA, premultiplied.
     let bgra: Vec<u8> = img
         .rgba
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|p| {
             let a = u32::from(p[3]);
             let m = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;

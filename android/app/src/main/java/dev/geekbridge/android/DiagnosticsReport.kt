@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.Manifest
@@ -27,11 +28,13 @@ object DiagnosticsReport {
             appendLine("GeekBridge Android support report (no names, numbers, addresses or content)")
             appendLine("app: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})")
             appendLine("phone: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLine("licence: GPL-3.0-or-later (source: https://github.com/fspecii/geekbridge)")
             appendLine("vendor skin: $oem")
             appendLine("native core: ${scrub(coreState)}")
             appendLine("paired computers: ${AppState.pairedCount}")
             appendLine("stay connected: ${AppState.keepConnected}")
             appendLine("setup finished: ${AppState.setupFinished}")
+            appendLine("saved data: ${StateMigrations.diagnostics()?.let(::scrub) ?: "ok"}${BackedBlob.lastNote?.let { " / " + scrub(it) }.orEmpty()}")
             appendLine("battery: $battery")
             appendLine("permissions: " + PERMISSIONS.joinToString(", ") { (label, p) -> "$label=" + if (granted(p)) "granted" else "no" })
             appendLine("last issue: ${lastIssue?.let(::scrub) ?: "none"}")

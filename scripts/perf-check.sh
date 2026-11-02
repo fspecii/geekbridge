@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Measure the desktop service against the perf budget in docs/performance.md; exit 1 when over.
 #
 #   scripts/perf-check.sh [--build] [--bin-dir DIR] [--window SECONDS] [--ui]
@@ -40,7 +41,7 @@ while (($#)); do
         --ui) UI=1 ;;
         --bin-dir) BIN_DIR="$2"; shift ;;
         --window) WINDOW="$2"; shift ;;
-        -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift

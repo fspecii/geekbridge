@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Source to use the PRIVATE macOS-check toolchain (does not touch the Android rustup).
 # Everything lives under the git-ignored .tools/macos-calls-check/.
 _gb_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

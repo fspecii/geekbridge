@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl diagnose`: a support bundle that is safe to paste into a bug report.
 //!
 //! The report carries versions, capability states, counters and the last error *kinds*. It never

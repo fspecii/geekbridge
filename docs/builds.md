@@ -144,7 +144,7 @@ sources change):
 
 What this does **not** establish: at the time of this first build the APK had not been installed anywhere. It has since
 been installed and exercised on an Android 16 emulator (pairing, transfers, SMS, calendar, call answering, self-update;
-see [e2e-findings.md](reports/e2e-findings.md)); no physical phone has been used. Build success alone says nothing about
+see [e2e-findings.md](e2e-findings.md)); no physical phone has been used. Build success alone says nothing about
 phone pairing, calls, or message delivery. The hashes above are of the tree as built and will
 change on rebuild.
 

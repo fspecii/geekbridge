@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Soak test: long reconnect/junk churn with fd and memory growth assertions, plus long fuzz runs.
 #
 #   scripts/soak.sh [--cycles N] [--fuzz-iters N] [--seconds N] [--bin-dir DIR] [--no-chaos] [--chaos-only]
@@ -33,7 +34,7 @@ while (($#)); do
         --bin-dir) BIN_DIR="$2"; shift ;;
         --no-chaos) RUN_CHAOS=0 ;;
         --chaos-only) RUN_SOAK=0 ;;
-        -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Hands freed heap back to the OS. glibc keeps memory it has freed inside the arena, and the GL
 //! driver frees a lot of it right after start-up: with a cold NVIDIA shader cache the first
 //! frames compile shaders in-process (libnvidia-gpucomp) and leave ~40 MB of freed-but-resident

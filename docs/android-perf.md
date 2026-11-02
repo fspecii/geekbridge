@@ -44,6 +44,13 @@ Changes: `android/app/build.gradle.kts` (release: `isMinifyEnabled`, `isShrinkRe
 `QuickActions` loads with `Class.forName`). The release build ran pairing, reconnects, a 5 MB file receive and the
 Home quick actions with R8 on.
 
+Home-screen widgets (2026-11-02, [android-app.md](android-app.md#home-screen-widgets)): three previews (64 KB of PNG), seven
+layout/drawable/xml resources and about 10 KB of dex. The release APK measured 6 313 629 B unsigned afterwards (budget 6.5 MB;
+`classes.dex` 452 656 B, budget 0.5 MB), but that build also contains other people's concurrent native and Kotlin changes
+(the `.so` files are not the sizes in the table above), so the widget share is the figure in this paragraph, not the delta to the
+table. Runtime cost: no timer, no job, no wake lock; at most one inexact alarm and one Calendar `ContentObserver`, both only
+while an Agenda widget is on the home screen; the worker thread exits 10 s after its last update.
+
 ## Runtime (release build, emulator)
 
 * **Cold start:** 765 ms median (7 starts after `force-stop`: 765 778 750 761 814 773 764; one earlier set was 1107

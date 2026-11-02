@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Developer CLI for the Windows calling adapter.
 //!
 //! The default command, `diagnose`, is read-only: it reports contract, package identity, privacy,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Design tokens and widget-like components for the Nothing-inspired look: rounded-square
 //! tiles, dot-matrix titles and numerals, dotted status/progress rows. Everything is painted in
 //! code with the shared dot-matrix renderer; no fonts, images or logos are involved.

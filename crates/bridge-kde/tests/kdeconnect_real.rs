@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Cross-implementation vectors captured from a REAL stock KDE Connect desktop daemon
 //! (kdeconnectd 26.08.2, Arch package `kdeconnect`), by `scripts/interop-kdeconnect.sh`.
 //!

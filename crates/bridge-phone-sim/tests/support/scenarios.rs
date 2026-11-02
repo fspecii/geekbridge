@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Desktop-side end-to-end scenario engine, shared by the `geekbridge-call-e2e` binary and the
 //! integration tests (both `#[path]`-include this file).
 //!
@@ -512,8 +513,8 @@ impl Caps {
         remote_hangup_outbound: true,
         input_retry: None,
     };
-    /// The Android emulator's modem simulator, as measured in
-    /// `docs/architecture.md`.
+    /// The Android emulator's modem simulator, as measured
+    /// (see `docs/emulated-calls.md`).
     pub const EMULATOR: Caps = Caps {
         auto_answers_outbound: true,
         remote_accept_outbound: false,

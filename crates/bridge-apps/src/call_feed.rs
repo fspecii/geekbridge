@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Live call state for the Calls window: a worker thread asks the service for the merged call view
 //! about once a second and runs the user's decisions (answer, decline, hang up, mute). All blocking
 //! I/O stays on the worker; the window only reads the latest result. Phone numbers and names pass

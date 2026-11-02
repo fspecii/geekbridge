@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Headless developer client for the GeekBridge control API.
 //!
 //! Prints the service's JSON answers. It never prints the control token and never approves a
@@ -318,6 +319,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 Err(_) => None,
             },
             query: None,
+            message_limit: 0,
         },
         "messages-refresh" => Request::MessagesRefresh {
             device_id: arg(1, "DEVICE_ID")?,
@@ -758,6 +760,7 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
                     device_id: None,
                     thread_id: None,
                     query: None,
+                    message_limit: 0,
                 },
             )
             && m.devices
@@ -872,6 +875,10 @@ fn describe_update(s: &UpdateStatus) {
         (Some(latest), false) => println!("latest:   v{} - you are up to date", latest.version),
         (None, _) if s.state == UpdateState::NoPublicRelease => {
             println!("latest:   {}", ipc::UPDATE_NO_PUBLIC_RELEASE);
+        }
+        // A check finished but offered nothing (only drafts or prereleases exist): not "unknown".
+        (None, _) if s.last_checked_unix.is_some() => {
+            println!("latest:   no stable release published - you are up to date");
         }
         (None, _) => println!("latest:   unknown (no check has completed)"),
     }

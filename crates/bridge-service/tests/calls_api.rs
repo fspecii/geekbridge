@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end call control over the GeekBridge link: a real `Daemon` and a stand-in phone that is a
 //! real `bridge_kde` endpoint (TLS over loopback) sending `geekbridge.calls.state` and executing
 //! `geekbridge.calls.request`.

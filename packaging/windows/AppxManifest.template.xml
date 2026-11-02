@@ -11,7 +11,7 @@
   It makes NO production claim: the identity and publisher are development placeholders, nothing
   here is signed, Microsoft has not approved any restricted capability for GeekBridge, and this
   template has not been run through MakeAppx or installed on a Windows machine (it was authored on
-  Linux). Windows may still deny access; see `docs/architecture.md`.
+  Linux). Windows may still deny access.
 
   Placeholders (@NAME@) are filled by register-dev.ps1. No Limited Access Feature key or
   attestation is used or needed for Windows 11; Windows 10 is unsupported.

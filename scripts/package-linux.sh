@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the Linux installers from already-built release binaries.
 #
 #   scripts/package-linux.sh [--bin-dir DIR] [--out DIR] [--version X.Y.Z]
@@ -19,13 +20,14 @@ while [[ $# -gt 0 ]]; do
     --bin-dir) bindir="$2"; shift 2;;
     --out) out="$2"; shift 2;;
     --version) version="$2"; shift 2;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done
+mkdir -p "$out"; out="$(cd "$out" && pwd -P)"   # absolute: the .deb is assembled from another directory
 [[ -n "$version" ]] || version="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' "$ROOT/Cargo.toml")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "bad version '$version'" >&2; exit 64; }
-debversion="${version/-/~}"
+debversion="$(printf '%s' "$version" | sed 's/-/~/')"   # not ${version/-/~}: bash expands that ~ to $HOME
 bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share)
 for b in "${bins[@]}"; do [[ -x "$bindir/$b" ]] || { echo "missing binary: $bindir/$b" >&2; exit 66; }; done
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)" >&2; exit 69; }
@@ -51,7 +53,7 @@ mkdir -p "$out"
 # ---- installer tarball
 t="$work/geekbridge-$version"; mkdir -p "$t"
 cp -a "$pay/." "$t/"; install -m 0755 "$pk/install.sh" "$t/install.sh"
-[[ -f "$ROOT/README.md" ]] && cp "$ROOT/README.md" "$t/"
+for doc in README.md LICENSE THIRD_PARTY_NOTICES.md; do cp "$ROOT/$doc" "$t/"; done   # GPL-3.0-or-later: the licence text travels with the binaries
 tar --owner=0 --group=0 --numeric-owner -czf "$out/geekbridge-$version-linux-x86_64-installer.tar.gz" -C "$work" "geekbridge-$version"
 
 # ---- .deb (data laid out for /usr)
@@ -69,7 +71,8 @@ sed "s|@BINDIR@|/usr/bin|" "$pk/geekbridge-service.service" > "$root/usr/lib/sys
 chmod 0644 "$root/usr/lib/systemd/user/geekbridge-service.service"
 install -m 0644 "$pk/geekbridge-service.desktop" "$root/etc/xdg/autostart/"
 [[ -f "$ROOT/README.md" ]] && install -m 0644 "$ROOT/README.md" "$root/usr/share/doc/geekbridge/README.md"
-printf 'GeekBridge %s\nNo copyright file is bundled yet; see the project repository for licensing.\n' "$version" > "$root/usr/share/doc/geekbridge/copyright"
+install -m 0644 "$pk/copyright" "$root/usr/share/doc/geekbridge/copyright"
+install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"
 
 size_kb=$(du -sk "$root" | cut -f1)
 ctl="$work/control"; mkdir -p "$ctl"

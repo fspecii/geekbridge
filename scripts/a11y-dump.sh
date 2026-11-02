@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Prove a desktop app exposes an AT-SPI accessibility tree and dump it.
 #
 #   scripts/a11y-dump.sh [--bin-dir DIR] APP...        APP is one of: geekbridge calls messages agenda contacts clipboard

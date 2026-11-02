@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Pairing lifecycle end to end on the emulator (docs/pairing.md, docs/first-run-audit.md rows 3 and 15):
 #
 #   scripts/e2e/pair-lifecycle.sh [--repeat N] [--no-build] [SCENARIO...]
@@ -23,7 +24,7 @@ while (($#)); do
   case "$1" in
     --repeat) REPEAT="$2"; shift ;;
     --no-build) BUILDARG=(--no-build) ;;
-    -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,20p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) SCEN+=("$1") ;;
   esac
   shift

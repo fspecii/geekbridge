@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Writes the tray icon set from the same dot tables the service draws at run time.
 //!
 //!   cargo run -p bridge-service --example tray-icons -- svg DIR          # icon-<state>-<style>.svg

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Call control on the phone transport (`geekbridge.calls.*`, see `bridge_core::calls_link`).
 //!
 //! Rust owns the wire; Kotlin owns Android's telephony. Nothing here touches a call:

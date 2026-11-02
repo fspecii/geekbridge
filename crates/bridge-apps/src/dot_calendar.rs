@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Dot-matrix month grid, the desktop twin of the Android Calendar card: weekday initials in the
 //! dot font, one dim dot per day, a bright dot where something is scheduled, and a red disc on
 //! today. Drawn once per change; no animation.

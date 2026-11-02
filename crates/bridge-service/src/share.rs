@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! File, link and text sharing with paired phones (KDE Connect `share` plugin).
 //!
 //! * **Receiving** needs the per-device `receive` permission (default off). A file then becomes an
@@ -129,44 +130,99 @@ fn parse_xdg_download(text: &str, home: &Path) -> Option<PathBuf> {
 // ---------------------------------------------------------------------- settings
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
+#[serde(default)]
 struct Perm {
     receive: bool,
     auto_accept: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SettingsFile {
-    version: u32,
-    devices: BTreeMap<String, Perm>,
+/// `share.json`: `{"version": 1, "devices": {"<device id>": {"receive": bool, "auto_accept": bool}}}`.
+/// Unknown fields (top level and per device) are kept on rewrite; a file from a newer build is
+/// read but never rewritten; a damaged file without backup means "nothing allowed" (opt-in).
+pub static SETTINGS_SPEC: bridge_core::statefile::Spec = bridge_core::statefile::Spec {
+    name: SETTINGS_FILE,
+    current: 1,
+    migrations: &[],
+    validate: Some(validate_settings),
+    on_corrupt: bridge_core::statefile::Corrupt::Reset,
+};
+
+fn validate_settings(body: &serde_json::Map<String, serde_json::Value>) -> Result<(), String> {
+    match body.get("devices") {
+        Some(serde_json::Value::Object(m)) if m.len() <= MAX_SETTINGS_DEVICES => Ok(()),
+        Some(serde_json::Value::Object(_)) => Err("too many entries".into()),
+        _ => Err("no devices object".into()),
+    }
 }
 
 struct Settings {
-    path: Option<PathBuf>,
+    file: Option<fsutil::PrivateStateFile>,
     devices: BTreeMap<String, Perm>,
+    /// Format of a newer build's file, which must not be rewritten.
+    newer: Option<u32>,
 }
 
 impl Settings {
     fn open(path: Option<PathBuf>) -> Self {
-        let devices = path
-            .as_deref()
-            .and_then(|p| fsutil::read_private_file(p).ok().flatten())
-            .and_then(|b| serde_json::from_slice::<SettingsFile>(&b).ok())
-            .filter(|f| f.version == 1 && f.devices.len() <= MAX_SETTINGS_DEVICES)
-            .map(|f| f.devices)
-            .unwrap_or_default();
-        Self { path, devices }
+        use bridge_core::statefile::Status;
+        let file =
+            path.map(|p| fsutil::PrivateStateFile::new(fsutil::PrivateIo, p, &SETTINGS_SPEC));
+        let mut devices = BTreeMap::new();
+        let mut newer = None;
+        if let Some(f) = &file {
+            match f.load() {
+                Ok(l) => {
+                    if let Status::Newer { found } = l.status {
+                        newer = Some(found);
+                    }
+                    if let Some(serde_json::Value::Object(m)) = l.body.get("devices") {
+                        for (id, v) in m.iter().take(MAX_SETTINGS_DEVICES) {
+                            if let Ok(p) = serde_json::from_value::<Perm>(v.clone()) {
+                                devices.insert(id.clone(), p);
+                            }
+                        }
+                    }
+                }
+                // Loose permissions and the like: nothing is allowed, and the file is left alone.
+                Err(e) => bridge_core::statefile::note(format!("{SETTINGS_FILE}: {e}")),
+            }
+        }
+        Self {
+            file,
+            devices,
+            newer,
+        }
     }
 
     fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
-        let Some(path) = &self.path else {
+        let Some(file) = &self.file else {
             return Ok(());
         };
-        let bytes = serde_json::to_vec_pretty(&SettingsFile {
-            version: 1,
-            devices: next.clone(),
-        })
-        .map_err(|e| e.to_string())?;
-        fsutil::atomic_write_private(path, &bytes).map_err(|e| e.to_string())
+        if let Some(found) = self.newer {
+            return Err(format!(
+                "{SETTINGS_FILE} is format {found}, written by a newer version; not changed"
+            ));
+        }
+        let locked = file.lock().map_err(|e| e.to_string())?;
+        let loaded = locked.load().map_err(|e| e.to_string())?;
+        let mut body = loaded.body;
+        let old = match body.remove("devices") {
+            Some(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        let mut devices = serde_json::Map::new();
+        for (id, perm) in next {
+            let mut entry = match old.get(id) {
+                Some(serde_json::Value::Object(m)) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            if let Ok(serde_json::Value::Object(known)) = serde_json::to_value(perm) {
+                entry.extend(known);
+            }
+            devices.insert(id.clone(), serde_json::Value::Object(entry));
+        }
+        body.insert("devices".into(), serde_json::Value::Object(devices));
+        locked.save(&body).map_err(|e| e.to_string())
     }
 }
 
@@ -1144,6 +1200,60 @@ mod home_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_file_formats_load_keep_unknown_fields_and_respect_newer_versions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("s");
+        fsutil::ensure_private_dir(&state).unwrap();
+        let path = state.join(SETTINGS_FILE);
+        let put = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        // The golden format-1 file.
+        let golden = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/state-v1/share.json"),
+        )
+        .unwrap();
+        put(&golden);
+        let s = Settings::open(Some(path.clone()));
+        let id = "b2".repeat(16);
+        assert_eq!(
+            s.devices.get(&id),
+            Some(&Perm {
+                receive: true,
+                auto_accept: false
+            })
+        );
+        // An unknown field of a newer minor build survives our rewrite.
+        let mut v: serde_json::Value = serde_json::from_slice(&golden).unwrap();
+        v["devices"][&id]["mute_until"] = 5.into();
+        put(&serde_json::to_vec(&v).unwrap());
+        let mut next = s.devices.clone();
+        next.get_mut(&id).unwrap().auto_accept = true;
+        s.persist(&next).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v["devices"][&id]["mute_until"], 5);
+        assert_eq!(v["devices"][&id]["auto_accept"], true);
+        // A newer format is read but never written.
+        v.as_object().unwrap();
+        let mut newer = v.clone();
+        newer["version"] = 3.into();
+        put(&serde_json::to_vec(&newer).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let s = Settings::open(Some(path.clone()));
+        assert!(s.devices.get(&id).unwrap().receive);
+        assert!(s.persist(&BTreeMap::new()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        // Damage with no backup: nothing is allowed, and the service still starts.
+        let _ = std::fs::remove_file(path.with_extension("json.bak"));
+        put(b"{ torn");
+        assert!(Settings::open(Some(path)).devices.is_empty());
+    }
 
     #[test]
     fn xdg_download_dir_parsing() {

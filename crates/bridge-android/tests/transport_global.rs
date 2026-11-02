@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The process-wide `handle_request` (what the JNI export calls) drives the same transport.
 //! One test only: the global instance is shared by everything in this test binary.
 use geekbridge_android::handle_request;

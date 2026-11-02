@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Apple-framework bindings (macOS only): IOBluetooth hands-free calls, CoreAudio defaults and the
 //! main-thread run loop. All `unsafe` in the crate lives in this module tree; each block carries a
 //! safety argument. The platform-independent logic (state machine, planning, protocol) is in the

@@ -1,0 +1,18 @@
+[package]
+name = "bridge-fuzz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Fuzz targets and a deterministic mutation fuzzer for GeekBridge's network-facing parsers (not shipped)"
+publish = false
+
+[dependencies]
+bridge-core.workspace = true
+bridge-kde = { path = "../bridge-kde" }
+bridge-service = { path = "../bridge-service" }
+bridge-android = { path = "../bridge-android" }
+bridge-update = { path = "../bridge-update" }
+serde_json.workspace = true
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "io-util", "time", "macros"] }

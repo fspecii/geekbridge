@@ -1,11 +1,13 @@
 [workspace]
-members = ["crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update", "crates/bridge-chaos"]
+members = ["crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update", "crates/bridge-chaos", "crates/bridge-fuzz"]
 resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/fspecii/geekbridge"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

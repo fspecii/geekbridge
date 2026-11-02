@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Host tests of the public request handler (no JVM). Mirrors the JSON contract in
 //! `docs/android-contract.md`.
 use bridge_core::{clipboard::DEFAULT_MAX_TEXT_BYTES, messages::MAX_TEXT_CHARS};

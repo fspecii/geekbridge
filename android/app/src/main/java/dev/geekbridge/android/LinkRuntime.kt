@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import android.os.Handler
@@ -24,6 +25,7 @@ object LinkRuntime {
                 if (c.phase == LinkPhase.Running) startWaiter(c)
                 val s = c.snapshot
                 if (s != null && s.isRunning) AppState.recordPaired(s.paired, readable = !s.pairedError)
+                WidgetUpdater.onLink(s?.connections.orEmpty().filter { it.trusted }.map { it.peer.name.ifEmpty { "Computer" } })
             }
         }
         return c

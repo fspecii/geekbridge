@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! JNI export for `dev.geekbridge.android.NativeBridge.nativeRequest`. Compiled for Android only.
 //!
 //! Kotlin side: `object NativeBridge { external fun nativeRequest(request: String): String }`, so

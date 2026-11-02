@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The Objective-C delegate object that IOBluetooth calls back into.
 //!
 //! # Ownership and threading

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 <#
 .SYNOPSIS
   Register GeekBridge's DEVELOPMENT sparse package so geekbridge-calls-windows.exe runs with

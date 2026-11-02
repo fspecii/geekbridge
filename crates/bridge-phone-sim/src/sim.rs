@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The simulated service: owns the bus connection and reconciles the modem's call state into
 //! `org.pipewire.Telephony` objects and signals.
 

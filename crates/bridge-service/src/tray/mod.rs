@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A quiet tray / menu-bar presence for the service: an icon that shows connected / disconnected /
 //! ringing / update available / transfer in progress, and a small menu (open the app, paste from
 //! phone, send a file, answer or decline, pause sync, check for updates, quit).
@@ -286,7 +287,8 @@ async fn toggle_pause(daemon: &Arc<Daemon>, state_dir: &Path) {
     let Ok(json) = serde_json::to_vec(&on) else {
         return;
     };
-    if std::fs::write(state_dir.join(PAUSED_FILE), json).is_err() {
+    // Atomic: a crash mid-write must not leave a torn list that "forgets" which devices to resume.
+    if bridge_core::statefile::write_atomic_plain(&state_dir.join(PAUSED_FILE), &json).is_err() {
         return;
     }
     for device_id in on {

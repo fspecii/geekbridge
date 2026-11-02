@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A stand-in `org.kde.StatusNotifierWatcher` for headless verification (scripts/e2e/tray-headless.sh).
 //! It owns the watcher name on the session bus it is started on, records every
 //! `RegisterStatusNotifierItem`, then reads the item the way a bar would and prints what it saw:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Android companion native library: a bounded JSON request dispatcher over shared
 //! `bridge-core` rules, plus (Android builds only) the JNI export Kotlin calls.
 //!

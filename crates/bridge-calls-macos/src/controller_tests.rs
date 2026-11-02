@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use super::*;
 use crate::mock::{ManualClock, MockAudio, MockNative};
 use crate::model::{AgClass, ListEntry, ListStatus};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! KDE Connect payload sockets (file bodies that follow a packet with `payloadSize`).
 //!
 //! Roles are inverted relative to the link, exactly like the main connection:

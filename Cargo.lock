@@ -684,6 +684,21 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "bridge-fuzz"
+version = "0.1.0"
+dependencies = [
+ "bridge-android",
+ "bridge-core",
+ "bridge-kde",
+ "bridge-service",
+ "bridge-update",
+ "serde_json",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -692,6 +707,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bridge-core",
+ "bridge-kde",
  "clap",
  "libc",
  "rcgen",
@@ -1310,18 +1326,11 @@ dependencies = [
  "bytemuck",
  "ecolor",
  "emath",
- "epaint_default_fonts",
  "log",
  "nohash-hasher",
  "parking_lot",
  "profiling",
 ]
-
-[[package]]
-name = "epaint_default_fonts"
-version = "0.31.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc7e7a64c02cf7a5b51e745a9e45f60660a286f151c238b9d397b3e923f5082f"
 
 [[package]]
 name = "equivalent"

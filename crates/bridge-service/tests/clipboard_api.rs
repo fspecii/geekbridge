@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end clipboard bridge tests: a real `Daemon` with an in-memory OS clipboard, and
 //! stand-in phones that are real `bridge_kde` endpoints talking TLS over loopback.
 //!

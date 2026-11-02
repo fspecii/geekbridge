@@ -1,0 +1,1 @@
+{"contacts": true, "calendar": true, "sms": false, "calendar_ids": ["1", "7"], "calendar_edit": false, "sms_special": false, "calendar_ops": "[{\"op\":\"op-aaaa1111\",\"state\":\"applied\",\"eventId\":\"42\"}]", "sms_requests": "req-aaaa1111"}

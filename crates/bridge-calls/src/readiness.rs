@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Is this computer able to carry a phone call's audio over Bluetooth hands-free?
 //!
 //! Three situations look identical from the outside ("calls don't sound on this computer") but

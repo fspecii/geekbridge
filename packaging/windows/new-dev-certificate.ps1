@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 <#
 .SYNOPSIS
   Create a self-signed DEVELOPMENT code-signing certificate for signing a test MSIX of this package.

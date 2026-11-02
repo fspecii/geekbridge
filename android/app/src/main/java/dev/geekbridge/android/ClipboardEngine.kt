@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 /** Everything the engine needs from Android. Implemented by `AndroidClipboardHost`; faked in tests. */

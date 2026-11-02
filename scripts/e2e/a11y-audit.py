@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Per-screen accessibility / layout audit from one uiautomator dump (stdlib only).
 
   a11y-audit.py [NAME]     audit the current screen; NAME tags the findings (e.g. home-light-font2)

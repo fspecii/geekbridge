@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pure text helpers for the local-only controls.
 
 pub const MAX_DIAL_CHARS: usize = 32;

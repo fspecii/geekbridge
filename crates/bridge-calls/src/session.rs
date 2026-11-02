@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A stateful view over a [`CallBackend`]: diffs snapshots into the neutral
 //! [`bridge_core::calls::CallEvent`] stream, keeps one [`CallState`] per phone, and gates explicit
 //! [`CallCommand`]s through the model's pre-flight before dispatch.

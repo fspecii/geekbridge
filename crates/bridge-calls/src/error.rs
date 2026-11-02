@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Failure types. Control failures are separated by *why* the command was not (or may not have
 //! been) executed, so a caller can tell "nothing happened" from "outcome unknown".
 

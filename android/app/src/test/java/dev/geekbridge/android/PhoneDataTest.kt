@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import org.json.JSONArray
@@ -35,6 +36,8 @@ class PhoneDataTest {
         override fun calendars() = listOf(CalendarInfo("1", "Personal"), CalendarInfo("2", "Work"))
         override fun instances(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int) =
             items.filter { it.calendarId in calendarIds }.take(max)
+        override fun instancesAround(calendarIds: Set<String>, fromMs: Long, toMs: Long, pivotMs: Long, max: Int) =
+            items.filter { it.calendarId in calendarIds }.sortedBy { kotlin.math.abs(it.begin - pivotMs) }.take(max)
     }
 
     private class FakeSms(val rows: List<SmsRow> = emptyList(), val sims: List<SimInfo> = emptyList(), val unread: Map<Long, Int> = emptyMap()) : SmsPort {
@@ -264,7 +267,7 @@ class PhoneDataTest {
         val e = engine(core, sms = FakeSms(rows))
         e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQ_CONVERSATIONS)))
         val packets = core.of(PhoneDataKinds.SMS_MESSAGES)
-        assertEquals(2, packets.size); assertEquals(2, packets[0].getInt("version"))
+        assertEquals(3, packets.size); assertEquals(2, packets[0].getInt("version"))
         assertTrue(packets.all { it.getJSONArray("messages").length() <= 100 })
         val m = packets[0].getJSONArray("messages").getJSONObject(0)
         for (k in listOf("addresses", "body", "date", "type", "read", "thread_id", "_id", "sub_id", "event")) assertTrue(k, m.has(k))

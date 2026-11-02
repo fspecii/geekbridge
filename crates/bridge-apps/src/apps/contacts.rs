@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Contacts: the phone's phonebook on the computer. Alphabetical with letter sections, search,
 //! a details pane with Call / Message / Copy, and nothing stored: the list is a bounded view of
 //! what the phone shared, held in memory by the helper service.
@@ -39,14 +40,10 @@ pub struct Section {
     pub range: std::ops::Range<usize>,
 }
 
-/// Section letter of a name: its first letter in capitals, `#` for digits and symbols.
+/// Section letter of a name: `A`-`Z` with accents folded (Émile is under E), `#` for digits and
+/// symbols, `…` for every other script. Matches the order `Agenda::people` returns.
 pub fn letter_of(name: &str) -> char {
-    name.trim()
-        .chars()
-        .next()
-        .filter(|c| c.is_alphabetic())
-        .and_then(|c| c.to_uppercase().next())
-        .unwrap_or('#')
+    bridge_core::collate::section_letter(name)
 }
 
 /// Groups a list that is already sorted by name into consecutive sections.
@@ -193,10 +190,21 @@ impl Contacts {
                 if let Some(y) = self.jump.take() {
                     area = area.vertical_scroll_offset(y);
                 }
-                area.show(ui, |ui| {
+                // Only the rows in view are laid out: everything above and below is one spacer, so a
+                // frame costs O(sections + visible rows), not O(people).
+                area.show_viewport(ui, |ui, viewport| {
                     ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
+                        let (top, bottom) = (viewport.min.y, viewport.max.y);
+                        let mut y = 0.0_f32;
                         for s in &secs {
+                            let count = s.range.len();
+                            let height = HEADER_HEIGHT + count as f32 * ROW_HEIGHT;
+                            if y + height < top || y > bottom {
+                                ui.add_space(height);
+                                y += height;
+                                continue;
+                            }
                             ui.allocate_ui_with_layout(
                                 vec2(ui.available_width(), HEADER_HEIGHT),
                                 egui::Layout::left_to_right(egui::Align::Center),
@@ -208,7 +216,15 @@ impl Contacts {
                                     );
                                 },
                             );
-                            for p in &view.people[s.range.clone()] {
+                            let rows_top = y + HEADER_HEIGHT;
+                            let first = (((top - rows_top) / ROW_HEIGHT).floor().max(0.0) as usize)
+                                .min(count);
+                            let last = (((bottom - rows_top) / ROW_HEIGHT).ceil().max(0.0)
+                                as usize)
+                                .clamp(first, count);
+                            ui.add_space(first as f32 * ROW_HEIGHT);
+                            let rows = &view.people[s.range.clone()][first..last];
+                            for p in rows {
                                 let selected = self
                                     .person
                                     .as_ref()
@@ -217,6 +233,18 @@ impl Contacts {
                                     self.person = Some((p.device_id.clone(), p.id.clone()));
                                 }
                             }
+                            ui.add_space((count - last) as f32 * ROW_HEIGHT);
+                            y += height;
+                        }
+                        if view.devices.iter().any(|d| d.contacts_capped) {
+                            ui.add_space(8.0);
+                            ui.add(
+                                egui::Label::new(theme::caption(
+                                    pal,
+                                    "The phone shares at most 5,000 contacts; later ones are not listed.",
+                                ))
+                                .wrap(),
+                            );
                         }
                         if view.people_total > view.people.len() {
                             ui.add_space(8.0);
@@ -584,12 +612,14 @@ mod tests {
             p("Ada"),
             p("adam"),
             p("Béla"),
-            p("Zoe"),
             p("émile"),
+            p("Zoe"),
+            p("山田"),
         ];
         assert_eq!(letter_of("adam"), 'A');
         assert_eq!(letter_of("1Password"), '#');
-        assert_eq!(letter_of("  émile"), 'É');
+        assert_eq!(letter_of("  émile"), 'E');
+        assert_eq!(letter_of("山田"), '…');
         assert_eq!(letter_of(""), '#');
         let s = sections(&list);
         assert_eq!(
@@ -600,8 +630,9 @@ mod tests {
                 ('#', 0..1),
                 ('A', 1..3),
                 ('B', 3..4),
-                ('Z', 4..5),
-                ('É', 5..6)
+                ('E', 4..5),
+                ('Z', 5..6),
+                ('…', 6..7)
             ]
         );
         // The rail jumps to the section header: headers and rows have fixed heights.
@@ -618,5 +649,106 @@ mod tests {
         assert_eq!(initials("madonna"), "M");
         assert_eq!(initials("  "), "?");
         assert_eq!(initials("+44 20"), "42");
+    }
+
+    /// Frame cost of the people list (headless: egui builds and tessellates the shapes, nothing is drawn).
+    /// `GEEKBRIDGE_SCALE=1` runs the 1,000-row maximum and enforces a budget; `--nocapture` prints the numbers.
+    #[test]
+    fn list_frame_cost_does_not_grow_with_the_people_count() {
+        use crate::{connection::ControlState, state::DiscoveryModel};
+        use std::time::Instant;
+        let big = std::env::var("GEEKBRIDGE_SCALE").as_deref() == Ok("1");
+        let n = if big { MAX_PEOPLE_LIMIT } else { 300 };
+        let mut names: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    "{} {i:04}",
+                    [
+                        "Zoë Müller",
+                        "Émile",
+                        "山田太郎",
+                        "Adam",
+                        "Çelik",
+                        "🎉 Party"
+                    ][i % 6]
+                )
+            })
+            .collect();
+        names.sort_by_key(|n| bridge_core::collate::key(n));
+        let view = AgendaView {
+            people: names.iter().map(|n| p(n)).collect(),
+            people_total: n,
+            ..AgendaView::default()
+        };
+        let state = phone_feed::FeedState {
+            view: Some(view.clone()),
+            problem: None,
+            notice: None,
+        };
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, bridge_core::AppKind::Contacts);
+        let pal = theme::palette(bridge_core::AppKind::Contacts, true);
+        let (model, control) = (DiscoveryModel::Checking, ControlState::default());
+        let env = Env {
+            app: bridge_core::AppKind::Contacts,
+            api_port: 0,
+            model: &model,
+            pal: &pal,
+            control: &control,
+        };
+        let mut c = Contacts::default();
+        let frame = |c: &mut Contacts, jump: Option<f32>| {
+            c.jump = jump;
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    vec2(900.0, 640.0),
+                )),
+                ..Default::default()
+            };
+            let t = Instant::now();
+            let out = ctx.run(input, |ctx| c.list(ctx, &env, &state, &view));
+            let meshes = ctx.tessellate(out.shapes, out.pixels_per_point);
+            (t.elapsed().as_secs_f64() * 1000.0, meshes.len())
+        };
+        for _ in 0..3 {
+            frame(&mut c, None);
+        }
+        let top: f64 = (0..10).map(|_| frame(&mut c, None).0).sum::<f64>() / 10.0;
+        let middle = (0..10)
+            .map(|_| frame(&mut c, Some(n as f32 * ROW_HEIGHT / 2.0)).0)
+            .sum::<f64>()
+            / 10.0;
+        // The same rows without virtualisation, for the record.
+        let naive = {
+            let t = Instant::now();
+            for _ in 0..10 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(900.0, 640.0),
+                    )),
+                    ..Default::default()
+                };
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for person in &view.people {
+                                person_row(ui, &pal, person, false);
+                            }
+                        });
+                    });
+                });
+                ctx.tessellate(out.shapes, out.pixels_per_point);
+            }
+            t.elapsed().as_secs_f64() * 100.0
+        };
+        println!(
+            "scale contacts list: {n} rows, frame {top:.2} ms at the top, {middle:.2} ms mid-list (all rows laid out: {naive:.2} ms)"
+        );
+        if big && !cfg!(debug_assertions) {
+            assert!(top < 8.0 && middle < 8.0, "frame {top:.2}/{middle:.2} ms");
+        }
     }
 }

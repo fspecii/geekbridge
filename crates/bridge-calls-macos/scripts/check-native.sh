@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Type-check (and lint) the macOS-only code for both Apple targets with the private toolchain.
 #
 # What this proves: the objc2/IOBluetooth/CoreAudio bindings are used with correct Rust types and

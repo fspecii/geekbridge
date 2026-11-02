@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Persistence tests: private-file helpers and the file trust store, including
 //! several processes and several store instances writing at once.
 //!
@@ -188,7 +189,7 @@ fn deleting_the_file_revokes_everything() {
 }
 
 #[test]
-fn tampering_after_open_fails_closed_and_is_not_overwritten() {
+fn tampering_after_open_fails_closed_and_the_damage_is_kept() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("s");
     let s = FileTrustStore::open(&dir).unwrap();
@@ -202,21 +203,19 @@ fn tampering_after_open_fails_closed_and_is_not_overwritten() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(s.path(), fs::Permissions::from_mode(0o600)).unwrap();
     }
-    // No stale trust from the cache, and writes refuse to clobber the damage.
-    assert!(matches!(
-        s.get(&p.device_id),
-        Err(KdeError::StoreCorrupt { .. })
-    ));
-    assert!(matches!(s.list(), Err(KdeError::StoreCorrupt { .. })));
-    assert!(matches!(
-        s.insert(peer_with_id(&numbered_id(3, 2))),
-        Err(KdeError::StoreCorrupt { .. })
-    ));
-    assert!(matches!(
-        s.remove(&p.device_id),
-        Err(KdeError::StoreCorrupt { .. })
-    ));
-    assert_eq!(fs::read(s.path()).unwrap(), garbage);
+    // No stale trust from the cache: damage means nobody is trusted (no backup exists yet).
+    assert!(s.get(&p.device_id).unwrap().is_none());
+    assert!(s.list().unwrap().is_empty());
+    assert_eq!(
+        fs::read(s.path()).unwrap(),
+        garbage,
+        "reading never rewrites"
+    );
+    // The next write starts from the empty state and keeps the damaged file for the user.
+    s.insert(peer_with_id(&numbered_id(3, 2))).unwrap();
+    assert_eq!(s.list().unwrap().len(), 1);
+    let kept = s.path().with_extension("json.corrupt");
+    assert_eq!(fs::read(kept).unwrap(), garbage);
 }
 
 #[test]

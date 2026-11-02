@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Failure injection against the update checker: a server that returns garbage, drips bytes
 //! forever (slow loris), never answers, loops redirects or resets the connection. Every case must
 //! end in an error within the configured deadlines, leave no download behind, and leave the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! GitHub release JSON, platform asset selection and checksum-file parsing.
 
 use crate::{
@@ -124,7 +125,14 @@ pub fn select_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a 
             }
             Some((ext_rank(&platform.os, &lower)?, a))
         })
-        .min_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.name.cmp(&b.name)))
+        // Same extension: the shortest name is the canonical `geekbridge-<os>-<arch>.<ext>`; a longer
+        // one (`geekbridge-0.1.1-linux-x86_64-installer.tar.gz`, `…-debug…`) is an extra the release
+        // also carries and must not win on alphabetical luck (a digit sorts before a letter).
+        .min_by(|(ra, a), (rb, b)| {
+            ra.cmp(rb)
+                .then_with(|| a.name.len().cmp(&b.name.len()))
+                .then_with(|| a.name.cmp(&b.name))
+        })
         .map(|(_, a)| a)
 }
 
@@ -282,6 +290,30 @@ mod tests {
         assert_eq!(
             select_asset(&list, &p).unwrap().name,
             "geekbridge-macos-arm64.dmg"
+        );
+    }
+
+    #[test]
+    fn real_release_asset_set_picks_the_canonical_archive() {
+        // Exactly what release.yml publishes for a Linux build (package-linux.sh adds the installer
+        // tarball and the .deb next to geekbridge-linux-x86_64.tar.gz).
+        let list: Vec<Asset> = [
+            "geekbridge-0.1.1-linux-x86_64-installer.tar.gz",
+            "geekbridge-android.apk",
+            "geekbridge-linux-x86_64.tar.gz",
+            "geekbridge_0.1.1_amd64.deb",
+            "SHA256SUMS",
+        ]
+        .iter()
+        .map(|n| asset(n, 5))
+        .collect();
+        let p = Platform {
+            os: "linux".into(),
+            arch: "x86_64".into(),
+        };
+        assert_eq!(
+            select_asset(&list, &p).unwrap().name,
+            "geekbridge-linux-x86_64.tar.gz"
         );
     }
 

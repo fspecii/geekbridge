@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Start the service at login, and the firewall command for this computer.
 //!
 //! `geekbridge-ctl autostart enable` writes the platform's own per-user entry: an XDG autostart
@@ -76,6 +77,8 @@ pub fn desktop_entry(exe: &Path) -> Result<String, String> {
                 exec.push(c);
             }
             '\\' => exec.push_str("\\\\\\\\"),
+            // `%` starts a field code in Exec=; `%%` is a literal percent sign.
+            '%' => exec.push_str("%%"),
             _ => exec.push(c),
         }
     }
@@ -267,6 +270,8 @@ mod tests {
         assert!(e.contains("Exec=\"") && e.contains("Program Files"));
         let tricky = desktop_entry(&abs("a$b")).unwrap();
         assert!(tricky.contains("\\\\$"), "{tricky}");
+        let pct = desktop_entry(&abs("100%/gb")).unwrap();
+        assert!(pct.contains("100%%/gb") && !pct.contains("100%/"), "{pct}");
     }
 
     #[test]

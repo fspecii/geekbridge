@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Explicit readiness: why calling can or cannot work right now.
 //!
-//! Setup, not the call APIs, is where phone calling fails:
+//! Setup, not the call APIs, is where Windows phone calling fails:
 //! contract, package identity, privacy, access, registration, connection, line and audio route
 //! each fail independently. This module turns raw facts into an ordered list of [`Blocker`]s so
 //! the UI and the engine's gating share one truth. It performs no I/O.

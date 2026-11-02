@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Messages: an iTunes-style window (toolbar with a status display, library sidebar with a
 //! devices group, list/detail content) drawn in a monochrome dot-matrix look with a single
 //! red accent. Conversations, names and unread counts come from the paired phone through the
@@ -18,8 +19,8 @@ use bridge_core::{
     ipc::{Feature, Request},
     messages::{SmsEncoding, sms_segments},
     phone_view::{
-        ConversationItem, DataDevice, DataState, MessageItem, MessagesView, SelectedThread,
-        SendItem, SendPhase, SimItem, send_reason_text,
+        ConversationItem, DataDevice, DataState, MAX_MESSAGES_LIMIT, MAX_MESSAGES_SHOWN,
+        MessageItem, MessagesView, SelectedThread, SendItem, SendPhase, SimItem, send_reason_text,
     },
 };
 use eframe::egui::{
@@ -64,7 +65,16 @@ pub struct Messages {
     env_checked: bool,
     /// Conversations whose earlier messages were already requested on opening.
     history: std::collections::HashSet<(String, i64)>,
+    /// How many of the open thread's newest messages the view asks for (0 = the default); grows with
+    /// "Load older messages" and resets when another conversation opens.
+    message_limit: usize,
+    limit_for: Option<(String, i64)>,
+    /// Measured height of each bubble (with its day heading), by message and pane width.
+    heights: HashMap<(i64, u32), f32>,
 }
+/// Height assumed for a bubble that has not been drawn yet, and how far past the viewport bubbles are still drawn.
+const ESTIMATED_BUBBLE: f32 = 52.0;
+const OVERSCAN: f32 = 240.0;
 
 #[derive(Clone, Copy)]
 enum Focus {
@@ -325,7 +335,6 @@ impl Messages {
     fn thread_list(&mut self, ctx: &egui::Context, env: &Env, view: &MessagesView) {
         let pal = env.pal;
         let now_ms = now_ms();
-        let offset = localtime::utc_offset_minutes(localtime::now().date);
         egui::SidePanel::left("threads")
             .exact_width(310.0)
             .resizable(false)
@@ -366,9 +375,13 @@ impl Messages {
                                 .thread
                                 .as_ref()
                                 .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
-                            if thread_row(ui, pal, c, selected, now_ms, offset).clicked() {
+                            if thread_row(ui, pal, c, selected, now_ms).clicked() {
                                 self.thread = Some((c.device_id.clone(), c.thread_id));
                             }
+                        }
+                        if let Some(note) = conversations_note(view) {
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(theme::caption(pal, note)).wrap());
                         }
                     }).bars(ui.ctx());
             });
@@ -446,22 +459,41 @@ impl Messages {
             }
             + if ready { 0.0 } else { 74.0 };
         let body_h = (ui.available_height() - footer).max(80.0);
-        let offset = localtime::utc_offset_minutes(localtime::now().date);
         egui::ScrollArea::vertical()
             .id_salt("thread-scroll")
             .max_height(body_h)
             .min_scrolled_height(body_h)
             .stick_to_bottom(true)
             .auto_shrink([false, false])
-            .show(ui, |ui| {
+            .show_viewport(ui, |ui, viewport| {
+                let list_origin = ui.min_rect().top();
                 ui.add_space(8.0);
-                if sel.may_have_older
+                // Messages held here but not shown yet come first; the phone is asked only when
+                // everything held is already on screen.
+                let hidden = sel.held.saturating_sub(sel.messages.len());
+                if (hidden > 0 || sel.may_have_older)
                     && theme::pill_button(ui, pal, "Load older messages", ButtonKind::Plain, true)
                         .clicked()
                 {
-                    self.run(Request::MessagesRefresh {
-                        device_id: device.clone(),
-                        thread_id: Some(thread),
+                    self.message_limit = (sel.messages.len().max(MAX_MESSAGES_SHOWN) + 200)
+                        .min(MAX_MESSAGES_LIMIT);
+                    if hidden == 0 {
+                        self.run(Request::MessagesRefresh {
+                            device_id: device.clone(),
+                            thread_id: Some(thread),
+                        });
+                    }
+                }
+                if hidden > 0 {
+                    ui.vertical_centered(|ui| {
+                        ui.label(theme::caption(
+                            pal,
+                            format!(
+                                "Showing the newest {} of {} messages loaded.",
+                                sel.messages.len(),
+                                sel.held
+                            ),
+                        ));
                     });
                 }
                 if sel.capped {
@@ -475,20 +507,14 @@ impl Messages {
                         ));
                     });
                 }
-                let today = localtime::now().date;
-                let mut last_day = None;
-                for m in &sel.messages {
-                    let day = local_day(m.date_ms, offset);
-                    if last_day != Some(day) {
-                        last_day = Some(day);
-                        ui.vertical_centered(|ui| {
-                            ui.add_space(6.0);
-                            ui.label(theme::caption(pal, day_label(day, today)));
-                            ui.add_space(4.0);
-                        });
-                    }
-                    bubble(ui, pal, m, offset);
-                }
+                thread_bubbles(
+                    ui,
+                    pal,
+                    &mut self.heights,
+                    &sel.messages,
+                    viewport,
+                    list_origin,
+                );
                 ui.add_space(6.0);
             }).bars(ui.ctx());
         theme::hairline(ui, pal);
@@ -1087,7 +1113,7 @@ fn day_label(day: localtime::Date, today: localtime::Date) -> String {
             "{} {} {}{}",
             day.weekday().short(),
             day.day,
-            &day.month_name()[..3],
+            crate::calendar_model::month_abbr(day.month_name()),
             if day.year == today.year {
                 String::new()
             } else {
@@ -1097,10 +1123,11 @@ fn day_label(day: localtime::Date, today: localtime::Date) -> String {
     }
 }
 
-fn local_day(ms: u64, offset_minutes: i32) -> localtime::Date {
+fn local_day(ms: u64) -> localtime::Date {
+    let utc_ms = i64::try_from(ms).unwrap_or(0);
     localtime::split_unix(
-        i64::try_from(ms / 1000).unwrap_or(0),
-        offset_minutes.saturating_mul(60),
+        utc_ms.div_euclid(1000),
+        localtime::utc_offset_minutes_at(utc_ms).saturating_mul(60),
     )
     .0
 }
@@ -1161,7 +1188,6 @@ fn thread_row(
     c: &ConversationItem,
     selected: bool,
     now_ms: u64,
-    offset: i32,
 ) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
     let radius = CornerRadius::same(8);
@@ -1197,7 +1223,7 @@ fn thread_row(
         sub,
     );
     let when = if now_ms.saturating_sub(c.last_date_ms) < 86_400_000 {
-        localtime::clock_label(i64::try_from(c.last_date_ms).unwrap_or(0), offset)
+        localtime::clock_label_local(i64::try_from(c.last_date_ms).unwrap_or(0))
     } else {
         phone_ui::age_label(now_ms, c.last_date_ms)
     };
@@ -1248,7 +1274,117 @@ fn thread_row(
     response
 }
 
-fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::MessageItem, offset: i32) {
+/// The bubbles of one thread inside a scroll area, laying out only those near `viewport`.
+/// `list_origin` is the top of the scroll content (`ui.min_rect().top()` before anything was added).
+fn thread_bubbles(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    heights: &mut HashMap<(i64, u32), f32>,
+    messages: &[MessageItem],
+    viewport: egui::Rect,
+    list_origin: f32,
+) {
+    let today = localtime::now().date;
+    // Only the bubbles near the viewport are laid out. Heights are measured the first time a
+    // bubble is drawn and remembered; unseen ones count as an estimate, so a frame costs
+    // O(visible) layout plus O(n) additions, whatever the thread length.
+    let top = viewport.min.y;
+    let bottom = viewport.max.y;
+    let width_bucket = (ui.available_width() / 8.0) as u32;
+    let base = ui.cursor().top() - list_origin;
+    let mut days = Vec::with_capacity(messages.len());
+    let mut last_day = None;
+    for m in messages {
+        let day = local_day(m.date_ms);
+        days.push((last_day != Some(day)).then_some(day));
+        last_day = Some(day);
+    }
+    let height_of = |heights: &HashMap<(i64, u32), f32>, i: usize, m: &MessageItem| {
+        heights
+            .get(&(m.uid, width_bucket))
+            .copied()
+            .unwrap_or(ESTIMATED_BUBBLE + if days[i].is_some() { 34.0 } else { 0.0 })
+    };
+    let mut y = base;
+    let (mut first, mut last) = (0, 0);
+    let mut before = 0.0;
+    let mut after = 0.0;
+    for (i, m) in messages.iter().enumerate() {
+        let h = height_of(heights, i, m);
+        if y + h < top - OVERSCAN {
+            first = i + 1;
+            before += h;
+        } else if y <= bottom + OVERSCAN {
+            last = i + 1;
+        } else {
+            after += h;
+        }
+        y += h;
+    }
+    let last = last.max(first);
+    ui.add_space(before);
+    for (i, m) in messages.iter().enumerate().take(last).skip(first) {
+        let start = ui.cursor().top();
+        if let Some(day) = days[i] {
+            ui.vertical_centered(|ui| {
+                ui.add_space(6.0);
+                ui.label(theme::caption(pal, day_label(day, today)));
+                ui.add_space(4.0);
+            });
+        }
+        bubble(ui, pal, m);
+        let measured = ui.cursor().top() - start;
+        let known = heights.insert((m.uid, width_bucket), measured);
+        if known.is_none_or(|k| (k - measured).abs() > 0.5) {
+            ui.ctx().request_repaint();
+        }
+    }
+    ui.add_space(after);
+    if heights.len() > 8 * MAX_MESSAGES_LIMIT {
+        heights.clear();
+    }
+}
+
+/// Says so when the list is cut: this computer shows the newest conversations only; the rest stay on the phone.
+fn conversations_note(view: &MessagesView) -> Option<String> {
+    let shown = view.conversations.len();
+    let on_phone = view
+        .devices
+        .iter()
+        .filter_map(|d| d.threads_on_phone)
+        .sum::<usize>()
+        .max(view.conversations_total);
+    if view.conversations_total > shown {
+        Some(format!(
+            "Showing the newest {} of {} conversations. Search to find older ones.",
+            fmt_count(shown),
+            fmt_count(on_phone)
+        ))
+    } else if on_phone > shown && view.conversations_total == shown {
+        Some(format!(
+            "Showing the newest {} of {} conversations; older ones stay on the phone.",
+            fmt_count(shown),
+            fmt_count(on_phone)
+        ))
+    } else {
+        None
+    }
+}
+
+/// 1234 -> "1,234".
+fn fmt_count(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::MessageItem) {
     let layout = if m.outgoing {
         Layout::right_to_left(Align::TOP)
     } else {
@@ -1299,9 +1435,8 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                         );
                     }
                     ui.label(
-                        RichText::new(localtime::clock_label(
+                        RichText::new(localtime::clock_label_local(
                             i64::try_from(m.date_ms).unwrap_or(0),
-                            offset,
                         ))
                         .color(fg.gamma_multiply(0.7))
                         .size(12.0),
@@ -1315,10 +1450,15 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
 impl AppView for Messages {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        if self.limit_for != self.thread {
+            self.limit_for.clone_from(&self.thread);
+            self.message_limit = 0;
+        }
         let request = Request::MessagesView {
             device_id: self.thread.as_ref().map(|(d, _)| d.clone()),
             thread_id: self.thread.as_ref().map(|(_, t)| *t),
             query: Some(self.search.trim().to_owned()).filter(|q| !q.is_empty()),
+            message_limit: self.message_limit,
         };
         match &self.feed {
             Some(feed) => feed.set_params(request),
@@ -1542,9 +1682,6 @@ mod tests {
             ),
             "Wed 31 Dec 2025"
         );
-        // Midnight boundary in the viewer's zone, not UTC.
-        let late_utc = 1_700_000_000_000 + 23 * 3_600_000; // 2023-11-14 22:13 UTC + 23h
-        assert_ne!(local_day(late_utc, 0), local_day(late_utc, 300));
     }
 
     #[test]
@@ -1586,6 +1723,8 @@ mod tests {
             calendar_names: vec![],
             calendar_writable: false,
             calendar_truncated: false,
+            contacts_capped: false,
+            threads_on_phone: None,
             contacts_synced_unix_ms: None,
             calendar_synced_unix_ms: None,
             sms_status_reports: false,
@@ -1618,5 +1757,109 @@ mod tests {
     fn capitalizes_device_kind() {
         assert_eq!(capitalize("phone"), "Phone");
         assert_eq!(capitalize(""), "");
+    }
+
+    /// Frame cost of a conversation pane with many bubbles (headless: shapes built and tessellated, nothing drawn).
+    /// `--nocapture` prints the numbers; `GEEKBRIDGE_SCALE=1` runs 2,000 messages and enforces a budget.
+    #[test]
+    fn thread_frame_cost_with_many_messages() {
+        use std::time::Instant;
+        let big = std::env::var("GEEKBRIDGE_SCALE").as_deref() == Ok("1");
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply(&ctx, bridge_core::AppKind::Messages);
+        let pal = theme::palette(bridge_core::AppKind::Messages, true);
+        let messages = |n: usize| -> Vec<MessageItem> {
+            (0..n)
+                .map(|i| MessageItem {
+                    uid: i as i64,
+                    mms: false,
+                    outgoing: i % 2 == 0,
+                    body: format!("message {i} about lunch 🎉 Café 東京 the quick brown fox jumps over the lazy dog"),
+                    date_ms: 1_793_523_600_000 + i as u64 * 60_000,
+                    attachments: 0,
+                    sub_id: None,
+                })
+                .collect()
+        };
+        let heights = std::cell::RefCell::new(HashMap::new());
+        let cost = |list: &[MessageItem]| -> f64 {
+            heights.borrow_mut().clear();
+            let mut total = 0.0;
+            for round in 0..8 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 640.0),
+                    )),
+                    ..Default::default()
+                };
+                let t = Instant::now();
+                let out = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        egui::ScrollArea::vertical()
+                            .stick_to_bottom(true)
+                            .show_viewport(ui, |ui, viewport| {
+                                let origin = ui.min_rect().top();
+                                thread_bubbles(
+                                    ui,
+                                    &pal,
+                                    &mut heights.borrow_mut(),
+                                    list,
+                                    viewport,
+                                    origin,
+                                );
+                            });
+                    });
+                });
+                ctx.tessellate(out.shapes, out.pixels_per_point);
+                if round >= 3 {
+                    total += t.elapsed().as_secs_f64() * 1000.0;
+                }
+            }
+            total / 5.0
+        };
+        let (small, large) = (
+            cost(&messages(100)),
+            cost(&messages(if big { 2000 } else { 400 })),
+        );
+        println!(
+            "scale thread: 100 bubbles {small:.2} ms/frame, {} bubbles {large:.2} ms/frame",
+            if big { 2000 } else { 400 }
+        );
+        if big && !cfg!(debug_assertions) {
+            assert!(large < 16.0, "{large:.2} ms for 2000 bubbles");
+        }
+    }
+
+    #[test]
+    fn a_cut_conversation_list_says_how_much_is_shown() {
+        let mut v = MessagesView::default();
+        assert_eq!(conversations_note(&v), None);
+        v.conversations = (0..100)
+            .map(|i| ConversationItem {
+                thread_id: i,
+                ..ConversationItem::default()
+            })
+            .collect();
+        v.conversations_total = 100;
+        assert_eq!(conversations_note(&v), None);
+        v.conversations_total = 300;
+        assert_eq!(
+            conversations_note(&v).unwrap(),
+            "Showing the newest 100 of 300 conversations. Search to find older ones."
+        );
+        let d = DataDevice {
+            threads_on_phone: Some(1234),
+            ..DataDevice::default()
+        };
+        v.devices.push(d);
+        assert!(
+            conversations_note(&v)
+                .unwrap()
+                .contains("of 1,234 conversations")
+        );
+        assert_eq!(fmt_count(0), "0");
+        assert_eq!(fmt_count(20000), "20,000");
     }
 }

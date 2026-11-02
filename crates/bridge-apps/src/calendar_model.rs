@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Pure calendar logic for the Calendar window: which local day an event belongs to, month/week
 //! grids, overlap columns, the event editor's text fields and their conversion to UTC. No drawing
 //! and no I/O; the computer's UTC offset is passed in so tests cover daylight-saving edges.
@@ -5,6 +6,12 @@ use crate::localtime::Date;
 use bridge_core::phone_view::{CalendarItem, EventDraft, EventItem};
 
 pub const DAY_MS: i64 = 86_400_000;
+
+/// First three characters of a month name ("août" -> "aoû"). Never slice a name by bytes: the
+/// non-English names hold multi-byte letters and `[..3]` panics inside one.
+pub fn month_abbr(name: &str) -> String {
+    name.chars().take(3).collect()
+}
 
 /// UTC offset in minutes of the viewer's computer on a local date.
 pub type Offset<'a> = &'a dyn Fn(Date) -> i32;
@@ -319,6 +326,23 @@ pub fn local_zone_name() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn month_abbreviation_survives_multibyte_names_in_every_language() {
+        use crate::localtime::{Lang, Locale};
+        for lang in [Lang::En, Lang::De, Lang::Fr, Lang::Es, Lang::Pt, Lang::It] {
+            for m in 1..=12 {
+                let name = Locale {
+                    lang,
+                    hour12: false,
+                }
+                .month_name(m);
+                let a = month_abbr(name);
+                assert!(a.chars().count() <= 3 && name.starts_with(&a), "{name}");
+            }
+        }
+        assert_eq!(month_abbr("août"), "aoû");
+    }
 
     fn d(y: i32, m: u32, day: u32) -> Date {
         Date {

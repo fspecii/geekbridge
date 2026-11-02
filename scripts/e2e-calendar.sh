@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Real end-to-end for the Contacts and Calendar apps: Android emulator <-> desktop geekbridge-service <->
 # the real desktop windows (private Xvfb). Contacts and calendar events are injected into the emulator's
 # own providers with `content insert`; an event is then CREATED from the desktop and looked up again in the

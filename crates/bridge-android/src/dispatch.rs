@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Request parsing, action dispatch and response encoding. Pure and JVM-free so host tests cover it.
 use bridge_core::{
     clipboard::{

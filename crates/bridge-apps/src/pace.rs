@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Poll pacing for the background workers. The service offers no pushed events (IPC is request /
 //! response), so idle windows poll less often: unfocused or minimised windows and windows with no
 //! phone paired back off. Interactive commands still wake a worker at once through its channel.

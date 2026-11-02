@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Android footprint measurements on an emulator (docs/android-perf.md). Emulator numbers are a regression baseline,
 # not phone numbers: x86_64 code, software GPU, a different ART/zygote, no real radio or battery.
 #

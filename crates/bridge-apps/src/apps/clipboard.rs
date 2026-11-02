@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Clipboard: per-phone sync switches and status, "paste from phone", and a small scratchpad.
 //! Computer-to-phone copying is automatic for phones you turn on; phone-to-computer is pulled with a
 //! shortcut because Android does not let apps read the clipboard in the background.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Honest bookkeeping for calendar edits sent to a phone (`geekbridge.calendar.write`).
 //!
 //! Nothing here touches the link. The ledger records what the user asked for and how far it got:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Failure injection against the Android transport actor: pairing through a lossy, fragmenting,
 //! slow link, a reconnect storm with descriptor / thread / memory checks, a stalled handshake,
 //! and the kernel keepalive on accepted sockets. A TCP fault proxy (bridge-chaos) sits between a

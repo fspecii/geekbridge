@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Linux implementation of the read-only probe.
 
 use std::collections::HashMap;

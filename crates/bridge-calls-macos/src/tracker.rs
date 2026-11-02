@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Derives GeekBridge calls from the three standard HFP call indicators.
 //!
 //! `IOBluetoothHandsFreeDevice` reports `call`, `callsetup` and `callheld` as separate delegate

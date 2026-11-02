@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Light and dark screenshots of the real Messages window, with a scripted phone
 # (crates/bridge-phone-sim/examples/data_sim.rs) instead of an emulator. Private Xvfb, private
 # service state; nothing touches the user's session.

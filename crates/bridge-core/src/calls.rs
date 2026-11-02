@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-independent call state and call-control capability model.
 //!
 //! This module performs no I/O. It describes what a backend claims it can do

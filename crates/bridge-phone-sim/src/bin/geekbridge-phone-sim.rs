@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-phone-sim`: serve a simulated phone as `org.pipewire.Telephony` on D-Bus, backed
 //! by an Android emulator (via `adb`) or an in-memory fake modem. Signalling only: no Bluetooth,
 //! no audio.

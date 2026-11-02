@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Live-heap accounting for memory work (feature `memstats`, off in releases). A counting global
 //! allocator tracks live and peak bytes of everything Rust allocates; GL driver allocations
 //! (Mesa, NVIDIA) bypass it, so `rss - live` is roughly "what the driver and libraries cost".

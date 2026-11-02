@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! KDE Connect `share` plugin on the phone: transfer book, JSON views and the tasks that move bytes.
 //!
 //! Files never pass through JSON or memory: Kotlin hands over duplicated file descriptors (a content

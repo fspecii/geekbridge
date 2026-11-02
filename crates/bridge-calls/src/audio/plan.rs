@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only planning: inventory → explicit routing plan. Pure functions over a
 //! [`ServerSnapshot`]; nothing here can touch a server.
 //!

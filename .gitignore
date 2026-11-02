@@ -15,3 +15,29 @@
 *.keystore
 *.pass
 release-keystore*
+
+# Never publish: local-only research, third-party analysis inputs and scratch output
+/docs/research/
+/docs/reference-manifest.json
+/docs/public-readiness.md
+/tools/
+/references/
+/downloads/
+/dist/
+/.tools/
+/scratch/
+/tmp/
+/android/.kotlin/
+/android/local.properties
+local.properties
+__pycache__/
+*.pyc
+.env
+.env.*
+*.key
+
+# Generated fuzz corpus (hundreds of MB of mutated inputs): only the hand-written builtin-* seeds are kept
+/fuzz/corpus/*/*
+!/fuzz/corpus/*/builtin-*
+/fuzz/artifacts/
+/fuzz/target/

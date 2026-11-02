@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The process main thread's `CFRunLoop`, driven in short slices.
 //!
 //! IOBluetooth delivers delegate callbacks through run loops; Apple does not say which one, so the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! IOBluetooth implementation of [`NativePort`].
 //!
 //! # Ownership and threading

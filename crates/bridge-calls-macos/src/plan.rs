@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Command planning: turns a requested operation plus the current call picture into exactly one
 //! documented `IOBluetoothHandsFreeDevice` operation, or a refusal.
 //!

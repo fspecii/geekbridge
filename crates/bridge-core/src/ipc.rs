@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Authenticated local control protocol between `geekbridge-service` and its clients.
 //!
 //! This is *not* the public discovery API ([`crate::fetch_snapshot`]); that one stays read-only and
@@ -506,6 +507,10 @@ pub enum Request {
         /// Filter the list to conversations whose name, number or any held message contains this.
         #[serde(default)]
         query: Option<String>,
+        /// How many of the thread's newest messages to return; 0 = the default `MAX_MESSAGES_SHOWN`. Capped by
+        /// `MAX_MESSAGES_LIMIT` and by the reply's byte budget.
+        #[serde(default)]
+        message_limit: usize,
     },
     /// Ask for the conversation list, or for older history of one thread.
     MessagesRefresh {

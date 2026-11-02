@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
 import org.json.JSONArray
@@ -69,7 +70,7 @@ object PhoneDataKinds {
 
 /** One desktop request relayed by the native core. */
 data class DataEvent(val seq: Long, val connectionId: Long, val kind: String, val body: JSONObject)
-data class DataWait(val events: List<DataEvent>, val seq: Long, val stopped: Boolean)
+data class DataWait(val events: List<DataEvent>, val seq: Long, val stopped: Boolean, val truncated: Boolean = false)
 
 object PhoneDataLimits {
     const val MAX_PACKET_BYTES = 900 * 1024
@@ -91,8 +92,13 @@ object PhoneDataLimits {
     const val MAX_SMS_PER_PACKET = 100
     const val MAX_SMS_BODY_CHARS = 20_000
     const val MAX_CONVERSATION_PAGE = 50
-    const val WINDOW_PAST_MS = 7L * 86_400_000
-    const val WINDOW_FUTURE_MS = 90L * 86_400_000
+    /** Events from the last 12 months and the next 24 months; past [MAX_EVENTS] the ones nearest today win. */
+    const val WINDOW_PAST_MS = 365L * 86_400_000
+    const val WINDOW_FUTURE_MS = 730L * 86_400_000
+    /** Newest SMS rows scanned to find the latest message of each thread, and for the thread count. */
+    const val SMS_SCAN_ROWS = 20_000
+    const val SMS_SCAN_CHUNK = 2_000
+    const val SMS_THREADS_LISTED = MAX_SMS_PER_PACKET * 3
     const val CALENDAR_PUSH_SPACING_MS = 30_000L
     const val WAIT_MS = 25_000L
     const val SMS_SENDS_PER_MINUTE = 10
@@ -127,9 +133,10 @@ object PhoneDataProtocol {
     fun parseWait(result: Any?): DataWait? {
         val o = result as? JSONObject ?: return null
         val arr = o.optJSONArray("events") ?: return null
-        if (arr.length() > 64) return null
-        val out = ArrayList<DataEvent>(arr.length())
-        for (i in 0 until arr.length()) {
+        // More than 64 is not an error: hand on the first 64 and let the next wait return the rest.
+        val truncated = arr.length() > 64
+        val out = ArrayList<DataEvent>(minOf(arr.length(), 64))
+        for (i in 0 until minOf(arr.length(), 64)) {
             val e = arr.optJSONObject(i) ?: continue
             val seq = (e.opt("seq") as? Number)?.toLong() ?: continue
             val conn = (e.opt("connection_id") as? Number)?.toLong() ?: 0L
@@ -138,7 +145,13 @@ object PhoneDataProtocol {
             out += DataEvent(seq, conn, k, body)
         }
         val seq = (o.opt("seq") as? Number)?.toLong() ?: (o.opt("last_seq") as? Number)?.toLong() ?: 0L
-        return DataWait(out, seq, o.optBoolean("stopped", false))
+        return DataWait(out, seq, o.optBoolean("stopped", false), truncated)
+    }
+
+    /** Where the next wait starts. After a truncated answer only what was handed on counts as seen. */
+    fun nextSince(since: Long, w: DataWait): Long {
+        val seen = w.events.maxOfOrNull { it.seq } ?: 0L
+        return if (w.truncated && seen > 0) maxOf(since, seen) else maxOf(since, w.seq, seen)
     }
 
     // ------------------------------------------------------------------ text hygiene

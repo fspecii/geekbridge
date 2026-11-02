@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Narrow ports between the testable orchestration and the Apple frameworks.
 //!
 //! [`NativePort`] is everything the orchestrator needs from IOBluetooth; [`AudioPort`] everything

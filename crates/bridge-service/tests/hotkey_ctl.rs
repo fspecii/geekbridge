@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! `geekbridge-ctl hotkey` and `status --waybar` end to end, in a temporary home. HOME and
 //! XDG_CONFIG_HOME are overridden and the Hyprland instance variable is removed, so the real
 //! `~/.config` is never read or written and the real compositor is never asked to reload.

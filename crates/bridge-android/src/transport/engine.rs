@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Live transport state and the tasks that drive connections on the transport runtime.
 //!
 //! Everything here is built on `bridge-kde`: it performs the TLS handshake, pins certificates,
@@ -1116,6 +1117,15 @@ async fn run_trusted(
                     // request is shown as the usual prompt on this connection; nothing changes
                     // until the user accepts.
                     if let Ok(pending) = link.into_re_pairing() {
+                        // Sends queued for the old trusted link will never go out on this one:
+                        // fail them (and the transfers announced to this device) now.
+                        let device = core.lock().conns.get(&id).map(|c| c.peer_id.clone());
+                        if let Some(device) = device {
+                            core.cancel_transfers_of(device.as_str());
+                        }
+                        while let Ok(queued) = ctl_rx.try_recv() {
+                            core.drop_queued(queued);
+                        }
                         core.with_conn(id, |c| c.phase = Phase::PairingAwait);
                         return Box::pin(run_pending(
                             core, id, pending, Origin::Inbound, ctl_rx, close,
@@ -1181,6 +1191,7 @@ pub(super) fn kde_code(e: &KdeError) -> &'static str {
             PairingFailure::LinkClosed => "link_closed",
         },
         KdeError::Store(_) | KdeError::StoreCorrupt { .. } => "store_error",
+        KdeError::StoreNewer { .. } => "state_newer",
         KdeError::InsecurePermissions { .. } => "insecure_state",
         KdeError::UnsupportedPlatform(_) => "unsupported_platform",
     }

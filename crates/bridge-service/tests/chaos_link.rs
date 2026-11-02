@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Failure injection on the phone link: pairing and reconnecting through a fault proxy, a
 //! 100-cycle reconnect storm with descriptor / thread / memory growth checks, the dead-link
 //! settings, and call control while the link flaps.

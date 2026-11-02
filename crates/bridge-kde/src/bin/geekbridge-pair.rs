@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Developer tool for pairing GeekBridge with one explicitly chosen KDE Connect device.
 //!
 //! It never scans or broadcasts, talks only to the endpoint given on the command
@@ -30,7 +31,7 @@ use tokio::net::TcpListener;
         it performs the KDE Connect protocol 8 TLS handshake, shows the peer certificate fingerprint, \
         and - for `pair` - asks you to type the verification code shown on the other device.\n\n\
         Interoperability with real devices is NOT established by the automated tests; \
-        see `docs/architecture.md`."
+        see docs/kdeconnect-interop.md."
 )]
 struct Cli {
     /// Directory for the device identity (identity.pem, mode 0600) and trust store.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The "Update available" banner and the update controls in the details panel.
 //!
 //! The service owns the schedule, the network and the SHA-256 check (`bridge-update`). This

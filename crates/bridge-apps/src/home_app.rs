@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The single entry window (`geekbridge`). It owns no protocol logic: pairing is the shared
 //! `Connections` panel, clipboard sync is the Clipboard app's `sync_section`, updates are
 //! `Updates`, and sending files hands them to `geekbridge-share`.
@@ -265,6 +266,7 @@ impl HomeApp {
                     device_id: None,
                     thread_id: None,
                     query: None,
+                    message_limit: 0,
                 },
             ));
         }
@@ -627,7 +629,6 @@ impl HomeApp {
     fn next_events(&self) -> Option<Vec<(String, String)>> {
         let view = self.agenda.as_ref()?.state().view?;
         let now = now_ms();
-        let off = localtime::utc_offset_minutes(localtime::now().date);
         let mut items: Vec<_> = view.events.iter().filter(|e| e.end_ms >= now).collect();
         items.sort_by_key(|e| e.start_ms);
         Some(
@@ -638,7 +639,7 @@ impl HomeApp {
                     let when = if e.all_day {
                         "All day".to_owned()
                     } else {
-                        localtime::clock_label(e.start_ms, off)
+                        localtime::clock_label_local(e.start_ms)
                     };
                     (when, crate::state::display_text(&e.title))
                 })

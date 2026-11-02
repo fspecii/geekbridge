@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Explicit "not supported here" ports for hosts without macOS Bluetooth. They let the daemon
 //! construct the same [`Controller`](crate::controller::Controller) everywhere; every operation
 //! then reports [`AdapterError::UnsupportedHost`](crate::error::AdapterError::UnsupportedHost)

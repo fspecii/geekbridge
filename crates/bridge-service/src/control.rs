@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The authenticated control listener (loopback only). Wire contract: `bridge_core::ipc`.
 //!
 //! Order of operations per connection, each step bounded:

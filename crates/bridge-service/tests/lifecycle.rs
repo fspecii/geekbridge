@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end lifecycle tests: the service core against phones that speak the real transport over
 //! loopback TLS. Covers pair, reconnect, unpair (both directions), dead-link detection and hostile
 //! input on established and half-open connections. The leak assertions live in `leaks.rs`, which
@@ -447,6 +448,38 @@ async fn renaming_the_computer_is_validated_saved_and_used_by_the_next_connectio
     let phone = Phone::new();
     let link = pair_phone(&rig, &phone).await;
     assert_eq!(link.info().peer.device_name, "Study PC");
+}
+
+#[tokio::test]
+async fn a_rename_reaches_the_lan_announcement_without_a_restart() {
+    let rig = Rig::start().await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let daemon = rig.daemon.clone();
+    let task = tokio::spawn(async move {
+        daemon
+            .announce_every(1716, std::time::Duration::from_millis(20), move |line| {
+                let _ = tx.send(line);
+                std::future::ready(())
+            })
+            .await
+    });
+    let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
+    assert!(text(rx.recv().await.unwrap()).contains("Test Desktop"));
+    rig.ok(Request::SetDeviceName {
+        name: "Study PC".into(),
+    })
+    .await;
+    // Lines already in flight may still carry the old name; a later one must not.
+    let seen = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if text(rx.recv().await.unwrap()).contains("Study PC") {
+                break;
+            }
+        }
+    })
+    .await;
+    task.abort();
+    assert!(seen.is_ok(), "still announcing the old name");
 }
 
 #[tokio::test]

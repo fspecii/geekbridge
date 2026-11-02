@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The modem abstraction behind the simulated phone, plus an in-memory fake and an `adb`-driven
 //! Android-emulator implementation. Portable: nothing here is platform specific.
 //!
@@ -463,7 +464,7 @@ const REGISTRY_CMD: &str = "dumpsys telephony.registry | grep -E '^ +(mCallState
 /// [`Command`] (never a shell on the host); numbers are validated first and, because `adb shell`
 /// hands one string to the device shell, quoted there as well.
 ///
-/// Measured emulator behaviour this relies on is in `docs/architecture.md`:
+/// Measured emulator behaviour this relies on is described in `docs/emulated-calls.md`:
 /// the registry's precise call states tell dialing from active; the console cannot answer or hang
 /// up a call the guest placed (the modem simulator answers outbound calls by itself after about
 /// two seconds), so [`RemoteParty::remote_accept`] / [`RemoteParty::remote_hangup`] report
@@ -992,7 +993,7 @@ Phone Id=1
         ));
     }
 
-    /// Registry lines as the emulator prints them (`docs/architecture.md`).
+    /// Registry lines as the emulator prints them (see docs/emulated-calls.md).
     fn reg(call_state: u8, ring: i32, fg: i32, bg: i32, number: &str) -> String {
         format!(
             "  Phone Id=0\n    mCallState={call_state}\n    mRingingCallState={ring}\n    \

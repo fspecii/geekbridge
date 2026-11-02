@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Black-box tests of file / link / text sharing through the control API.
 //!
 //! The "phone" is a real `bridge_kde` endpoint with a generated certificate; payload sockets are

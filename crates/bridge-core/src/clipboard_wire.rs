@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Stock KDE Connect clipboard packets, shared by the desktop service and the phone transport.
 //!
 //! Pure functions over the JSON body of a packet; this crate does not depend on the transport.
 //! `kdeconnect.clipboard` carries `{content}`; `kdeconnect.clipboard.connect` carries
 //! `{content, timestamp}` (epoch milliseconds, 0 = unknown) and is sent once when a link comes up.
-//! See `docs/architecture.md` for what stock peers do with them.
+//! See `docs/clipboard-sync.md` for what stock peers do with them.
 use serde_json::{Map, Value};
 
 pub const CLIPBOARD: &str = "kdeconnect.clipboard";

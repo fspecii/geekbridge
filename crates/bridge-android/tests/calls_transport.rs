@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Call control on the phone transport, through the public request interface, against a real
 //! `bridge_kde` endpoint playing the desktop. Telecom itself (Android's `TelecomManager`) is Kotlin's
 //! and is covered by the JVM tests.

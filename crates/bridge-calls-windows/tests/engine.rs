@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Engine behaviour against the in-memory port: state, selection, gating, side effects, stale
 //! references, dispatch and timeouts. No Windows needed.
 use bridge_calls_windows::engine::*;

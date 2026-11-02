@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The incoming-call popup and the ongoing-call panel of the Calls window.
 //!
 //! Everything shown here comes from the service's merged view (`bridge_core::calls_view`): a button
@@ -504,7 +505,8 @@ fn keys_for(
     }
     if view.live().is_some() {
         if armed {
-            if hit(Key::Enter) || (!typing && hit(Key::H)) {
+            // Enter in the dialer's text field is the field's, not a hang-up.
+            if !typing && (hit(Key::Enter) || hit(Key::H)) {
                 out.decisions.push(Decision::HangUp);
             } else if hit(Key::Escape) {
                 out.cancel_hangup = true;
@@ -658,8 +660,13 @@ mod tests {
         );
         let back = keys(&live, true, false, false, &[Key::Escape]);
         assert!(back.cancel_hangup && back.decisions.is_empty());
-        // Typing a number never hangs up.
+        // Typing a number never hangs up, armed or not.
         assert_eq!(keys(&live, false, false, true, &[Key::H]), Keys::default());
+        assert!(
+            keys(&live, true, false, true, &[Key::Enter])
+                .decisions
+                .is_empty()
+        );
     }
 
     #[test]

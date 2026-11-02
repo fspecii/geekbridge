@@ -78,11 +78,22 @@ Single version source: see [builds.md](builds.md#releases-and-versioning).
 * TLS is rustls with the bundled Mozilla root set (`webpki-roots`); the operating system trust store and proxy
   settings are not used.
 
+### Installing a downloaded archive by hand
+
+The archive the checker fetches, `geekbridge-linux-x86_64.tar.gz`, holds the nine executables and `README.md` in one
+directory; it has no `install.sh`, desktop entries or systemd unit (those come with the installer tarball and the `.deb`).
+To update by hand: extract it, copy the executables over the installed ones (same directory as `geekbridge-ctl`, e.g.
+`install -m 0755 geekbridge-linux-x86_64/geekbridge* ~/.local/bin/`), then restart the service
+(`systemctl --user restart geekbridge-service`, or log out and in). Pairings and settings live in the state directory and
+are not touched. Verified with real artifacts: [updater-e2e.md](updater-e2e.md).
+
 ### Asset naming (what the selector expects)
 
 `geekbridge-<os>-<arch>.<tar.gz|zip>` with `os` in `linux|windows|macos` and `arch` in `x86_64|aarch64`
 (aliases `amd64|x64|arm64`, `darwin|osx`, `universal` for macOS are accepted). Files containing `android`,
-ending in `.apk`, or containing `sha256` are never picked as desktop installers. The release workflow produces
+ending in `.apk`, or containing `sha256` are never picked as desktop installers. When several files fit (the release also
+carries `geekbridge-<version>-linux-x86_64-installer.tar.gz`), the better extension wins, then the shortest name, i.e. the
+canonical `geekbridge-<os>-<arch>.<ext>`. The release workflow produces
 exactly these names.
 
 ## Android

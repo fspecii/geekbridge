@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Assemble "GeekBridge Calls.app" around an already-built geekbridge-macos-calls executable.
 #
 #   assemble-app.sh --binary PATH --out DIR [--bundle-id ID] [--version X.Y.Z] [--build N]
@@ -21,7 +22,7 @@ while [[ $# -gt 0 ]]; do
     --version) version="$2"; shift 2;;
     --build) build="$2"; shift 2;;
     --adhoc-sign) sign=1; shift;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0;;
+    -h|--help) sed -n '3,16p' "${BASH_SOURCE[0]}"; exit 0;;
     *) echo "unknown argument: $1" >&2; exit 64;;
   esac
 done
@@ -43,6 +44,8 @@ mkdir -p "$app/Contents/MacOS"
 sed -e "s|@BUNDLE_ID@|$bundle_id|g" -e "s|@VERSION@|$version|g" -e "s|@BUILD@|$build|g" \
   "$here/Info.plist.template" > "$app/Contents/Info.plist"
 install -m 0755 "$bin" "$app/Contents/MacOS/geekbridge-macos-calls"
+mkdir -p "$app/Contents/Resources"
+install -m 0644 "$here/../../LICENSE" "$here/../../THIRD_PARTY_NOTICES.md" "$app/Contents/Resources/"
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
   plutil -lint "$app/Contents/Info.plist"

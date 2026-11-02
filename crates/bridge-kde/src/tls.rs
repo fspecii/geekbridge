@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! TLS configuration with per-connection peer verifiers.
 //!
 //! KDE peers use self-signed certificates, so public-CA validation is useless

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Transactional start/stop of the session-owned modules that carry call audio.
 //!
 //! Ownership rules (the reason this file is long):

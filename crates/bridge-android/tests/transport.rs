@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Integration tests of the transport actor through the public request interface.
 //!
 //! The "desktop" is a `bridge_kde::Endpoint` with generated credentials and its own runtime, so

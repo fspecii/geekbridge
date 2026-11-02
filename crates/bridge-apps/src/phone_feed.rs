@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Live phone data (people, events, messages) for the Agenda and Messages windows. A worker thread
 //! asks the service for a bounded view every couple of seconds and runs the user's actions (refresh,
 //! send, allow a feature); the window only reads the latest result. All blocking I/O stays on the

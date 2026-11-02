@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The actor that owns the platform port and the [`Engine`].
 //!
 //! All COM/WinRT work happens on one dedicated thread: the platform is *created on that thread*

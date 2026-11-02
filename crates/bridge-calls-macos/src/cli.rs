@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Command line of the `geekbridge-macos-calls` helper.
 //!
 //! The default action (no arguments) is the read-only probe: it lists paired phones and
@@ -24,7 +25,7 @@ pub const USAGE: &str = "\
 geekbridge-macos-calls [probe | serve] [options]
 
   probe   (default) read-only: authorization, paired phones, capabilities, then exit.
-  serve   JSON-lines helper on stdin/stdout (protocol v1); see `docs/architecture.md`.
+  serve   JSON-lines helper on stdin/stdout (protocol v1).
 
 options:
   --allow-permission-prompt   let macOS show its Bluetooth permission prompt if undecided

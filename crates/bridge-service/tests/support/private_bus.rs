@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! A private `dbus-daemon` and a fake `org.kde.StatusNotifierWatcher` for the tray tests. Include with
 //! `#[path = "support/private_bus.rs"] mod private_bus;`.
 #![allow(dead_code)]

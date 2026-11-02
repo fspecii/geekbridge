@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-neutral vocabulary shared by the orchestration layer, the JSON helper protocol and the
 //! Apple bindings. Nothing here touches Objective-C, so it compiles and is tested on every host.
 use bridge_core::calls::{MAX_FIELD_LEN, Sensitive};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The audio "server" of platforms without a native call-audio adapter yet. Every operation
 //! fails with an explicit reason; the Windows (WASAPI/virtual-device) and macOS (CoreAudio)
 //! adapters will implement [`AudioServer`] in their place.

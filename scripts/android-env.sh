@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Source this file (do not execute) to put the project-local Android/Rust/Java
 # toolchain on PATH for the current shell only. Nothing global is modified.
 #

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! PulseAudio / `pipewire-pulse` adapter over libpulse's native API (no `pactl`, no subprocess).
 //!
 //! Uses the single-threaded libpulse main loop, pumped manually so every wait has a deadline:

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Build the Android companion debug APK with the project-local toolchain.
 #
 #   scripts/build-android.sh [--skip-tests] [--skip-lint] [--skip-host-tests]
@@ -24,7 +25,7 @@ for arg in "$@"; do
         --skip-tests) RUN_TESTS=0 ;;
         --skip-lint) RUN_LINT=0 ;;
         --skip-host-tests) RUN_HOST_TESTS=0 ;;
-        -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done

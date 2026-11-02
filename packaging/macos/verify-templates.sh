@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Structural checks for the macOS packaging templates. Runs on any host (no Apple tools needed):
 # parses each plist with Python's plistlib and asserts the keys and purpose strings the helper needs.
 # This proves the templates are well-formed and complete; it does NOT prove macOS accepts them.

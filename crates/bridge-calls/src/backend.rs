@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The backend contract and the explicit "nothing here" backend.
 
 use std::time::Duration;

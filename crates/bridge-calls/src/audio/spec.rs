@@ -1,8 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Module names, argument strings and ownership tags for the loopback / echo-cancel modules.
 //!
-//! The module set follows the usual call-audio graph (two `module-loopback`, optional
-//! `module-echo-cancel`; a common PulseAudio recipe), rebuilt here as typed specs
-//! rather than copied code. Every argument string is derived from validated names, so no quoting
+//! The module set is the usual PipeWire/PulseAudio call-audio graph (two `module-loopback`, optional
+//! `module-echo-cancel`), written here as typed specs. Every argument string is derived from validated names, so no quoting
 //! or escaping is ever needed.
 
 use serde::Serialize;

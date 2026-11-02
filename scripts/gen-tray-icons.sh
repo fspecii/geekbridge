@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Regenerate assets/tray/: dot-matrix SVGs (from the tables in crates/bridge-service/src/tray/icon.rs,
 # the same ones the service draws at run time) and PNGs at the usual tray sizes (needs rsvg-convert).
 #

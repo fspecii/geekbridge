@@ -1,4 +1,5 @@
 #!/usr/bin/env python3 -I
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Dump the AT-SPI accessibility tree of one running application (used by scripts/a11y-dump.sh).
 
     python3 -I scripts/atspi_dump.py APP_NAME_SUBSTRING [SECONDS_TO_WAIT]

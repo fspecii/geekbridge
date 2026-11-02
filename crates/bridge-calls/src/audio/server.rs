@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The only way the route manager touches an audio server.
 //!
 //! The trait is deliberately narrow: one consistent read, load a module, unload a module,

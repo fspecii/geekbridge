@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! The tray task end to end: a real service core and a stand-in phone on one side, a private session
 //! bus with a fake StatusNotifierWatcher on the other. Pairing a phone must change what the tray shows
 //! with no timer involved, and "Quit" must reach the service.

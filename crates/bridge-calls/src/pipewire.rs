@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Linux adapter: PipeWire's `org.pipewire.Telephony` D-Bus service (zbus, blocking).
 //!
 //! Object layout (`telephony.c`, master; interface set confirmed against the installed

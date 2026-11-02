@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Dead-link detection timers for link sockets (docs/chaos-findings.md, C-2 / C-5).
 //!
 //! Idle 30 s, then probes every 10 s, three of them: a vanished peer is noticed in about 60 s.

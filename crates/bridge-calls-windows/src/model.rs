@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-neutral facts and identifiers observed through the Windows phone-line APIs.
 //!
 //! Everything here is plain data so the engine, the projection to `bridge-core` and the tests run

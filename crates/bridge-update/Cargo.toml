@@ -3,6 +3,8 @@ name = "bridge-update"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+publish = false
 description = "Update check, download and SHA-256 verification against the latest GitHub Release"
 
 [dependencies]

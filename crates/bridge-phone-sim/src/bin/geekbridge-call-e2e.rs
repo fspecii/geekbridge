@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end call harness, desktop side.
 //!
 //! Drives the real `bridge-calls` stack (`Session` over `PipeWireBackend`) against a simulator
@@ -72,7 +73,7 @@ OPTIONS:
   --json               print one JSON document instead of per-step lines
   -h, --help           this text
 
-With --adb the scenarios adapt to the emulator's measured modem (`docs/architecture.md`):
+With --adb the scenarios adapt to the emulator's measured modem (docs/emulated-calls.md):
 it auto-answers calls the desktop places after about 2 s and cannot be accepted or hung up from the
 console, so S4 ends with a desktop Hangup and S5 hangs up inside the dialing window (retrying up to
 twice if the call is answered first, reported in the output).

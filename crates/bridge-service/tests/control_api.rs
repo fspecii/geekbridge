@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Black-box tests of the authenticated control API and the link lifecycle behind it.
 //!
 //! The "phones" are real `bridge_kde` endpoints with freshly generated certificates talking TLS to

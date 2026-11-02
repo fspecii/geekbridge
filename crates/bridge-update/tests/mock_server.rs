@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! End-to-end flows against a local mock "GitHub" over plain HTTP on loopback.
 
 use bridge_core::ipc::UpdateState;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 use bridge_core::{ConnectionState, Device};
 use serde::Deserialize;
 use std::net::IpAddr;
@@ -62,7 +63,17 @@ pub fn parse_identity(data: &[u8], source: IpAddr, now: u64) -> Result<Device, &
         _ => "unknown",
     }
     .to_owned();
-    let name: String = body.device_name.chars().take(64).collect();
+    // Zero-width and bidi-override characters can reorder or hide the text around a name; the TCP
+    // identity path strips them (bridge_kde::identity), so the datagram path must too.
+    let name: String = body
+        .device_name
+        .chars()
+        .filter(|c| !bridge_kde::identity::is_invisible_format(*c))
+        .take(64)
+        .collect();
+    if name.trim().is_empty() {
+        return Err("invalid device name");
+    }
     if !(1716..=1764).contains(&body.tcp_port) {
         return Err("invalid KDE Connect TCP port");
     }

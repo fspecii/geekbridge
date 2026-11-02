@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Authenticated service state and explicit user decisions. Networking never runs in a GUI frame.
 use crate::{
     state::{DiscoveryModel, Strip, Tone, display_text},

@@ -1,0 +1,48 @@
+<resources>
+    <!-- Home-screen widgets (platform RemoteViews only). Android 12+ uses the launcher's own corner radius. -->
+    <dimen name="gb_widget_radius">24dp</dimen>
+    <dimen name="gb_widget_inner_radius">14dp</dimen>
+
+    <string name="widget_connection_label">Connection</string>
+    <string name="widget_connection_desc">Whether this phone is connected to your computer.</string>
+    <string name="widget_quick_label">Quick actions</string>
+    <string name="widget_quick_desc">Send a file or the clipboard, paste from your computer, answer calls from it.</string>
+    <string name="widget_agenda_label">Agenda</string>
+    <string name="widget_agenda_desc">The next three events today, in dots. Needs calendar access.</string>
+
+    <!-- Drawn in the dot-matrix font (capital Latin letters, digits and basic punctuation only). -->
+    <string name="widget_word_connected">Connected</string>
+    <string name="widget_word_offline">Offline</string>
+    <string name="widget_word_ringing">Ringing</string>
+    <string name="widget_word_unpaired">Not paired</string>
+    <string name="widget_computer_none">No computer</string>
+
+    <!-- What TalkBack reads: words, never dots. -->
+    <string name="widget_a11y_connected">Connected to %1$s. Tap to open GeekBridge.</string>
+    <string name="widget_a11y_offline">Offline. %1$s is not connected. Tap to open GeekBridge.</string>
+    <string name="widget_a11y_offline_nameless">Offline. Tap to open GeekBridge.</string>
+    <string name="widget_a11y_ringing">Phone is ringing. %1$s can answer. Tap to open GeekBridge.</string>
+    <string name="widget_a11y_unpaired">No computer paired. Tap to pair.</string>
+
+    <string name="widget_q_send_file">Send file</string>
+    <string name="widget_q_send_clip">Send clipboard</string>
+    <string name="widget_q_paste">Paste from computer</string>
+    <string name="widget_q_answer">Answer: %1$s</string>
+    <string name="widget_q_send_file_a11y">Send file to your computer</string>
+    <string name="widget_q_send_clip_a11y">Send clipboard to your computer</string>
+    <string name="widget_q_paste_a11y">Paste from your computer</string>
+    <string name="widget_q_answer_on_a11y">Answer calls from your computer: on. Double tap to turn off.</string>
+    <string name="widget_q_answer_off_a11y">Answer calls from your computer: off. Double tap to set up.</string>
+    <string name="widget_q_pair_first_a11y">%1$s. Pair a computer first.</string>
+    <string name="widget_paste_hint">Send the clipboard from your computer; it lands on this phone, then paste anywhere.</string>
+    <string name="widget_answer_off_toast">Answering calls from the computer is off.</string>
+
+    <string name="widget_agenda_allow">Allow calendar</string>
+    <string name="widget_agenda_allow_a11y">Calendar access is off. Tap to allow calendar.</string>
+    <string name="widget_agenda_none">No more events today</string>
+    <string name="widget_agenda_all_day">All day</string>
+    <string name="widget_agenda_untitled">No title</string>
+    <string name="widget_agenda_today_a11y">Today, %1$s. %2$s</string>
+    <string name="widget_agenda_row_a11y">%1$s, %2$s</string>
+    <string name="widget_agenda_more_a11y">%1$d more events today.</string>
+</resources>

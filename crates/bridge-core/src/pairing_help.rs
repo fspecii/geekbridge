@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Plain-language help for first-time pairing: what a failure means in terms of the user's Wi-Fi,
 //! and the verdict of the "Test connection" check. Pure functions over measured facts, so every
 //! wording rule is unit-tested and the service, the apps and `geekbridge-ctl` all say the same thing.

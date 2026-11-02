@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Capability reporting. Events, control, SCO and routing are separate planes and every operation
 //! has its own entry; nothing is ever reported `Verified` by this crate (that needs a recorded
 //! hardware exercise, see `CallCapabilities::record_verified` in `bridge-core`).

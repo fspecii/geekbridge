@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Payload socket tests with generated credentials over loopback.
 
 use std::io::Cursor;

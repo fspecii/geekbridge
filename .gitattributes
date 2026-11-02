@@ -1,0 +1,22 @@
+# Checkout on the windows-latest runner defaults to core.autocrlf=true, which turns every shell
+# script into CRLF and breaks `scripts/*.sh` under Git Bash ("$'\r': command not found"), shifts
+# line-based golden files and makes `THIRD_PARTY_NOTICES.md` differ. Keep LF everywhere.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.ttf binary
+*.otf binary
+*.so binary
+*.keystore binary
+*.jks binary
+
+# Gradle wrapper (android/): the shell script must stay LF, the batch file is CRLF, the jar is a committed binary
+# whose SHA-256 is checked against Gradle's published checksums (docs/supply-chain.md).
+android/gradlew text eol=lf
+*.bat text eol=crlf
+android/gradle/wrapper/gradle-wrapper.jar binary

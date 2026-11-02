@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! macOS Bluetooth cellular-call adapter: the Mac acts as the Hands-Free (HF) unit and the Android
 //! phone as the Audio Gateway (AG), through `IOBluetoothHandsFreeDevice`.
 //!
@@ -12,7 +13,7 @@
 //!
 //! The adapter's output is the neutral `bridge_core::calls::CallEvent` stream plus
 //! [`controller::AdapterEvent`]s; it never claims `Verified` support or "duplex" audio.
-//! See `docs/architecture.md` for evidence levels and daemon integration.
+//! See `packaging/macos/README.md` for the packaging and permission notes.
 pub mod caps;
 pub mod cli;
 pub mod controller;

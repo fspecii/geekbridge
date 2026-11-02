@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Edits of the user's Hyprland configuration: a global "paste from phone" binding and window rules
 //! for the call and share windows (docs/omarchy.md).
 //!
@@ -125,6 +126,24 @@ fn is_begin(line: &str, flavor: Flavor, name: &str) -> bool {
     line.starts_with(&format!("{} >>> GeekBridge {name} (", comment(flavor)))
 }
 
+/// `text` split into lines that keep their own terminator, so joining them gives `text` back.
+fn raw_lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+/// A raw line without its terminator.
+fn content(line: &str) -> &str {
+    line.trim_end_matches(['\r', '\n'])
+}
+
+/// Line ending to use for lines GeekBridge writes: the file's first one.
+fn eol_of(text: &str) -> &'static str {
+    match text.find('\n') {
+        Some(i) if text[..i].ends_with('\r') => "\r\n",
+        _ => "\n",
+    }
+}
+
 /// Line range `[begin, end]` of the block called `name`, `None` when absent, an error when the
 /// markers are damaged (an unterminated or repeated block is never guessed at).
 fn find_block(
@@ -136,17 +155,29 @@ fn find_block(
     let mut found = None;
     let mut i = 0;
     while i < lines.len() {
-        if is_begin(lines[i], flavor, name) {
+        if is_begin(content(lines[i]), flavor, name) {
             if found.is_some() {
                 return Err(format!(
                     "more than one GeekBridge {name} block; fix it by hand"
                 ));
             }
-            let Some(off) = lines[i + 1..].iter().position(|l| l.trim_end() == end) else {
+            let Some(off) = lines[i + 1..]
+                .iter()
+                .position(|l| content(l).trim_end() == end)
+            else {
                 return Err(format!(
                     "GeekBridge {name} block has no end marker; fix it by hand"
                 ));
             };
+            // A begin marker before the end means this block lost its end marker.
+            if lines[i + 1..i + 1 + off]
+                .iter()
+                .any(|l| is_begin(content(l), flavor, name))
+            {
+                return Err(format!(
+                    "GeekBridge {name} block has no end marker; fix it by hand"
+                ));
+            }
             found = Some((i, i + 1 + off));
             i += off + 1;
         }
@@ -162,54 +193,52 @@ pub fn set_block(
     name: &str,
     body: &[String],
 ) -> Result<String, String> {
-    let lines: Vec<&str> = text.lines().collect();
+    let lines = raw_lines(text);
+    let eol = eol_of(text);
     let mut block = vec![begin_line(flavor, name)];
     block.extend(body.iter().cloned());
     block.push(end_line(flavor, name));
-    let mut out: Vec<String> = Vec::new();
     match find_block(&lines, flavor, name)? {
         Some((b, e)) => {
-            out.extend(lines[..b].iter().map(|l| (*l).to_owned()));
-            out.extend(block);
-            out.extend(lines[e + 1..].iter().map(|l| (*l).to_owned()));
-            return Ok(join(&out, text.ends_with('\n')));
+            let mut out = lines[..b].concat();
+            out.push_str(&block.join(eol));
+            // The old end marker's own terminator (or lack of one) stays.
+            out.push_str(&lines[e][content(lines[e]).len()..]);
+            out.push_str(&lines[e + 1..].concat());
+            Ok(out)
         }
         None => {
-            out.extend(lines.iter().map(|l| (*l).to_owned()));
-            if !lines.is_empty() {
-                out.push(String::new());
+            let mut out = text.to_owned();
+            if !out.is_empty() {
+                if !out.ends_with('\n') {
+                    out.push_str(eol);
+                }
+                out.push_str(eol);
             }
-            out.extend(block);
+            out.push_str(&block.join(eol));
+            out.push_str(eol);
+            Ok(out)
         }
     }
-    Ok(join(&out, true))
 }
 
 /// `text` without the block `name` (and the one blank line that separated it), or unchanged.
 pub fn remove_block(text: &str, flavor: Flavor, name: &str) -> Result<String, String> {
-    let lines: Vec<&str> = text.lines().collect();
+    let lines = raw_lines(text);
     let Some((b, e)) = find_block(&lines, flavor, name)? else {
         return Ok(text.to_owned());
     };
     // set_block puts exactly one blank line before an appended block; take it back with the block.
-    let start = if b > 0 && lines[b - 1].trim().is_empty() {
+    let start = if b > 0 && content(lines[b - 1]).trim().is_empty() {
         b - 1
     } else {
         b
     };
-    let mut out: Vec<String> = lines[..start].iter().map(|l| (*l).to_owned()).collect();
-    out.extend(lines[e + 1..].iter().map(|l| (*l).to_owned()));
-    Ok(join(&out, text.ends_with('\n')))
-}
-
-/// `lines` as text; `newline` says whether the last line ends with one (a file whose last line had
-/// none keeps it that way).
-fn join(lines: &[String], newline: bool) -> String {
-    match (lines.is_empty(), newline) {
-        (true, _) => String::new(),
-        (false, true) => format!("{}\n", lines.join("\n")),
-        (false, false) => lines.join("\n"),
-    }
+    Ok(format!(
+        "{}{}",
+        lines[..start].concat(),
+        lines[e + 1..].concat()
+    ))
 }
 
 fn lua_str(s: &str) -> String {
@@ -315,8 +344,7 @@ pub fn uninstall(text: &str, flavor: Flavor) -> Result<String, String> {
 
 /// Whether a GeekBridge block exists in `text`.
 pub fn installed(text: &str, flavor: Flavor, name: &str) -> bool {
-    let lines: Vec<&str> = text.lines().collect();
-    matches!(find_block(&lines, flavor, name), Ok(Some(_)))
+    matches!(find_block(&raw_lines(text), flavor, name), Ok(Some(_)))
 }
 
 /// A minimal unified-style diff of one changed region (everything between the common first and
@@ -373,7 +401,14 @@ pub fn apply(path: &Path, new: &str, stamp: &str) -> Result<PathBuf, String> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or("config file has no name")?;
-    let backup = real.with_file_name(format!("{name}.bak.geekbridge.{stamp}"));
+    // Never overwrite an earlier backup: two changes within one `stamp` would lose the original.
+    let backup = (0..)
+        .map(|n| match n {
+            0 => real.with_file_name(format!("{name}.bak.geekbridge.{stamp}")),
+            n => real.with_file_name(format!("{name}.bak.geekbridge.{stamp}.{n}")),
+        })
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .ok_or("no free backup name")?;
     std::fs::copy(&real, &backup).map_err(|e| format!("cannot back up {}: {e}", real.display()))?;
     let tmp = real.with_file_name(format!(".{name}.geekbridge.tmp"));
     let result = (|| -> std::io::Result<()> {
@@ -416,8 +451,9 @@ pub fn conflicts_in(key: &Hotkey, text: &str) -> Vec<String> {
 
 /// The combination a `o.bind("SUPER + V", ...)` / `hl.bind(...)` / `bind = SUPER, V, ...` line binds.
 fn binding_of(line: &str) -> Option<Hotkey> {
-    let spec = if line.contains("bind(") {
-        let rest = &line[line.find("bind(")? + 5..];
+    let call = line.find("bind(").filter(|&i| !line[..i].ends_with("un"));
+    let spec = if let Some(at) = call {
+        let rest = &line[at + 5..];
         let rest = rest.trim_start().strip_prefix('"')?;
         rest[..rest.find('"')?].replace(' ', "")
     } else if line.starts_with("bind") && line.contains('=') {
@@ -599,6 +635,59 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names.len(), 4, "only the backup was added: {names:?}");
+    }
+
+    #[test]
+    fn crlf_files_keep_every_byte_outside_the_block() {
+        let base = "# mine\r\nbindd = SUPER, B, Browser, exec, chromium\r\n";
+        let once = install(base, Flavor::Conf, &opts()).unwrap();
+        assert!(once.starts_with(base), "the user's lines keep their CRLF");
+        assert!(
+            !once.replace("\r\n", "").contains('\n'),
+            "no bare LF: {once:?}"
+        );
+        assert_eq!(uninstall(&once, Flavor::Conf).unwrap(), base);
+        // Mixed endings outside the block survive too.
+        let mixed = "a\r\nb\nc\r\n";
+        let m = install(mixed, Flavor::Conf, &opts()).unwrap();
+        assert!(m.starts_with(mixed));
+        assert_eq!(uninstall(&m, Flavor::Conf).unwrap(), mixed);
+    }
+
+    #[test]
+    fn a_second_begin_marker_inside_an_unterminated_block_is_refused() {
+        // The first block lost its end marker; a later duplicate has one. Replacing "first begin
+        // .. that end" would delete the user's lines between them.
+        let b = begin_line(Flavor::Lua, BLOCK_HOTKEY);
+        let e = end_line(Flavor::Lua, BLOCK_HOTKEY);
+        let text = format!("{b}\nmy own binding\n{b}\nhl.bind()\n{e}\n");
+        assert!(install(&text, Flavor::Lua, &opts()).is_err());
+        assert!(uninstall(&text, Flavor::Lua).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_second_apply_in_the_same_second_keeps_the_first_backup() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("bindings.lua");
+        fs::write(&f, LUA).unwrap();
+        let new = install(LUA, Flavor::Lua, &opts()).unwrap();
+        let first = apply(&f, &new, "same").unwrap();
+        let second = apply(&f, LUA, "same").unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            fs::read_to_string(&first).unwrap(),
+            LUA,
+            "original survives"
+        );
+        assert_eq!(fs::read_to_string(&second).unwrap(), new);
+    }
+
+    #[test]
+    fn an_unbind_line_is_not_a_binding() {
+        let k = Hotkey::parse("Super+V").unwrap();
+        assert!(conflicts_in(&k, "hl.unbind(\"SUPER + V\")\nunbind = SUPER, V\n").is_empty());
+        assert_eq!(conflicts_in(&k, "hl.bind(\"SUPER + V\", x)").len(), 1);
     }
 
     #[cfg(unix)]

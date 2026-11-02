@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! CoreAudio implementation of [`AudioPort`] using the plain `AudioObject*` property C API.
 //!
 //! Reads (`devices`, `default_*`) have no side effects. The two setters change the **system

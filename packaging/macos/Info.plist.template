@@ -5,7 +5,7 @@
   Placeholders: @BUNDLE_ID@  @VERSION@  @BUILD@  (filled by assemble-app.sh).
   The bundle, not the bare executable, is meant to be the identity macOS shows in its Bluetooth and
   Microphone permission prompts. Whether a helper spawned by another process is attributed to this
-  bundle or to its parent is NOT verified (no Mac available); see `docs/architecture.md`.
+  bundle or to its parent is NOT verified (no Mac available).
 -->
 <plist version="1.0">
 <dict>
@@ -29,6 +29,8 @@
 	<string>@BUILD@</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright (C) 2026 fspecii and GeekBridge contributors. GPL-3.0-or-later.</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<!-- No Dock icon or menu bar: this is a background helper. -->

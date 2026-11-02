@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Calendar dates and the computer's local time zone, with no extra dependencies.
 //!
 //! Only the system clock and the time zone configured on this computer are used; nothing
@@ -415,6 +416,18 @@ pub fn clock_label(utc_ms: i64, offset_minutes: i32) -> String {
     clock_label_in(Locale::current(), utc_ms, offset_minutes)
 }
 
+/// The UTC offset in minutes that applied at the instant `utc_ms` (0 when the zone cannot be
+/// read). Unlike `utc_offset_minutes`, this is right for a past or future instant on the other
+/// side of a daylight-saving change.
+pub fn utc_offset_minutes_at(utc_ms: i64) -> i32 {
+    utc_offset_seconds(utc_ms.div_euclid(1000)).map_or(0, |s| s / 60)
+}
+
+/// `clock_label` at the offset that applied at `utc_ms` itself.
+pub fn clock_label_local(utc_ms: i64) -> String {
+    clock_label(utc_ms, utc_offset_minutes_at(utc_ms))
+}
+
 pub fn clock_label_in(locale: Locale, utc_ms: i64, offset_minutes: i32) -> String {
     let secs = (utc_ms / 1000 + i64::from(offset_minutes) * 60).rem_euclid(86_400);
     locale.clock(secs as u32)
@@ -654,6 +667,26 @@ mod tests {
         assert_eq!(split_unix(unix, 0), (d(2026, 11, 1), 23 * 3600 + 1800));
         assert_eq!(split_unix(unix, 3600), (d(2026, 11, 2), 1800));
         assert_eq!(split_unix(unix, -86_400 * 2).0, d(2026, 10, 30));
+    }
+
+    #[cfg(all(unix, target_pointer_width = "64"))]
+    #[test]
+    fn the_offset_of_an_instant_follows_dst_not_today() {
+        unsafe extern "C" {
+            fn tzset();
+        }
+        // POSIX TZ rule (no tzdata needed): CET, DST from the last Sunday of March to October.
+        // SAFETY: this is the only test that touches TZ, and nothing else here depends on the zone.
+        unsafe {
+            std::env::set_var("TZ", "CET-1CEST,M3.5.0,M10.5.0/3");
+            tzset();
+        }
+        let ms = |d: Date| (d.to_days() * 86_400 + 12 * 3600) * 1000;
+        assert_eq!(utc_offset_minutes_at(ms(d(2026, 1, 15))), 60);
+        assert_eq!(utc_offset_minutes_at(ms(d(2026, 7, 15))), 120);
+        // A winter message shown in summer: 11:00 UTC is 12:00 in January, whatever today's offset.
+        assert_eq!(clock_label_local(ms(d(2026, 1, 15)) - 3600 * 1000), "12:00");
+        assert_eq!(clock_label_local(ms(d(2026, 7, 15)) - 3600 * 1000), "13:00");
     }
 
     #[test]

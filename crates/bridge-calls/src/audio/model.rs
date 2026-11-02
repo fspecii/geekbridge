@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-neutral description of an audio server's state: cards, sinks, sources and modules.
 //!
 //! These are plain data. The Linux adapter fills them from libpulse; tests fill them by hand.

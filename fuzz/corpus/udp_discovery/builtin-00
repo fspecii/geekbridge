@@ -1,0 +1,1 @@
+{"id":1700000000000,"type":"kdeconnect.identity","body":{"deviceId":"0123456789abcdef0123456789abcdef","deviceName":"Phone","deviceType":"phone","tcpPort":1716,"protocolVersion":8,"incomingCapabilities":["kdeconnect.ping"],"outgoingCapabilities":["kdeconnect.ping"]}}

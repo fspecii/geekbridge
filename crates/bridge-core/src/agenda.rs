@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Read-only contacts and calendar domain for the Agenda app.
 //!
 //! Pure data and validation: no I/O, no pairing, no phone access, no new dependencies. Records
 //! come from a phone-side source (KDE contacts today; the calendar side has no existing protocol,
-//! see `docs/architecture.md`) and are never written back.
+//! see `docs/phone-data-link.md`) and are never written back.
 //!
 //! Conventions:
 //! - [`SourceId`] and [`Revision`] are opaque. Never use an id as a file name or compare
@@ -715,7 +716,7 @@ impl Agenda {
     /// or more phone digits), sorted by case-insensitive name. Empty query lists everyone.
     pub fn people(&self, query: &str) -> Vec<&Record<Contact>> {
         let (q, q_digits) = (
-            query.trim().to_lowercase(),
+            crate::collate::fold(query.trim()),
             query
                 .chars()
                 .filter(char::is_ascii_digit)
@@ -731,12 +732,12 @@ impl Agenda {
                         .into_iter()
                         .flatten()
                         .chain(&c.emails)
-                        .any(|s| s.to_lowercase().contains(&q))
+                        .any(|s| crate::collate::fold(s).contains(&q))
                     || (q_digits.len() >= 3
                         && c.phones.iter().any(|p| digits(p).contains(&q_digits)))
             })
             .collect();
-        out.sort_by_cached_key(|(r, c)| (c.display_name.to_lowercase(), r.id.clone()));
+        out.sort_by_cached_key(|(r, c)| (crate::collate::key(&c.display_name), r.id.clone()));
         out.into_iter().map(|(r, _)| r).collect()
     }
 
@@ -1311,7 +1312,8 @@ mod tests {
                 .map(|r| r.item().unwrap().display_name.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(names(""), ["Ada", "zoe", "Álvaro"]);
+        assert_eq!(names(""), ["Ada", "Álvaro", "zoe"]);
+        assert_eq!(names("alvaro"), ["Álvaro"], "search ignores accents");
         assert_eq!(names("ENGINES"), ["Ada"]);
         assert_eq!(names("example.org"), ["Ada"]);
         assert_eq!(names("555501"), ["zoe"]);

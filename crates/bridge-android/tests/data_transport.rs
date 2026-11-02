@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Phone data relay (contacts, calendar, SMS) through the public request interface, against a real
 //! `bridge_kde` endpoint playing the desktop. The Android providers are Kotlin's.
 use std::net::SocketAddr;

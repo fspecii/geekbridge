@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Explicit, connection-bound pairing.
 //!
 //! A [`PendingLink`] is the only place pairing happens. The state machine
@@ -38,6 +39,9 @@ pub const PAIR_TYPE: &str = "kdeconnect.pair";
 
 /// Peer requests per window that may (re)start a prompt; further ones are ignored.
 pub const MAX_REPLACEMENTS: usize = 5;
+/// A prompt series (the first request plus its replacements) lives at most this many response
+/// windows, however many replacements arrive.
+pub const PROMPT_CAP_FACTOR: u32 = 3;
 pub const REPLACEMENT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
@@ -231,6 +235,9 @@ pub(crate) struct Machine {
     generation: u64,
     /// Monotonic times of the peer requests that opened or replaced a prompt.
     requests: Vec<Instant>,
+    /// When the first prompt of the current series opened; replacements never run past a fixed
+    /// multiple of the response window counted from here.
+    prompt_started: Option<Instant>,
 }
 
 impl Machine {
@@ -244,6 +251,7 @@ impl Machine {
             hint_sent: false,
             generation: 0,
             requests: Vec::new(),
+            prompt_started: None,
         }
     }
 
@@ -416,7 +424,16 @@ impl Machine {
 
     /// (Re)open the prompt for a peer request: a fresh generation, a fresh response window.
     fn prompt_peer_request(&mut self, ts: i64, now: Now) -> Vec<Action> {
-        let expires_in = self.cfg.response_timeout;
+        let started = match (&self.state, self.prompt_started) {
+            (State::RequestedByPeer { .. }, Some(t)) => t,
+            _ => now.mono,
+        };
+        self.prompt_started = Some(started);
+        let cap = started + self.cfg.response_timeout * PROMPT_CAP_FACTOR;
+        let expires_in = self
+            .cfg
+            .response_timeout
+            .min(cap.saturating_duration_since(now.mono));
         self.generation += 1;
         self.state = State::RequestedByPeer {
             deadline: now.mono + expires_in,
@@ -808,6 +825,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn replacements_cannot_extend_the_prompt_past_its_hard_cap() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        m.on_pair(request(5000), at(t0, 5000));
+        let cap = cfg().response_timeout * PROMPT_CAP_FACTOR;
+        // A new request every 20 s, inside the 25 s window, 4 per minute.
+        for i in 1..=3i64 {
+            let t = at(t0 + Duration::from_secs(20 * i as u64), 5000 + 20 * i);
+            m.on_pair(request(5000 + 20 * i), t);
+            assert!(m.deadline().unwrap() <= t0 + cap);
+        }
+        assert_eq!(m.deadline(), Some(t0 + cap));
+        let t = at(t0 + cap, 5000 + 75);
+        assert!(matches!(
+            m.on_pair(request(5100), t).last(),
+            Some(Action::Fail(PairingFailure::Timeout))
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn stale_rejection_does_not_cancel_the_new_prompt() {
         let t0 = Instant::now();
         let mut m = machine();
@@ -1039,7 +1077,7 @@ mod tests {
     /// Expected values were computed independently with `openssl pkey -pubin
     /// -outform DER` + `sha256sum` over freshly generated fixtures (extension-less,
     /// v3, serial 1, ecdsa-with-SHA512, like stock Android certificates). The fixture
-    /// commands are recorded in `docs/architecture.md`.
+    /// commands are recorded in docs/kdeconnect-interop.md.
     #[test]
     fn independent_verification_key_vectors() {
         let a = fixture(include_str!("../tests/fixtures/a.crt.pem"));

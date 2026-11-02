@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Errors surfaced by the adapter to its caller (the daemon or the helper protocol).
 use crate::model::{BluetoothAuth, Generation};
 use crate::plan::Refusal;

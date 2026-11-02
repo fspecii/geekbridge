@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Remove GeekBridge-owned scratch left in the temp dir. Dry run by default.
 #
 #   scripts/clean-tmp.sh [--apply] [--older-than MINUTES] [--emu]
@@ -20,7 +21,7 @@ while (($#)); do
         --apply) APPLY=1 ;;
         --older-than) AGE="$2"; shift ;;
         --emu) EMU=1 ;;
-        -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        -h|--help) sed -n '3,16p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
     shift

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Private in-memory audio server for the call-audio tests. It speaks only the `AudioServer`
 //! trait, so no test here can touch a real sound server, move a stream or play a sound.
 #![allow(dead_code)]

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 <#
 .SYNOPSIS
   Remove the DEVELOPMENT sparse package registered by register-dev.ps1.

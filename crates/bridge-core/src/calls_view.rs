@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! What the desktop shows for calls: one honest, UI-ready view built from every call source.
 //!
 //! A phone can be seen by several sources at once: a Bluetooth HFP backend (this computer as the

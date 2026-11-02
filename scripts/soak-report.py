@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turn a soak run (dist/soak/<ts>/, written by scripts/soak-e2e.sh) into report.md plus PNG charts.
 
   python3 -I scripts/soak-report.py DIR [--publish]
