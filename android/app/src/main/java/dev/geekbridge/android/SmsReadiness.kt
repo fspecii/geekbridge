@@ -76,6 +76,15 @@ object SmsReadinessLogic {
     )
 }
 
+/** Whether "Allow restricted settings" can be what blocks SMS; pure so the wording choice is tested. */
+object SmsRestriction {
+    /** Stores Android trusts: an app installed by one is never restricted. Everything else (adb, a file manager, a browser) is. */
+    private val trustedStores = setOf("com.android.vending", "com.sec.android.app.samsungapps")
+
+    fun likely(sdk: Int, permissionIsHardRestricted: Boolean, installer: String?): Boolean =
+        sdk >= 33 && permissionIsHardRestricted && installer !in trustedStores
+}
+
 /** Reads the real phone state for [SmsReadinessLogic]. */
 object SmsReadinessAndroid {
     fun status(a: Activity, p: SmsPerm): PermissionStatus = PermissionStatusLogic.compute(
@@ -86,12 +95,17 @@ object SmsReadinessAndroid {
 
     /** Android 13+ treats SMS as hard-restricted for apps not installed by a store until "Allow restricted settings". */
     fun restrictedCapable(a: Activity): Boolean {
-        if (Build.VERSION.SDK_INT < 33) return false
-        return try {
+        val flagged = try {
             (a.packageManager.getPermissionInfo(Manifest.permission.READ_SMS, 0).flags and PermissionInfo.FLAG_HARD_RESTRICTED) != 0
         } catch (_: PackageManager.NameNotFoundException) {
             false
         }
+        val installer = try {
+            if (Build.VERSION.SDK_INT >= 30) a.packageManager.getInstallSourceInfo(a.packageName).installingPackageName else null
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        }
+        return SmsRestriction.likely(Build.VERSION.SDK_INT, flagged, installer)
     }
 
     fun evaluate(a: Activity): SmsReadiness {
@@ -111,4 +125,22 @@ object SmsReadinessAndroid {
 /** Capabilities are declared in the identity packet at connect time, so any change while linked needs a reconnect. */
 object CapabilityRedeclare {
     fun needed(declared: ActiveFeatures, now: ActiveFeatures) = now != declared
+
+    enum class Action { None, Reconnect, Observe }
+
+    /**
+     * What to do when a permission or setting changed. A link that is not up yet needs nothing now, because
+     * [driftAtLinkUp] is checked the moment it comes up; a link that is up reconnects when what it declared differs.
+     */
+    fun onChange(declared: ActiveFeatures, now: ActiveFeatures, linkRunning: Boolean): Action = when {
+        !linkRunning -> Action.None
+        needed(declared, now) -> Action.Reconnect
+        else -> Action.Observe
+    }
+
+    /**
+     * The link came up with whatever was declared when it started; if the user answered a permission dialog in
+     * between, the computer was told the old set and must hear the new one.
+     */
+    fun driftAtLinkUp(declared: ActiveFeatures, now: ActiveFeatures) = needed(declared, now)
 }

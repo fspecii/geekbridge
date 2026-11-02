@@ -683,8 +683,8 @@ object PhoneDataRuntime {
         val a = app ?: return
         val now = active()
         worker.execute { core.dataAction(PhoneDataProtocol.configRequest(now)) }
-        if (!linkRunning) return
-        if (CapabilityRedeclare.needed(declared, now)) {
+        if (CapabilityRedeclare.onChange(declared, now, linkRunning) == CapabilityRedeclare.Action.None) return
+        if (CapabilityRedeclare.onChange(declared, now, linkRunning) == CapabilityRedeclare.Action.Reconnect) {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
             GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms}): reconnecting to re-declare")
@@ -716,6 +716,8 @@ object PhoneDataRuntime {
         } else {
             worker.execute { e.reset() }
             startObserving()
+            // A permission answered while the link was still connecting was not in the identity packet it sent.
+            if (CapabilityRedeclare.driftAtLinkUp(declared, active())) main.post { resync() }
         }
     }
 

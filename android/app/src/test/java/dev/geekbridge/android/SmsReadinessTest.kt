@@ -80,4 +80,30 @@ class SmsReadinessTest {
         assertFalse(g.allows("dev-b", GrantFeature.Sms))
         assertEquals(setOf("dev-a"), g.permitsObject().getJSONArray("sms").let { a -> (0 until a.length()).map { a.getString(it) }.toSet() })
     }
+
+    @Test fun restrictedSettingIsOnlyBlamedForSideloadedAndroid13Plus() {
+        assertTrue(SmsRestriction.likely(33, true, null)) // adb
+        assertTrue(SmsRestriction.likely(34, true, "com.google.android.packageinstaller"))
+        assertFalse(SmsRestriction.likely(33, true, "com.android.vending"))
+        assertFalse(SmsRestriction.likely(33, true, "com.sec.android.app.samsungapps"))
+        assertFalse(SmsRestriction.likely(32, true, null))
+        assertFalse(SmsRestriction.likely(33, false, null))
+    }
+
+    @Test fun permissionChangeRedeclaresAtOnceWhenLinkedAndAtLinkUpOtherwise() {
+        val off = PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions(readSms = true, sendSms = true))
+        val on = PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions(readSms = true, sendSms = true, receiveSms = true))
+        assertFalse(off.sms)
+        assertTrue(on.sms)
+        assertEquals(CapabilityRedeclare.Action.Reconnect, CapabilityRedeclare.onChange(off, on, linkRunning = true))
+        assertEquals(CapabilityRedeclare.Action.Observe, CapabilityRedeclare.onChange(on, on, linkRunning = true))
+        assertEquals(CapabilityRedeclare.Action.None, CapabilityRedeclare.onChange(off, on, linkRunning = false))
+        assertTrue(CapabilityRedeclare.driftAtLinkUp(off, on)) // answered while connecting
+        assertFalse(CapabilityRedeclare.driftAtLinkUp(on, on))
+    }
+
+    @Test fun switchingTheSwitchOnWithoutPermissionsDeclaresNothingUntilGranted() {
+        assertFalse(PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions()).sms)
+        assertFalse(PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions(readSms = true, sendSms = true, receiveSms = false)).sms)
+    }
 }

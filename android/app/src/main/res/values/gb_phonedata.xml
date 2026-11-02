@@ -24,7 +24,7 @@
     <string name="sms_state_turn_on">Messages is switched off. Turn on “Share text messages (SMS)” below.</string>
     <string name="sms_state_allow">Android still needs your OK for SMS. Missing: %1$s. Tap “Allow access” and choose Allow.</string>
     <string name="sms_state_settings">Android will not ask for SMS again. Missing: %1$s. Open app settings › Permissions › SMS and choose Allow.</string>
-    <string name="sms_state_restricted">Android blocks SMS for apps installed outside a store (“restricted setting”). Missing: %1$s. Open app settings, tap ⋮ › Allow restricted settings, then allow SMS.</string>
+    <string name="sms_state_restricted">Android blocks SMS for apps installed outside a store (“restricted setting”). Missing: %1$s. Open app settings, tap ⋮ (top right) › Allow restricted settings, then Permissions › SMS › Allow. If ⋮ has no such item yet, tap “Allow access” once and look again.</string>
     <string name="sms_state_pair">SMS is allowed on this phone, but no computer is paired. Pair a computer first.</string>
     <string name="sms_state_choose">SMS is allowed on this phone, but no paired computer may use it. Tap “Allowed computers…” and tick your computer.</string>
 </resources>
