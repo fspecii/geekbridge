@@ -32,6 +32,7 @@ fn status(paired: &[&str], links: Vec<ipc::LinkStatus>) -> Status {
         event_seq: 0,
         inbound_listener: None,
         reconnecting: vec![],
+        disconnected: vec![],
     }
 }
 
@@ -45,10 +46,17 @@ fn qr(ms: u64) -> ipc::PairQr {
 }
 
 fn scripted(s: Arc<Mutex<Status>>, qr_ms: u64) -> (Connections, Log) {
+    scripted_with(move || Ok(s.lock().unwrap().clone()), qr_ms)
+}
+
+fn scripted_with(
+    fetch: impl FnMut() -> Result<Status, String> + Send + 'static,
+    qr_ms: u64,
+) -> (Connections, Log) {
     let log: Log = Arc::default();
     let sink = log.clone();
     let worker = Worker::spawn_with(
-        move || Ok(s.lock().unwrap().clone()),
+        fetch,
         move |r| {
             sink.lock().unwrap().push(r.clone());
             match r {
@@ -277,6 +285,7 @@ fn one_tap_pair_connects_first_then_pairs_when_the_link_reports_unpaired() {
         pings_received: 0,
         last_ping_unix_ms: None,
         rejected_packets: 0,
+        battery: None,
     };
     *shared.lock().unwrap() = status(&[], vec![link]);
     c.refresh();
@@ -305,8 +314,9 @@ fn one_tap_pair_connects_first_then_pairs_when_the_link_reports_unpaired() {
 fn the_card_with_no_service_disables_pairing_buttons() {
     let cx = ctx();
     let size = egui::vec2(500.0, 600.0);
-    let (mut c, log) = scripted(Arc::new(Mutex::new(status(&[], vec![]))), 1);
-    // Before the first status arrives nothing can be requested.
+    // The service never answers, so no status can arrive between clicks (a status that did
+    // arrive on a fast poll made this flaky on slower runners).
+    let (mut c, log) = scripted_with(|| Err("no service".into()), 1);
     c.state.status = None;
     for y in (20..300).step_by(10) {
         for x in [60.0, 150.0, 260.0] {
