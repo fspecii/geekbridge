@@ -45,9 +45,9 @@ fail() { echo "FAIL $*" >&2; exit 1; }
 
 out="$("$(bin geekbridge-ctl)" --version)" && [[ "$out" == geekbridge-ctl\ * ]] || fail "geekbridge-ctl --version: $out"
 ok "$out"
-"$(bin geekbridge-service)" --help | grep -q -- --state-dir || fail "geekbridge-service --help"
+captured="$("$(bin geekbridge-service)" --help 2>&1)" && grep -q -- --state-dir <<<"$captured" || fail "geekbridge-service --help"
 ok "geekbridge-service --help"
-"$(bin geekbridge-messages)" --help | grep -qi usage || fail "geekbridge-messages --help"
+captured="$("$(bin geekbridge-messages)" --help 2>&1)" && grep -qi usage <<<"$captured" || fail "geekbridge-messages --help"
 ok "geekbridge-messages --help"
 
 # No service and no token on a fresh machine: a clean explained error, never a panic.
@@ -58,9 +58,9 @@ set -e
 [ "$rc" -ne 0 ] && [[ "$out" == *"no control token"* ]] || fail "diagnose on a fresh HOME: rc=$rc: $out"
 ok "geekbridge-ctl diagnose on a fresh HOME fails cleanly: $out"
 
-"$(bin geekbridge-ctl)" token-path | grep -q ipc-token || fail "token-path"
-"$(bin geekbridge-ctl)" autostart status | grep -q "autostart: off" || fail "autostart status"
-"$(bin geekbridge-ctl)" firewall | grep -q 1716 || fail "firewall help"
+captured="$("$(bin geekbridge-ctl)" token-path 2>&1)" && grep -q ipc-token <<<"$captured" || fail "token-path"
+captured="$("$(bin geekbridge-ctl)" autostart status 2>&1)" && grep -q "autostart: off" <<<"$captured" || fail "autostart status"
+captured="$("$(bin geekbridge-ctl)" firewall 2>&1)" && grep -q 1716 <<<"$captured" || fail "firewall help"
 ok "token-path, autostart status, firewall help"
 
 if [ "$LIVE" = 1 ]; then
@@ -75,12 +75,12 @@ if [ "$LIVE" = 1 ]; then
     ctl() { "$(bin geekbridge-ctl)" --state-dir "$state" --control-port $((port + 1)) "$@"; }
     ctl status >"$fresh/status.txt" 2>&1 || { cat "$fresh/status.txt" "$fresh/service.log" >&2; fail "ctl status against the live service"; }
     ok "ctl status against the live service"
-    ctl diagnose | grep -qi version || fail "ctl diagnose against the live service"
+    captured="$(ctl diagnose 2>&1)" && grep -qi version <<<"$captured" || fail "ctl diagnose against the live service"
     ok "ctl diagnose against the live service"
     # On Windows the entry is a registry value that no fake HOME redirects: only touch it on a CI runner.
     if [ -z "$EXT" ] || [ -n "${CI:-}" ]; then
-        ctl autostart enable >/dev/null && ctl autostart status | grep -q "autostart: on" || fail "autostart enable"
-        ctl autostart disable >/dev/null && ctl autostart status | grep -q "autostart: off" || fail "autostart disable"
+        ctl autostart enable >/dev/null && captured="$(ctl autostart status 2>&1)" && grep -q "autostart: on" <<<"$captured" || fail "autostart enable"
+        ctl autostart disable >/dev/null && captured="$(ctl autostart status 2>&1)" && grep -q "autostart: off" <<<"$captured" || fail "autostart disable"
         ok "autostart enable/disable round trip"
     fi
 fi
