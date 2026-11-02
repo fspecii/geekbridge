@@ -32,7 +32,6 @@ fn status(paired: &[&str], links: Vec<ipc::LinkStatus>) -> Status {
         event_seq: 0,
         inbound_listener: None,
         reconnecting: vec![],
-        disconnected: vec![],
     }
 }
 
@@ -285,7 +284,6 @@ fn one_tap_pair_connects_first_then_pairs_when_the_link_reports_unpaired() {
         pings_received: 0,
         last_ping_unix_ms: None,
         rejected_packets: 0,
-        battery: None,
     };
     *shared.lock().unwrap() = status(&[], vec![link]);
     c.refresh();
