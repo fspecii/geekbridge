@@ -161,6 +161,7 @@ class CallControlTest {
         val sent = ArrayList<JSONObject>()
         var coreOk = true
         val telecom = FakeTelecom()
+        var now = 1_000L
         val engine = CallControlEngine(
             core = { req ->
                 sent += JSONObject(req)
@@ -171,6 +172,7 @@ class CallControlTest {
             settings = { CallLinkSettings(enabled) },
             lookup = { names[it] },
             sdk = sdk,
+            clock = { now },
         )
         fun actions() = sent.map { it.getString("action") }
     }
@@ -205,6 +207,43 @@ class CallControlTest {
         assertEquals("+15550100", h.sent[3].getString("number"))
         assertEquals("idle", h.sent[4].getString("state"))
         assertFalse(h.sent[4].has("number"))
+    }
+
+    @Test fun aNumberThatArrivesBeforeTheRingingStateIsNotLost() {
+        val h = Harness(all)
+        h.engine.onNumber("+15550100") // the broadcast beat the telephony callback
+        h.now += 500
+        h.engine.onState(CallState.Ringing)
+        assertEquals("+15550100", h.sent.last().getString("number"))
+    }
+
+    @Test fun anOldEarlyNumberIsNotAttachedToALaterCall() {
+        val h = Harness(all)
+        h.engine.onNumber("+15550100")
+        h.now += 10_000
+        h.engine.onState(CallState.Ringing)
+        assertFalse(h.sent.last().has("number"))
+    }
+
+    @Test fun aSecondCallNeverShowsTheFirstCallersNumber() {
+        val h = Harness(all)
+        h.engine.onState(CallState.Ringing, "+15550100")
+        h.engine.onState(CallState.OffHook)
+        h.engine.onState(CallState.Ringing) // call waiting, number not (yet) known
+        assertEquals("ringing", h.sent.last().getString("state"))
+        assertFalse(h.sent.last().has("number"))
+        h.engine.onNumber("+15550199")
+        assertEquals("+15550199", h.sent.last().getString("number"))
+    }
+
+    @Test fun afterAWaitingCallEndsTheLineIsShownWithoutAGuessedParty() {
+        val h = Harness(all)
+        h.engine.onState(CallState.Ringing, "+15550100")
+        h.engine.onState(CallState.OffHook)
+        h.engine.onState(CallState.Ringing, "+15550199")
+        h.engine.onState(CallState.OffHook) // declined or answered: not knowable
+        assertEquals("offhook", h.sent.last().getString("state"))
+        assertFalse(h.sent.last().has("number"))
     }
 
     @Test fun identicalReportsAreNotRepeatedAndFailedOnesAreRetried() {

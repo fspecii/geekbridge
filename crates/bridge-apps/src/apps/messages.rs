@@ -1863,3 +1863,7 @@ mod tests {
         assert_eq!(fmt_count(20000), "20,000");
     }
 }
+
+#[cfg(test)]
+#[path = "messages_tests.rs"]
+mod render_tests;

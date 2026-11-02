@@ -204,6 +204,10 @@ pub struct Daemon {
     share: Arc<ShareManager>,
     calls: Arc<CallHub>,
     data: Arc<crate::phone_data::PhoneData>,
+    /// Log lines and state dumps from a debug-build phone (`phone_debug`).
+    debug: Arc<crate::phone_debug::PhoneDebug>,
+    /// Automatic redial bookkeeping for paired phones (see `reconnect`).
+    reconnect: Mutex<crate::reconnect::Book>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -319,6 +323,7 @@ impl Daemon {
         if let Some(n) = options.share_notifier.take() {
             share.set_notifier(n);
         }
+        let debug = Arc::new(crate::phone_debug::PhoneDebug::new(consents.dir()));
         let data = crate::phone_data::PhoneData::new();
         data.set_notify_content(options.sms_show_content);
         if let Some(n) = options.sms_notifier.take() {
@@ -339,6 +344,8 @@ impl Daemon {
             share,
             calls,
             data,
+            debug,
+            reconnect: Mutex::new(crate::reconnect::Book::default()),
         });
         let weak = Arc::downgrade(&daemon);
         daemon.share.set_event_sink(Arc::new(move |device, kind| {
@@ -420,6 +427,11 @@ impl Daemon {
             challenges,
             event_seq: core.next_seq,
             inbound_listener: *self.inbound.lock().unwrap_or_else(|e| e.into_inner()),
+            reconnecting: self
+                .reconnect
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .trying(),
         })
     }
 
@@ -496,6 +508,10 @@ impl Daemon {
                 .set_consent(&device_id, feature, enabled)
                 .map(|()| Response::Ack),
             Request::Ping { device_id } => self.ping(&device_id).map(|()| Response::Ack),
+            Request::PhoneDebugState { device_id } => self
+                .phone_debug_state(&device_id)
+                .await
+                .map(|text| Response::PhoneDebugState { text }),
             Request::CallingStatus => self.calling_status().await.map(Response::CallingStatus),
             Request::Calls => Ok(Response::Calls(Box::new(self.calls.status()))),
             Request::CallAction { target, action } => {
@@ -947,11 +963,72 @@ impl Daemon {
         true
     }
 
+    /// One pass of the automatic redial: every paired phone that announced itself recently, has no link and whose
+    /// back-off allows it is dialed at the address it announced from. Trust comes from the pairing store only.
+    pub async fn reconnect_tick(self: &Arc<Self>) {
+        const FRESH_MS: u64 = 20_000;
+        let now_unix = now_ms();
+        let seen: Vec<(String, IpAddr, u16)> = self
+            .discovery
+            .read()
+            .await
+            .devices
+            .iter()
+            .filter(|d| now_unix.saturating_sub(d.last_seen_unix_ms) < FRESH_MS)
+            .map(|d| (d.id.clone(), d.address, d.tcp_port))
+            .collect();
+        let ids: Vec<&str> = seen.iter().map(|s| s.0.as_str()).collect();
+        let now = Instant::now();
+        self.reconnect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keep_only(&ids);
+        for (id, ip, port) in &seen {
+            let Ok(target) = parse_id(id) else { continue };
+            if !matches!(self.store.get(&target), Ok(Some(_))) {
+                continue;
+            }
+            let (linked, connected) = {
+                let core = self.core();
+                let link = core.links.get(id);
+                (
+                    link.is_some(),
+                    link.is_some_and(|l| l.status.phase == LinkPhase::Connected),
+                )
+            };
+            let go = {
+                let mut book = self.reconnect.lock().unwrap_or_else(|e| e.into_inner());
+                if connected {
+                    book.settled(id);
+                    false
+                } else {
+                    !linked && book.due(id, (*ip, *port), now)
+                }
+            };
+            if !go {
+                continue;
+            }
+            let _ = self
+                .connect(
+                    id,
+                    Some(Endpoint {
+                        address: *ip,
+                        port: *port,
+                    }),
+                )
+                .await;
+        }
+    }
+
     async fn disconnect(&self, device_id: &str) -> Result<(), ErrorBody> {
         parse_id(device_id)?;
         if !self.take_down(device_id).await {
             return Err(err(ErrorCode::NotFound, "no live link for this device"));
         }
+        self.reconnect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pause(device_id, Instant::now());
         self.core().emit(Some(device_id), EventKind::Disconnected);
         Ok(())
     }
@@ -1035,6 +1112,43 @@ impl Daemon {
             EventKind::ConsentChanged { feature, enabled },
         );
         Ok(())
+    }
+
+    /// Ask a debug-build phone for its redacted state dump and wait for the answer.
+    async fn phone_debug_state(&self, device_id: &str) -> Result<String, ErrorBody> {
+        parse_id(device_id)?;
+        match self.store.get(&parse_id(device_id)?) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not paired")),
+            Err(e) => return Err(err(ErrorCode::Failed, reason(&e))),
+        }
+        let connected = self
+            .core()
+            .links
+            .get(device_id)
+            .is_some_and(|l| l.status.phase == LinkPhase::Connected);
+        let consent = self.consents().is_enabled(device_id, Feature::Debug);
+        let (request_id, answer) = self
+            .debug
+            .request_state(device_id, consent, connected)
+            .map_err(|e| {
+                let code = match e {
+                    crate::phone_debug::AskError::NotConnected => ErrorCode::NotConnected,
+                    _ => ErrorCode::Failed,
+                };
+                err(code, e.message())
+            })?;
+        let waited = tokio::time::timeout(crate::phone_debug::STATE_TIMEOUT, answer).await;
+        match waited {
+            Ok(Ok(text)) => Ok(text),
+            _ => {
+                self.debug.cancel_wait(device_id, &request_id);
+                Err(err(
+                    ErrorCode::Failed,
+                    crate::phone_debug::AskError::Timeout.message(),
+                ))
+            }
+        }
     }
 
     fn ping(&self, device_id: &str) -> Result<(), ErrorBody> {
@@ -1137,6 +1251,13 @@ impl Daemon {
                 "no connected phone has Clipboard switched on. Turn on Clipboard sync in the phone app \
                  (Home > Settings) and allow Clipboard for it on this computer \
                  (`geekbridge-ctl consent DEVICE_ID clipboard on`), then try again"
+            }
+            "phone_app_cannot_be_asked" => {
+                "this phone's GeekBridge app is too old to be asked for its clipboard: update the app on the phone"
+            }
+            "link_busy" => "the link to the phone is busy: wait a moment and try again",
+            "too_many_requests" => {
+                "too many clipboard requests are waiting: wait for the phone to answer, then try again"
             }
             other => other,
         };
@@ -1550,8 +1671,30 @@ async fn trusted_loop(
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
     let (mut call_rx, _call_guard) = calls_link(d, id, &link);
     let (mut data_rx, _data_guard) = data_link(d, id, &link);
+    let (mut debug_rx, _debug_guard) = debug_link(d, id, &link);
+    // A ping every 20 s keeps access-point / NAT idle timers and the phone's Wi-Fi power saving from
+    // dropping a quiet link. The phone judges our silence (it knows what its own sleep looks like); we
+    // never cut a phone off for being quiet, kernel keepalive does that.
+    let pings = gate::negotiated_outgoing(&link.info().peer)
+        .iter()
+        .any(|k| k == gate::PING);
+    let mut beat = bridge_core::heartbeat::Heartbeat::new(std::time::Instant::now());
+    let mut tick = tokio::time::interval_at(
+        tokio::time::Instant::now() + bridge_core::heartbeat::EVERY,
+        bridge_core::heartbeat::EVERY,
+    );
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let loss = loop {
         tokio::select! {
+            _ = tick.tick(), if pings => {
+                if beat.ping_due(std::time::Instant::now()) {
+                    let ping = kde::Packet::new(gate::PING, Map::new());
+                    if let Err(e) = link.send(&ping).await {
+                        break reason(&e);
+                    }
+                    beat.sent(std::time::Instant::now());
+                }
+            },
             incoming = link.recv() => match incoming {
                 Ok(kde::LinkEvent::Packet(packet)) => {
                     if ShareManager::is_share_packet(&packet.kind) {
@@ -1589,6 +1732,20 @@ async fn trusted_loop(
                             crate::phone_data::Disposition::Invalid
                         };
                         if verdict == crate::phone_data::Disposition::Invalid
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Debug {
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        let verdict = if clean {
+                            on_debug_packet(d, id, &packet)
+                        } else {
+                            crate::phone_debug::Disposition::Invalid
+                        };
+                        if verdict == crate::phone_debug::Disposition::Invalid
                             && !count_rejected(d, id, attempt)
                         {
                             break "too many packets outside the negotiated set".to_owned();
@@ -1633,6 +1790,11 @@ async fn trusted_loop(
             },
             Some(out) = data_rx.recv() => {
                 if let Err(e) = link.send(&kde::Packet::new(out.kind, out.body)).await {
+                    break reason(&e);
+                }
+            },
+            Some(out) = debug_rx.recv() => {
+                if let Err(e) = link.send(&kde::Packet::new(&out.kind, out.body)).await {
                     break reason(&e);
                 }
             },
@@ -1772,6 +1934,58 @@ fn data_link(
         rx,
         DataLinkGuard(Some((d.clone(), id.to_owned(), generation))),
     )
+}
+
+/// Registers a trusted link with the debug hub. A phone that declares the debug packets (only a debug
+/// build does) gets the `debug` consent switched on once; the user can switch it off for good.
+fn debug_link(
+    d: &Arc<Daemon>,
+    id: &str,
+    link: &kde::TrustedLink,
+) -> (mpsc::Receiver<crate::phone_debug::Out>, DebugLinkGuard) {
+    let peer = &link.info().peer;
+    let accepts = gate::negotiated_outgoing(peer)
+        .iter()
+        .any(|k| k == gate::DEBUG_STATE_REQUEST);
+    let sends = gate::negotiated_incoming(peer)
+        .iter()
+        .any(|k| k == gate::DEBUG_LOG);
+    if accepts || sends {
+        let switched = d.consents().default_debug_on(id);
+        if matches!(switched, Ok(true)) {
+            d.core().emit(
+                Some(id),
+                EventKind::ConsentChanged {
+                    feature: Feature::Debug,
+                    enabled: true,
+                },
+            );
+        }
+    }
+    let (rx, generation) = d.debug.link_up(id, accepts);
+    (
+        rx,
+        DebugLinkGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
+}
+
+struct DebugLinkGuard(Option<(Arc<Daemon>, String, u64)>);
+impl Drop for DebugLinkGuard {
+    fn drop(&mut self) {
+        if let Some((d, id, generation)) = self.0.take() {
+            d.debug.link_down(&id, generation);
+        }
+    }
+}
+
+/// One `geekbridge.debug.*` packet from a negotiated, trusted (so paired) phone.
+fn on_debug_packet(d: &Daemon, id: &str, packet: &kde::Packet) -> crate::phone_debug::Disposition {
+    let consent = d.consents().is_enabled(id, Feature::Debug);
+    match packet.kind.as_str() {
+        gate::DEBUG_LOG => d.debug.on_log(id, consent, &packet.body),
+        gate::DEBUG_STATE => d.debug.on_state(id, consent, &packet.body),
+        _ => crate::phone_debug::Disposition::Invalid,
+    }
 }
 
 /// (calendar editing, calendar alerts) consents of one phone.
@@ -1927,7 +2141,11 @@ fn on_packet(
         }
         // Clipboard packets are routed by `route_clipboard` before this function runs; one that
         // reaches here carried a payload it must not have, so it is treated as misbehaviour.
-        Incoming::Clipboard | Incoming::Calls | Incoming::PhoneData | Incoming::Reject => {
+        Incoming::Clipboard
+        | Incoming::Calls
+        | Incoming::PhoneData
+        | Incoming::Debug
+        | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {
                 events.push_back(event(id, EventKind::PacketRejected));

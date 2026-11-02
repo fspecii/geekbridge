@@ -112,6 +112,7 @@ class MainActivity : Activity() {
         buildHeader(root)
         buildStatusCard(root)
         buildAboutCard(root)
+        DebugHooks.diagnosticsCard?.invoke(this, ui, root) // debug builds only
         link = LinkSection(
             this, ui,
             // The native core is first touched on the transport worker thread, never on the main thread.

@@ -497,3 +497,56 @@ async fn a_saved_computer_name_is_used_at_start_and_junk_in_the_file_is_ignored(
     let rig = Rig::start_with(move |o| o.device_name_file = Some(path)).await;
     assert_eq!(rig.status().await.device_name, "Test Desktop");
 }
+
+#[tokio::test]
+async fn a_paired_phone_that_announces_again_is_redialed_but_an_unpaired_or_disconnected_one_is_not()
+ {
+    let rig = Rig::start().await;
+    let phone = Phone::new();
+    drop(pair_phone(&rig, &phone).await);
+    rig.wait("link lost", |s| s.links.is_empty()).await;
+
+    // Not announcing: nothing happens.
+    rig.daemon.reconnect_tick().await;
+    assert!(rig.status().await.links.is_empty());
+
+    // Announcing from a listening address: the computer dials it by itself and the pinned certificate is accepted.
+    let l = listener().await;
+    let addr = l.local_addr().unwrap();
+    let again = phone.answer(l);
+    announce(&rig, &phone, addr).await;
+    rig.daemon.reconnect_tick().await;
+    assert_eq!(rig.status().await.reconnecting, vec![phone.id()]);
+    let link = timeout(Duration::from_secs(15), again)
+        .await
+        .unwrap()
+        .unwrap();
+    wait_connected(&rig, &phone).await;
+    assert!(rig.status().await.challenges.is_empty());
+    rig.daemon.reconnect_tick().await;
+    assert!(rig.status().await.reconnecting.is_empty());
+
+    // A manual disconnect is respected even though the phone keeps announcing.
+    rig.ok(Request::Disconnect {
+        device_id: phone.id(),
+    })
+    .await;
+    drop(link);
+    rig.wait("disconnected", |s| s.links.is_empty()).await;
+    rig.daemon.reconnect_tick().await;
+    assert!(rig.status().await.links.is_empty());
+
+    // A phone that is not paired is never dialed.
+    let stranger = Phone::new();
+    let l = listener().await;
+    let addr = l.local_addr().unwrap();
+    announce(&rig, &stranger, addr).await;
+    rig.daemon.reconnect_tick().await;
+    assert!(rig.status().await.links.is_empty());
+    assert!(
+        timeout(Duration::from_millis(300), l.accept())
+            .await
+            .is_err(),
+        "an unpaired phone was dialed"
+    );
+}

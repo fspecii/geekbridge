@@ -24,6 +24,7 @@ object LinkRuntime {
                 PhoneDataRuntime.onLinkChanged(c.phase == LinkPhase.Running)
                 if (c.phase == LinkPhase.Running) startWaiter(c)
                 val s = c.snapshot
+                if (s != null && s.prompts.isNotEmpty()) AppState.pairingPromptSeen()
                 if (s != null && s.isRunning) AppState.recordPaired(s.paired, readable = !s.pairedError)
                 WidgetUpdater.onLink(s?.connections.orEmpty().filter { it.trusted }.map { it.peer.name.ifEmpty { "Computer" } })
             }

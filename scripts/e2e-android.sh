@@ -26,6 +26,20 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 # shellcheck disable=SC1091
 source scripts/android-env.sh >/dev/null 2>&1
+# Disk hygiene (docs/disk-hygiene.md): one scratch root, one shared cargo target, throwaway AVD clones.
+# shellcheck disable=SC1091
+source scripts/lib/scratch.sh; source scripts/lib/avd.sh
+# Per-task cargo dirs that sibling scripts pin under target/ (target/e2e-pd, target/pl, ...) go to the shared
+# target dir instead (GB_LEGACY_TARGET=1 keeps them); perf-* trees stay put because those runs want their own.
+case "${E2E_TARGET:-}" in
+  "$ROOT"/target/perf-*) ;;
+  "$ROOT"/target/*) [[ "${GB_LEGACY_TARGET:-0}" == 1 ]] || { E2E_TARGET="$GB_SCRATCH/target-shared"; export E2E_TARGET; } ;;
+esac
+# The APK scratch copy (a full android/ tree + Gradle output) lives in per-task scratch, removed on success.
+case "${E2E_SCRATCH:-$ROOT/target/e2e-android}" in
+  "$ROOT"/target/perf-*|"$ROOT"/target/soak-*) ;;
+  "$ROOT"/target/*) [[ "${GB_LEGACY_TARGET:-0}" == 1 ]] || { gb_scratch_init e2e && E2E_SCRATCH="$GB_SCRATCH_DIR/android"; export E2E_SCRATCH; } ;;
+esac
 
 STAGES_ALL=(env battery pair reconnect clip_d2p clip_p2d file_d2p file_p2d update)
 ONLY="" BUILD=auto
@@ -95,6 +109,10 @@ start_service() {
 }
 start_emulator() {
   [[ "$($ADB get-state 2>/dev/null)" == device ]] && return 0
+  gb_preflight "$ROOT/.tools" || return 1
+  if gb_avd_ensure "$AVD" && [[ "${GB_AVD_CLONED:-}" == 1 ]]; then
+    gb_avd_on_exit "$ADB emu kill >/dev/null 2>&1; systemctl --user stop gbe2e-emulator${E2E_TAG:-} >/dev/null 2>&1"
+  fi
   mkdir -p "$ROOT/.tools/e2e-emu/tmp"
   local envs=(GB_EMU_AVD="$AVD" GB_EMU_PORT="$CONSOLE_PORT" GB_EMU_ADB_PORT="$ANDROID_ADB_SERVER_PORT" GB_EMU_TMPDIR="$ROOT/.tools/e2e-emu/tmp")
   # A transient systemd user unit keeps the emulator out of this process tree (see scripts/emulator-call.sh).
@@ -105,11 +123,11 @@ start_emulator() {
 }
 build_all() {
   if [[ ! -x "$SVC" || "$BUILD" == yes ]]; then
-    log "building desktop service/ctl (target/e2e)"
+    log "building desktop service/ctl ($E2E_TARGET)"
     CARGO_TARGET_DIR="$E2E_TARGET" cargo build --release -p bridge-service --bins >"$LOGS/e2e-build-desktop.log" 2>&1 || return 1
   fi
   if [[ ! -f "$APK" || "$BUILD" == yes ]]; then
-    log "building the debug APK with the native core (scratch copy; target/e2e-android)"
+    log "building the debug APK with the native core (scratch copy; $SCRATCH)"
     mkdir -p "$SCRATCH"; cp "$ROOT/Cargo.toml" "$SCRATCH/Cargo.toml"
     rsync -a --delete --exclude build --exclude .gradle --exclude .kotlin android/ "$SCRATCH/android/"
     GB_ANDROID_DIR="$SCRATCH/android" GB_ANDROID_DIST_DIR="$SCRATCH/dist" \
@@ -118,6 +136,7 @@ build_all() {
 }
 stage_env() {
   [[ "${STOP:-}" == 1 ]] && return 0
+  gb_preflight "$ROOT" || { rec env FAIL "not enough free disk (GB_MIN_FREE_GB=${GB_MIN_FREE_GB})"; return 1; }
   [[ "$BUILD" != no ]] && { build_all || { rec env FAIL "build failed, see dist/android/logs/e2e-build-*.log"; return 1; }; }
   start_xvfb || { rec env FAIL "Xvfb did not start"; return 1; }
   start_service || { rec env FAIL "desktop service did not start"; return 1; }

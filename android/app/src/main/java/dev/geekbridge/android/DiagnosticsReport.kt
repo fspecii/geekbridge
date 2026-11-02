@@ -33,6 +33,7 @@ object DiagnosticsReport {
             appendLine("native core: ${scrub(coreState)}")
             appendLine("paired computers: ${AppState.pairedCount}")
             appendLine("stay connected: ${AppState.keepConnected}")
+            appendLine("background service: ${if (LinkService.isRunning) "running" else "not running"}${AppState.serviceError?.let { " (last start failed: " + scrub(it) + ")" }.orEmpty()}")
             appendLine("setup finished: ${AppState.setupFinished}")
             appendLine("saved data: ${StateMigrations.diagnostics()?.let(::scrub) ?: "ok"}${BackedBlob.lastNote?.let { " / " + scrub(it) }.orEmpty()}")
             appendLine("battery: $battery")

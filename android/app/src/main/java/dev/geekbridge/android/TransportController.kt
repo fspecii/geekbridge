@@ -121,6 +121,7 @@ class TransportController(
                     poll()
                 }
                 else -> {
+                    GbLog.i("link", "start failed: ${o.javaClass.simpleName}")
                     phase = LinkPhase.Stopped
                     notice = rejected(o, R.string.verb_could_not_start)
                     changed()
@@ -136,6 +137,7 @@ class TransportController(
         if (phase == LinkPhase.Stopped || phase == LinkPhase.Stopping) return
         // Leaving the foreground (reason != null) must not cut a running share; an explicit Stop still does.
         if (reason != null && needsLink()) return
+        GbLog.i("link", "close: requested by this phone (${reason ?: "explicit stop"}), shares holding the link: $holds")
         phase = LinkPhase.Stopping
         epoch++
         val mine = epoch
@@ -198,6 +200,7 @@ class TransportController(
         for (e in s.events) {
             if (e.seq > lastSeq) {
                 events += e
+                GbLog.i("link", "event ${e.kind} code=${e.code ?: "-"}") // reason a link ended / was redialed
                 if (TransportText.isSecurity(e.code) || e.kind == "peer_requested_repair") {
                     say(TransportText.event(strings, e), Tone.Bad)
                 } else if (e.kind == "peer_unpaired") {

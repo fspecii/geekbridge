@@ -1859,3 +1859,7 @@ mod tests {
         assert!(long_time(&a, 0).contains('–'));
     }
 }
+
+#[cfg(test)]
+#[path = "calendar_tests.rs"]
+mod render_tests;

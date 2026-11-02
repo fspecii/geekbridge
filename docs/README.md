@@ -23,11 +23,13 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 - [Service integration](service-integration.md): daemon, control API, client wiring
 - [State formats](state-formats.md): on-disk files and their versioning
 - [KDE Connect interoperability](kdeconnect-interop.md): protocol coverage and what stock peers do
+- [Running next to stock KDE Connect](coexistence.md): shared ports, discovery, QR/IP pairing, clipboard double sync
 - Android: [app](android-app.md), [native library](android-native.md), [contract](android-contract.md), [transport](android-transport.md), [runtime notes](android-runtime.md), [call state](android-calls.md), [performance](android-perf.md)
 - [Desktop design](design-desktop.md): the Nothing x macOS/iOS visual language
 - [Performance](performance.md): budgets and how to measure them
 - [Golden images](golden-images.md): visual regression tests for the desktop and Android UI, and how to update them
 - [Translating](translating.md): adding a language on Android and desktop, pseudo-locales, glossary, tone
+- [Disk hygiene](disk-hygiene.md): `make disk` / `make clean-dev`, scratch roots, free-space pre-flight
 - [Test coverage](coverage.md): measured line/function/region coverage, targets and how to regenerate
 - [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [CI dry run](ci-dry-run.md)
 - [Emulated calls](emulated-calls.md) and [updater end to end](updater-e2e.md): development test setups
@@ -35,8 +37,9 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 
 ## Maintainers: releasing
 
-- [Release checklist](release-checklist.md), [licence decision](licence-decision.md)
+- [Release checklist](release-checklist.md), [public release runbook](public-release-runbook.md), [licence decision](licence-decision.md)
 - [Real-device test plan](real-device-test-plan.md): the full manual checklist for a physical phone
+- [Real-device clipboard and calls script](real-device-clipboard-calls.md): step-by-step for the Galaxy Z Fold5 + Hyprland, with `geekbridge-ctl` proofs
 
 ## Reports (snapshots)
 

@@ -18,6 +18,9 @@ IFS=$'\n\t'
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=android-env.sh
 source "$HERE/android-env.sh"
+# shellcheck source=lib/scratch.sh
+source "$HERE/lib/scratch.sh"
+gb_preflight "$GB_ROOT" || exit 1   # refuse a big build on a nearly full disk (GB_MIN_FREE_GB, default 15)
 
 RUN_TESTS=1 RUN_LINT=1 RUN_HOST_TESTS=1
 for arg in "$@"; do

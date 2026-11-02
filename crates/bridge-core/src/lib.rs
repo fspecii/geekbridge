@@ -7,6 +7,8 @@ pub mod calls_view;
 pub mod clipboard;
 pub mod clipboard_wire;
 pub mod collate;
+pub mod debug_link;
+pub mod heartbeat;
 pub mod hotkey;
 pub mod ipc;
 pub mod messages;

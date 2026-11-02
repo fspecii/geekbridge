@@ -27,14 +27,16 @@ use bridge_kde::{
 use serde_json::{Map, Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Notify, Semaphore, mpsc, oneshot};
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep, timeout};
 
+use bridge_core::heartbeat::{EVERY as HEARTBEAT_EVERY, Heartbeat};
 use bridge_kde::share::{SHARE_REQUEST, SHARE_REQUEST_UPDATE};
 
 mod calls;
 mod clipboard;
 mod data;
 mod permits;
+mod redial;
 mod share;
 
 pub(super) use clipboard::SendArgs as ClipboardSend;
@@ -145,6 +147,8 @@ struct ConnEntry {
     peer_type: &'static str,
     peer_cert_sha256: String,
     peer_ip: IpAddr,
+    /// The computer declared it accepts `geekbridge.debug.log` (see `data::Feature::Debug`).
+    peer_debug: bool,
     ctl: mpsc::Sender<Ctl>,
     close: Arc<Notify>,
     since: Instant,
@@ -257,6 +261,7 @@ pub(super) struct Core {
     calls: calls::Hub,
     data: data::Hub,
     permits: permits::Permits,
+    redial: Mutex<redial::Book>,
 }
 
 pub(super) struct Decision {
@@ -298,7 +303,16 @@ impl Core {
             calls: calls::Hub::default(),
             data: data::Hub::default(),
             permits: permits::Permits::default(),
+            redial: Mutex::new({
+                let mut book = redial::Book::default();
+                book.carry_over();
+                book
+            }),
         }
+    }
+
+    fn lock_redial(&self) -> MutexGuard<'_, redial::Book> {
+        self.redial.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// A panic while the lock was held only ever interrupted a bookkeeping update; keep serving.
@@ -546,6 +560,7 @@ impl Core {
             .remove(device)
             .map_err(|_| err("store_error", "the trust store could not be updated"))?;
         self.cancel_transfers_of(device.as_str());
+        self.lock_redial().forget(device);
         let mut st = self.lock();
         let found = st
             .conns
@@ -627,6 +642,11 @@ impl Core {
                 peer_type: info.peer.device_type.as_str(),
                 peer_cert_sha256: info.peer_cert.fingerprint_hex(),
                 peer_ip: info.peer_ip,
+                peer_debug: info
+                    .peer
+                    .incoming_capabilities
+                    .iter()
+                    .any(|c| c == bridge_core::debug_link::LOG),
                 ctl,
                 close,
                 since: Instant::now(),
@@ -875,36 +895,34 @@ pub(super) async fn accept_loop(core: Arc<Core>, listener: TcpListener) {
     }
 }
 
-/// Kernel TCP keepalive for an accepted socket: a computer that vanished (sleep, Wi-Fi change) is noticed
-/// without any timer or wakeup in this process. Probes start after 2 minutes idle, then every 30 s, 4 times.
-fn enable_keepalive(stream: &TcpStream) {
-    let ka = socket2::TcpKeepalive::new()
-        .with_time(Duration::from_secs(120))
-        .with_interval(Duration::from_secs(30))
-        .with_retries(4);
-    let _ = socket2::SockRef::from(stream).set_tcp_keepalive(&ka); // best effort
-}
+// Kernel TCP keepalive (30 s idle, 10 s x 3, TCP_USER_TIMEOUT 60 s) is armed by `bridge-kde` on every
+// accepted and dialed socket, on Android as on Linux (see `bridge-kde/src/keepalive.rs`).
 
 async fn inbound(core: Arc<Core>, stream: TcpStream, permit: tokio::sync::OwnedSemaphorePermit) {
-    enable_keepalive(&stream);
     // The address policy runs inside `accept` before a byte is read.
     let result = timeout(HANDSHAKE_DEADLINE, core.endpoint.accept(stream)).await;
     drop(permit);
     match result {
-        Ok(Ok(hs)) => drive(core, hs, Origin::Inbound, None).await,
+        Ok(Ok(hs)) => drive(core, hs, Origin::Inbound, None, None).await,
         _ => core.count(|c| c.inbound_failed += 1),
     }
 }
 
 pub(super) async fn outbound(core: Arc<Core>, attempt: u64, addr: SocketAddr, target: DeviceId) {
     match timeout(HANDSHAKE_DEADLINE, core.endpoint.connect(addr, &target)).await {
-        Ok(Ok(hs)) => drive(core, hs, Origin::Outbound, Some(attempt)).await,
+        Ok(Ok(hs)) => drive(core, hs, Origin::Outbound, Some(attempt), Some(addr)).await,
         Ok(Err(e)) => core.attempt_failed(attempt, &target, kde_code(&e)),
         Err(_) => core.attempt_failed(attempt, &target, "timeout"),
     }
 }
 
-async fn drive(core: Arc<Core>, hs: Handshake, origin: Origin, attempt: Option<u64>) {
+async fn drive(
+    core: Arc<Core>,
+    hs: Handshake,
+    origin: Origin,
+    attempt: Option<u64>,
+    dialed: Option<SocketAddr>,
+) {
     let info = hs.info().clone();
     let id = info.connection_id.0;
     let (ctl_tx, ctl_rx) = mpsc::channel(CTL_DEPTH);
@@ -914,6 +932,8 @@ async fn drive(core: Arc<Core>, hs: Handshake, origin: Origin, attempt: Option<u
         (Handshake::Pending(_), Origin::Inbound) => Phase::PairingAwait,
         (Handshake::Pending(_), Origin::Outbound) => Phase::Parked,
     };
+    let peer_ip = info.peer_ip;
+    let device = info.peer.device_id.clone();
     if let Err(code) = core.admit(&info, phase, ctl_tx, close.clone(), attempt) {
         if origin == Origin::Outbound {
             core.lock().event(
@@ -926,7 +946,10 @@ async fn drive(core: Arc<Core>, hs: Handshake, origin: Origin, attempt: Option<u
         return; // dropping `hs` closes the connection
     }
     match hs {
-        Handshake::Trusted(link) => run_trusted(core, id, link, ctl_rx, close).await,
+        Handshake::Trusted(link) => {
+            core.lock_redial().connected(&device, peer_ip, dialed);
+            run_trusted(core, id, link, ctl_rx, close).await
+        }
         Handshake::Pending(link) => run_pending(core, id, link, origin, ctl_rx, close).await,
     }
 }
@@ -977,6 +1000,10 @@ async fn run_pending(
             }
             core.with_conn(id, |c| c.phase = Phase::Trusted);
             core.lock().event("paired", Some(id), Some(&device), None);
+            let ip = core.lock().conns.get(&id).map(|c| c.peer_ip);
+            if let Some(ip) = ip {
+                core.lock_redial().connected(&device, ip, None);
+            }
             run_trusted(core, id, trusted, ctl_rx, close).await;
         }
         Some(Err(e)) => {
@@ -1035,6 +1062,9 @@ async fn run_trusted(
         core.remove_conn(id, Some(("link_closed", Some("io_error"))));
         return;
     }
+    let mut beat = Heartbeat::new(std::time::Instant::now());
+    let mut tick = interval_at(Instant::now() + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let exit: Option<(&'static str, Option<&'static str>)> = loop {
         tokio::select! {
             biased;
@@ -1082,6 +1112,7 @@ async fn run_trusted(
                 Ok(LinkEvent::Packet(p)) => {
                     // Only the advertised types are acted on; ping content is not retained.
                     let is_ping = p.kind == PING;
+                    beat.heard(std::time::Instant::now(), is_ping);
                     let acted = if p.kind == SHARE_REQUEST || p.kind == SHARE_REQUEST_UPDATE {
                         core.incoming_share(id, link.payload_context(), &p)
                     } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
@@ -1136,6 +1167,19 @@ async fn run_trusted(
                 }
                 Err(e) => break Some(("link_closed", Some(kde_code(&e)))),
             },
+            // Last in the biased order: after a long sleep, packets already queued win over this check.
+            _ = tick.tick() => {
+                let now = std::time::Instant::now();
+                if beat.peer_silent(now) {
+                    break Some(("link_closed", Some("ping_timeout")));
+                }
+                if beat.ping_due(now) {
+                    if let Err(e) = link.send(&Packet::new(PING, Map::new())).await {
+                        break Some(("link_closed", Some(kde_code(&e))));
+                    }
+                    beat.sent(std::time::Instant::now());
+                }
+            },
         }
     };
     // Files queued behind the failure will never be announced; fail them instead of leaving them waiting.
@@ -1143,7 +1187,72 @@ async fn run_trusted(
     while let Ok(queued) = ctl_rx.try_recv() {
         core.drop_queued(queued);
     }
+    let redial = exit.is_some_and(|(kind, _)| kind == "link_closed");
+    let device = core.lock().conns.get(&id).map(|c| c.peer_id.clone());
     core.remove_conn(id, exit);
+    if redial && let Some(device) = device {
+        spawn_redial(&core, device);
+    }
+}
+
+/// Dial the computer again after an unexpected loss (the user's own disconnect, an unpair or a
+/// stop never get here). The computer redials too; whichever link lands first wins and the
+/// cross-dial rule in [`prefer_new`] keeps exactly one.
+/// After a transport restart (network change): dial the paired computers it was linked to before.
+pub(super) fn redial_remembered(core: &Arc<Core>, handle: &tokio::runtime::Handle) {
+    let _guard = handle.enter();
+    let devices = core.lock_redial().dialable();
+    for device in devices {
+        if matches!(core.store.get(&device), Ok(Some(_))) {
+            spawn_redial(core, device);
+        }
+    }
+}
+
+fn spawn_redial(core: &Arc<Core>, device: DeviceId) {
+    if !core.lock_redial().begin(&device) {
+        return;
+    }
+    let core = core.clone();
+    tokio::spawn(async move {
+        redial_loop(&core, &device).await;
+        core.lock_redial().end(&device);
+    });
+}
+
+async fn redial_loop(core: &Arc<Core>, device: &DeviceId) {
+    loop {
+        let Some(delay) = core.lock_redial().next_delay(device) else {
+            return;
+        };
+        sleep(delay).await;
+        let addr = core.lock_redial().addr(device);
+        let paired = matches!(core.store.get(device), Ok(Some(_)));
+        let Some(addr) = addr.filter(|a| paired && core.policy.check(a.ip()).is_ok()) else {
+            core.lock_redial().forget(device);
+            return;
+        };
+        match core.begin_attempt(device) {
+            Ok(attempt) => {
+                core.lock().event("redial", None, Some(device), None);
+                tokio::spawn(outbound(core.clone(), attempt, addr, device.clone()));
+            }
+            // Connected meanwhile (the computer got there first), or stopped.
+            Err(_) => return,
+        }
+        // The dial ends within the handshake deadline; a landed link ends the loop.
+        let deadline = Instant::now() + HANDSHAKE_DEADLINE + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            sleep(Duration::from_millis(500)).await;
+            let st = core.lock();
+            if !st.open || st.conns.values().any(|c| c.peer_id == *device) {
+                return;
+            }
+            if !st.attempts.iter().any(|a| a.device == *device) {
+                break;
+            }
+        }
+    }
 }
 
 /// Bridges `bridge-kde`'s approval hook to the UI: the pairing waits on a oneshot that only
@@ -1165,7 +1274,13 @@ impl Approver for UiApprover {
 /// Static, content-free code for a failure. Never includes a message, address or fingerprint.
 pub(super) fn kde_code(e: &KdeError) -> &'static str {
     match e {
-        KdeError::Io(_) => "io_error",
+        KdeError::Io(e) => match e.kind() {
+            std::io::ErrorKind::ConnectionReset => "conn_reset",
+            std::io::ErrorKind::BrokenPipe => "broken_pipe",
+            std::io::ErrorKind::ConnectionAborted => "conn_aborted",
+            std::io::ErrorKind::TimedOut => "tcp_timeout",
+            _ => "io_error",
+        },
         KdeError::Timeout(_) => "timeout",
         KdeError::UnexpectedEof => "peer_closed",
         KdeError::LineTooLong { .. } | KdeError::OutgoingTooLarge { .. } => "packet_too_large",
@@ -1221,6 +1336,16 @@ mod tests {
         // Same direction twice is a reconnect: newest wins.
         assert!(prefer_new(&a, &b, Role::Initiator, Role::Initiator));
         assert!(prefer_new(&a, &b, Role::Acceptor, Role::Acceptor));
+    }
+
+    #[test]
+    fn io_failures_name_their_cause() {
+        use std::io::{Error, ErrorKind};
+        let code = |k| kde_code(&KdeError::Io(Error::from(k)));
+        assert_eq!(code(ErrorKind::ConnectionReset), "conn_reset");
+        assert_eq!(code(ErrorKind::BrokenPipe), "broken_pipe");
+        assert_eq!(code(ErrorKind::TimedOut), "tcp_timeout");
+        assert_eq!(code(ErrorKind::PermissionDenied), "io_error");
     }
 
     #[test]

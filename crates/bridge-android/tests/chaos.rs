@@ -378,3 +378,84 @@ fn accepted_sockets_have_the_keepalive_timer_armed() {
     drop(link);
     phone.d.handle(&req("transport_stop", json!({})));
 }
+
+/// The phone dials the computer again by itself after a reset in the middle of a live link, at the
+/// endpoint it dialed last, and ends up with exactly one trusted connection. The reset comes from the
+/// fault proxy (a TCP RST, as a Wi-Fi power-save or NAT drop produces), so the loss reason is
+/// named in the event log (`conn_reset` or `peer_closed`).
+#[test]
+fn the_phone_redials_after_a_reset_mid_link_and_keeps_a_single_connection() {
+    let _g = serial();
+    let desk = Desk::new();
+    let phone = Phone::start(41);
+    let pairing_proxy = desk.proxy(phone.addr, Faults::default(), 3);
+    drop(desk.pair(&phone, pairing_proxy.addr()));
+    phone.wait("connection gone", Duration::from_secs(15), |s| {
+        s["connections"].as_array().unwrap().is_empty()
+    });
+
+    // The computer's own listener, behind a fault proxy; it keeps every trusted link it accepts.
+    let (links_tx, links_rx) = std::sync::mpsc::channel::<TrustedLink>();
+    let listener = desk
+        .rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let desk_addr = listener.local_addr().unwrap();
+    let ep = desk.ep.clone();
+    desk.rt.spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (ep, tx) = (ep.clone(), links_tx.clone());
+            tokio::spawn(async move {
+                if let Ok(Handshake::Trusted(link)) = ep.accept(stream).await {
+                    let _ = tx.send(link);
+                    std::future::pending::<()>().await; // hold the link open
+                }
+            });
+        }
+    });
+    let proxy = desk.proxy(desk_addr, Faults::default(), 5);
+
+    let v: Value = serde_json::from_str(&phone.d.handle(&req(
+        "transport_connect",
+        json!({
+            "host": "127.0.0.1",
+            "port": proxy.port(),
+            "device_id": "d".repeat(32),
+        }),
+    )))
+    .unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    phone.wait("first link", Duration::from_secs(15), |s| {
+        s["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["trusted"] == true)
+    });
+    links_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    proxy.reset_all();
+    let s = phone.wait("redialed link", Duration::from_secs(30), |s| {
+        let ev = s["events"].as_array().unwrap();
+        ev.iter().any(|e| e["kind"] == "redial")
+            && s["connections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["trusted"] == true)
+    });
+    let lost = s["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rfind(|e| e["kind"] == "link_closed")
+        .expect("a link_closed event");
+    // The proxy's teardown reaches the phone as an RST or a bare close, depending on timing.
+    assert!(
+        matches!(lost["code"].as_str(), Some("conn_reset" | "peer_closed")),
+        "{lost}"
+    );
+    assert_eq!(s["connections"].as_array().unwrap().len(), 1, "{s}");
+    links_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    phone.d.handle(&req("transport_stop", json!({})));
+}

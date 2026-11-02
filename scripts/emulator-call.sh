@@ -265,6 +265,12 @@ cmd_create_avd() {
 }
 
 preflight() {
+  # Refuse to boot an emulator on a nearly full disk (GB_MIN_FREE_GB, default 15; docs/disk-hygiene.md).
+  if [ -r "$ROOT/scripts/lib/scratch.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$ROOT/scripts/lib/scratch.sh"
+    gb_preflight "$ROOT/.tools" || { set_status "failed: not enough free disk (GB_MIN_FREE_GB=$GB_MIN_FREE_GB)"; return 1; }
+  fi
   [ -x "$EMU_BIN" ] || { set_status "failed: emulator binary missing at $EMU_BIN (run scripts/bootstrap-android.sh)"; return 1; }
   [ -x "$ADB_BIN" ] || { set_status "failed: adb not found"; return 1; }
   if ! avd_exists; then

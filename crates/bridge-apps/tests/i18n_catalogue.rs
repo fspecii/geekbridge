@@ -35,9 +35,22 @@ fn sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Code before the first `#[cfg(test)]` line (test modules sit at the end of each file).
+/// Code before the first `#[cfg(test)] mod ...` (test modules sit at the end of each file). A
+/// `#[cfg(test)]` on an `impl` or `fn` mid-file is a test helper, not the start of the tests.
 fn non_test(src: &str) -> &str {
-    src.find("#[cfg(test)]").map_or(src, |i| &src[..i])
+    let mut from = 0;
+    while let Some(i) = src[from..].find("#[cfg(test)]") {
+        let at = from + i;
+        let mut rest = src[at + "#[cfg(test)]".len()..].trim_start();
+        while rest.starts_with("#[") {
+            rest = rest.split_once('\n').map_or("", |(_, r)| r.trim_start());
+        }
+        if rest.starts_with("mod ") {
+            return &src[..at];
+        }
+        from = at + 1;
+    }
+    src
 }
 
 fn english() -> BTreeMap<String, String> {
@@ -124,6 +137,8 @@ fn offenders() -> BTreeMap<String, Vec<(usize, String)>> {
             "i18n.rs" | "localtime.rs" | "cli.rs" | "memstats.rs" | "memtrim.rs" | "lib.rs"
         ) || rel.starts_with("bin/")
             || rel.contains("a11y")
+            || rel.ends_with("_tests.rs")
+            || rel == "test_support.rs"
         {
             continue;
         }

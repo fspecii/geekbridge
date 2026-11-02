@@ -17,10 +17,26 @@ import android.widget.Toast
  */
 class ClipboardFloatingActivity : Activity() {
     private var handled = false
+    private val main = Handler(Looper.getMainLooper())
+
+    // A transparent window that never gets focus (keyguard, a Samsung overlay such as the edge panel) would sit over
+    // the screen swallowing touches; give up after a moment and say so.
+    private val giveUp = Runnable {
+        if (handled || isFinishing) return@Runnable
+        handled = true
+        Toast.makeText(applicationContext, R.string.clip_no_focus, Toast.LENGTH_SHORT).show()
+        finish()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ClipboardRuntime.init(this)
+        main.postDelayed(giveUp, FOCUS_WAIT_MS)
+    }
+
+    override fun onDestroy() {
+        main.removeCallbacks(giveUp)
+        super.onDestroy()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -44,6 +60,8 @@ class ClipboardFloatingActivity : Activity() {
     }
 
     companion object {
+        private const val FOCUS_WAIT_MS = 4_000L
+
         fun intent(ctx: Context): Intent = Intent(ctx, ClipboardFloatingActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_NO_HISTORY)
     }

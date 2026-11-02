@@ -171,3 +171,44 @@ object ClipboardText {
         },
     )
 }
+
+/** The last answer the phone gave about its clipboard; only a refusal the user can fix is shown, and only for a while. */
+class ClipOutcome(val reason: String?, val atMs: Long)
+
+/** The one line on Home that says what clipboard sync is doing and what to do next. Pure, so every state is tested. */
+object ClipboardState {
+    enum class Kind { Off, Waiting, Ready, ReadyNoTile, NoNotifications, Blocked }
+
+    class Line(val kind: Kind, val text: String, val tone: Tone)
+
+    /** A refusal stays on screen this long; after that the line is about what to do next, not what went wrong once. */
+    const val BLOCKED_SHOWN_MS = 2 * 60_000L
+
+    fun line(
+        s: Strings,
+        enabled: Boolean,
+        connected: Boolean,
+        notificationsAllowed: Boolean,
+        tileAdded: Boolean,
+        canRequestTile: Boolean,
+        last: ClipOutcome?,
+        nowMs: Long,
+    ): Line {
+        if (!enabled) return Line(Kind.Off, s.get(R.string.clip_state_off), Tone.Muted)
+        if (!connected) return Line(Kind.Waiting, s.get(R.string.clip_state_waiting), Tone.Muted)
+        val recent = last?.takeIf { nowMs - it.atMs in 0..BLOCKED_SHOWN_MS }?.reason
+        val why = when (recent) {
+            "locked" -> R.string.clip_state_blocked_locked
+            "sensitive" -> R.string.clip_state_blocked_sensitive
+            "too_large" -> R.string.clip_state_blocked_too_large
+            else -> null
+        }
+        if (why != null) return Line(Kind.Blocked, s.get(why), Tone.Warn)
+        if (!notificationsAllowed) return Line(Kind.NoNotifications, s.get(R.string.clip_state_no_notifications), Tone.Warn)
+        if (!tileAdded) {
+            val id = if (canRequestTile) R.string.clip_state_ready_no_tile else R.string.clip_state_ready_no_tile_old
+            return Line(Kind.ReadyNoTile, s.get(id), Tone.Normal)
+        }
+        return Line(Kind.Ready, s.get(R.string.clip_state_ready), Tone.Ok)
+    }
+}

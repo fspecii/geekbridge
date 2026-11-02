@@ -110,6 +110,16 @@ fn sheet_id() -> egui::Id {
 
 impl CallPanel {
     fn seconds(&mut self, key: &str) -> u64 {
+        // Golden-image tests pin the call timer (scripts/golden-desktop.sh); never set in normal use.
+        static FIXED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+        let fixed = FIXED.get_or_init(|| {
+            std::env::var("GEEKBRIDGE_FIXED_CALL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        });
+        if let Some(secs) = *fixed {
+            return secs;
+        }
         self.started
             .entry(key.to_owned())
             .or_insert_with(Instant::now)

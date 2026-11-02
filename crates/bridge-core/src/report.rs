@@ -99,7 +99,13 @@ fn is_sensitive(core: &str, prev: &str) -> bool {
     let email = core
         .split_once('@')
         .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty());
-    let unix_path = (core.starts_with('/') && core[1..].contains('/')) || core.starts_with("~/");
+    let is_unix_path =
+        |p: &str| (p.starts_with('/') && p[1..].contains('/')) || p.starts_with("~/");
+    // Also "PATH=/usr/bin:/home/me/bin": any `=`/`:`/`;`-separated piece that is a path (but not "//host/..." of a URL).
+    let unix_path = is_unix_path(core)
+        || core
+            .split(['=', ':', ';'])
+            .any(|p| !p.starts_with("//") && is_unix_path(p));
     let win_path = core.contains('\\')
         || (core.len() > 2
             && core.as_bytes()[1] == b':'
@@ -116,10 +122,27 @@ fn is_sensitive(core: &str, prev: &str) -> bool {
         let lens: Vec<usize> = core.split('-').map(str::len).collect();
         lens == [8, 4, 4, 4, 12] && hex == 32
     };
+    // Windows `ipconfig` spells a MAC address "AA-BB-CC-DD-EE-FF".
+    let dash_mac = {
+        let groups: Vec<&str> = core.split('-').collect();
+        groups.len() == 6
+            && groups
+                .iter()
+                .all(|g| g.len() == 2 && g.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
     let long_hex = core.len() >= 16 && hex * 10 >= core.len() * 9;
     let timestamp = prev.ends_with("unix_ms");
     let phone = (core.starts_with('+') && digits >= 6) || (digits >= 7 && !timestamp);
-    email || unix_path || win_path || file_url || v4 || v6_or_mac || uuid || long_hex || phone
+    email
+        || unix_path
+        || win_path
+        || file_url
+        || v4
+        || v6_or_mac
+        || uuid
+        || dash_mac
+        || long_hex
+        || phone
 }
 
 /// Percent-encodes everything but RFC 3986 unreserved characters.

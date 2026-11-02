@@ -39,9 +39,9 @@ adds "Battery optimisation is on".
 - Holds one TCP listener and sends UDP announcements; it does not listen for discovery, so there is **no multicast
   lock**, and there are **no wake locks** in the new code. (Share transfers by the sharing code keep their own holds.)
 - No polling or timers in the service. It reacts to a default-network change (`registerDefaultNetworkCallback`,
-  debounced 3 s, bounded retries) by re-announcing once. Dead peers are detected by kernel TCP keepalive set on every
-  accepted socket in the Rust transport (120 s idle, 30 s interval, 4 probes; no process wakeups). Outbound
-  connections made by `bridge-kde` do not set keepalive yet.
+  debounced 3 s, bounded retries) by re-announcing once. Dead peers are detected by kernel TCP keepalive that `bridge-kde` arms on every accepted and dialed socket
+  (30 s idle, 10 s interval, 3 probes, `TCP_USER_TIMEOUT` 60 s; Android included), plus a 20 s application
+  heartbeat (ping) in both directions; see docs/reports/real-device-link-stability.md.
 - `BootReceiver` (`RECEIVE_BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`) calls `LinkService.sync`.
 - While Home/Setup is visible the UI polls `transport_status` every 1-2 s (the core API is poll-based); the service
   never does. Moving between the app's screens does not stop the link (`ActivityTracker`).

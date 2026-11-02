@@ -1280,6 +1280,7 @@ async fn consent_defaults_off_needs_a_pairing_and_ping_needs_no_consent() {
                     | Feature::Calendar
                     | Feature::CalendarEdit
                     | Feature::CalendarAlerts
+                    | Feature::Debug
             )));
 
     rig.ok(Request::SetConsent {

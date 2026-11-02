@@ -42,6 +42,31 @@ object AppState {
         get() = p()?.getBoolean("keep_connected", true) ?: true
         set(v) { p()?.edit()?.putBoolean("keep_connected", v)?.apply() }
 
+    @Volatile private var pairingUntil = 0L
+
+    /** True while a pairing started in the last few minutes may keep the background link alive (not persisted). */
+    fun pairingGrace(): Boolean = android.os.SystemClock.elapsedRealtime() < pairingUntil
+    fun pairingGraceLeftMs(): Long = (pairingUntil - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0)
+    fun startPairingGrace() { pairingUntil = android.os.SystemClock.elapsedRealtime() + ServicePolicy.PAIRING_GRACE_MS }
+    fun endPairingGrace() { pairingUntil = 0 }
+
+    /**
+     * A pairing code is waiting for a decision (whichever screen shows it). The user usually looks at the other
+     * computer to compare it, so the phone screen may lock or the app may be left before they answer: keep the link
+     * alive for a few minutes through the background service.
+     */
+    fun pairingPromptSeen() {
+        val fresh = !pairingGrace()
+        startPairingGrace()
+        if (fresh) appContext?.let { LinkService.sync(it) }
+    }
+
+    /** Should the foreground service hold the link right now? */
+    fun wantService(): Boolean = ServicePolicy.shouldRun(pairedCount, keepConnected, pairingGrace())
+
+    /** Why the foreground service could not start last time (shown in Diagnostics); null if it did. */
+    @Volatile var serviceError: String? = null
+
     var oemAcknowledged: Boolean
         get() = p()?.getBoolean("oem_ack", false) ?: false
         set(v) { p()?.edit()?.putBoolean("oem_ack", v)?.apply() }
@@ -63,6 +88,8 @@ object AppState {
         val names = paired.take(MAX_NAMES).map { it.name.ifEmpty { "Computer" }.replace('\n', ' ').take(NAME_CHARS) }
         ComputerGrantsRuntime.onPaired(paired)
         val before = pairedCount
+        // The first successful pairing turns "Stay connected" on explicitly (the Home toggle shows it and can undo it).
+        if (before == 0 && paired.isNotEmpty()) { keepConnected = true; endPairingGrace() }
         p()?.edit()?.putInt("paired_count", paired.size)?.putString("paired_names", names.joinToString("\n"))
             ?.putString("paired_peers", paired.take(MAX_NAMES).joinToString("\n") { it.deviceId + "\t" + it.name.ifEmpty { "Computer" }.replace(Regex("[\\n\\t]"), " ").take(NAME_CHARS) })?.apply()
         // Starting or stopping the background connection follows the paired count (event-driven, no polling).

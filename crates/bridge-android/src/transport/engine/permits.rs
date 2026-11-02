@@ -47,6 +47,26 @@ impl Core {
         device.is_some_and(|d| self.permits.allows(feature, &d))
     }
 
+    /// Does the computer on this connection declare the debug packets (only a computer built to read them)?
+    pub(in crate::transport) fn peer_debug(&self, connection_id: u64) -> bool {
+        self.lock()
+            .conns
+            .get(&connection_id)
+            .is_some_and(|c| c.peer_debug && c.phase == Phase::Trusted)
+    }
+
+    /// Control handles of the trusted connections that declared the debug packets (optionally one connection).
+    pub(super) fn debug_ctls(&self, only: Option<u64>) -> Vec<tokio::sync::mpsc::Sender<Ctl>> {
+        let st = self.lock();
+        st.conns
+            .values()
+            .filter(|c| {
+                c.phase == Phase::Trusted && c.peer_debug && only.is_none_or(|id| id == c.id)
+            })
+            .map(|c| c.ctl.clone())
+            .collect()
+    }
+
     /// Control handles of the trusted connections allowed to use `feature` (optionally only one connection).
     pub(super) fn permitted_ctls(
         &self,

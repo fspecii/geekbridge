@@ -238,7 +238,9 @@ class ClipboardEngineTest {
         host = host,
         settings = { settings },
         clock = { now },
+        onOutcome = { outcomes += it },
     )
+    private val outcomes = ArrayList<String?>()
 
     private fun snap(text: String = "hello", copiedAgo: Long = 1_000, sensitive: Boolean = false, kind: ClipKind = ClipKind.Text) =
         ClipSnapshot(kind, text, null, if (kind == ClipKind.Image) "content://x/1" else null, if (kind == ClipKind.Image) "image/png" else null,
@@ -422,5 +424,53 @@ class ClipboardEngineTest {
         engine.onEvents(listOf(pull("b")))
         assertTrue("cache was dropped, so it asks instead of answering", sent.isEmpty())
         assertNotNull(host.asks)
+    }
+
+    @Test fun refusalsAndSendsAreReportedForTheHomeLine() {
+        host.locked = true
+        engine.capture(snap())
+        engine.onEvents(listOf(pull("a")))
+        assertEquals(listOf<String?>("locked"), outcomes)
+        host.locked = false
+        engine.capture(snap())
+        engine.onEvents(listOf(pull("b")))
+        assertEquals(listOf<String?>("locked", null), outcomes)
+        engine.capture(snap(sensitive = true))
+        engine.onEvents(listOf(pull("c")))
+        assertEquals("sensitive", outcomes.last())
+    }
+
+    // ---- the one line on Home
+
+    private fun line(
+        enabled: Boolean = true, connected: Boolean = true, notif: Boolean = true, tile: Boolean = true,
+        canTile: Boolean = true, last: ClipOutcome? = null, at: Long = 1_000_000,
+    ) = ClipboardState.line(TestStrings, enabled, connected, notif, tile, canTile, last, at)
+
+    @Test fun homeLineCoversEveryState() {
+        assertEquals(ClipboardState.Kind.Off, line(enabled = false, connected = false).kind)
+        assertEquals(ClipboardState.Kind.Waiting, line(connected = false).kind)
+        val ready = line()
+        assertEquals(ClipboardState.Kind.Ready, ready.kind)
+        assertTrue(ready.text.startsWith("Ready: copy, then tap"))
+        assertEquals(ClipboardState.Kind.ReadyNoTile, line(tile = false).kind)
+        assertTrue(line(tile = false).text.contains("tap the notification"))
+        val nn = line(notif = false)
+        assertEquals(ClipboardState.Kind.NoNotifications, nn.kind)
+        assertTrue(nn.text.startsWith("Blocked:"))
+    }
+
+    @Test fun aRecentFixableRefusalIsShownThenForgotten() {
+        val now = 1_000_000L
+        val locked = ClipOutcome("locked", now - 10_000)
+        assertEquals(ClipboardState.Kind.Blocked, line(last = locked, at = now).kind)
+        assertTrue(line(last = locked, at = now).text.contains("locked"))
+        assertEquals(ClipboardState.Kind.Ready, line(last = locked, at = now + ClipboardState.BLOCKED_SHOWN_MS + 1).kind)
+        // A refusal that is not a problem to fix (expired / needs a tap) and a success are not shown.
+        assertEquals(ClipboardState.Kind.Ready, line(last = ClipOutcome("expired", now), at = now).kind)
+        assertEquals(ClipboardState.Kind.Ready, line(last = ClipOutcome(null, now), at = now).kind)
+        assertEquals(ClipboardState.Kind.Blocked, line(last = ClipOutcome("sensitive", now), at = now).kind)
+        // Off and waiting win over an old refusal.
+        assertEquals(ClipboardState.Kind.Off, line(enabled = false, last = locked, at = now).kind)
     }
 }

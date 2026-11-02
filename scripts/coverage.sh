@@ -14,6 +14,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 what="${1:-all}"
+# shellcheck disable=SC1091
+source scripts/lib/scratch.sh; gb_preflight "$PWD" || exit 1   # instrumented builds are huge; GB_MIN_FREE_GB, default 15
 
 rust() {
   command -v cargo-llvm-cov >/dev/null || { echo "cargo-llvm-cov is not installed (see the header of $0)" >&2; return 1; }

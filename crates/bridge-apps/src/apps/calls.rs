@@ -375,3 +375,7 @@ impl AppView for Calls {
         self.feed = Some(feed);
     }
 }
+
+#[cfg(test)]
+#[path = "calls_tests.rs"]
+mod render_tests;

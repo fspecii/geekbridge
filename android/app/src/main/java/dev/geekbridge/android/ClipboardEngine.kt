@@ -38,6 +38,8 @@ class ClipboardEngine(
     private val host: ClipboardHost,
     private val settings: () -> ClipSettings,
     private val clock: () -> Long,
+    /** Told the reason after every refusal and null after every send, so Home can say what is going on. */
+    private val onOutcome: (String?) -> Unit = {},
 ) {
     private class Pending(val pull: ClipEvent.Pull, val expiresAtMs: Long)
 
@@ -130,17 +132,20 @@ class ClipboardEngine(
         return when (val v = PullGate.decideExplicit(s.enabled, host.isLocked(), snapshot)) {
             is Verdict.Send -> deliver(v.snapshot, null, null).let { SendResult(it == null, it) }
             is Verdict.Refuse -> SendResult(false, v.reason)
-        }.let { if (!it.sent && it.reason == null) SendResult(false, "not_connected") else it }
+        }.also { onOutcome(it.reason) }.let { if (!it.sent && it.reason == null) SendResult(false, "not_connected") else it }
     }
 
     /** Null when the item was handed to the core, else why not. Only reasons the computer understands are refused. */
     private fun answer(p: ClipEvent.Pull, snap: ClipSnapshot): String? {
-        val why = deliver(snap, p.requestId, p.connectionId) ?: return null
+        val why = deliver(snap, p.requestId, p.connectionId)
+        onOutcome(why)
+        if (why == null) return null
         if (why in WIRE_REASONS) refuse(p, why)
         return why
     }
 
     private fun refuse(p: ClipEvent.Pull, reason: String) {
+        onOutcome(reason)
         core(ClipboardProtocol.sendNoneRequest(p.requestId, p.connectionId, reason))
     }
 

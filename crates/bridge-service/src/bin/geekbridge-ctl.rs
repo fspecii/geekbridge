@@ -26,7 +26,9 @@ Commands:
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
-  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony
+  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony, debug
+  phone-log DEVICE_ID [-f] [-n N]     last N (default 200) lines of a debug-build phone's log; -f follows
+  phone-state DEVICE_ID               ask a debug-build phone for its redacted state dump and print it
   ping DEVICE_ID                      interoperability check on a paired link
   agenda [QUERY] [YYYY-MM-DD] [DAYS]         contacts matching QUERY and that day's events, from phones whose
                                       Contacts/Calendar consent is on (prints personal data; memory only)
@@ -169,6 +171,12 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if matches!(command.as_str(), "pair-qr" | "test-connection") {
         return pairing_command(&command, &args[1..], port, &state_dir);
+    }
+    if command == "phone-log" {
+        return phone_log_command(&args[1..], &state_dir);
+    }
+    if command == "phone-state" {
+        return phone_state_command(&args[1..], port, &state_dir);
     }
     if command == "diagnose" {
         return diagnose_command(port, &state_dir);
@@ -370,6 +378,15 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     })?;
     match response {
         Response::Ack => println!("ok"),
+        Response::Status(status) => {
+            let json = serde_json::to_string_pretty(&Response::Status(status.clone()))
+                .map_err(|e| e.to_string())?;
+            println!("{json}");
+            // On stderr so the JSON above stays machine-readable.
+            if let Some(note) = status.port_note() {
+                eprintln!("{note}");
+            }
+        }
         other => println!(
             "{}",
             serde_json::to_string_pretty(&other).map_err(|e| e.to_string())?
@@ -474,15 +491,17 @@ fn describe_pull(p: &ipc::ClipboardPullStatus) -> String {
             "Nothing recent on the phone: copy again, then paste within the time window.".into()
         }
         (_, Some("empty")) => "The phone's clipboard is empty.".into(),
-        (_, Some("needs_gesture")) => {
-            "Tap the GeekBridge notification on the phone to send its clipboard.".into()
-        }
+        (_, Some("needs_gesture")) => "Android needs a tap on the phone: tap the GeekBridge notification, the Send clipboard \
+             tile, or open the app and tap Send clipboard. No notification? Allow GeekBridge notifications on the phone."
+            .into(),
         (_, Some("disabled")) => "Clipboard sync is off in the phone app.".into(),
         (_, Some("too_large")) => "That item is too large to send.".into(),
         (_, Some("sensitive")) => {
             "The phone marked that item as sensitive; it was not sent.".into()
         }
-        (_, Some("timeout")) => "The phone did not answer in time.".into(),
+        (_, Some("timeout")) => "The phone did not answer in time: it may be asleep or offline, or its \
+             notifications are blocked. Open GeekBridge on the phone, copy, and tap the Send clipboard tile."
+            .into(),
         (_, Some(other)) => format!("No item from the phone ({other})."),
         _ => "No item from the phone.".into(),
     }
@@ -536,6 +555,11 @@ fn clipboard_command(
                 }
             );
             println!("window:   {} s", s.window_ms / 1000);
+            if s.other_sync_app {
+                println!(
+                    "note:     KDE Connect is also running here; if both sync the clipboard to the same phone, text can echo. Turn one off."
+                );
+            }
             println!("hotkey:   {} ({})", s.hotkey, s.hotkey_binding);
             println!("images:   up to {} MiB", s.max_image_bytes / (1024 * 1024));
             if let Some(p) = &s.last_pull {
@@ -573,7 +597,13 @@ fn clipboard_command(
                     match s.last_pull {
                         Some(p) if p.state != "waiting" => return Ok(p),
                         _ if std::time::Instant::now() > deadline => {
-                            return Err("the phone did not answer in time".to_string());
+                            return Err(describe_pull(&ipc::ClipboardPullStatus {
+                                device_id: String::new(),
+                                state: "none".into(),
+                                reason: Some("timeout".into()),
+                                kind: None,
+                                at_unix_ms: 0,
+                            }));
                         }
                         _ => {}
                     }
@@ -591,7 +621,9 @@ fn clipboard_command(
         }
         "push-to-phone" => {
             clipboard_call(port, &token, &Request::ClipboardPush { device_id: device })?;
-            println!("ok");
+            println!(
+                "Sent this computer's clipboard to the phone (it works while the phone is locked or in the background)."
+            );
             Ok(())
         }
         "window" => {
@@ -887,6 +919,7 @@ fn diagnose_text(port: u16, state_dir: &std::path::Path) -> Result<String, Strin
         Response::Status(s) => *s,
         _ => return Err("unexpected reply from the service".into()),
     };
+    let status_ids: Vec<String> = status.paired.iter().map(|d| d.device_id.clone()).collect();
     let mut ask = |request: Request, what: &str| match ipc::call(port, &token, &request) {
         Ok(Response::Error(e)) => {
             notes.push(format!("{what}: {}", e.message));
@@ -922,10 +955,113 @@ fn diagnose_text(port: u16, state_dir: &std::path::Path) -> Result<String, Strin
             calling,
             clipboard,
             update,
+            phone_logs: phone_log_sizes(state_dir, &status_ids),
             notes,
         },
         &host,
     ))
+}
+
+/// Sizes of the captured debug logs of the paired phones (their content is never read here).
+fn phone_log_sizes(state_dir: &std::path::Path, ids: &[String]) -> Vec<(String, u64)> {
+    let dir = bridge_service::phone_debug::log_dir(state_dir);
+    ids.iter()
+        .filter_map(|id| {
+            let bytes = std::fs::metadata(dir.join(format!("{id}.log"))).ok()?.len();
+            Some((id.clone(), bytes))
+        })
+        .collect()
+}
+
+fn phone_device_id(args: &[OsString]) -> Result<String, String> {
+    let id = text(args.first(), "DEVICE_ID")?;
+    // Also what keeps the id from naming a path.
+    bridge_kde::DeviceId::parse(&id).map_err(|_| "DEVICE_ID is not a valid device id")?;
+    Ok(id)
+}
+
+fn phone_log_command(args: &[OsString], state_dir: &std::path::Path) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let id = phone_device_id(args)?;
+    let mut follow = false;
+    let mut count = 200usize;
+    let mut rest = args[1..].iter();
+    while let Some(a) = rest.next() {
+        match a.to_str() {
+            Some("-f") | Some("--follow") => follow = true,
+            Some("-n") => {
+                count = rest
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("-n expects a number of lines")?;
+            }
+            _ => return Err(format!("unexpected argument\n\n{USAGE}")),
+        }
+    }
+    let path = bridge_service::phone_debug::log_dir(state_dir).join(format!("{id}.log"));
+    let mut file = std::fs::File::open(&path).map_err(|_| {
+        format!(
+            "no log captured yet for this phone ({}). Is it a debug build, connected, and is the debug consent on? \
+             (geekbridge-ctl consent {id} debug on)",
+            path.display()
+        )
+    })?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).map_err(|e| e.to_string())?;
+    let all = String::from_utf8_lossy(&data);
+    let lines: Vec<&str> = all.lines().collect();
+    let out = std::io::stdout();
+    let mut out = out.lock();
+    for l in &lines[lines.len().saturating_sub(count)..] {
+        let _ = writeln!(out, "{l}");
+    }
+    let _ = out.flush();
+    if !follow {
+        return Ok(());
+    }
+    let mut pos = data.len() as u64;
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() < pos {
+            // Rotated: continue with the new live file from its start.
+            pos = 0;
+            file = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+        }
+        if meta.len() > pos {
+            file.seek(SeekFrom::Start(pos)).map_err(|e| e.to_string())?;
+            let mut chunk = Vec::new();
+            file.read_to_end(&mut chunk).map_err(|e| e.to_string())?;
+            pos += chunk.len() as u64;
+            let _ = out.write_all(String::from_utf8_lossy(&chunk).as_bytes());
+            let _ = out.flush();
+        }
+    }
+}
+
+fn phone_state_command(
+    args: &[OsString],
+    port: u16,
+    state_dir: &std::path::Path,
+) -> Result<(), String> {
+    let id = phone_device_id(args)?;
+    let token = load_token(state_dir)?;
+    match ipc::call(port, &token, &Request::PhoneDebugState { device_id: id }) {
+        Ok(Response::PhoneDebugState { text }) => {
+            println!("{}", text.trim_end());
+            Ok(())
+        }
+        Ok(Response::Error(e)) => Err(e.message),
+        Ok(_) => Err("unexpected reply from the service".into()),
+        Err(IpcError::Service(e)) => Err(e.message),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 fn update_call(port: u16, token: &Token, request: &Request) -> Result<UpdateStatus, String> {
@@ -1184,5 +1320,40 @@ fn share_command(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod clipboard_words_tests {
+    use super::*;
+
+    fn pull(state: &str, reason: Option<&str>) -> ipc::ClipboardPullStatus {
+        ipc::ClipboardPullStatus {
+            device_id: "d".into(),
+            state: state.into(),
+            reason: reason.map(str::to_owned),
+            kind: None,
+            at_unix_ms: 0,
+        }
+    }
+
+    #[test]
+    fn every_refusal_tells_the_person_what_to_do() {
+        let locked = describe_pull(&pull("none", Some("locked")));
+        assert_eq!(locked, "Phone is locked: unlock it and copy again.");
+        let tap = describe_pull(&pull("none", Some("needs_gesture")));
+        assert!(
+            tap.contains("notification")
+                && tap.contains("tile")
+                && tap.contains("Allow GeekBridge notifications")
+        );
+        let late = describe_pull(&pull("none", Some("timeout")));
+        assert!(late.contains("did not answer") && late.contains("tile"));
+        assert!(describe_pull(&pull("none", Some("sensitive"))).contains("sensitive"));
+        assert!(describe_pull(&pull("none", Some("disabled"))).contains("off in the phone app"));
+        assert_eq!(
+            describe_pull(&pull("waiting", None)),
+            "Waiting for the phone..."
+        );
     }
 }

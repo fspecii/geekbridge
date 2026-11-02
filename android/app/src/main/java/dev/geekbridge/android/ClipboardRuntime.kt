@@ -22,6 +22,15 @@ object ClipboardRuntime {
     @Volatile var settings: ClipSettings = ClipSettings()
         private set
     @Volatile private var engine: ClipboardEngine? = null
+
+    /** The last refusal (or null after a send), for the line on Home. Memory only; never any content. */
+    @Volatile var lastOutcome: ClipOutcome? = null
+        private set
+
+    /** Whether the Send clipboard tile is in Quick Settings. Android has no query for it, so the tile reports it. */
+    var tileAdded: Boolean
+        get() = prefs?.getBoolean("tile_added", false) == true
+        set(v) { prefs?.edit()?.putBoolean("tile_added", v)?.apply() }
     private val waiter = WaiterSlot()
     private val core: CoreClient by lazy { CoreClient.native() }
 
@@ -46,6 +55,7 @@ object ClipboardRuntime {
             host = AndroidClipboardHost(a),
             settings = { settings },
             clock = System::currentTimeMillis,
+            onOutcome = { lastOutcome = ClipOutcome(it, System.currentTimeMillis()) },
         )
     }
 

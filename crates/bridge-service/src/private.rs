@@ -12,7 +12,7 @@ use bridge_kde::{
 };
 use serde_json::{Map, Value};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -64,6 +64,8 @@ pub struct ConsentStore {
     enabled: BTreeMap<String, Vec<Feature>>,
     /// The file is from a newer build: readable, never rewritten.
     newer: Option<u32>,
+    /// Devices whose `debug` consent was switched on by default once (so turning it off sticks).
+    debug_defaulted: BTreeSet<String>,
 }
 
 /// `consent.json`: `{"version": 1, "devices": {"<device id>": ["Sms", ...]}}`. Unknown fields and
@@ -121,11 +123,48 @@ impl ConsentStore {
             Status::Newer { found } => Some(found),
             _ => None,
         };
+        let debug_defaulted = loaded
+            .body
+            .get("debug_defaulted")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str())
+            .filter(|id| DeviceId::parse(id).is_ok())
+            .map(str::to_owned)
+            .collect();
         Ok(Self {
             enabled: known_features(&loaded.body),
             file,
             newer,
+            debug_defaulted,
         })
+    }
+
+    /// The directory the consent file lives in (the service's private state directory).
+    pub fn dir(&self) -> Option<&Path> {
+        self.file.path().parent()
+    }
+
+    /// A paired phone that advertises the debug packets (only a debug build does) gets the `debug` consent
+    /// switched on, once. Later changes by the user are never overridden. True if it was switched on now.
+    pub fn default_debug_on(&mut self, device_id: &str) -> Result<bool, KdeError> {
+        if self.debug_defaulted.contains(device_id) {
+            return Ok(false);
+        }
+        let mut next = self.enabled.clone();
+        let entry = next.entry(device_id.to_owned()).or_default();
+        let already = entry.contains(&Feature::Debug);
+        if !already {
+            entry.push(Feature::Debug);
+            entry.sort();
+        }
+        let mut seen = self.debug_defaulted.clone();
+        seen.insert(device_id.to_owned());
+        self.persist(&next, &seen)?;
+        self.enabled = next;
+        self.debug_defaulted = seen;
+        Ok(!already)
     }
 
     /// Consent is opt-in: anything not recorded is off.
@@ -154,23 +193,30 @@ impl ConsentStore {
         if next.len() > MAX_CONSENT_DEVICES {
             return Err(KdeError::Store("consent store is full".into()));
         }
-        self.persist(&next)?;
+        self.persist(&next, &self.debug_defaulted)?;
         self.enabled = next;
         Ok(())
     }
 
     pub fn forget(&mut self, device_id: &str) -> Result<(), KdeError> {
-        if !self.enabled.contains_key(device_id) {
+        if !self.enabled.contains_key(device_id) && !self.debug_defaulted.contains(device_id) {
             return Ok(());
         }
         let mut next = self.enabled.clone();
         next.remove(device_id);
-        self.persist(&next)?;
+        let mut seen = self.debug_defaulted.clone();
+        seen.remove(device_id);
+        self.persist(&next, &seen)?;
         self.enabled = next;
+        self.debug_defaulted = seen;
         Ok(())
     }
 
-    fn persist(&self, devices: &BTreeMap<String, Vec<Feature>>) -> Result<(), KdeError> {
+    fn persist(
+        &self,
+        devices: &BTreeMap<String, Vec<Feature>>,
+        defaulted: &BTreeSet<String>,
+    ) -> Result<(), KdeError> {
         let locked = self.file.lock()?;
         let loaded = locked.load()?;
         if let Some(found) = self.newer.or(match loaded.status {
@@ -206,6 +252,11 @@ impl ConsentStore {
             out.insert(id.clone(), Value::Array(list));
         }
         body.insert("devices".into(), Value::Object(out));
+        if defaulted.is_empty() {
+            body.remove("debug_defaulted");
+        } else {
+            body.insert("debug_defaulted".into(), serde_json::json!(defaulted));
+        }
         locked.save(&body)?;
         Ok(())
     }
@@ -370,6 +421,31 @@ mod tests {
                 "the identity is untouched"
             );
         }
+    }
+
+    #[test]
+    fn debug_consent_defaults_on_once_and_the_users_off_sticks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("state");
+        fsutil::ensure_private_dir(&dir).unwrap();
+        let id = "c3".repeat(16);
+        let mut store = ConsentStore::open(&dir).unwrap();
+        assert!(
+            !store.is_enabled(&id, Feature::Debug),
+            "off until a debug phone shows up"
+        );
+        assert!(store.default_debug_on(&id).unwrap());
+        assert!(store.is_enabled(&id, Feature::Debug));
+        store.set(&id, Feature::Debug, false).unwrap();
+        // A later connection of the same phone, even after a restart, must not switch it back on.
+        assert!(!store.default_debug_on(&id).unwrap());
+        let mut again = ConsentStore::open(&dir).unwrap();
+        assert!(!again.default_debug_on(&id).unwrap());
+        assert!(!again.is_enabled(&id, Feature::Debug));
+        // Unpairing forgets it, so a re-paired debug phone starts on again.
+        again.forget(&id).unwrap();
+        assert!(again.default_debug_on(&id).unwrap());
+        assert!(again.is_enabled(&id, Feature::Debug));
     }
 
     #[test]

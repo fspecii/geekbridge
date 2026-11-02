@@ -665,6 +665,7 @@ mod tests {
             challenges: vec![],
             event_seq: 0,
             inbound_listener: None,
+            reconnecting: vec![],
         }
     }
     #[test]
@@ -754,3 +755,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "connection_tests.rs"]
+mod render_tests;

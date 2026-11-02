@@ -169,6 +169,7 @@ class QrPairActivity : Activity() {
     /** The scan is self-contained: this phone only dials out, so discovery stays off. */
     private fun startLinkIfStopped() {
         if (controller.phase != LinkPhase.Stopped) return
+        AppState.startPairingGrace()
         controller.start(
             LinkRuntime.startOptions(
                 stateDir = filesDir.absolutePath,
@@ -177,6 +178,7 @@ class QrPairActivity : Activity() {
                 announce = false,
             ),
         )
+        LinkService.sync(this)
     }
 
     private fun tick() {

@@ -1,0 +1,34 @@
+== A0: emulator + both APKs
+PASS  emulator booted
+PASS  install GeekBridge
+PASS  install stock KDE Connect (emulator only)
+uids: geekbridge=10216 stock=10217
+== A1: stock KDE Connect app first, then GeekBridge
+listeners after stock start: tcp6 1716 10217;udp6 1716 10217;
+PASS  A1 stock app listens on TCP 1716 and UDP 1716
+listeners with both: tcp 1717 10216;tcp6 1716 10217;udp 1716 10216;udp6 1716 10217;
+GeekBridge TCP port: 1717
+PASS  A1 GeekBridge TCP listener fell back to a port in 1717-1764
+PASS  A1 GeekBridge UDP discovery shares 1716 with the stock app (both uids bound)
+PASS  A1 stock app still listens on TCP 1716
+PASS  A1 GeekBridge lists the stock app's device (heard its broadcast on the shared port)
+PASS  A1 no crash in either app
+== A2: another program (a shell-owned socket) holds TCP 1716, then GeekBridge starts
+listeners with the squatter: tcp 1716 2000;
+PASS  A2 squatter holds TCP 1716
+listeners after GeekBridge: tcp 1716 2000;tcp 1717 10216;udp 1716 10216;
+GeekBridge TCP port: 1717
+PASS  A2 GeekBridge starts anyway and listens on a fallback port
+PASS  A2 GeekBridge UDP discovery bound on 1716
+PASS  A2 no crash
+== A3: entry points do not collide
+PASS  A3 package names differ
+PASS  A3 both are SEND share targets
+SEND targets:     dev.geekbridge.android/.ShareActivity     org.kde.kdeconnect_tp/org.kde.kdeconnect.plugins.share.ShareActivity 
+Quick Settings tiles:     dev.geekbridge.android/.ClipboardTileService     org.kde.kdeconnect_tp/org.kde.kdeconnect.plugins.clipboard.ClipboardTileService 
+PASS  A3 tile service class names are package-scoped (no shared component)
+notification channels: 
+chooser entry for dev.geekbridge.android: dev.geekbridge.android/.ShareActivity
+chooser entry for org.kde.kdeconnect_tp: org.kde.kdeconnect_tp/org.kde.kdeconnect.plugins.share.ShareActivity
+PASS  A3 still no crash
+== done; 17 passed, 0 failed

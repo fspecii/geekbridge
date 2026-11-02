@@ -1,6 +1,6 @@
 # CI dry run (2026-11-02)
 
-The GitHub Actions workflows had not yet run on GitHub-hosted runners when this was written, so `.github/workflows/check.yml` and
+GitHub Actions has never started a job for this repository (account billing), so `.github/workflows/check.yml` and
 `release.yml` had never run. Before the first real run, every step that can execute on Linux was run locally, as
 written, and the rest was checked by reading and by scripted logic checks. **Nothing was pushed, tagged or triggered.**
 

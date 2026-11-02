@@ -32,6 +32,17 @@ val workspaceVersionCode: Int = run {
     (major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt()) * 100 + slot
 }
 
+// Debug builds record the source commit (plus "-dirty" for uncommitted changes) for the debug state dump.
+val gitCommit: String = try {
+    providers.exec {
+        commandLine("git", "describe", "--always", "--dirty", "--abbrev=9")
+        workingDir = rootProject.projectDir
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().ifEmpty { "unknown" }.filter { it.isLetterOrDigit() || it == '-' }
+} catch (_: Exception) {
+    "unknown"
+}
+
 val packagedAbis: List<String> =
     (findProperty("gb.abis") as String?)?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
         ?: listOf("arm64-v8a", "x86_64")
@@ -61,6 +72,8 @@ android {
             // en-XA (accented, 30% longer) and ar-XB (right-to-left) pseudo-locales, to catch hard-coded text,
             // truncation and RTL breakage; never in the release APK (docs/translating.md).
             isPseudoLocalesEnabled = true
+            // Which commit this debug APK was built from (shown in the debug state dump); never in release.
+            buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
         }
         release {
             isPseudoLocalesEnabled = false

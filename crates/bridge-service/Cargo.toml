@@ -23,6 +23,7 @@ bridge-update = { path = "../bridge-update" }
 serde.workspace = true
 serde_json.workspace = true
 getrandom = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 
 # Windows: the global "paste from phone" hotkey (RegisterHotKey) and the notification-area icon
@@ -38,6 +39,10 @@ features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ]
+
+# Interface list for the pairing QR (getifaddrs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # Linux tray: a StatusNotifierItem on the zbus the call backend already links (no new crates).
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -55,5 +60,3 @@ tempfile = "3"
 bridge-chaos = { path = "../bridge-chaos" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 
-[target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"

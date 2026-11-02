@@ -149,3 +149,23 @@ async fn read_request_line(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accept_errors_that_a_busy_machine_produces_are_retried_and_others_are_fatal() {
+        for kind in [
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::Interrupted,
+        ] {
+            assert!(is_transient(&kind.into()), "{kind:?}");
+        }
+        // EMFILE / ENFILE style failures carry an OS error code and are waited out, not fatal.
+        assert!(is_transient(&io::Error::from_raw_os_error(24)));
+        assert!(!is_transient(&io::Error::other("listener closed")));
+        assert!(!is_transient(&io::ErrorKind::InvalidInput.into()));
+    }
+}

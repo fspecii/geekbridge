@@ -4,7 +4,7 @@
 
 Inline `#[cfg(test)] mod ...` blocks (the last block of a source file by convention) are excluded: a test's own
 lines are always "covered" and would otherwise inflate the numbers. Files under tests/, benches/ and examples/ are
-already left out by cargo-llvm-cov. Usage: coverage-summary.py LCOV [--files N] [--crate NAME]
+already left out by cargo-llvm-cov; `test_support.rs` and `*_tests.rs` are skipped here. Usage: coverage-summary.py LCOV [--files N] [--crate NAME]
 """
 import collections
 import os
@@ -47,6 +47,8 @@ rows = []
 for path, lines in files.items():
     if not path.startswith('crates/'):
         continue
+    if re.search(r'(^|/)(test_support|[a-z0-9_]+_tests)\.rs$', path):
+        continue  # test-only files: always "covered", never production code
     cut = first_test_line(path)
     prod = {n: h for n, h in lines.items() if n < cut}
     covered = sum(1 for h in prod.values() if h > 0)

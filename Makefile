@@ -3,10 +3,18 @@
 # Needs GNU make and bash (Linux, macOS, WSL). First time on a machine: `make setup`.
 SHELL := bash
 .DEFAULT_GOAL := help
-.PHONY: help setup check fmt fmt-check clippy test android android-test desktop build perf docs-links hygiene coverage golden golden-desktop golden-android golden-update
+# Disk hygiene knobs for `make clean-dev`: APPLY=1 deletes (default dry run), HOURS=<idle hours>, WHAT=target|avd|cache|tmp|all,
+# KEEP_AVD="name ...". See docs/disk-hygiene.md.
+.PHONY: disk clean-dev help setup check fmt fmt-check clippy test android android-test desktop build perf docs-links hygiene coverage golden golden-desktop golden-android golden-update
 
 help: ## list the targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | sed 's/:.*## /\t/' | column -t -s $$'\t'
+
+disk: ## report what is using disk (target/, AVDs, caches, /tmp) and what is safe to delete; deletes nothing
+	scripts/disk-report.sh
+
+clean-dev: ## reclaim idle scratch: dry run; APPLY=1 deletes; HOURS=12 WHAT=all KEEP_AVD="a b"
+	scripts/clean-dev.sh $(if $(APPLY),--apply) $(if $(HOURS),--older-than $(HOURS)) $(if $(WHAT),--what $(WHAT)) $(foreach a,$(KEEP_AVD),--keep-avd $(a))
 
 setup: ## check the toolchain and print what is missing (scripts/dev-setup.sh --install installs it)
 	scripts/dev-setup.sh

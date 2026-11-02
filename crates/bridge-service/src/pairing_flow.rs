@@ -4,6 +4,7 @@
 //! use the daemon's private state without widening it.
 
 use super::*;
+use crate::lan_select;
 use bridge_core::ipc::PairQr;
 use bridge_core::pairing_help::{ConnectionTest, Measured, Probe, build_report};
 use bridge_kde::qrpair::{QrPayload, TOKEN_TTL, now_ms as unix_ms};
@@ -16,9 +17,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 /// Addresses written into one QR code.
 const MAX_QR_ADDRESSES: usize = 4;
 
-/// The addresses this computer is probably reachable on: what the OS would use to leave for a
-/// private network. Nothing is sent; connecting a UDP socket only selects a route.
-pub(super) fn lan_addresses() -> Vec<IpAddr> {
+/// Source addresses the OS picks for a few private destinations. Nothing is sent; connecting a UDP
+/// socket only selects a route. The first one (a documentation address) is the default route's.
+fn route_probe_addresses() -> Vec<IpAddr> {
     let mut out: Vec<IpAddr> = Vec::new();
     for probe in [
         "192.0.2.1:9",
@@ -40,6 +41,42 @@ pub(super) fn lan_addresses() -> Vec<IpAddr> {
         }
     }
     out
+}
+
+/// The addresses this computer is probably reachable on from the phone's Wi-Fi, likeliest first:
+/// the default-route interface's private address, then other private networks. Never loopback,
+/// link-local, CGNAT, container bridges or VPN tunnels (see [`lan_select`]).
+pub(super) fn lan_addresses() -> Vec<IpAddr> {
+    let probes = route_probe_addresses();
+    let mut ifaces = lan_select::system_interfaces();
+    if ifaces.is_empty() {
+        // No interface list on this platform: trust the route probes.
+        ifaces = probes
+            .iter()
+            .map(|ip| lan_select::Iface {
+                name: "route".into(),
+                ip: *ip,
+                up: true,
+            })
+            .collect();
+    }
+    lan_select::rank(&ifaces, &probes[..probes.len().min(1)], 8)
+}
+
+/// `GEEKBRIDGE_QR_ADDRESSES=192.168.1.50,192.168.1.50:1716,[fd00::5]:1716`: the owner (or a test rig)
+/// names the addresses for the QR. A bare address uses the listener's port.
+fn qr_address_override(port: u16) -> Option<Vec<SocketAddr>> {
+    let list = std::env::var("GEEKBRIDGE_QR_ADDRESSES").ok()?;
+    let parsed: Vec<SocketAddr> = list
+        .split(',')
+        .filter_map(|a| {
+            let a = a.trim();
+            a.parse::<SocketAddr>()
+                .ok()
+                .or_else(|| a.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port)))
+        })
+        .collect();
+    (!parsed.is_empty()).then_some(parsed)
 }
 
 /// A VPN-looking interface is up (Linux only; other systems do not report one here).
@@ -95,14 +132,10 @@ impl Daemon {
             .into_iter()
             .map(|ip| SocketAddr::new(ip, listener.port()))
             .collect();
-        // Developer topologies (emulator NAT, loopback tests) name the address the phone must use.
-        if self.options.dev_loopback
-            && let Ok(list) = std::env::var("GEEKBRIDGE_QR_ADDRESSES")
-        {
-            addresses = list
-                .split(',')
-                .filter_map(|a| a.trim().parse().ok())
-                .collect();
+        // The owner (a machine whose auto-detection picks wrong) or a test rig (emulator NAT) names the
+        // addresses the phone must use.
+        if let Some(list) = qr_address_override(listener.port()) {
+            addresses = list;
         }
         if addresses.is_empty() && self.options.dev_loopback {
             addresses.push(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port()));

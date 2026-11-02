@@ -22,7 +22,8 @@ import java.net.Inet4Address
  * Keeps the link to paired computers reachable while the app is closed.
  *
  * Lightweight by design: it only runs while at least one computer is paired and the user has not turned
- * "Stay connected" off; it holds one TCP listener and one UDP announce (no multicast lock, no wake lock),
+ * "Stay connected" off; it holds one TCP listener and one UDP announce (no multicast lock, no wake lock;
+ * a Wi-Fi lock only while linked, see [WifiLockPolicy]),
  * has no timers or polling loops, and reacts only to events: a default-network change re-announces the phone
  * once (debounced); dead peers are detected by kernel TCP keepalive in the Rust transport. It is a
  * `connectedDevice` foreground service because it keeps a connection to a device on the local network;
@@ -35,6 +36,11 @@ class LinkService : Service() {
     private var lastNetwork: Long? = null
     private var lastV4: Set<String>? = null
     private val restart = Runnable { restartLink(0) }
+    private lateinit var wifi: WifiLinkLock
+    private var wasConnected = false
+    private var lostAt: Long? = null
+    private val wifiObserver: () -> Unit = { syncWifiLock() }
+    private val wifiRecheck = Runnable { syncWifiLock() }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -42,6 +48,8 @@ class LinkService : Service() {
         super.onCreate()
         AppState.init(this)
         controller = LinkRuntime.controller()
+        wifi = WifiLinkLock(this)
+        controller.observers += wifiObserver
         isRunning = true
     }
 
@@ -49,22 +57,49 @@ class LinkService : Service() {
         AppState.init(this)
         // startForegroundService() obliges us to call startForeground() within seconds, even if we stop right away.
         // A sticky restart from the background can be refused on Android 12+; stop quietly rather than crash.
-        if (!ServicePolicy.promoteOrStop(::promote, ::stopSelf)) return START_NOT_STICKY
+        if (!ServicePolicy.promoteOrStop(::promote, ::stopSelf)) {
+            AppState.serviceError = "startForeground refused"
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_STOP) {
             AppState.keepConnected = false
             stopSelf()
             return START_NOT_STICKY
         }
-        if (!ServicePolicy.shouldRun(AppState.pairedCount, AppState.keepConnected)) {
+        if (!AppState.wantService()) {
             stopSelf()
             return START_NOT_STICKY
         }
         if (controller.phase == LinkPhase.Stopped) controller.start(serviceOptions())
         watchNetwork()
+        scheduleGraceCheck()
         return START_STICKY
     }
 
+    /**
+     * Holds the Wi-Fi lock while a computer is linked (and briefly after a loss, so the redial is quick). A loss
+     * is logged with how long the link had lasted; the reason itself comes from the transport's `link_closed` event.
+     */
+    private fun syncWifiLock() {
+        val connected = controller.snapshot?.connections?.any { it.trusted } == true
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (wasConnected && !connected) {
+            lostAt = now
+            GbLog.i("link", "link lost (service running, phase=${controller.phase})")
+        } else if (connected) {
+            lostAt = null
+        }
+        wasConnected = connected
+        val since = lostAt?.let { now - it }
+        wifi.set(WifiLockPolicy.wanted(AppState.pairedCount, connected, since))
+        main.removeCallbacks(wifiRecheck)
+        if (since != null && since < WifiLockPolicy.LINGER_MS) main.postDelayed(wifiRecheck, WifiLockPolicy.LINGER_MS - since + 100)
+    }
+
     override fun onDestroy() {
+        GbLog.i("link", "service destroyed (paired=${AppState.pairedCount}, keepConnected=${AppState.keepConnected})")
+        controller.observers -= wifiObserver
+        wifi.set(false)
         isRunning = false
         main.removeCallbacksAndMessages(null)
         callback?.let { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(it) }
@@ -89,7 +124,12 @@ class LinkService : Service() {
                 val change = ServicePolicy.shouldRestartOnNetwork(lastNetwork, id)
                 if (id != lastNetwork) lastV4 = null // addresses of the new network arrive in onLinkPropertiesChanged
                 lastNetwork = id
+                GbLog.i("link", "default network available (changed=$change)")
                 if (change) scheduleRestart()
+            }
+
+            override fun onLost(network: Network) {
+                GbLog.i("link", "default network lost")
             }
 
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
@@ -97,7 +137,10 @@ class LinkService : Service() {
                 val v4 = lp.linkAddresses.mapNotNull { it.address.takeIf { a -> a is Inet4Address }?.hostAddress }.toSet()
                 val changed = ServicePolicy.addressesChanged(lastV4, v4)
                 lastV4 = v4
-                if (changed) scheduleRestart()
+                if (changed) {
+                    GbLog.i("link", "IPv4 address set changed, re-announcing")
+                    scheduleRestart()
+                }
             }
         }
         try {
@@ -108,6 +151,21 @@ class LinkService : Service() {
         }
     }
 
+    /** A pairing that never finished must not keep the service alive forever: look again when its grace ends. */
+    private fun scheduleGraceCheck() {
+        main.removeCallbacks(graceCheck)
+        ServicePolicy.graceCheckDelayMs(AppState.pairedCount, AppState.pairingGraceLeftMs())?.let { main.postDelayed(graceCheck, it) }
+    }
+
+    // The grace may have been extended since this was scheduled (another pairing prompt): look again until it is over.
+    private val graceCheck = Runnable { if (!AppState.wantService()) stopSelf() else scheduleGraceCheck() }
+
+    /** Swiping the app away from Recents must not end the link: this service is not tied to the task. */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        if (AppState.wantService() && controller.phase == LinkPhase.Stopped) controller.start(serviceOptions())
+        super.onTaskRemoved(rootIntent)
+    }
+
     private fun scheduleRestart() {
         main.removeCallbacks(restart)
         main.postDelayed(restart, ServicePolicy.RESTART_DEBOUNCE_MS)
@@ -116,9 +174,13 @@ class LinkService : Service() {
     /** Re-announce on the new network: stop, then start again once the native side reports stopped. Bounded. */
     private fun restartLink(attempt: Int) {
         if (!isRunning) return
-        if (!ServicePolicy.shouldRun(AppState.pairedCount, AppState.keepConnected)) return stopSelf()
+        if (!AppState.wantService()) return stopSelf()
         when (controller.phase) {
-            LinkPhase.Running -> { controller.stop(R.string.link_stop_network); retryStart(attempt) }
+            LinkPhase.Running -> {
+                GbLog.i("link", "closing the link to re-announce on the new network")
+                controller.stop(R.string.link_stop_network)
+                retryStart(attempt)
+            }
             LinkPhase.Stopped -> controller.start(serviceOptions())
             else -> retryStart(attempt)
         }
@@ -182,11 +244,13 @@ class LinkService : Service() {
             AppState.init(ctx)
             val app = ctx.applicationContext
             val intent = Intent(app, LinkService::class.java)
-            if (ServicePolicy.shouldRun(AppState.pairedCount, AppState.keepConnected)) {
+            if (AppState.wantService()) {
                 try {
                     app.startForegroundService(intent)
-                } catch (_: RuntimeException) {
+                    AppState.serviceError = null
+                } catch (e: RuntimeException) {
                     // Android refused a background start (e.g. app in a restricted bucket). The next visit retries.
+                    AppState.serviceError = e.javaClass.simpleName
                 }
             } else if (isRunning) {
                 app.stopService(intent)

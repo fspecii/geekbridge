@@ -1793,6 +1793,7 @@ impl ClipboardService {
             hotkey_binding: g.binding.to_owned(),
             last_pull: g.last_pull.clone(),
             devices,
+            other_sync_app: crate::coexist::other_sync_app_running(),
         }
     }
 }
@@ -1817,6 +1818,7 @@ pub fn unavailable_status(devices: Vec<ClipboardDeviceStatus>) -> ClipboardStatu
         hotkey_binding: "unsupported".to_owned(),
         last_pull: None,
         devices,
+        other_sync_app: crate::coexist::other_sync_app_running(),
     }
 }
 

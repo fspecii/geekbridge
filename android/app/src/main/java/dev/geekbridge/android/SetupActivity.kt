@@ -67,6 +67,7 @@ class SetupActivity : Activity() {
     override fun onResume() {
         super.onResume()
         WidgetUpdater.refreshAll(this)
+        PhoneDataRuntime.resync() // back from app settings: re-declare what is allowed now
         render()
     }
 

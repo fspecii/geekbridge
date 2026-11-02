@@ -271,10 +271,13 @@ pub enum Feature {
     Clipboard,
     Notifications,
     Telephony,
+    /// Debug-build diagnostics from the phone (`geekbridge.debug.*`): its log and a redacted state dump.
+    /// Only a debug build of the phone ever advertises it; it is on by default for such a phone.
+    Debug,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 8] = [
+    pub const ALL: [Feature; 9] = [
         Feature::Sms,
         Feature::Contacts,
         Feature::Calendar,
@@ -283,6 +286,7 @@ impl Feature {
         Feature::Clipboard,
         Feature::Notifications,
         Feature::Telephony,
+        Feature::Debug,
     ];
 }
 
@@ -365,6 +369,11 @@ pub enum Request {
     },
     /// Interoperability check on a paired, connected device. Carries no user text.
     Ping {
+        device_id: String,
+    },
+    /// Ask a debug-build phone for its redacted state dump (`geekbridge.debug.state`). Needs the `debug`
+    /// consent and a phone that advertises the debug packets; answered with [`Response::PhoneDebugState`].
+    PhoneDebugState {
         device_id: String,
     },
     /// Read-only probe of the host's Bluetooth calling backend (counts only, no numbers).
@@ -744,6 +753,10 @@ pub struct ClipboardStatus {
     /// Outcome of the latest "paste from phone" request.
     pub last_pull: Option<ClipboardPullStatus>,
     pub devices: Vec<ClipboardDeviceStatus>,
+    /// Stock KDE Connect is running on this computer and may sync the same clipboard to the same
+    /// phone (echo or loops are possible). Informational: nothing is switched off.
+    #[serde(default)]
+    pub other_sync_app: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -791,6 +804,26 @@ pub struct Status {
     /// Highest event sequence number so far; pass it back as `Events::after` to stay current.
     pub event_seq: u64,
     pub inbound_listener: Option<SocketAddr>,
+    /// Paired phones this computer is dialing again after the link dropped (shown as "Reconnecting").
+    #[serde(default)]
+    pub reconnecting: Vec<String>,
+}
+
+impl Status {
+    /// One calm line when the listener moved off port 1716 (see [`listen_port_note`]).
+    pub fn port_note(&self) -> Option<String> {
+        listen_port_note(self.inbound_listener, true)
+    }
+}
+
+/// Why the listener is not on 1716, worded so it does not read as a fault. `None` on 1716, when
+/// the address was chosen explicitly (`auto` false) or when there is no listener. KDE Connect
+/// reserves 1716-1764 and phones learn the port from our announcement, so any port in the range works.
+pub fn listen_port_note(listener: Option<SocketAddr>, auto: bool) -> Option<String> {
+    let port = listener?.port();
+    (auto && (1717..=1764).contains(&port)).then(|| {
+        format!("Using port {port} because 1716 is in use by another program: this is fine")
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -892,6 +925,10 @@ pub enum Response {
     Status(Box<Status>),
     Events(EventPage),
     CallingStatus(CallingStatus),
+    /// The phone's redacted state dump (multi-line text).
+    PhoneDebugState {
+        text: String,
+    },
     Calls(Box<CallsStatus>),
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
@@ -1320,5 +1357,25 @@ mod tests {
         assert!(probe_protected(port).is_err());
         assert!(start.elapsed() < CLIENT_DEADLINE + Duration::from_secs(1));
         peer.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod port_note_tests {
+    use super::listen_port_note;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn note_only_for_the_fallback_range() {
+        let at = |p: u16| Some(SocketAddr::from(([0, 0, 0, 0], p)));
+        assert_eq!(listen_port_note(at(1716), true), None);
+        assert_eq!(listen_port_note(None, true), None);
+        assert_eq!(listen_port_note(at(1739), false), None);
+        assert_eq!(listen_port_note(at(40000), true), None);
+        assert_eq!(
+            listen_port_note(at(1739), true).as_deref(),
+            Some("Using port 1739 because 1716 is in use by another program: this is fine")
+        );
+        assert!(listen_port_note(at(1764), true).is_some());
     }
 }

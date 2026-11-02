@@ -7,4 +7,15 @@
     <string name="tile_on">To your computer</string>
     <string name="tile_off">Turn on in GeekBridge</string>
     <string name="process_text_label">Send to computer</string>
+    <string name="clip_state_off">Clipboard sync is off.</string>
+    <string name="clip_state_waiting">Waiting for your computer to connect.</string>
+    <string name="clip_state_ready">Ready: copy, then tap the Send clipboard tile or use the computer\'s shortcut.</string>
+    <string name="clip_state_ready_no_tile">Ready: copy, then use the computer\'s shortcut and tap the notification. Tap here to add the Send clipboard tile.</string>
+    <string name="clip_state_ready_no_tile_old">Ready: copy, then use the computer\'s shortcut and tap the notification. You can add the Send clipboard tile in Quick Settings.</string>
+    <string name="clip_state_no_notifications">Blocked: notifications are off, so the computer can\'t ask for a tap. Copy, then tap the Send clipboard tile or the button above. Tap here to allow notifications.</string>
+    <string name="clip_state_blocked_locked">Blocked: the phone was locked. Unlock it and copy again.</string>
+    <string name="clip_state_blocked_sensitive">Blocked: the last item was marked sensitive (like a password), so it wasn\'t sent.</string>
+    <string name="clip_state_blocked_too_large">Blocked: the last item was too large to send.</string>
+    <string name="clip_tile_added">Send clipboard tile added.</string>
+    <string name="clip_no_focus">Android didn\'t let GeekBridge read the clipboard. Unlock the phone and try again.</string>
 </resources>

@@ -654,7 +654,10 @@ object PhoneDataRuntime {
     }
 
     /** Called when the transport is (re)started so the declared capabilities are what [active] says right now. */
-    fun startFeatures(): ActiveFeatures = active().also { declared = it }
+    fun startFeatures(): ActiveFeatures = active().also {
+        declared = it
+        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms}")
+    }
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
     fun setCalendar(on: Boolean) = update { it.copy(calendar = on) }
@@ -681,9 +684,10 @@ object PhoneDataRuntime {
         val now = active()
         worker.execute { core.dataAction(PhoneDataProtocol.configRequest(now)) }
         if (!linkRunning) return
-        if (now != declared) {
+        if (CapabilityRedeclare.needed(declared, now)) {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
+            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms}): reconnecting to re-declare")
             val controller = LinkRuntime.controller()
             controller.stop(R.string.pd_reconnecting)
             restartAttempt(a, 0)
@@ -719,7 +723,7 @@ object PhoneDataRuntime {
     private fun startObserving() {
         val a = app ?: return
         val f = active()
-        if (!f.any || !linkRunning) return
+        if ((!f.any && !DebugHooks.streaming) || !linkRunning) return
         val e = engine ?: return
         if (f.calendar && observer == null) {
             val o = object : ContentObserver(main) {
@@ -777,7 +781,7 @@ object PhoneDataRuntime {
             if (r.stopped) return
             since = PhoneDataProtocol.nextSince(since, r)
             if (r.events.isNotEmpty()) e.onEvents(r.events)
-            if (!linkRunning || !active().any) return
+            if (!linkRunning || (!active().any && !DebugHooks.streaming)) return
         }
     }
 

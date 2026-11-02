@@ -756,3 +756,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "contacts_tests.rs"]
+mod render_tests;

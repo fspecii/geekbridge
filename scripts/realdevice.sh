@@ -6,8 +6,10 @@
 #
 # Commands
 #   check [--apply]            adb, device authorisation, Android version/API/OEM, free space, Bluetooth/Wi-Fi,
-#                              same-subnet test, desktop binaries/service and the host firewall for ports
-#                              1716-1764 TCP+UDP. Prints the exact allow commands; runs them only with --apply.
+#                              same-subnet test, phone-to-PC reachability (ping + TCP 1716), VPN / private DNS /
+#                              Wi-Fi validation on the phone, the addresses the QR will carry, desktop binaries/
+#                              service and the host firewall for ports 1716-1764 TCP+UDP. Prints the exact allow
+#                              commands; runs them only with --apply. Every WARN/FAIL names the quickstart section.
 #   firewall [--apply]         only the firewall part of `check`
 #   install [--apk FILE] [--build] [--no-grant] [--no-start]
 #                              locate (or --build) the debug APK, `adb install -r`, grant the runtime permissions
@@ -97,6 +99,7 @@ pick_device() {
       device) devs+=("$s"); if [[ $s == emulator-* ]]; then emu+=("$s"); else real+=("$s"); fi ;;
       unauthorized) other+=("$s unauthorized") ;;
       offline) other+=("$s offline") ;;
+      no) other+=("$s no permissions (udev rule missing)") ;;
       *) other+=("$s $st") ;;
     esac
   done < <("$ADBBIN" devices 2>/dev/null | tr -d '\r' | sed 1d)
@@ -131,11 +134,20 @@ same_net() { # addr1/len addr2/len -> 0 if equal networks under both masks
     (( ($(ip2int "$a1") & $(mask_of "$l")) == ($(ip2int "$a2") & $(mask_of "$l")) )) || return 1
   done
 }
-# PC global IPv4 addresses as addr/len, one per line, without container bridges.
-pc_addrs() { ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|virbr|lxc|podman|cni)/ {print $4}'; }
-pc_lan_cidr() { # the network of the default route's interface
-  local dev; dev="$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')"
-  local a; a="$(ip -4 -o addr show dev "$dev" scope global 2>/dev/null | awk '{print $4; exit}')"
+# PC global IPv4 addresses as addr/len, one per line, without container bridges, VPN tunnels, CGNAT (100.64/10)
+# and link-local addresses: the ones a phone on the Wi-Fi could plausibly reach. Default-route interface first.
+pc_addrs() {
+  local dev; dev="$(pc_default_dev)"
+  ip -4 -o addr show scope global 2>/dev/null \
+    | awk -v dev="$dev" '$2 !~ /^(docker|br-|veth|virbr|lxc|lxd|podman|cni|vmnet|vboxnet|tailscale|wg|tun|tap|zt|utun|nordlynx|proton|mullvad|ppp)/ {
+        split($4, a, "[./]"); if (a[1] == 100 && a[2] >= 64 && a[2] <= 127) next; if (a[1] == 169 && a[2] == 254) next
+        print ($2 == dev ? "0 " : "1 ") $4 }' | sort -s -k1,1 | awk '{print $2}'
+}
+pc_default_dev() { ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
+pc_default_gw() { ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="via"){print $(i+1); exit}}'; }
+pc_lan_ip() { pc_addrs | head -1 | cut -d/ -f1; }
+pc_lan_cidr() { # the network of the first plausible LAN address
+  local a; a="$(pc_addrs | head -1)"
   [[ -n $a ]] && net_of "$a"
 }
 
@@ -282,6 +294,11 @@ check_phone() {
     bad "no usable phone: $PICK_ERR"
     info "Enable Developer options > USB debugging, use a data cable, accept 'Allow USB debugging?' (tick 'Always allow')."
     info "'unauthorized' means the RSA prompt on the phone is still waiting; 'offline': unplug, replug, or: adb kill-server"
+    info "Nothing listed at all: the cable is charge-only (use the phone's own), or the USB mode is 'Charging only' (pick 'File transfer'),"
+    info "or USB debugging is off. 'no permissions': install udev rules (Arch/Omarchy: sudo pacman -S android-udev, then replug)."
+    info "Wireless instead (Android 11+): phone Developer options > Wireless debugging > Pair device with pairing code, then:"
+    info "  adb pair PHONE_IP:PAIR_PORT   and   adb connect PHONE_IP:CONNECT_PORT   (then pass --serial PHONE_IP:CONNECT_PORT)"
+    info "Quickstart: docs/real-device-quickstart.md, section T0."
     "$ADBBIN" devices -l 2>/dev/null | sed 1d | sed '/^$/d;s/^/       /'
     return 1
   fi
@@ -331,12 +348,41 @@ check_phone() {
     done < <(pc_addrs)
     if ((!hit)); then
       local mine_nets="" m; while read -r m; do [[ -n $m ]] && mine_nets+="$(net_of "$m") "; done < <(pc_addrs)
-      if ((IS_EMU)); then warn "emulator is NAT-ed ($(net_of "$pipcidr")), PC is ${mine_nets}: expected for an emulator"
+      if ((IS_EMU)); then warn "emulator is NAT-ed ($(net_of "$pipcidr")), PC is ${mine_nets}: expected for an emulator. A real phone on your Wi-Fi must show PASS here"
       else bad "phone ($(net_of "$pipcidr")) and this PC (${mine_nets% }) are on different subnets"; fi
       info "Guest Wi-Fi / client isolation / a repeater on another subnet also break discovery. QR pairing needs a routable path to the PC."
     fi
   fi
+  check_phone_network
   PHONE_FOUND=1
+}
+
+# Things on the PHONE that break the LAN path: VPN, a Wi-Fi without internet, Battery Saver, another router.
+check_phone_network() {
+  local conn pdns pvpn lowp gw pgw
+  conn="$(A shell dumpsys connectivity 2>/dev/null | tr -d '\r' | grep -E 'NetworkAgentInfo\{' )"
+  if ((!IS_EMU)); then
+    pgw="$(sh_ ip -4 route show table all | awk '/^default via/ && /wlan|swlan|wifi/ {print $3; exit}')"
+    gw="$(pc_default_gw)"
+    if [[ -n $pgw && -n $gw ]]; then
+      if [[ $pgw == "$gw" ]]; then ok "phone and PC use the same router (gateway $gw)"
+      else warn "phone gateway ${pgw%.*}.x differs from this PC's ${gw%.*}.x: two routers / a repeater / a guest network (quickstart T2)"; fi
+    fi
+  fi
+  if grep -qE 'ni\{VPN|Transports: VPN' <<<"$conn"; then
+    warn "a VPN is active on the phone: it can route or block LAN traffic. Pause it or allow 'local network' (quickstart T3)"
+  else ok "no VPN on the phone"; fi
+  pvpn="$(sh_ settings get secure always_on_vpn_app)"
+  [[ -n $pvpn && $pvpn != null ]] && warn "always-on VPN app on the phone: $pvpn (turn off 'Block connections without VPN' while testing)"
+  if grep -E 'ni\{WIFI' <<<"$conn" | grep -qv IS_VALIDATED; then
+    warn "the phone's Wi-Fi is 'connected, no internet' (not validated): Android may send traffic over mobile data instead (quickstart T6)"
+  fi
+  lowp="$(sh_ settings get global low_power)"
+  [[ $lowp == 1 ]] && warn "Battery Saver is ON: background network is throttled and the link will drop with the screen off (quickstart T8)"
+  pdns="$(sh_ settings get global private_dns_mode)"
+  case "$pdns" in
+    hostname) info "Private DNS is set to a provider hostname: harmless for QR pairing by IP, but names such as ${HOSTNAME:-pc}.local will not resolve (quickstart T7)" ;;
+  esac
 }
 
 check_desktop() {
@@ -345,7 +391,14 @@ check_desktop() {
   for b in geekbridge-service geekbridge-ctl geekbridge geekbridge-calls geekbridge-share geekbridge-clipboard; do
     [[ -x $BIN/$b ]] || { bad "missing $BIN/$b"; missing=1; }
   done
-  ((missing)) && info "build: cargo build --release --locked -p bridge-apps -p bridge-service" || ok "release binaries present in target/release"
+  if ((missing)); then
+    info "build: cargo build --release --locked -p bridge-apps -p bridge-service   (in a shell where you did NOT source scripts/android-env.sh:"
+    info "that file sets CARGO_TARGET_DIR=target/android and the binaries would not land in target/release)"
+  else
+    ok "release binaries present in target/release"
+    local stale; stale="$(find "$ROOT/crates" -path '*/src/*' -name '*.rs' -newer "$BIN/geekbridge-service" 2>/dev/null | head -1)"
+    [[ -n $stale ]] && warn "desktop sources are newer than target/release/geekbridge-service (e.g. ${stale#"$ROOT"/}): rebuild with the cargo command above, then scripts/run-desktop.sh --stop"
+  fi
   if [[ -x $BIN/geekbridge-ctl ]] && ctl status >/dev/null 2>&1; then
     ok "service answers (control port $CTRL_PORT, state dir $STATE)"
     ctl calling 2>&1 | head -4 | sed 's/^/       calling: /'
@@ -361,8 +414,60 @@ check_desktop() {
     case "$btp" in yes) ok "PC Bluetooth controller powered on" ;; no) warn "PC Bluetooth is powered off (bluetoothctl power on)" ;;
       *) warn "no PC Bluetooth controller found (calls need one; Answer/Decline popups work only with it)" ;; esac
   else warn "bluetoothctl not installed"; fi
-  local wifi_pc; wifi_pc="$(ip -4 -o addr show scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth|lo)/ {printf "%s %s; ", $2, $4}')"
-  info "PC addresses: ${wifi_pc:-none}"
+  local lan_if vpn_if
+  lan_if="$(pc_default_dev)"
+  info "PC LAN addresses (default route via ${lan_if:-none}): $(pc_addrs | tr '\n' ' ')"
+  vpn_if="$(ip -br link 2>/dev/null | awk '$2 == "UP" || $2 == "UNKNOWN" {print $1}' | grep -E '^(tailscale|wg|tun|tap|zt|nordlynx|proton|mullvad|ppp)' | tr '\n' ' ')"
+  [[ -n $vpn_if ]] && warn "VPN-style interface(s) up on this PC: ${vpn_if}. Fine for a LAN QR (they are never put in it), but a full-tunnel VPN can swallow the phone's replies (quickstart T3)"
+  local nlan; nlan="$(pc_addrs | wc -l)"
+  ((nlan > 1)) && warn "this PC has $nlan LAN addresses; the QR lists the default-route one first. Pin it if the phone is on another: GEEKBRIDGE_QR_ADDRESSES=IP (quickstart T4)"
+  ((nlan == 0)) && bad "this PC has no usable LAN IPv4 address (only loopback / docker / VPN / link-local): connect to your router first"
+  check_qr_addresses
+  ((PHONE_FOUND)) && check_reach
+}
+
+# What the pairing QR will actually contain, straight from the running service (no token is printed).
+QR_ADDRS=""
+check_qr_addresses() {
+  [[ -x $BIN/geekbridge-ctl ]] && ctl status >/dev/null 2>&1 || return 0
+  QR_ADDRS="$(ctl pair-qr 2>&1 | sed -n 's/.*Addresses: *//p' | head -1)"
+  if [[ -z $QR_ADDRS ]]; then warn "the service could not make a pairing QR (no usable LAN address?)"
+  else
+    ok "the pairing QR will carry: $QR_ADDRS (first = tried first)"
+    local a bad=0
+    for a in ${QR_ADDRS//,/ }; do
+      case "$a" in 127.*|169.254.*|172.17.*|100.6[4-9].*|100.[7-9][0-9].*|100.1[01][0-9].*|100.12[0-7].*|\[fe80*) bad=1 ;; esac
+    done
+    ((bad)) && warn "the QR carries a loopback / link-local / CGNAT / docker address; set GEEKBRIDGE_QR_ADDRESSES (quickstart T4)"
+  fi
+}
+
+# Can the phone really reach this PC? Needs the service up for the TCP test.
+check_reach() {
+  say "Phone to this PC (the test that matters)"
+  local ip port t0 t1 rc listen
+  ip="$(pc_lan_ip)"
+  [[ -n $QR_ADDRS ]] && ip="${QR_ADDRS%%:*}"
+  [[ -n $ip ]] || { warn "no PC LAN address to test against"; return 0; }
+  if sh_ ping -c1 -W2 "$ip" | grep -q ' 0% packet loss'; then ok "phone can ping $ip"
+  else warn "phone cannot ping $ip: Wi-Fi client isolation, another subnet, or ICMP dropped by the firewall (quickstart T1/T2)"; fi
+  listen="$(ctl status 2>/dev/null | sed -n 's/.*"inbound_listener": *"[^"]*:\([0-9]*\)".*/\1/p')"
+  port="${listen:-}"
+  if [[ -z $port ]]; then
+    info "service is not running, so the TCP test is skipped. Run: scripts/realdevice.sh desktop   then   scripts/realdevice.sh check"
+    return 0
+  fi
+  t0=$(date +%s)
+  sh_ "echo | nc -w 3 $ip $port; echo rc=\$?" | grep -q 'rc=0' && rc=0 || rc=1
+  t1=$(date +%s)
+  if ((rc == 0)); then
+    ok "phone reached $ip:$port over TCP"
+    ((IS_EMU)) && info "emulator: the connection comes out of this PC itself, so the firewall cannot show up here. On the real phone this line is the firewall test."
+  elif ((t1 - t0 >= 2)); then
+    bad "phone timed out connecting to $ip:$port: packets are being DROPPED (firewall below, Wi-Fi isolation, VPN: quickstart T1)"
+  else
+    bad "phone got 'connection refused' from $ip:$port: nothing listens on that address (service started with --no-listen-inbound or another port?)"
+  fi
 }
 
 cmd_check() {
@@ -371,7 +476,24 @@ cmd_check() {
   check_phone
   check_desktop
   firewall_section "$apply"
+  check_next_steps
   summary
+}
+
+# Short, situation-specific guidance after the checks (always names the quickstart section).
+check_next_steps() {
+  ((PHONE_FOUND)) || return 0
+  say "What this means for the real phone"
+  if ((IS_EMU)); then
+    info "This run used an emulator. Three lines only mean something on the real phone:"
+    info "  - subnet: must be PASS (phone and PC on the same Wi-Fi/router), else quickstart T2"
+    info "  - 'Phone to this PC' TCP test: here it comes out of this PC itself; on the phone it is the real firewall test (T1)"
+    info "  - discovery by UDP broadcast never reaches an emulator; on the phone check step 11 (restart the PC, phone reconnects) or T5"
+  else
+    info "Order: 1) $FW_KIND rules (above) 2) '$0 desktop' 3) '$0 check' again for the TCP test 4) scan the QR."
+    info "If the TCP test times out: T1 firewall, T2 guest Wi-Fi/isolation, T3 VPN. Refused: T4 (wrong address in the QR)."
+  fi
+  info "Troubleshooting sections: docs/real-device-quickstart.md (T0-T9)."
 }
 
 cmd_firewall() {
@@ -478,9 +600,12 @@ cmd_desktop() {
   cat <<EOF
 
 How to pair (QR):
-  1. Phone on the SAME Wi-Fi as this PC. Open GeekBridge > Add computer > Scan QR code.
+  1. Phone on the SAME Wi-Fi as this PC (not a guest network, no VPN). Open GeekBridge: setup wizard step 1
+     "Pair with your computer" > Scan QR code > Open the camera app (already past the wizard: Home > Pair a computer).
   2. Point the camera at the QR above (or the one in the GeekBridge window) and tap the GeekBridge link it shows.
-  3. The phone asks "Pair with <name>?" - Continue. No code comparison is needed (the QR pins the certificate).
+     Camera shows only text? Copy it, return to GeekBridge, tap "Paste from clipboard" > Continue.
+  3. "Connect to a computer?" > Continue, then "Pair with <name>?" > Pair. No code comparison is needed (the QR pins the certificate).
+     Nothing happens or "no address answered"? scripts/realdevice.sh check  (its "Phone to this PC" section is the test).
   4. Check: geekbridge-ctl status shows the phone under "paired" with link phase "connected":
        eval "\$(scripts/run-desktop.sh --env)"; geekbridge-ctl status
   QR expired (2 min) or used? Print a new one:  scripts/realdevice.sh desktop

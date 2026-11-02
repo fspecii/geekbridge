@@ -66,6 +66,8 @@ pub(crate) const ACTIONS: [&str; 29] = [
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
 const DATA_PACKET_LINE: usize = 1024 * 1024 + 16 * 1024;
 const DEFAULT_KDE_PORT: u16 = 1716;
+/// Last port of the KDE Connect range 1716-1764.
+const MAX_KDE_PORT: u16 = 1764;
 const MAX_STATE_DIR_BYTES: usize = 1024;
 const MAX_DEVICE_NAME_CHARS: usize = 128;
 /// Longest string accepted for a code, fingerprint or device id argument.
@@ -291,6 +293,9 @@ struct StartArgs {
     device_name: String,
     /// `None` when `listen.enabled` is false.
     listen: Option<(IpAddr, u16)>,
+    /// The port was not chosen by the app: when 1716 is taken (stock KDE Connect on the same phone)
+    /// the next free port up to 1764 is used and announced instead.
+    listen_walk: bool,
     discovery: DiscoveryArgs,
     allow_loopback: bool,
     /// `Some((enabled, max_image_bytes))` when the app wants clipboard packets negotiated.
@@ -327,6 +332,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         return Err(err("invalid_device_name", "device name is not acceptable"));
     }
 
+    let mut listen_walk = true;
     let listen = match f.take_opt_object("listen")? {
         None => Some((IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_KDE_PORT)),
         Some(mut o) => {
@@ -344,6 +350,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
                     None => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                     Some(h) => h.parse().map_err(|_| invalid_field())?,
                 };
+                listen_walk = port.is_none();
                 Some((ip, port.map_or(Ok(DEFAULT_KDE_PORT), port_field)?))
             }
         }
@@ -419,6 +426,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
         state_dir,
         device_name,
         listen,
+        listen_walk,
         discovery,
         allow_loopback,
         clipboard,
@@ -455,6 +463,7 @@ fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
         calendar: o.take_opt_bool("calendar")?.unwrap_or(false),
         calendar_edit: o.take_opt_bool("calendar_edit")?.unwrap_or(false),
         sms: o.take_opt_bool("sms")?.unwrap_or(false),
+        debug: o.take_opt_bool("debug")?.unwrap_or(false),
     };
     Ok(flags)
 }
@@ -715,6 +724,7 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                     .take_opt_bool("calendar_edit")?
                     .unwrap_or(current.calendar_edit),
                 sms: f.take_opt_bool("sms")?.unwrap_or(current.sms),
+                debug: f.take_opt_bool("debug")?.unwrap_or(current.debug),
             };
             f.finish()?;
             core.data().set_flags(flags);
@@ -783,12 +793,34 @@ fn state_error(e: KdeError) -> ApiError {
 }
 
 fn bind_udp(addr: SocketAddr, broadcast: bool) -> std::io::Result<std::net::UdpSocket> {
-    let socket = std::net::UdpSocket::bind(addr)?;
+    // SO_REUSEADDR, like stock KDE Connect: when both apps listen on UDP 1716 the kernel hands
+    // each broadcast to both, so neither app silences the other's discovery.
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::DGRAM,
+        None,
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
+    let socket: std::net::UdpSocket = socket.into();
     socket.set_nonblocking(true)?;
     if broadcast {
         socket.set_broadcast(true)?;
     }
     Ok(socket)
+}
+
+/// Bind the TCP listener. A taken port moves on to the next one up to `last` (1764, the range the
+/// protocol reserves, when the port was not chosen by the app); the port bound is the one announced.
+fn bind_tcp(ip: IpAddr, port: u16, last: u16) -> std::io::Result<std::net::TcpListener> {
+    let mut result = std::net::TcpListener::bind(SocketAddr::new(ip, port));
+    for next in port.saturating_add(1)..=last {
+        if result.is_ok() {
+            break;
+        }
+        result = std::net::TcpListener::bind(SocketAddr::new(ip, next));
+    }
+    result
 }
 
 /// Where to announce: an explicit target, else the limited broadcast address.
@@ -888,7 +920,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     // synchronously, then hand the sockets to the runtime.
     let tcp = match args.listen {
         Some((ip, port)) => {
-            let listener = std::net::TcpListener::bind(SocketAddr::new(ip, port))
+            let listener = bind_tcp(ip, port, if args.listen_walk { MAX_KDE_PORT } else { port })
                 .and_then(|l| l.set_nonblocking(true).map(|()| l))
                 .map_err(|_| err("listen_failed", "the listen address could not be bound"))?;
             Some(listener)
@@ -985,6 +1017,9 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         }));
     }
 
+    // A restart (network change) must not leave the computer waiting for the next announcement.
+    engine::redial_remembered(&core, rt.handle());
+
     let result = json!({
         "state": "running",
         "device_id": core.local_id().as_str(),
@@ -997,4 +1032,36 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     });
     drop(enter);
     Ok((Running { core, rt }, result))
+}
+
+#[cfg(test)]
+mod coexist_tests {
+    use super::*;
+
+    const LO: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    #[test]
+    fn busy_port_walks_to_the_next_free_one() {
+        let first = std::net::TcpListener::bind((LO, 0)).unwrap();
+        let base = first.local_addr().unwrap().port();
+        let second = bind_tcp(LO, base, base.saturating_add(5)).unwrap();
+        assert_ne!(second.local_addr().unwrap().port(), base);
+        assert!(second.local_addr().unwrap().port() <= base.saturating_add(5));
+    }
+
+    #[test]
+    fn fixed_port_is_never_walked() {
+        let first = std::net::TcpListener::bind((LO, 0)).unwrap();
+        let base = first.local_addr().unwrap().port();
+        assert!(bind_tcp(LO, base, base).is_err());
+    }
+
+    #[test]
+    fn two_discovery_sockets_can_share_the_port() {
+        let a = bind_udp(SocketAddr::new(LO, 0), false).unwrap();
+        let port = a.local_addr().unwrap().port();
+        // A stock KDE Connect on the same phone binds with SO_REUSEADDR as well.
+        let b = bind_udp(SocketAddr::new(LO, port), false).unwrap();
+        assert_eq!(b.local_addr().unwrap().port(), port);
+    }
 }

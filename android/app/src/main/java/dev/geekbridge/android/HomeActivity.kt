@@ -68,6 +68,7 @@ class HomeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         lastSig = "" // permissions and battery may have changed in system settings
+        PhoneDataRuntime.resync() // a permission granted in Settings must be re-declared to the computer without a reconnect by hand
         render()
     }
 
@@ -127,16 +128,17 @@ class HomeActivity : Activity() {
             strings, AppState.pairedNames, AppState.pairedCount, controller.phase, connected, AppState.keepConnected, LinkService.isRunning,
         )
         val glance = TransferGlanceModel.of(s?.transfers.orEmpty())
-        val sig = listOf(WhatsNewRuntime.pending() != null, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, PhoneDataRuntime.active().sms).joinToString("|")
+        val clipLine = clipboardLine(connected.isNotEmpty())
+        val sig = listOf(WhatsNewRuntime.pending() != null, clipLine.text, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, SmsReadinessAndroid.evaluate(this)).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
         // The whole screen is rebuilt on a state change; put TalkBack back where the user was.
         val focus = A11yLabels.focusPath(screen.root)
-        build(hero, connected, warnings, steps, glance)
+        build(hero, connected, warnings, steps, glance, clipLine)
         A11yLabels.restoreFocus(screen.root, focus)
     }
 
-    private fun build(hero: HeroState, connected: List<String>, warnings: List<SetupModel.Warning>, steps: List<StepInfo>, glance: TransferGlance?) {
+    private fun build(hero: HeroState, connected: List<String>, warnings: List<SetupModel.Warning>, steps: List<StepInfo>, glance: TransferGlance?, clipLine: ClipboardState.Line) {
         val root = screen.root
         root.removeAllViews()
         fun status(id: StepId) = steps.first { it.id == id }.status
@@ -215,10 +217,21 @@ class HomeActivity : Activity() {
         val clipHook = QuickActions.sendClipboard
         kit.tile(row, R.drawable.ic_clipboard, getString(R.string.home_send_clipboard), if (clipHook == null && paired > 0) getString(R.string.home_opens_clipboard_tools) else sub, paired > 0) { if (paired > 0) sendClipboard() else needPairing() }
 
+        // One line: what clipboard sync is doing and what to do next
+        root.addView(
+            kit.text(clipLine.text, 13f, clipLine.tone).apply {
+                setPadding(kit.dp(4), kit.dp(8), kit.dp(4), 0)
+                if (clipLine.kind == ClipboardState.Kind.ReadyNoTile || clipLine.kind == ClipboardState.Kind.NoNotifications) {
+                    setOnClickListener { clipboardLineAction(clipLine.kind) }
+                }
+            },
+        )
+
         // Widget tiles for what this phone shares
         kit.label(root, getString(R.string.home_section_phone))
         val calls = status(StepId.PhoneState) == StepStatus.Done
-        val sms = PhoneDataRuntime.active().sms
+        val smsState = SmsReadinessAndroid.evaluate(this)
+        val sms = smsState.ready
         val contactsOk = status(StepId.Contacts) == StepStatus.Done
         val calOk = status(StepId.Calendar) == StepStatus.Done
         val grid1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -226,7 +239,7 @@ class HomeActivity : Activity() {
         kit.widgetTile(grid1, R.drawable.ic_call, getString(R.string.home_feature_calls), getString(if (calls) R.string.word_ready else R.string.word_allow), calls) {
             startActivity(SetupActivity.intent(this, step = StepId.PhoneState))
         }
-        kit.widgetTile(grid1, R.drawable.ic_message, getString(R.string.home_messages), getString(if (sms) R.string.word_on else R.string.word_off), sms) {
+        kit.widgetTile(grid1, R.drawable.ic_message, getString(R.string.home_messages), SmsReadinessLogic.tileWord(smsState, strings), sms) {
             startActivity(SetupActivity.intent(this, step = StepId.Sms))
         }
         val grid2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -243,6 +256,15 @@ class HomeActivity : Activity() {
             if (CallControlRuntime.settings.enabled) status(StepId.AnswerCalls) else StepStatus.Todo,
             R.string.home_answer_ok, R.string.home_answer_todo, StepId.AnswerCalls,
         )
+        if (CallControlRuntime.settings.enabled) {
+            val numberOk = status(StepId.CallerNumber) == StepStatus.Done
+            root.addView(
+                kit.text(getString(if (numberOk) R.string.home_caller_shown else R.string.home_caller_hidden), 13f, if (numberOk) Tone.Muted else Tone.Warn).apply {
+                    setPadding(kit.dp(4), kit.dp(8), kit.dp(4), 0)
+                    if (!numberOk) setOnClickListener { startActivity(SetupActivity.intent(this@HomeActivity, step = StepId.CallerNumber)) }
+                },
+            )
+        }
 
         // Settings
         kit.label(root, getString(R.string.home_section_settings))
@@ -345,6 +367,33 @@ class HomeActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ quick actions
+
+    private fun clipboardLine(connected: Boolean): ClipboardState.Line {
+        ClipboardRuntime.init(this)
+        return ClipboardState.line(
+            strings, ClipboardRuntime.settings.enabled, connected, AndroidClipboardHost.canAskForTap(this),
+            ClipboardRuntime.tileAdded, Build.VERSION.SDK_INT >= 33, ClipboardRuntime.lastOutcome, System.currentTimeMillis(),
+        )
+    }
+
+    private fun clipboardLineAction(kind: ClipboardState.Kind) {
+        when {
+            kind == ClipboardState.Kind.NoNotifications ->
+                startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+            Build.VERSION.SDK_INT >= 33 -> {
+                val bar = getSystemService(android.app.StatusBarManager::class.java) ?: return
+                bar.requestAddTileService(
+                    android.content.ComponentName(this, ClipboardTileService::class.java), getString(R.string.tile_label),
+                    android.graphics.drawable.Icon.createWithResource(this, R.drawable.ic_clipboard), mainExecutor,
+                ) { result ->
+                    val added = result == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED ||
+                        result == android.app.StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ALREADY_ADDED
+                    if (added) ClipboardRuntime.tileAdded = true
+                    lastSig = ""; render()
+                }
+            }
+        }
+    }
 
     private fun sendClipboard() {
         val hook = QuickActions.sendClipboard

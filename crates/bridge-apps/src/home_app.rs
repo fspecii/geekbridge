@@ -162,6 +162,14 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
             linked,
             alert: true,
         }
+    } else if let (Some(name), false) = (name.clone(), status.reconnecting.is_empty()) {
+        PhoneLine {
+            dots: "RETRYING",
+            name: crate::state::display_text(&name),
+            detail: "Reconnecting to your phone…".into(),
+            linked,
+            alert: false,
+        }
     } else if let Some(name) = name {
         PhoneLine {
             dots: "OFFLINE",
@@ -499,6 +507,17 @@ impl HomeApp {
             let on = if line.linked { pal.text } else { pal.text3 };
             let lit = if line.linked { 12 } else { 0 };
             nothing::dot_progress(ui, pal, 12, lit, on, ui.available_width().min(190.0));
+            // Only when the listener moved off 1716 (another program, usually KDE Connect, has it).
+            if let Some(note) = self
+                .connections
+                .state
+                .status
+                .as_ref()
+                .and_then(|s| s.port_note())
+            {
+                ui.add_space(S2);
+                ui.add(egui::Label::new(theme::caption(pal, note)).wrap());
+            }
         });
     }
 

@@ -478,3 +478,115 @@ fn a_computer_outside_the_permit_list_gets_nothing_and_is_ignored() {
         assert!(phone.call("transport_permits", bad)["ok"] == false);
     }
 }
+
+fn debug_peer() -> Peer {
+    Peer::new(
+        &[
+            "kdeconnect.ping",
+            "geekbridge.debug.log",
+            "geekbridge.debug.state",
+        ],
+        &["kdeconnect.ping", "geekbridge.debug.state_request"],
+    )
+}
+
+#[test]
+fn debug_packets_flow_only_with_the_flag_a_declaring_computer_and_within_limits() {
+    // Declared only when the app turned it on.
+    let off = Phone::start(Some(json!({"sms": true})));
+    let caps = &off.started["capabilities"];
+    assert!(!caps.to_string().contains("geekbridge.debug"), "{caps}");
+    assert_eq!(
+        off.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.debug.log", "body": {"seq": 1, "lines": []}})
+        ),
+        "data_disabled"
+    );
+
+    let phone = Phone::start(Some(json!({"debug": true})));
+    assert!(
+        phone.started["capabilities"]["incoming"]
+            .to_string()
+            .contains("geekbridge.debug.state_request")
+    );
+
+    // A stock-like computer that does not declare the debug packets never gets them.
+    let mut stock = Peer::new(&["kdeconnect.ping"], &["kdeconnect.ping"]);
+    stock.pair(&phone);
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.debug.log", "body": {"seq": 1, "lines": ["x"]}})
+        ),
+        "not_connected"
+    );
+    stock.send(
+        "geekbridge.debug.state_request",
+        body(json!({"requestId": "r"})),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    drop(stock);
+
+    let phone = Phone::start(Some(json!({"debug": true})));
+    let mut peer = debug_peer();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "geekbridge.debug.log", "body": {"seq": 1, "lines": ["hello"]}}),
+    );
+    let p = peer.recv_kind("geekbridge.debug.log");
+    assert_eq!(p.body["lines"][0], "hello");
+    // The state request becomes an event for Kotlin, and the answer goes back.
+    peer.send(
+        "geekbridge.debug.state_request",
+        body(json!({"requestId": "r9"})),
+    );
+    let ev = phone.events(0, 1);
+    assert_eq!(ev[0]["kind"], "geekbridge.debug.state_request");
+    assert_eq!(ev[0]["body"]["requestId"], "r9");
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "geekbridge.debug.state", "body": {"requestId": "r9", "text": "sms: not offered: x"}}),
+    );
+    assert_eq!(
+        peer.recv_kind("geekbridge.debug.state").body["text"],
+        "sms: not offered: x"
+    );
+    // Size cap (128 KiB) and the own rate limit.
+    let huge = "z".repeat(130 * 1024);
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.debug.log", "body": {"seq": 2, "lines": [huge]}})
+        ),
+        "too_large"
+    );
+    let mut limited = 0;
+    for seq in 3..40 {
+        let v = phone.call(
+            "transport_data_send",
+            json!({"kind": "geekbridge.debug.log", "body": {"seq": seq, "lines": ["f"]}}),
+        );
+        if v["ok"] == false {
+            assert_eq!(v["error"]["code"], "rate_limited");
+            limited += 1;
+        }
+    }
+    assert!(limited >= 20, "{limited}");
+    // Debug traffic did not use the SMS budget: switching it on later still works at once.
+    phone.ok("transport_data_config", json!({"debug": false}));
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.debug.log", "body": {"seq": 99, "lines": []}})
+        ),
+        "data_disabled"
+    );
+}

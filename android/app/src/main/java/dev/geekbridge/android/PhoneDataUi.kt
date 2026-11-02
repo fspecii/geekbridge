@@ -45,9 +45,18 @@ object PhoneDataUi {
                     rerender()
                 },
             )
+            if (grant == GrantFeature.Sms) {
+                // Say exactly what is missing (switch / which permission / restricted setting / computer) in plain words.
+                val r = SmsReadinessAndroid.evaluate(a)
+                parent.addView(
+                    kit.text(SmsReadinessLogic.message(r, a.strings), 13.5f, if (r.ready) Tone.Ok else Tone.Warn)
+                        .apply { setPadding(0, kit.dp(6), 0, 0) },
+                )
+            }
             if (enabled) GrantsUi.add(a, kit, parent, grant, rerender)
             if (enabled && !ok) {
                 kit.button(parent, a.getString(R.string.pd_grant), BtnStyle.Tonal) {
+                    perms.forEach { AppState.markAsked(it) }
                     a.requestPermissions(perms, REQUEST_CODE)
                 }
                 kit.button(parent, a.getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(a) }

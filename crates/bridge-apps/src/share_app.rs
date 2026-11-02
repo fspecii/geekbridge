@@ -1137,9 +1137,14 @@ mod tests {
             challenges: vec![],
             event_seq: 0,
             inbound_listener: None,
+            reconnecting: vec![],
         };
         let t = targets(&status);
         assert_eq!(t[0].device_id, "b");
         assert!(t[0].connected && !t[1].connected);
     }
 }
+
+#[cfg(test)]
+#[path = "share_app_tests.rs"]
+mod render_tests;

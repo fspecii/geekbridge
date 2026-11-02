@@ -13,5 +13,14 @@
         <activity android:name=".DebugPinWidgetActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <!-- Debug only: seeds made-up contacts and events for scripts/scale-e2e.sh (see ScaleSeedReceiver for the adb command). -->
         <receiver android:name=".ScaleSeedReceiver" android:exported="true" />
+        <!-- Debug only: starts the remote diagnostics with the process (own-log ring, state dump, Diagnostics card).
+             See DebugDiagnostics and docs/debug-diagnostics.md. Not in release builds. -->
+        <!-- Debug only: flips the opt-in switches from adb for scripts/e2e-debug-diag.sh (see DebugControlReceiver). -->
+        <receiver android:name=".DebugControlReceiver" android:exported="true" />
+        <provider
+            android:name=".DebugBootProvider"
+            android:authorities="${applicationId}.debugboot"
+            android:exported="false"
+            android:initOrder="100" />
     </application>
 </manifest>

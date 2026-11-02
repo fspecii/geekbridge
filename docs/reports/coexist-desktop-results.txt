@@ -1,0 +1,48 @@
+== P1: stock kdeconnectd first, then geekbridge-service (default ports)
+daemon selfId=83cbf2d7025c4f0ab13793fba5729eaa
+PASS  P1 daemon owns TCP 1716
+geekbridge deviceId=4c740d455d1df587019e2edf146aa39b
+PASS  P1 geekbridge started anyway
+PASS  P1 geekbridge TCP listener fell back to 1717
+PASS  P1 geekbridge shares UDP 1716 with the daemon (both bound)
+PASS  P1 one clear log line about the port
+PASS  P1 geekbridge-ctl status says so (stderr)
+PASS  P1 no UDP bind error reported
+PASS  P1 announced tcpPort is the fallback port 1717 (seen on the wire)
+PASS  P1 geekbridge hears the daemon's broadcast although the daemon owns UDP 1716
+PASS  P1 sniffer (third listener) also got both identities
+PASS  P1 daemon sees geekbridge as a separate device (own id)
+PASS  P1 device ids differ
+daemon cert sha256=2e0c67fee6e14f6220c3d8561263b06d0212e0356772883bb7e5583995241e2a
+geekbridge cert sha256=22d591825c722352c4badaee72de6c640e291c17cd2505d8c11bd11c9724fccd
+PASS  P1 certificates differ (geekbridge's is its own)
+PASS  P1 daemon sees geekbridge's own certificate fingerprint
+PASS  P1 geekbridge state dir is its own and has no KDE Connect files
+PASS  P1 geekbridge made no outgoing TCP connection to the daemon
+PASS  P1 nothing paired on either side before anyone asks
+PASS  P1 pairing started by the daemon is only a pending challenge in geekbridge (not answered for)
+PASS  P1 ... and stays unpaired without a decision
+PASS  P1 clipboard status warns that KDE Connect is also running (D-Bus org.kde.kdeconnect)
+PASS  P1 nothing was disabled automatically
+== P2: geekbridge-service first, then stock kdeconnectd
+PASS  P2 geekbridge on TCP 1716, no fallback note
+PASS  P2 no clipboard warning while KDE Connect is not running
+PASS  P2 daemon started (took UDP 1716 beside us)
+PASS  P2 daemon logged no UDP bind failure
+daemon TCP listener: *:1717 
+PASS  P2 geekbridge hears the daemon (daemon's broadcast reaches both sockets)
+PASS  P2 daemon sees geekbridge (announced tcpPort 1716)
+PASS  P2 announced tcpPort is 1716
+PASS  P2 clipboard warning appears once the daemon is on the bus
+== P3: UDP 1716 held without SO_REUSEADDR and TCP 1716 held by another program
+PASS  P3 geekbridge starts anyway
+PASS  P3 listener fell back to 1717
+PASS  P3 log says why
+PASS  P3 discovery API reports the UDP problem and points to QR/IP pairing
+PASS  P3 QR pairing still works and carries port 1717
+== P4: every TCP port 1716-1764 is taken
+PASS  P4 geekbridge still starts (outgoing connections and UI keep working)
+PASS  P4 one clear log line
+== done; logs in OUTDIR
+passed: 36
+failed: 0

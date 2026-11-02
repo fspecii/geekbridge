@@ -13,7 +13,7 @@ import org.json.JSONObject
  *   by the `ANSWER_PHONE_CALLS` runtime permission. It never touches call audio: that stays on the phone's
  *   own Bluetooth hands-free connection.
  * - The caller's number needs `READ_CALL_LOG` (Android hands the number only to apps that hold it) and the
- *   name additionally `READ_CONTACTS`. Both are optional; without them the computer shows "Unknown caller".
+ *   name additionally `READ_CONTACTS`. Both are optional; without them the computer shows "Unknown caller" (it cannot tell a hidden number from a missing permission).
  * - Nothing is sent unless the user switched this on, and each report carries only what the permissions allow.
  */
 
@@ -207,21 +207,56 @@ class CallControlEngine(
     private val settings: () -> CallLinkSettings,
     private val lookup: ContactLookup,
     private val sdk: Int,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private var state: CallState? = null
     private var number: String? = null
     private var name: String? = null
     private var lastSent: CallReport? = null
 
+    /**
+     * Android sends the number in a broadcast and the state through a separate callback; they race, so the number
+     * can arrive first. It is kept briefly and used if a ringing state follows at once.
+     */
+    private var earlyNumber: String? = null
+    private var earlyAtMs = 0L
+
+    /** A call was already in progress when this one began ringing (call waiting). */
+    private var ringingOverCall = false
+
     /** The coarse state changed. [number] is whatever Android supplied, if anything. */
     @Synchronized
     fun onState(newState: CallState, number: String? = null) {
+        val before = state
         state = newState
-        if (newState == CallState.Idle) {
-            this.number = null
-            name = null
-        } else if (number != null) {
-            setNumber(number)
+        when {
+            newState == CallState.Idle -> {
+                this.number = null
+                name = null
+                earlyNumber = null
+                ringingOverCall = false
+            }
+            newState == CallState.Ringing -> {
+                ringingOverCall = before == CallState.OffHook
+                val n = number ?: earlyNumber?.takeIf { clock() - earlyAtMs <= EARLY_NUMBER_MS }
+                earlyNumber = null
+                // A second call must not be shown with the first caller's number.
+                if (before != CallState.Ringing && n == null) {
+                    this.number = null
+                    name = null
+                }
+                if (n != null) setNumber(n)
+            }
+            newState == CallState.OffHook -> {
+                // Ringing ended in a call. If that ringing was a waiting call we cannot tell whether it was answered or
+                // declined, so which party is on the line is unknown: say nothing rather than the wrong number.
+                if (before == CallState.Ringing && ringingOverCall) {
+                    this.number = null
+                    name = null
+                }
+                ringingOverCall = false
+                if (number != null) setNumber(number)
+            }
         }
         send()
     }
@@ -229,7 +264,12 @@ class CallControlEngine(
     /** The incoming number arrived after the state (Android delivers them separately). */
     @Synchronized
     fun onNumber(number: String) {
-        if (state == null || state == CallState.Idle || !CallRules.plausibleNumber(number)) return
+        if (!CallRules.plausibleNumber(number)) return
+        if (state == null || state == CallState.Idle) {
+            earlyNumber = number
+            earlyAtMs = clock()
+            return
+        }
         setNumber(number)
         send()
     }
@@ -248,6 +288,8 @@ class CallControlEngine(
         number = null
         name = null
         lastSent = null
+        earlyNumber = null
+        ringingOverCall = false
     }
 
     @Synchronized
@@ -281,5 +323,9 @@ class CallControlEngine(
         val outcome = core(CallsProtocol.reportRequest(report))
         // Only remember what the core accepted; a not-yet-running core is retried on the next change.
         if (outcome is CoreOutcome.Ok) lastSent = report
+    }
+
+    private companion object {
+        const val EARLY_NUMBER_MS = 3_000L
     }
 }

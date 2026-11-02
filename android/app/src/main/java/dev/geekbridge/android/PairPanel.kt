@@ -72,6 +72,8 @@ class PairPanel(
 
     private fun start() {
         pendingDevice = null
+        // The user will look at the other computer to compare the code: keep the link alive if this screen is left.
+        AppState.startPairingGrace()
         controller.start(
             LinkRuntime.startOptions(
                 stateDir = activity.filesDir.absolutePath,
@@ -80,6 +82,7 @@ class PairPanel(
                 announce = true,
             ),
         )
+        LinkService.sync(activity) // after the start, so the service finds the link already running
     }
 
     fun render() {
@@ -185,7 +188,7 @@ class PairPanel(
                     NetCheck.run(activity, target?.ip, target?.tcpPort ?: 1716) { r -> testing = false; netReport = r; render() }
                 }
                 netReport?.let { ReportView.add(kit, container, it) }
-                kit.button(container, activity.getString(R.string.pair_stop_looking), BtnStyle.Plain) { controller.stop() }
+                kit.button(container, activity.getString(R.string.pair_stop_looking), BtnStyle.Plain) { AppState.endPairingGrace(); controller.stop(); LinkService.sync(activity) }
             }
         }
         val n = controller.notice

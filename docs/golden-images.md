@@ -32,7 +32,7 @@ private Xvfb and service state; a scripted phone (`bridge-phone-sim`); the wall 
 mock release server (no network); each screen is captured until two consecutive frames are identical. Every screen is shot
 in light and dark at the standard window size (`-std`) and resized to the app's minimum (`-min`).
 
-Android (`scripts/golden-android.sh`): a headless emulator on its own console port and adb server (`16058`), started
+Android (`scripts/golden-android.sh`): a headless emulator on its own free console port and adb server port (chosen at run time), started
 read-only so the AVD is not modified. System state: demo mode (clock 12:00, full battery), animations off, rotation locked,
 en-US, UTC, date pinned to 2026-06-15, font scale 1.0 and 2.0, light and dark; screencaps cropped to the app area.
 The AVD that gives stable pixels: system image `system-images;android-36;google_apis;x86_64` (the google_apis flavour,
@@ -42,9 +42,20 @@ default). The default is the project AVD `gbnothing` (`scripts/bootstrap-android
 `hw.lcd.density=420`, `hw.lcd.width=1080`, `hw.lcd.height=2400` in its `config.ini`, and run with `GOLDEN_AVD=gbgolden`.
 A different image, density or GPU renders text a few pixels differently, so the goldens are only valid on that setup.
 
+## Running on a busy machine
+
+Both scripts pick every port at run time (control, API, discovery, mock release server, adb server, emulator console), give
+each capture worker its own Xvfb (`-displayfd`, no display numbers), fail at once with the helper's log tail if a helper
+process dies, and are bounded by `GOLDEN_TIMEOUT` seconds (desktop 240, Android 600) with the whole process group killed on
+expiry. Scratch files live in `~/.cache/gb-golden` (`GOLDEN_SCRATCH`). The desktop check takes about two minutes
+(`GOLDEN_JOBS` workers, default min(8, cores)); the Android check about three, most of it emulator boot. In `--check` a
+desktop screen that differs is captured again (up to 3 tries): a startup race on a loaded machine passes, a real regression
+differs every time. Other pins: the call timer (`GEEKBRIDGE_FIXED_CALL_SECONDS=83`), `HOME=/tmp/gb-golden-home` (the share
+window prints its save folder), and the order of the captures (Home before Messages is opened, which marks conversations read).
+
 ## Tolerance and size
 
-Both goldens are 50 % scale, 256-colour PNGs (about 1.5 MB for the desktop set). A pixel counts as different when any
+Both goldens are 50 % scale, 256-colour PNGs (about 0.8 MB desktop, 0.6 MB Android). A pixel counts as different when any
 RGB channel differs by more than 24/255 (`GOLDEN_PIXEL_THRESHOLD`); the check fails when more than 0.05 % of the pixels
 differ (`GOLDEN_MAX_RATIO`) or the size changes (`scripts/golden/golden_img.py`).
 

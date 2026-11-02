@@ -28,11 +28,15 @@ pub use bridge_kde::sms::{
     REQUEST_CONVERSATIONS as SMS_REQUEST_CONVERSATIONS,
 };
 
+pub use bridge_core::debug_link::{
+    LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
+};
+
 pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 14] = [
+pub const LOCAL_INCOMING: [&str; 16] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -47,8 +51,10 @@ pub const LOCAL_INCOMING: [&str; 14] = [
     CALENDAR_WRITE_RESULT,
     SMS_MESSAGES,
     SMS_STATUS,
+    DEBUG_LOG,
+    DEBUG_STATE,
 ];
-pub const LOCAL_OUTGOING: [&str; 14] = [
+pub const LOCAL_OUTGOING: [&str; 15] = [
     PING,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
@@ -63,6 +69,7 @@ pub const LOCAL_OUTGOING: [&str; 14] = [
     SMS_REQUEST_CONVERSATIONS,
     SMS_REQUEST_CONVERSATION,
     SMS_REQUEST,
+    DEBUG_STATE_REQUEST,
 ];
 
 /// Packet types the peer may send us: its outgoing list intersected with what we declared.
@@ -90,6 +97,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     }
     if bridge_core::calls_link::is_calls_kind(kind) {
         return Some(Feature::Telephony);
+    }
+    if bridge_core::debug_link::is_debug_kind(kind) {
+        return Some(Feature::Debug);
     }
     if bridge_core::phone_link::is_calendar_write_kind(kind) {
         return Some(Feature::CalendarEdit);
@@ -123,6 +133,7 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::Calendar
             | Feature::CalendarEdit
             | Feature::CalendarAlerts
+            | Feature::Debug
     )
 }
 
@@ -136,6 +147,9 @@ pub enum Incoming {
     /// A contacts, calendar or SMS packet from the phone. Acted on only for devices that allowed
     /// that feature (`phone_data`); otherwise it is dropped unread.
     PhoneData,
+    /// A `geekbridge.debug.log` / `geekbridge.debug.state` packet from a debug-build phone. Acted on
+    /// only for a paired device whose `debug` consent is on (`phone_debug`).
+    Debug,
     Reject,
 }
 
@@ -158,6 +172,8 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
     ) && negotiated.iter().any(|k| k == kind)
     {
         Incoming::PhoneData
+    } else if matches!(kind, DEBUG_LOG | DEBUG_STATE) && negotiated.iter().any(|k| k == kind) {
+        Incoming::Debug
     } else {
         Incoming::Reject
     }
@@ -265,6 +281,31 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    #[test]
+    fn debug_packets_are_negotiated_only_when_the_phone_declares_them() {
+        let stock = peer(&[], &["kdeconnect.ping"]);
+        assert!(!negotiated_incoming(&stock).iter().any(|k| k == DEBUG_LOG));
+        let dbg = peer(&[DEBUG_STATE_REQUEST], &[DEBUG_LOG, DEBUG_STATE]);
+        let inc = negotiated_incoming(&dbg);
+        assert_eq!(classify_incoming(DEBUG_LOG, &inc), Incoming::Debug);
+        assert_eq!(classify_incoming(DEBUG_STATE, &inc), Incoming::Debug);
+        assert_eq!(classify_incoming(DEBUG_LOG, &[]), Incoming::Reject);
+        assert_eq!(
+            classify_incoming(DEBUG_STATE_REQUEST, &inc),
+            Incoming::Reject
+        );
+        assert!(negotiated_outgoing(&dbg).contains(&DEBUG_STATE_REQUEST.to_string()));
+        assert!(negotiated_outgoing(&stock).is_empty());
+        assert_eq!(
+            check_outgoing(DEBUG_STATE_REQUEST, &negotiated_outgoing(&dbg), |_| false),
+            Outgoing::ConsentRequired(Feature::Debug)
+        );
+        assert_eq!(
+            check_outgoing(DEBUG_STATE_REQUEST, &negotiated_outgoing(&dbg), |_| true),
+            Outgoing::Allowed
+        );
     }
 
     #[test]

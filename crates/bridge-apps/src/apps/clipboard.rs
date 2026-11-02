@@ -189,6 +189,10 @@ pub(crate) fn sync_body(
         )).wrap());
         ui.add_space(4.0);
         ui.add(egui::Label::new(theme::caption(pal, clipboard_link::backend_line(&status))).wrap());
+        if let Some(line) = clipboard_link::other_sync_line(&status) {
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(theme::caption(pal, line)).wrap());
+        }
     });
 
     ui.add_space(6.0);
@@ -311,3 +315,7 @@ pub(crate) fn sync_body(
         )));
     });
 }
+
+#[cfg(test)]
+#[path = "clipboard_tests.rs"]
+mod render_tests;

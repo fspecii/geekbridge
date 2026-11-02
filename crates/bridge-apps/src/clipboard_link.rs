@@ -139,6 +139,21 @@ impl Drop for ClipLink {
     }
 }
 
+#[cfg(test)]
+impl ClipLink {
+    /// A link with no worker: shows `state` and hands back what the window asked for.
+    pub(crate) fn detached(state: ClipState) -> (Self, mpsc::Receiver<Action>) {
+        let (commands, rx) = mpsc::sync_channel::<Action>(4);
+        let link = Self {
+            commands,
+            latest: Arc::new(Mutex::new(None)),
+            stop: Arc::new(AtomicBool::new(true)),
+            state,
+        };
+        (link, rx)
+    }
+}
+
 fn action_notice(a: &Action) -> &'static str {
     match a {
         Action::Pull => "Asking your phone…",
@@ -172,7 +187,8 @@ pub fn pull_line(p: &ClipboardPullStatus) -> String {
             }
             Some(NoneReason::Empty) => "Your phone's clipboard is empty.".into(),
             Some(NoneReason::NeedsGesture) => {
-                "Android needs a tap: open the GeekBridge notification on your phone.".into()
+                "Android needs a tap: tap the GeekBridge notification or the Send clipboard tile on your phone."
+                    .into()
             }
             Some(NoneReason::Disabled) => "Clipboard sharing is off in the phone app.".into(),
             Some(NoneReason::TooLarge) => "That item is too large to send.".into(),
@@ -226,6 +242,14 @@ pub fn backend_line(s: &ClipboardStatus) -> String {
     format!("Clipboard access: {} ({how}, {state}){problem}", s.backend)
 }
 
+/// One line when stock KDE Connect is running too: two apps syncing one clipboard to one phone can
+/// echo. Informational only; nothing is turned off.
+pub fn other_sync_line(s: &ClipboardStatus) -> Option<&'static str> {
+    s.other_sync_app.then_some(
+        "KDE Connect is also running on this computer. If both sync the clipboard to the same phone, text can bounce back and forth: turn clipboard sync off in one of them.",
+    )
+}
+
 pub fn hotkey_line(s: &ClipboardStatus) -> String {
     match s.hotkey_binding.as_str() {
         "bound" => format!("{} pastes from your phone, anywhere.", s.hotkey),
@@ -277,6 +301,7 @@ mod tests {
             hotkey_binding: "unsupported".into(),
             last_pull: None,
             devices: vec![],
+            other_sync_app: false,
         }
     }
 
@@ -288,6 +313,14 @@ mod tests {
             kind: Some("text".into()),
             at_unix_ms: 0,
         }
+    }
+
+    #[test]
+    fn other_sync_app_gets_one_warning_line() {
+        let mut s = status();
+        assert_eq!(other_sync_line(&s), None);
+        s.other_sync_app = true;
+        assert!(other_sync_line(&s).unwrap().contains("KDE Connect"));
     }
 
     #[test]

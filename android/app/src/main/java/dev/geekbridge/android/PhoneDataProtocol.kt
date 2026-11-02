@@ -113,13 +113,16 @@ object PhoneDataProtocol {
     private fun base(action: String) = JSONObject().put("version", CoreProtocol.VERSION).put("action", action)
 
     /** The `data` object of `transport_start`; null when nothing is active so the app declares nothing. */
-    fun startObject(a: ActiveFeatures): JSONObject? =
-        if (!a.any) null else JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
-            .put("calendar_edit", a.calendarEdit && a.calendar)
+    fun startObject(a: ActiveFeatures): JSONObject? {
+        val debug = DebugHooks.streaming // debug builds only; always false in release
+        if (!a.any && !debug) return null
+        return JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
+            .put("calendar_edit", a.calendarEdit && a.calendar).also { if (debug) it.put("debug", true) }
+    }
 
     fun configRequest(a: ActiveFeatures): String =
         base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
-            .put("calendar_edit", a.calendarEdit && a.calendar).toString()
+            .put("calendar_edit", a.calendarEdit && a.calendar).also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
 
     fun waitRequest(since: Long, timeoutMs: Long = PhoneDataLimits.WAIT_MS): String =
         base("transport_data_wait").put("since", since)

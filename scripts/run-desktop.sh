@@ -20,7 +20,9 @@
 #   --env            print `export` lines so a shell can run geekbridge-ctl against this session
 #
 # Environment: GEEKBRIDGE_REALDEVICE_STATE (state dir), GEEKBRIDGE_BIN_DIR (default target/release),
-# GEEKBRIDGE_CONTROL_PORT (default 17381), GEEKBRIDGE_API_PORT (default 17380).
+# GEEKBRIDGE_CONTROL_PORT (default 17381), GEEKBRIDGE_API_PORT (default 17380),
+# GEEKBRIDGE_QR_ADDRESSES (comma list, e.g. 192.168.1.50 or 192.168.1.50:1716: overrides the addresses the QR
+# carries; read when the service starts, so --stop first if it is already running).
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -113,6 +115,7 @@ fi
 # ---------------------------------------------------------------- service
 if ctl status >/dev/null 2>&1; then
   ok "service already running (reusing it, state dir $STATE)"
+  [[ -n ${GEEKBRIDGE_QR_ADDRESSES:-} ]] && warn "GEEKBRIDGE_QR_ADDRESSES is set but the running service was started without it: run '$0 --stop' first, then start again"
 else
   if ss -Htln 2>/dev/null | awk '{print $4}' | grep -q ":$CTRL_PORT\$"; then
     die "port $CTRL_PORT is taken by something that is not this session's service (another state dir?).
@@ -141,10 +144,16 @@ fi
 
 # ---------------------------------------------------------------- what the phone needs
 port="$(ss -Htlnp 2>/dev/null | awk '/geekbridge-service/ {n=split($4,a,":"); print a[n]; exit}')"
-ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/,"",$4); printf "%s ", $4}')"
+# Phone-reachable addresses only: no docker/libvirt bridges, VPN tunnels, CGNAT (100.64/10) or link-local; the
+# default-route interface first. (The QR below carries the service's own pick of the same list.)
+dev="$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')"
+ips="$(ip -4 -o addr show scope global 2>/dev/null \
+  | awk -v dev="$dev" '$2 !~ /^(docker|br-|veth|virbr|lxc|lxd|podman|cni|vmnet|vboxnet|tailscale|wg|tun|tap|zt|utun|nordlynx|proton|mullvad|ppp)/ {
+      split($4, a, "[./]"); if (a[1] == 100 && a[2] >= 64 && a[2] <= 127) next; if (a[1] == 169 && a[2] == 254) next
+      print ($2 == dev ? "0 " : "1 ") $4 " (" $2 ")" }' | sort -s -k1,1 | cut -d' ' -f2- | sed 's#/[0-9]*##' | tr '\n' ' ')"
 echo
 echo "  name shown to phones : $NAME"
-echo "  LAN address(es)      : ${ips:-none found}"
+echo "  LAN address(es)      : ${ips:-none found (connect to your router first)}"
 echo "  phone connects to    : TCP ${port:-1716} on this PC (discovery: UDP 1716 broadcast)"
 echo "  state dir            : $STATE"
 echo "  ctl in this shell    : eval \"\$(scripts/run-desktop.sh --env)\"   then  geekbridge-ctl status"
@@ -158,11 +167,14 @@ if ((QR)); then
   echo
   payload="$(ctl pair-qr 2>/dev/null)"
   if [[ $payload == geekbridge://pair?* ]]; then
-    command -v qrencode >/dev/null && qrencode -t ANSIUTF8 -m 1 "$payload"
+    if command -v qrencode >/dev/null; then qrencode -t ANSIUTF8 -m 1 "$payload"
+    else warn "qrencode is not installed, so no QR in this terminal (sudo pacman -S qrencode); use the QR in the GeekBridge window"; fi
+    qr_addrs="$(sed -n 's/.*[&?]a=\([^&]*\).*/\1/p' <<<"$payload" | sed 's/%3A/:/g; s/%2C/,/g; s/%5B/[/g; s/%5D/]/g')"
+    echo "  the QR makes the phone try (in this order): ${qr_addrs//,/  then  }"
     echo "  one-time link (2 min, single use): $payload"
   else warn "could not create a pairing link: $payload"; fi
 fi
 echo
-echo "  Pair: phone app > Scan QR code, scanning the QR in the GeekBridge window$( ((QR)) && echo ' or the one above')."
+echo "  Pair: phone app, setup wizard step 1 \"Pair with your computer\" > Scan QR code (later: Home > Pair a computer), scanning the QR in the GeekBridge window$( ((QR)) && echo ' or the one above')."
 ((QR)) || echo "        No window? rerun with --qr for a terminal QR."
 echo "  Stop everything: scripts/run-desktop.sh --stop"

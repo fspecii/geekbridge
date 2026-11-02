@@ -10,8 +10,19 @@ import android.service.quicksettings.TileService
 
 /** Quick Settings tile: "Send clipboard". One tap gives GeekBridge focus long enough to read and send it. */
 class ClipboardTileService : TileService() {
+    override fun onTileAdded() {
+        ClipboardRuntime.init(this)
+        ClipboardRuntime.tileAdded = true
+    }
+
+    override fun onTileRemoved() {
+        ClipboardRuntime.init(this)
+        ClipboardRuntime.tileAdded = false
+    }
+
     override fun onStartListening() {
         ClipboardRuntime.init(this)
+        ClipboardRuntime.tileAdded = true // it is only asked to listen while it is in Quick Settings
         qsTile?.apply {
             state = if (ClipboardRuntime.settings.enabled) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             label = getString(R.string.tile_label)

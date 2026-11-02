@@ -52,6 +52,7 @@ pub struct Rig {
     pub _tmp: tempfile::TempDir,
     pub state_dir: PathBuf,
     pub daemon: Arc<Daemon>,
+    pub discovery: SharedState,
     pub token: Token,
     pub control_port: u16,
     pub tasks: Vec<JoinHandle<std::io::Result<()>>>,
@@ -94,12 +95,13 @@ impl Rig {
         let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let tasks = vec![
             tokio::spawn(control::serve_control(control_listener, Arc::new(control))),
-            tokio::spawn(serve_api(api_listener, discovery)),
+            tokio::spawn(serve_api(api_listener, discovery.clone())),
         ];
         Self {
             _tmp: tmp,
             state_dir,
             daemon,
+            discovery,
             token,
             control_port,
             tasks,
@@ -356,3 +358,23 @@ impl Rng {
 
 pub mod chaos;
 pub mod space;
+
+/// Make the service "hear" `phone` announce itself at `addr`, as the UDP listener would.
+pub async fn announce(rig: &Rig, phone: &Phone, addr: SocketAddr) {
+    let device = bridge_core::Device {
+        id: phone.id(),
+        name: "Test Phone".into(),
+        device_type: "phone".into(),
+        address: addr.ip(),
+        tcp_port: addr.port(),
+        protocol_version: 8,
+        incoming_capabilities: vec![],
+        outgoing_capabilities: vec![],
+        state: bridge_core::ConnectionState::Discovered,
+        last_seen_unix_ms: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64,
+    };
+    bridge_service::record_device(&mut *rig.discovery.write().await, device);
+}

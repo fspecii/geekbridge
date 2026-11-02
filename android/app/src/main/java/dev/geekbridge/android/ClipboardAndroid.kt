@@ -130,6 +130,14 @@ class AndroidClipboardHost(private val ctx: Context) : ClipboardHost {
         private const val COPY_TIMEOUT_MS = 15_000L
         private const val CHANNEL = "clipboard_request"
         const val NOTIFICATION_ID = 2
+        /** False when the user turned off notifications for the app or for the clipboard-request channel. */
+        fun canAskForTap(ctx: Context): Boolean {
+            val nm = ctx.getSystemService(NotificationManager::class.java) ?: return false
+            if (!nm.areNotificationsEnabled()) return false
+            val ch = nm.getNotificationChannel(CHANNEL)
+            return ch == null || ch.importance != NotificationManager.IMPORTANCE_NONE
+        }
+
         private const val EXTRA_IS_SENSITIVE = "android.content.extra.IS_SENSITIVE"
 
         /**

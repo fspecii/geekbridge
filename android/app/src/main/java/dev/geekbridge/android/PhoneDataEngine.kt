@@ -190,6 +190,7 @@ class PhoneDataEngine(
             }
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
             PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
+            else -> if (e.kind.startsWith("geekbridge.debug.")) DebugHooks.onDataEvent?.invoke(e)
         }
     }
 

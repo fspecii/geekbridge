@@ -19,6 +19,8 @@ pub struct Inputs {
     pub calling: Option<CallingStatus>,
     pub clipboard: Option<ClipboardStatus>,
     pub update: Option<UpdateStatus>,
+    /// (device id, bytes on disk) of each phone's captured debug log (`phone_debug`); content is never read.
+    pub phone_logs: Vec<(String, u64)>,
     pub notes: Vec<String>,
 }
 
@@ -172,6 +174,21 @@ pub fn render(i: &Inputs, host: &str) -> String {
         );
     }
     let _ = writeln!(o, "events recorded: {}", s.event_seq);
+
+    let _ = writeln!(o, "\n== Phone debug logs ==");
+    if i.phone_logs.is_empty() {
+        let _ = writeln!(
+            o,
+            "none captured (only a GeekBridge debug build of the phone sends them; see geekbridge-ctl phone-log)"
+        );
+    }
+    for (id, bytes) in &i.phone_logs {
+        let _ = writeln!(
+            o,
+            "{}: {bytes} bytes captured on this computer (geekbridge-ctl phone-log / phone-state; lines are not included here)",
+            alias(s, id)
+        );
+    }
 
     let _ = writeln!(o, "\n== Capabilities ==");
     match &i.calling {
@@ -386,6 +403,7 @@ mod tests {
                 calling: None,
                 clipboard: None,
                 update: None,
+                phone_logs: Vec::new(),
                 notes: vec![format!("events: {reason}")],
             },
             "linux x86_64",

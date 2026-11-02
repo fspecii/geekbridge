@@ -16,6 +16,7 @@
     <string name="word_unpaired">Unpaired</string>
     <string name="word_on">On</string>
     <string name="word_off">Off</string>
+    <string name="word_needs_setup">Needs setup</string>
     <string name="word_allow">Allow</string>
     <string name="word_ready">Ready</string>
     <string name="home_contacts">Contacts</string>

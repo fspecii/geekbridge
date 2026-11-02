@@ -32,6 +32,10 @@ const RATE_BURST: f64 = 20.0;
 /// 8 packets per second sustained: a 5,000-contact sync is 200 vCard answers, which 2/s made a 100 s crawl
 /// (and the burst of 20 alone stalled it); the app waits and retries a rate-limited answer.
 const RATE_PER_SEC: f64 = 8.0;
+/// Debug packets: burst 6, 3 per second sustained, bodies up to 128 KiB (the computer accepts 64 KiB of log).
+const DEBUG_BURST: f64 = 6.0;
+const DEBUG_PER_SEC: f64 = 3.0;
+pub(in crate::transport) const MAX_DEBUG_BODY_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::transport) enum Feature {
@@ -40,14 +44,19 @@ pub(in crate::transport) enum Feature {
     /// Writing events (`geekbridge.calendar.write`); needs its own switch and WRITE_CALENDAR.
     CalendarEdit,
     Sms,
+    /// Debug-build diagnostics (`geekbridge.debug.*`): log lines and a redacted state dump for the paired
+    /// computer. Only the debug build's Kotlin ever turns it on; it has its own size and rate limits and
+    /// is not tied to the per-computer switches (the computer decides with its own `debug` consent).
+    Debug,
 }
 
 impl Feature {
-    const ALL: [Feature; 4] = [
+    const ALL: [Feature; 5] = [
         Feature::Contacts,
         Feature::Calendar,
         Feature::CalendarEdit,
         Feature::Sms,
+        Feature::Debug,
     ];
 
     fn key(self) -> &'static str {
@@ -56,6 +65,7 @@ impl Feature {
             Feature::Calendar => "calendar",
             Feature::CalendarEdit => "calendar_edit",
             Feature::Sms => "sms",
+            Feature::Debug => "debug",
         }
     }
 
@@ -72,6 +82,7 @@ impl Feature {
                 "kdeconnect.sms.request_conversation",
                 "kdeconnect.sms.request",
             ],
+            Feature::Debug => &[bridge_core::debug_link::STATE_REQUEST],
         }
     }
 
@@ -84,6 +95,7 @@ impl Feature {
             Feature::Calendar => &["geekbridge.calendar.sync"],
             Feature::CalendarEdit => &["geekbridge.calendar.write_result"],
             Feature::Sms => &["kdeconnect.sms.messages", "geekbridge.sms.status"],
+            Feature::Debug => &[bridge_core::debug_link::LOG, bridge_core::debug_link::STATE],
         }
     }
 
@@ -103,6 +115,7 @@ pub(in crate::transport) struct Flags {
     pub calendar: bool,
     pub calendar_edit: bool,
     pub sms: bool,
+    pub debug: bool,
 }
 
 impl Flags {
@@ -113,6 +126,7 @@ impl Flags {
             // Writing is never possible without reading: the switch alone is not enough.
             Feature::CalendarEdit => self.calendar_edit && self.calendar,
             Feature::Sms => self.sms,
+            Feature::Debug => self.debug,
         }
     }
 }
@@ -149,6 +163,9 @@ struct State {
     stopped: bool,
     tokens: f64,
     refilled: Instant,
+    /// Separate bucket for debug packets so a chatty log can never starve SMS or calendar answers.
+    debug_tokens: f64,
+    debug_refilled: Instant,
 }
 
 pub(in crate::transport) struct Hub {
@@ -167,6 +184,8 @@ impl Default for Hub {
                 stopped: false,
                 tokens: RATE_BURST,
                 refilled: Instant::now(),
+                debug_tokens: DEBUG_BURST,
+                debug_refilled: Instant::now(),
             }),
             cv: Condvar::new(),
         }
@@ -268,10 +287,28 @@ impl Hub {
             "calendar": g.flags.calendar,
             "calendar_edit": g.flags.calendar_edit,
             "sms": g.flags.sms,
+            "debug": g.flags.debug,
         })
     }
 
-    /// Token bucket: 20 burst, 2 per second sustained.
+    fn take_debug_token(&self) -> bool {
+        let mut g = self.lock();
+        let now = Instant::now();
+        let gained = now
+            .saturating_duration_since(g.debug_refilled)
+            .as_secs_f64()
+            * DEBUG_PER_SEC;
+        g.debug_refilled = now;
+        g.debug_tokens = (g.debug_tokens + gained).min(DEBUG_BURST);
+        if g.debug_tokens >= 1.0 {
+            g.debug_tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Token bucket: 20 burst, 8 per second sustained.
     fn take_token(&self) -> bool {
         let mut g = self.lock();
         let now = Instant::now();
@@ -315,14 +352,29 @@ impl Core {
             return Err(err("data_disabled", "this feature is off in the app"));
         }
         let size = serde_json::to_vec(&body).map_or(usize::MAX, |v| v.len());
-        if size > MAX_SEND_BODY_BYTES {
+        let debug = feature == Feature::Debug;
+        let cap = if debug {
+            MAX_DEBUG_BODY_BYTES
+        } else {
+            MAX_SEND_BODY_BYTES
+        };
+        if size > cap {
             return Err(err("too_large", "the packet body is over the size limit"));
         }
-        let ctls = self.permitted_ctls(feature.key(), only);
+        let ctls = if debug {
+            self.debug_ctls(only)
+        } else {
+            self.permitted_ctls(feature.key(), only)
+        };
         if ctls.is_empty() {
             return Err(err("not_connected", "no trusted computer is connected"));
         }
-        if !self.data.take_token() {
+        let allowed = if debug {
+            self.data.take_debug_token()
+        } else {
+            self.data.take_token()
+        };
+        if !allowed {
             return Err(err("rate_limited", "too many packets; try again shortly"));
         }
         let mut queued = 0;
@@ -350,7 +402,13 @@ impl Core {
         let Some(feature) = Feature::of_incoming(&p.kind) else {
             return false;
         };
-        if self.permitted(feature.key(), connection_id) {
+        let allowed = if feature == Feature::Debug {
+            // Debug requests come only from a computer that itself declared the debug packets.
+            self.peer_debug(connection_id)
+        } else {
+            self.permitted(feature.key(), connection_id)
+        };
+        if allowed {
             self.data
                 .push(feature, connection_id, &p.kind, p.body.clone());
         }
@@ -368,6 +426,7 @@ mod tests {
             calendar: true,
             calendar_edit: true,
             sms: true,
+            debug: false,
         }
     }
 
@@ -386,6 +445,32 @@ mod tests {
         assert!(incoming_types(both).contains(&"geekbridge.calendar.write".to_owned()));
         assert!(outgoing_types(both).contains(&"geekbridge.calendar.write_result".to_owned()));
         assert!(is_data_kind("geekbridge.calendar.write"));
+    }
+
+    #[test]
+    fn debug_capabilities_exist_only_when_the_app_turns_them_on() {
+        assert!(incoming_types(on()).iter().all(|k| !k.contains("debug")));
+        let dbg = Flags {
+            debug: true,
+            ..Flags::default()
+        };
+        assert_eq!(incoming_types(dbg), vec!["geekbridge.debug.state_request"]);
+        assert_eq!(
+            outgoing_types(dbg),
+            vec!["geekbridge.debug.log", "geekbridge.debug.state"]
+        );
+        assert!(is_data_kind("geekbridge.debug.log"));
+        // A computer's debug *response* kinds are noise, never queued.
+        assert!(Feature::of_incoming("geekbridge.debug.log").is_none());
+    }
+
+    #[test]
+    fn debug_packets_have_their_own_rate_limit() {
+        let hub = Hub::default();
+        let granted = (0..30).filter(|_| hub.take_debug_token()).count();
+        assert!((6..=7).contains(&granted), "{granted}");
+        // SMS answers are unaffected by a debug flood.
+        assert!(hub.take_token());
     }
 
     #[test]

@@ -397,3 +397,7 @@ mod tests {
         assert!(p.advice.contains("new QR code"));
     }
 }
+
+#[cfg(test)]
+#[path = "pair_ui_tests.rs"]
+mod render_tests;

@@ -17,11 +17,15 @@
          asks the user to allow it and to confirm each install. The app never installs silently. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <!-- A WifiLock (no CPU wake) while a computer is paired and linked, so Wi-Fi power save does not reset the link. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Background connection (LinkService): a quiet foreground service of type connectedDevice, only while a
          computer is paired. CHANGE_WIFI_MULTICAST_STATE above is one of the permissions that type requires. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- One of these is a prerequisite for a connectedDevice foreground service on Android 14+. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Setup wizard: "Allow unrestricted battery" (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS). -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />

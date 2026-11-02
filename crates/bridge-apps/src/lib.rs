@@ -31,6 +31,8 @@ pub mod report_ui;
 pub mod share_app;
 pub mod shell;
 pub mod state;
+#[cfg(test)]
+mod test_support;
 pub mod theme;
 pub mod update_ui;
 

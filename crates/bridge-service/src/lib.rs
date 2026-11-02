@@ -10,6 +10,7 @@ pub mod call_cli;
 pub mod call_control;
 pub mod calling;
 pub mod clipboard;
+pub mod coexist;
 pub mod config;
 pub mod control;
 pub mod daemon;
@@ -21,11 +22,14 @@ pub mod hotkey_bind;
 pub mod hotkey_cli;
 pub mod hotkey_help;
 pub mod hypr_config;
+pub mod lan_select;
 pub mod macos_host;
 pub mod notify_text;
 pub mod os_notify;
 pub mod phone_data;
+pub mod phone_debug;
 pub mod private;
+pub mod reconnect;
 pub mod session_env;
 pub mod share;
 pub mod tray;
@@ -385,6 +389,21 @@ fn update_service(state_dir: &std::path::Path) -> Arc<bridge_update::Updater> {
     }
 }
 
+/// The discovery socket. `SO_REUSEADDR`, as stock KDE Connect sets it: both programs can then
+/// listen on UDP 1716 and the kernel hands every broadcast to both (unicast goes to the last
+/// one that bound). Hearing a broadcast grants nothing: dialling and pairing stay explicit.
+fn bind_discovery(addr: SocketAddr) -> io::Result<UdpSocket> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::DGRAM,
+        None,
+    )?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&addr.into())?;
+    socket.set_nonblocking(true)?;
+    UdpSocket::from_std(socket.into())
+}
+
 /// Bind the inbound listener. The built-in default walks 1716..=1764 when its port is taken; an
 /// explicit address is bound as given.
 async fn bind_inbound(addr: SocketAddr, walk: bool) -> io::Result<TcpListener> {
@@ -410,11 +429,10 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         TcpListener::bind(bridge_core::ipc::control_address(config.control_port)).await?;
     let state = Arc::new(RwLock::new(Snapshot::empty(config.discovery_port)));
     let discovery_port = config.discovery_port;
-    let socket = UdpSocket::bind(SocketAddr::new(
+    let socket = bind_discovery(SocketAddr::new(
         IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         discovery_port,
-    ))
-    .await;
+    ));
     let discovery_state = state.clone();
     let discovery = tokio::spawn(async move {
         let result = match socket {
@@ -423,11 +441,13 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         };
         if let Err(err) = result {
             discovery_state.write().await.discovery_error = Some(format!(
-                "Cannot listen on UDP {discovery_port}: {err}. Check whether KDE Connect is already running."
+                "Cannot listen on UDP {discovery_port}: {err}. Another program (often KDE Connect) owns it, so this computer may not hear phones announce themselves: pair with the QR code or the phone's IP address instead."
             ));
         }
     });
     let expiry = tokio::spawn(expire_devices(state.clone()));
+    #[cfg(target_os = "linux")]
+    let coexist_watch = tokio::spawn(coexist::watch());
 
     let calling: Arc<dyn calling::CallingProbe> = if config.calling_probe {
         Arc::new(calling::HostCallingProbe)
@@ -491,6 +511,19 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     }
     let control = Arc::new(prepare_control(&config.state_dir, state.clone(), options));
     let mut announce = None;
+    let redial = match &*control {
+        control::Control::Ready { daemon, .. } => {
+            let daemon = daemon.clone();
+            Some(tokio::spawn(async move {
+                let mut tick = time::interval(Duration::from_secs(2));
+                loop {
+                    tick.tick().await;
+                    daemon.reconnect_tick().await;
+                }
+            }))
+        }
+        _ => None,
+    };
     let alerts = match &*control {
         control::Control::Ready { daemon, .. } => {
             let data = daemon.phone_data().clone();
@@ -510,6 +543,12 @@ pub async fn run(config: config::Config) -> io::Result<()> {
             match bind_inbound(addr, config.inbound_auto).await {
                 Ok(listener) => {
                     daemon.set_inbound_listener(listener.local_addr()?);
+                    if let Some(note) = bridge_core::ipc::listen_port_note(
+                        Some(listener.local_addr()?),
+                        config.inbound_auto,
+                    ) {
+                        eprintln!("GeekBridge service: {note}");
+                    }
                     ignore_own_announcements(
                         &daemon.status().map(|s| s.device_id).unwrap_or_default(),
                     );
@@ -521,7 +560,9 @@ pub async fn run(config: config::Config) -> io::Result<()> {
                 Err(err) if config.inbound_auto => {
                     // The default listener is a convenience: another program on 1716-1764 (usually
                     // KDE Connect) must not stop the service from starting.
-                    eprintln!("GeekBridge service: not accepting phone connections: {err}");
+                    eprintln!(
+                        "GeekBridge service: not accepting phone connections: {err} (TCP 1716-1764 are all in use by other programs; free one, or connect from this computer to the phone's address instead)"
+                    );
                     None
                 }
                 Err(err) => return Err(err),
@@ -560,11 +601,16 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     }
     discovery.abort();
     expiry.abort();
+    #[cfg(target_os = "linux")]
+    coexist_watch.abort();
     if let Some(alerts) = alerts {
         alerts.abort();
     }
     if let Some(announce) = announce {
         announce.abort();
+    }
+    if let Some(redial) = redial {
+        redial.abort();
     }
     if let Some(inbound) = inbound {
         inbound.abort();
@@ -575,6 +621,23 @@ pub async fn run(config: config::Config) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn discovery_socket_shares_its_port_like_stock_kde_connect() {
+        let loopback = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let first = bind_discovery(SocketAddr::new(loopback, 0)).unwrap();
+        let port = first.local_addr().unwrap().port();
+        // Stock KDE Connect binds UDP 1716 with ShareAddress (SO_REUSEADDR) too.
+        let second = bind_discovery(SocketAddr::new(loopback, port)).unwrap();
+        assert_eq!(second.local_addr().unwrap().port(), port);
+    }
+
+    #[tokio::test]
+    async fn a_taken_explicit_inbound_port_is_an_error_and_is_not_walked() {
+        let held = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = held.local_addr().unwrap();
+        assert!(bind_inbound(addr, false).await.is_err());
+    }
 
     #[test]
     fn one_source_cannot_flood_the_discovery_list() {

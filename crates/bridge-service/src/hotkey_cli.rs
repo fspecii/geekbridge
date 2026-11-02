@@ -109,6 +109,29 @@ Pass --key {DEFAULT_HOTKEY} to use it anyway."
     Ok((k, None))
 }
 
+/// Shortcuts tried in order when the preferred one is taken by an existing binding.
+const ALTERNATIVES: [&str; 4] = [
+    "Super+Shift+V",
+    "Super+Alt+V",
+    "Super+Ctrl+Alt+V",
+    "Ctrl+Alt+V",
+];
+
+/// The user's other Hyprland config files (`.lua` / `.conf`, no backups), which may bind keys too.
+fn other_user_files(hypr_dir: &std::path::Path, target: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(hypr_dir) else {
+        return Vec::new();
+    };
+    let mut v: Vec<PathBuf> = rd
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p != target && p.is_file())
+        .filter(|p| p.extension().is_some_and(|e| e == "lua" || e == "conf"))
+        .collect();
+    v.sort();
+    v
+}
+
 fn command(env: &Env) -> String {
     format!(
         "{} --notify",
@@ -179,20 +202,54 @@ fn change(a: &Args, env: &Env) -> Result<Report, String> {
         if let Some(n) = note {
             out.push_str(&format!("{n}\n"));
         }
-        // Shortcuts already bound elsewhere: the shipped defaults, and the user's own file
-        // outside our block.
+        // Shortcuts already bound elsewhere: the shipped defaults, the user's own file outside our
+        // block, and the user's other config files.
         let own = hc::uninstall(&old, target.flavor)?;
-        let mut found = hc::conflicts(&key, &env.default_binding_files);
-        found.extend(
-            hc::conflicts_in(&key, &own)
-                .into_iter()
-                .map(|l| (target.path.clone(), l)),
-        );
+        let taken = |k: &Hotkey| {
+            let mut found = hc::conflicts(k, &env.default_binding_files);
+            found.extend(hc::conflicts(
+                k,
+                &other_user_files(&env.hypr_dir, &target.path),
+            ));
+            found.extend(
+                hc::conflicts_in(k, &own)
+                    .into_iter()
+                    .map(|l| (target.path.clone(), l)),
+            );
+            found
+        };
+        let mut key = key;
+        let mut found = taken(&key);
+        // A key the user did not ask for is never taken from an existing binding: pick a free one.
+        if !found.is_empty()
+            && a.key.is_none()
+            && let Some(free) = ALTERNATIVES
+                .iter()
+                .filter_map(|k| Hotkey::parse(k).ok())
+                .find(|k| *k != key && taken(k).is_empty())
+        {
+            let (f, line) = &found[0];
+            out.push_str(&format!(
+                "{} is already bound ({}: {line}); using {} instead. Pass --key to choose another.\n",
+                key.normalized(),
+                f.display(),
+                free.normalized()
+            ));
+            key = free;
+            found.clear();
+        }
         for (f, line) in &found {
             out.push_str(&format!(
                 "Note: {} is already bound ({}: {line}). The GeekBridge block releases it first.\n",
                 key.normalized(),
                 f.display()
+            ));
+        }
+        if let Some(c) = &env.ctl
+            && (c.contains("/target/debug/") || c.contains("/target/release/"))
+        {
+            out.push_str(&format!(
+                "Note: the binding runs {c}, a build directory. Install geekbridge-ctl (or run this from the installed copy) so the shortcut survives a rebuild.\n"
             ));
         }
         let o = Options {
@@ -323,7 +380,20 @@ mod tests {
         let mut e = env(d.path());
         e.configured = Some("Ctrl+Alt+P".into());
         e.default_binding_files = vec![defaults];
+        // Not asked for explicitly: a free key is chosen instead of taking over the binding.
         let t = run(&s(&["install"]), &e).unwrap().text;
+        assert!(
+            t.contains("already bound") && t.contains("using Shift+Super+V instead"),
+            "{t}"
+        );
+        assert!(
+            t.contains("bindd = SHIFT SUPER, V") && !t.contains("unbind"),
+            "{t}"
+        );
+        // Asked for explicitly: honoured, the existing binding is released first.
+        let t = run(&s(&["install", "--key", "ctrl+alt+p"]), &e)
+            .unwrap()
+            .text;
         assert!(
             t.contains("already bound") && t.contains("unbind = CTRL ALT, P"),
             "{t}"
@@ -353,6 +423,43 @@ mod tests {
                 .unwrap()
                 .text
                 .contains("GNOME")
+        );
+    }
+
+    #[test]
+    fn alternative_skips_keys_bound_in_any_user_file() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(
+            d.path().join("bindings.lua"),
+            "-- x\no.bind(\"SUPER + SHIFT + V\", \"a\", \"b\")\n",
+        )
+        .unwrap();
+        fs::write(
+            d.path().join("other.lua"),
+            "hl.bind(\"SUPER + ALT + V\", f)\n",
+        )
+        .unwrap();
+        fs::write(
+            d.path().join("other.lua.bak.1"),
+            "hl.bind(\"SUPER + CTRL + ALT + V\", f)\n",
+        )
+        .unwrap();
+        let t = run(&s(&["install", "--no-rules"]), &env(d.path()))
+            .unwrap()
+            .text;
+        assert!(t.contains("using Ctrl+Alt+Super+V instead"), "{t}");
+        assert!(
+            t.contains("\"CTRL + ALT + SUPER + V\"") && !t.contains("hl.unbind"),
+            "{t}"
+        );
+        // A build-directory ctl path is called out.
+        let mut e = env(d.path());
+        e.ctl = Some("/w/target/debug/geekbridge-ctl".into());
+        assert!(
+            run(&s(&["install"]), &e)
+                .unwrap()
+                .text
+                .contains("build directory")
         );
     }
 }
