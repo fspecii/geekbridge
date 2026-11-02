@@ -368,6 +368,20 @@ impl Core {
 
     // ------------------------------------------------------------------------- commands
 
+    /// At least one computer is paired and every paired computer has a trusted connection right now.
+    pub(super) fn all_paired_linked(&self) -> bool {
+        let Ok(paired) = self.store.list() else {
+            return false;
+        };
+        let st = self.lock();
+        !paired.is_empty()
+            && paired.iter().all(|p| {
+                st.conns
+                    .values()
+                    .any(|c| c.phase == Phase::Trusted && c.peer_id == p.device_id)
+            })
+    }
+
     /// Reserve an outbound attempt. The caller spawns [`outbound`] with the returned id.
     pub(super) fn begin_attempt(&self, device: &DeviceId) -> Result<u64, ApiError> {
         let mut st = self.lock();
@@ -1178,7 +1192,7 @@ async fn run_trusted(
                 if beat.peer_silent(now) {
                     break Some(("link_closed", Some("ping_timeout")));
                 }
-                if heartbeat_peer && beat.ping_due(now) {
+                if heartbeat_peer && beat.ping_due_idle(now, super::screen_off()) {
                     if let Err(e) = link.send(&Packet::new(PING, Map::new())).await {
                         break Some(("link_closed", Some(kde_code(&e))));
                     }

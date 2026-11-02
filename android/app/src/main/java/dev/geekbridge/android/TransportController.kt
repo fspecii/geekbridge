@@ -291,6 +291,9 @@ class TransportController(
         notice(R.string.notice_ping_queued)
     }
 
+    /** Fire and forget: a failure only means the heartbeat keeps its normal cadence. */
+    fun setScreen(on: Boolean) = run(TransportProtocol.screenRequest(on)) { }
+
     companion object {
         const val MAX_EVENTS = 20
 

@@ -172,9 +172,14 @@ pub(super) async fn announce_loop(
     socket: UdpSocket,
     target: SocketAddr,
     payload: impl Fn() -> Vec<u8>,
+    all_linked: impl Fn() -> bool,
 ) {
     loop {
-        let _ = socket.send_to(&payload(), target).await;
+        // Every paired computer already has a trusted link: nobody needs the broadcast, and each one is a
+        // radio wake-up. A lost link brings the announcements back within one round (the redials run at once).
+        if !all_linked() {
+            let _ = socket.send_to(&payload(), target).await;
+        }
         sleep(ANNOUNCE_EVERY).await;
     }
 }
@@ -265,5 +270,37 @@ mod tests {
         assert_eq!(list.len(), MAX_DISCOVERED);
         assert_eq!(to_json(&list, now, &[]).len(), MAX_DISCOVERED);
         assert!(to_json(&list, now + TTL, &[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn announcements_pause_while_every_paired_computer_is_linked() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let rx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = rx.local_addr().unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let linked = Arc::new(AtomicBool::new(true));
+        let flag = linked.clone();
+        let task = tokio::spawn(announce_loop(
+            tx,
+            target,
+            || b"hello".to_vec(),
+            move || flag.load(Ordering::Relaxed),
+        ));
+        let mut buf = [0u8; 16];
+        let quiet = tokio::time::timeout(Duration::from_millis(300), rx.recv_from(&mut buf)).await;
+        assert!(quiet.is_err(), "nothing is sent while linked");
+        task.abort();
+        linked.store(false, Ordering::Relaxed);
+        let tx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let flag = linked.clone();
+        let task = tokio::spawn(announce_loop(
+            tx,
+            target,
+            || b"hello".to_vec(),
+            move || flag.load(Ordering::Relaxed),
+        ));
+        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv_from(&mut buf)).await;
+        assert!(got.is_ok(), "announces at once when not linked");
+        task.abort();
     }
 }

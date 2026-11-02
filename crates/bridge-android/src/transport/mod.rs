@@ -31,7 +31,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 29] = [
+pub(crate) const ACTIONS: [&str; 30] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -61,6 +61,7 @@ pub(crate) const ACTIONS: [&str; 29] = [
     "transport_data_wait",
     "transport_data_send",
     "transport_permits",
+    "transport_screen",
 ];
 
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
@@ -511,8 +512,22 @@ fn token(f: &mut Fields, key: &'static str) -> Result<Option<String>, ApiError> 
     }
 }
 
+/// Whether the phone screen is off. Process-wide: it only slows our own heartbeat (see
+/// `bridge_core::heartbeat::IDLE_EVERY`), so it needs no running transport and survives a restart.
+static SCREEN_OFF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn screen_off() -> bool {
+    SCREEN_OFF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, ApiError> {
     match action {
+        "transport_screen" => {
+            let on = f.take_bool("on")?;
+            f.finish()?;
+            SCREEN_OFF.store(!on, std::sync::atomic::Ordering::Relaxed);
+            Ok(json!({ "screen_on": on }))
+        }
         "transport_start" => host.start(parse_start(f)?),
         "transport_status" => {
             let since = f.take_opt_u64("since")?.unwrap_or(0);
@@ -1014,9 +1029,13 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     if let (Some((socket, target, _)), Some(port)) = (announce, announce_port) {
         // Re-encoded every round, so a rename shows up in the next announcement.
         let announcing = core.clone();
-        rt.spawn(discovery::announce_loop(socket, target, move || {
-            discovery::encode_announcement(&announcing.endpoint.current_identity(), port)
-        }));
+        let linked = core.clone();
+        rt.spawn(discovery::announce_loop(
+            socket,
+            target,
+            move || discovery::encode_announcement(&announcing.endpoint.current_identity(), port),
+            move || linked.all_paired_linked(),
+        ));
     }
 
     // A restart (network change) must not leave the computer waiting for the next announcement.

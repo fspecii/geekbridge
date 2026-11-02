@@ -361,6 +361,19 @@ fn pair_by_peer(phone: &Phone, peer: &Peer) -> TrustedLink {
 // ------------------------------------------------------------------------------- lifecycle
 
 #[test]
+fn the_screen_state_needs_no_running_transport_and_rejects_bad_input() {
+    let d = Dispatcher::new();
+    for on in [false, true] {
+        let v = parse(&d.handle(&request("transport_screen", json!({ "on": on })).to_string()));
+        assert_eq!(ok(&v)["screen_on"], on);
+    }
+    let v = parse(&d.handle(&request("transport_screen", json!({ "on": "no" })).to_string()));
+    assert_eq!(v["ok"], false);
+    let v = parse(&d.handle(&request("transport_screen", json!({})).to_string()));
+    assert_eq!(v["ok"], false);
+}
+
+#[test]
 fn nothing_starts_before_transport_start() {
     let d = Dispatcher::new();
     let dir = tempfile::tempdir().unwrap();

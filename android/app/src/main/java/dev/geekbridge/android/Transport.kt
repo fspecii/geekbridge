@@ -159,6 +159,8 @@ object TransportProtocol {
         return o.optLong("last_event_seq", -1).takeIf { it >= 0 }
     }
     fun disconnectRequest(connectionId: Long): String = base("transport_disconnect").put("connection_id", connectionId).toString()
+    /** Tells the core whether the screen is on: with it off the heartbeat is sent at the slower idle cadence. */
+    fun screenRequest(on: Boolean): String = base("transport_screen").put("on", on).toString()
     fun pingRequest(connectionId: Long): String = base("transport_ping").put("connection_id", connectionId).toString()
 
     // ------------------------------------------------------------------ parsing

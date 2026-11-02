@@ -42,6 +42,16 @@ class LinkService : Service() {
     private val wifiObserver: () -> Unit = { syncWifiLock() }
     private val wifiRecheck = Runnable { syncWifiLock() }
 
+    private val screenReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> controller.setScreen(false)
+                Intent.ACTION_SCREEN_ON -> controller.setScreen(true)
+            }
+        }
+    }
+    private var screenWatched = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -51,6 +61,18 @@ class LinkService : Service() {
         wifi = WifiLinkLock(this)
         controller.observers += wifiObserver
         isRunning = true
+        watchScreen()
+    }
+
+    /** Screen off slows our heartbeat (the core keeps the link; the unlock ping and the redial are unchanged). */
+    private fun watchScreen() {
+        val pm = getSystemService(android.os.PowerManager::class.java)
+        controller.setScreen(pm?.isInteractive != false)
+        registerReceiver(screenReceiver, android.content.IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        })
+        screenWatched = true
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -99,6 +121,9 @@ class LinkService : Service() {
     override fun onDestroy() {
         GbLog.i("link", "service destroyed (paired=${AppState.pairedCount}, keepConnected=${AppState.keepConnected})")
         controller.observers -= wifiObserver
+        if (screenWatched) try { unregisterReceiver(screenReceiver) } catch (_: IllegalArgumentException) { }
+        screenWatched = false
+        controller.setScreen(true)
         wifi.set(false)
         isRunning = false
         main.removeCallbacksAndMessages(null)

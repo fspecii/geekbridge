@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 /// Gap between our own pings.
 pub const EVERY: Duration = Duration::from_secs(20);
+/// Gap between our own pings while the phone screen is off and nobody is using the link. Still well inside
+/// typical AP/NAT idle timeouts (minutes); the peer keeps its own cadence, so silence detection is unchanged.
+pub const IDLE_EVERY: Duration = Duration::from_secs(60);
 /// A heartbeating peer that has said nothing at all for this long is considered gone (3+ missed pings).
 pub const PEER_SILENCE_LIMIT: Duration = Duration::from_secs(70);
 
@@ -68,7 +71,14 @@ impl Heartbeat {
     /// Time to send our ping? The timer that asks runs on its own schedule while `sent` is stamped after the
     /// write, so a tick can land a few milliseconds short of [`EVERY`]; that must not skip a whole interval.
     pub fn ping_due(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.last_sent) + TICK_SLACK >= EVERY
+        self.ping_due_idle(now, false)
+    }
+
+    /// As [`Self::ping_due`], at the slower [`IDLE_EVERY`] cadence while `idle` (screen off). Going back to
+    /// active makes a ping due on the next tick when the last one is older than [`EVERY`].
+    pub fn ping_due_idle(&self, now: Instant, idle: bool) -> bool {
+        let every = if idle { IDLE_EVERY } else { EVERY };
+        now.saturating_duration_since(self.last_sent) + TICK_SLACK >= every
     }
 
     /// The peer heartbeats and has been silent for too long.
@@ -94,6 +104,26 @@ mod tests {
         h.sent(at(t0, 20));
         assert!(!h.ping_due(at(t0, 38)));
         assert!(h.ping_due(at(t0, 40)));
+    }
+
+    #[test]
+    fn idle_pings_are_three_times_rarer_and_wake_up_on_the_next_tick() {
+        let t0 = Instant::now();
+        let h = Heartbeat::new(t0);
+        assert!(!h.ping_due_idle(at(t0, 20), true));
+        assert!(!h.ping_due_idle(at(t0, 40), true));
+        assert!(h.ping_due_idle(at(t0, 60), true));
+        // Screen on again 45 s after the last ping: due at once, not 15 s later.
+        assert!(h.ping_due_idle(at(t0, 45), false));
+        assert_eq!(
+            IDLE_EVERY.as_secs() % EVERY.as_secs(),
+            0,
+            "idle cadence is a whole number of ticks"
+        );
+        assert!(
+            IDLE_EVERY < PEER_SILENCE_LIMIT,
+            "an idle phone must still be heard within the peer's limit"
+        );
     }
 
     #[test]
