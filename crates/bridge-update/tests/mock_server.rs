@@ -919,6 +919,30 @@ fn prerelease_tag_is_never_offered_even_if_not_flagged() {
 }
 
 #[test]
+fn stable_v0_1_0_is_offered_over_rc_1() {
+    let rig = Rig::new();
+    let payload = vec![8_u8; 64];
+    rig.publish("v0.1.0", &payload, Some(good_sums(&payload)));
+    let up = rig.updater("0.1.0-rc.1");
+    up.check(true).unwrap();
+    let st = up.status();
+    assert_eq!(st.state, UpdateState::Available);
+    assert!(st.newer && st.downloadable);
+    assert_eq!(st.latest.unwrap().version, "0.1.0");
+}
+
+#[test]
+fn a_later_release_candidate_is_never_offered_to_rc_1() {
+    let rig = Rig::new();
+    let payload = vec![9_u8; 64];
+    rig.publish("v0.1.0-rc.2", &payload, Some(good_sums(&payload)));
+    let up = rig.updater("0.1.0-rc.1");
+    up.check(true).unwrap();
+    let st = up.status();
+    assert!(!st.newer && !st.downloadable && st.latest.is_none());
+}
+
+#[test]
 fn a_release_without_checksum_is_not_pinned_behind_its_etag() {
     let rig = Rig::new();
     let payload = vec![5_u8; 32];

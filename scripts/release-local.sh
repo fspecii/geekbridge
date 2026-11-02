@@ -43,6 +43,7 @@ fi
 
 ROOT="$(cd "$(dirname "$GB_RL_SELF")/.." && pwd -P)"
 cd "$ROOT"
+source "$ROOT/scripts/lib/signpass.sh"
 
 log()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -310,7 +311,7 @@ gradle_release() { # gradle_release ABIS dest.apk
 }
 sign_apk() { # sign_apk unsigned.apk signed.apk
     set -e
-    local ks="$KS" pass="file:$PASS_FILE" alias="$ALIAS"
+    local ks="$KS" pass="file:$PASS_FILE" alias="$ALIAS" apass=""
     if (( ! RELEASE_SIGNED )); then
         ks="${ANDROID_USER_HOME:-$HOME/.android}/debug.keystore"
         [[ -f "$ks" ]] || ks="$HOME/.android/debug.keystore"
@@ -320,12 +321,19 @@ sign_apk() { # sign_apk unsigned.apk signed.apk
                 -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
         fi
         pass="pass:android"; alias="androiddebugkey"
+    else
+        # apksigner needs a newline-terminated password line; make-keystore.sh writes none (see scripts/lib/signpass.sh).
+        apass="$(mktemp "$TMPDIR/ks-pass.XXXXXX")"
+        gb_signing_pass_file "$PASS_FILE" "$apass"
+        pass="file:$apass"
     fi
     zipalign -f -P 16 4 "$1" "$1.aligned"
     # v1 + v2 + v3, exactly as release.yml (minSdk 26: v2/v3 are what the platform checks).
+    local rc=0
     apksigner sign --ks "$ks" --ks-pass "$pass" --ks-key-alias "$alias" --key-pass "$pass" \
-        --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$2" "$1.aligned"
-    rm -f "$1.aligned"
+        --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$2" "$1.aligned" || rc=$?
+    rm -f "$1.aligned" ${apass:+"$apass"}
+    return "$rc"
 }
 android_all() {
     set -e

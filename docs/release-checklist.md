@@ -58,7 +58,10 @@ Decided 2026-11-02 (see [licence-decision.md](licence-decision.md)): GPL-3.0-or-
   [builds.md](builds.md#first-release-android-signing-key)):
   - [ ] `scripts/make-keystore.sh --out <outside-repo>.p12 --password-file <outside-repo>.pass` run; fingerprint noted.
   - [ ] Keystore **and** password file backed up in two separate offline places (losing them ends updates for everyone).
-  - [ ] Secrets set by you: `ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`;
+  - [ ] Local builds (`scripts/release-local.sh`): the pin is read from `ANDROID_SIGNER_SHA256` or
+        `~/.config/geekbridge/android-signer-sha256`, and `GB_KEYSTORE` / `GB_KEYSTORE_PASS_FILE` point at the key
+        ([release-local.md](release-local.md#one-time-setup)). A stable tag is refused without both.
+  - [ ] Only if GitHub Actions builds the release: secrets set by you: `ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`;
         variable `ANDROID_SIGNER_SHA256` set to the fingerprint (the release fails if another key signs).
   - [ ] `scripts/version-code.sh` prints the expected versionCode for the version in `Cargo.toml` (must exceed the last release).
   - [ ] After the run: release notes show the signer SHA-256 and it equals the one noted above.
@@ -70,6 +73,21 @@ Decided 2026-11-02 (see [licence-decision.md](licence-decision.md)): GPL-3.0-or-
 - [ ] **Privacy statement**: the app has no accounts or servers; the only network call besides the LAN is the
   GitHub update check. Say so in the README and store listings.
 - [ ] **Support channel** (issues only, discussions, email) and whether to ask for `diagnose` output in the issue template.
+
+## First stable release (v0.1.0)
+
+`Cargo.toml`, `Cargo.lock`, the Arch `pkgver` and `CHANGELOG.md` (`## [0.1.0]`, with everything that was under
+Unreleased folded in) are **already at 0.1.0** after `v0.1.0-rc.1`, so do **not** run `scripts/release.sh 0.1.0`: it
+refuses ("already at 0.1.0"). Instead, in order (readiness report: [reports/stable-release-readiness.md](reports/stable-release-readiness.md)):
+
+1. Decisions above done: visibility, keystore + pin, `SECURITY.md` contact, private vulnerability reporting.
+2. Real-device test plan finished; set the date of `## [0.1.0]` in `CHANGELOG.md` to the release day if it differs.
+3. `scripts/tests/release-readiness-test.sh` passes (versionCode, changelog, notices, keystore and pin refusals).
+4. Commit, push `main`; `scripts/release-local.sh v0.1.0 --dry-run`, then `scripts/release-local.sh v0.1.0` (no `--prerelease`).
+5. `scripts/release-local.sh v0.1.0 --tag --push-tag --publish`. The updaters offer v0.1.0 to `0.1.0-rc.1` installs
+   (versionCode 10051 to 10099) and never offer any `-rc` / prerelease or draft.
+6. From a phone and a PC that run rc.1 (same signer!): update check + install. A debug-signed rc.1 APK cannot be
+   updated to the release-signed v0.1.0; uninstall it first (this loses app data).
 
 ## Per release
 

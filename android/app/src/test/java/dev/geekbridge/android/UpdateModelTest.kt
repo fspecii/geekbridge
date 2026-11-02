@@ -116,6 +116,15 @@ class UpdateModelTest {
     }
 
     @Test
+    fun stableV010IsOfferedOverRc1AndLaterRcIsNot() {
+        // rc.1 is versionCode 10051, final 0.1.0 is 10099.
+        val offer = UpdateModel.evaluate(UpdateModel.parseRelease(json("v0.1.0")), "0.1.0-rc.1", 10_051, sums)
+        assertEquals("0.1.0", (offer as UpdateCheckResult.Available).offer.version)
+        val rc2 = UpdateModel.evaluate(UpdateModel.parseRelease(json("v0.1.0-rc.2")), "0.1.0-rc.1", 10_051, sums)
+        assertTrue(rc2 is UpdateCheckResult.UpToDate)
+    }
+
+    @Test
     fun sameOlderPrereleaseAndSkewedVersionCodesAreNotOffered() {
         fun eval(tag: String, name: String = "0.1.0", code: Int = 1_000) =
             UpdateModel.evaluate(UpdateModel.parseRelease(json(tag)), name, code, sums)

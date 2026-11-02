@@ -6,24 +6,6 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
-### Highlights
-- Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
-- Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
-- Answer or decline phone calls from your computer
-- Read and send texts, see your contacts, and keep your Google Calendar in sync with the desktop
-- Pair by scanning a QR code; updates are checked against GitHub and verified before you install
-
-### Added
-- "What's new" after an update: a dismissible card at the top of Home on Android and the desktop (once per version, never on a fresh install), `geekbridge-ctl whats-new`, and a link to the full release notes. The text is generated from this file by `scripts/gen-whats-new.sh` and checked for drift by tests.
-- Tray / menu-bar icon in the service (Linux StatusNotifierItem + dbusmenu, Windows notification area; the macOS menu-bar
-  item is type-checked only): dot-matrix icon with connected / disconnected / ringing / update / transfer states, a menu
-  with Open, Paste from phone, Send file, Answer / Decline, Pause sync, Check for updates and Quit. Optional: no tray
-  host means nothing is shown; `geekbridge-ctl tray disable` or `--no-tray` turns it off. Icons in `assets/tray/`
-  (`scripts/gen-tray-icons.sh`), headless check in `scripts/e2e/tray-headless.sh`.
-- Messages: unread badges, search, date separators, SIM choice (phones that list their SIMs), SMS segment counter
-  (GSM/UCS-2), local-only read marks, per-conversation memory cap, MMS "Attachment" placeholders, notification Reply
-  action (text hidden unless chosen), plain-language failure reasons and exact SMS-permission steps in the setup wizard.
-
 ## [0.1.0] - 2026-11-02
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Everything below is verified on
@@ -123,6 +105,17 @@ have not been run on real hardware (see "Known limitations").
   calendar, share, update), chaos and soak scripts, real-device test plan and quickstart, release checklist.
 - User guide with symptom-keyed troubleshooting, architecture, protocol and per-feature docs under `docs/`.
 
+**Also in this release**
+- "What's new" after an update: a dismissible card at the top of Home on Android and the desktop (once per version, never on a fresh install), `geekbridge-ctl whats-new`, and a link to the full release notes. The text is generated from this file by `scripts/gen-whats-new.sh` and checked for drift by tests.
+- Tray / menu-bar icon in the service (Linux StatusNotifierItem + dbusmenu, Windows notification area; the macOS menu-bar
+  item is type-checked only): dot-matrix icon with connected / disconnected / ringing / update / transfer states, a menu
+  with Open, Paste from phone, Send file, Answer / Decline, Pause sync, Check for updates and Quit. Optional: no tray
+  host means nothing is shown; `geekbridge-ctl tray disable` or `--no-tray` turns it off. Icons in `assets/tray/`
+  (`scripts/gen-tray-icons.sh`), headless check in `scripts/e2e/tray-headless.sh`.
+- Messages: unread badges, search, date separators, SIM choice (phones that list their SIMs), SMS segment counter
+  (GSM/UCS-2), local-only read marks, per-conversation memory cap, MMS "Attachment" placeholders, notification Reply
+  action (text hidden unless chosen), plain-language failure reasons and exact SMS-permission steps in the setup wizard.
+
 ### Fixed
 - Desktop to phone file transfers no longer stall at "Waiting" with a secure-channel or timeout error when the link
   arrived on a network other than the phone's default: the phone dials the normal route first, and a route counts only
@@ -139,8 +132,9 @@ have not been run on real hardware (see "Known limitations").
 - Call answering has only been tested with simulated signalling. Bluetooth hands-free audio (SCO, codecs) is unverified
   on any hardware, and needs a Bluetooth controller on the computer.
 - Windows and macOS binaries are unsigned and have never been run; they are type-checked and built in CI definitions
-  only. The release workflow has not been run (no tag pushed).
+  only. Release builds are made on the maintainer's Linux machine (Linux and Android assets only).
 - Vendor battery screens (Samsung, Xiaomi, Huawei, OnePlus, OPPO, vivo) are unit-tested for intent order only, not run on
   those devices.
 - Android 10+ restricts clipboard reads to the focused app, so phone to computer paste is on demand.
-- The debug APK is debug-signed; an Android update installs only over an app signed with the same key.
+- v0.1.0 is signed with the release key. The earlier v0.1.0-rc.1 APK was debug-signed, so a phone running it must uninstall
+  it (losing app data) before installing this version; later updates install in place.
