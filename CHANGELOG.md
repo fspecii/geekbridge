@@ -6,6 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+## [0.1.0-rc.1] - 2026-11-02
+
+> **Release candidate, debug-signed Android APK.** This pre-release is not signed with the release key: you will have to uninstall it before installing a stable release signed with the release key. Pre-releases are not offered by the in-app updaters. Linux and Android builds only; Windows and macOS: build from source.
+
 ### Highlights
 - Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
 - Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
