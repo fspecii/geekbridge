@@ -103,6 +103,38 @@ fn lock_times_out_while_held_and_is_released_on_drop() {
     lock_exclusive_timeout(&lock, Duration::from_secs(2)).unwrap();
 }
 
+/// Diagnostic for slow runners (shown with `--nocapture`): how long one uncontended locked
+/// read-modify-write cycle takes. The contended tests below need `threads * per` of these to fit
+/// inside the 10 s lock timeout, so a slow disk (fsync) shows up here first.
+#[test]
+fn uncontended_locked_cycle_is_fast_enough() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("state");
+    let counter = dir.join("counter");
+    let lock = dir.join("counter.lock");
+    atomic_write_private(&counter, b"0").unwrap();
+    let cycles = 20u32;
+    let (mut t_lock, mut t_read, mut t_write) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    for n in 1..=cycles {
+        let t = Instant::now();
+        let _g = lock_exclusive(&lock).unwrap();
+        t_lock += t.elapsed();
+        let t = Instant::now();
+        read_private_file(&counter).unwrap().unwrap();
+        t_read += t.elapsed();
+        let t = Instant::now();
+        atomic_write_private(&counter, n.to_string().as_bytes()).unwrap();
+        t_write += t.elapsed();
+    }
+    eprintln!(
+        "per cycle: lock {:?}, read {:?}, atomic write {:?}",
+        t_lock / cycles,
+        t_read / cycles,
+        t_write / cycles
+    );
+    assert!((t_lock + t_read + t_write) / cycles < Duration::from_millis(300));
+}
+
 #[test]
 fn lock_serialises_read_modify_write_across_threads() {
     let tmp = tempfile::tempdir().unwrap();

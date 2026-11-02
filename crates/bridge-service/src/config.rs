@@ -173,6 +173,13 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
 mod tests {
     use super::*;
 
+    /// An absolute state directory on every platform (`/tmp/gb` is relative on Windows).
+    const GB: &str = if cfg!(windows) {
+        "C:\\tmp\\gb"
+    } else {
+        "/tmp/gb"
+    };
+
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
     }
@@ -181,7 +188,7 @@ mod tests {
     fn parses_flags_and_rejects_bad_ones() {
         let Parsed::Run(c) = parse(args(&[
             "--state-dir",
-            "/tmp/gb",
+            GB,
             "--control-port",
             "4000",
             "--listen-inbound",
@@ -190,7 +197,7 @@ mod tests {
         .unwrap() else {
             panic!()
         };
-        assert_eq!(c.state_dir, PathBuf::from("/tmp/gb"));
+        assert_eq!(c.state_dir, PathBuf::from(GB));
         assert_eq!(c.control_port, 4000);
         assert!(c.calling_probe && !c.dev_loopback);
         assert_eq!(c.inbound, Some("127.0.0.1:1716".parse().unwrap()));
@@ -207,8 +214,8 @@ mod tests {
         assert!(!c.inbound_auto && c.announce);
         assert_eq!(parse(args(&["-h"])).unwrap(), Parsed::Help);
         assert_eq!(
-            parse(args(&["--state-dir", "/tmp/gb", "--print-token-path"])).unwrap(),
-            Parsed::PrintTokenPath(PathBuf::from("/tmp/gb/ipc-token"))
+            parse(args(&["--state-dir", GB, "--print-token-path"])).unwrap(),
+            Parsed::PrintTokenPath(PathBuf::from(GB).join("ipc-token"))
         );
     }
 }
@@ -216,6 +223,12 @@ mod tests {
 #[cfg(test)]
 mod default_tests {
     use super::*;
+
+    const GB: &str = if cfg!(windows) {
+        "C:\\tmp\\gb"
+    } else {
+        "/tmp/gb"
+    };
 
     fn run(list: &[&str]) -> Config {
         let list: Vec<OsString> = list.iter().map(OsString::from).collect();
@@ -227,19 +240,14 @@ mod default_tests {
 
     #[test]
     fn phones_can_find_and_dial_this_computer_by_default() {
-        let c = run(&["--state-dir", "/tmp/gb"]);
+        let c = run(&["--state-dir", GB]);
         assert_eq!(c.inbound, Some("0.0.0.0:1716".parse().unwrap()));
         assert!(c.inbound_auto && c.announce);
     }
 
     #[test]
     fn listening_and_announcing_can_be_switched_off() {
-        let c = run(&[
-            "--state-dir",
-            "/tmp/gb",
-            "--no-listen-inbound",
-            "--no-announce",
-        ]);
+        let c = run(&["--state-dir", GB, "--no-listen-inbound", "--no-announce"]);
         assert_eq!(c.inbound, None);
         assert!(!c.announce);
     }

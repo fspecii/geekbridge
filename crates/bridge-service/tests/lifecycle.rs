@@ -421,7 +421,8 @@ async fn renaming_the_computer_is_validated_saved_and_used_by_the_next_connectio
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    let file = dir.path().join("device-name");
+    // `fsutil` creates `state` private; a Windows temp dir itself is owned by Administrators.
+    let file = dir.path().join("state").join("device-name");
     let path = file.clone();
     let rig = Rig::start_with(move |o| o.device_name_file = Some(path)).await;
     assert_eq!(rig.status().await.device_name, "Test Desktop");

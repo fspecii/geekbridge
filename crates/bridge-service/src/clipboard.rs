@@ -1850,7 +1850,9 @@ mod tests {
     };
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\nrest-of-file";
 
-    /// `fsutil` insists on a private (0700) directory, which `tempdir` does not guarantee.
+    /// `fsutil` insists on a private (0700) directory, which `tempdir` does not guarantee. On
+    /// Windows a temp dir is owned by the Administrators group and inherits its ACL on elevated
+    /// runners, so tests keep their files in a `state` subdirectory that `fsutil` creates private.
     fn private_tempdir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         #[cfg(unix)]
@@ -2348,7 +2350,7 @@ mod tests {
     #[tokio::test]
     async fn settings_are_validated_clamped_and_persisted() {
         let dir = private_tempdir();
-        let path = dir.path().join(SETTINGS_FILE);
+        let path = dir.path().join("state").join(SETTINGS_FILE);
         let mem = Arc::new(MemoryClipboard::default());
         let svc = ClipboardService::with_settings_file(mem.clone(), "d", path.clone());
         assert_eq!(svc.settings(), Settings::default());
@@ -2370,7 +2372,7 @@ mod tests {
     #[test]
     fn corrupt_settings_fall_back_to_defaults() {
         let dir = private_tempdir();
-        let path = dir.path().join(SETTINGS_FILE);
+        let path = dir.path().join("state").join(SETTINGS_FILE);
         bridge_kde::fsutil::atomic_write_private(
             &path,
             br#"{"window_ms":99999999999,"hotkey":"nonsense"}"#,

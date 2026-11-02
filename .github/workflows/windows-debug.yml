@@ -1,9 +1,13 @@
-name: Windows debug (bridge-update only)
+name: Windows debug (chosen packages)
 
 # Fast iteration on Windows-only failures: run with
-#   gh workflow run windows-debug.yml --ref <branch>
+#   gh workflow run windows-debug.yml --ref <branch> -f packages="bridge-kde bridge-service"
 on:
   workflow_dispatch:
+    inputs:
+      packages:
+        description: Space-separated packages to test, one at a time
+        default: bridge-kde bridge-service bridge-apps bridge-calls bridge-update
   push:
     branches: [ci-windows-debug]
 
@@ -11,15 +15,25 @@ permissions:
   contents: read
 
 jobs:
-  update-tests:
-    name: bridge-update / windows-latest
+  tests:
+    name: windows-latest
     runs-on: windows-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
-      - name: bridge-update tests, one at a time, output shown (the tests print progress lines)
-        timeout-minutes: 8
-        run: cargo test -p bridge-update --locked --no-fail-fast -- --nocapture --test-threads=1
+      - name: Tests per package, one thread, per-test output shown
+        timeout-minutes: 13
+        shell: bash
+        env:
+          PACKAGES: ${{ inputs.packages || 'bridge-kde bridge-service bridge-apps bridge-calls bridge-update' }}
+        run: |
+          status=0
+          for p in $PACKAGES; do
+            echo "::group::cargo test -p $p"
+            cargo test -p "$p" --locked --no-fail-fast -- --nocapture --test-threads=1 || status=1
+            echo "::endgroup::"
+          done
+          exit $status

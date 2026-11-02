@@ -155,13 +155,26 @@ impl SourceLimiter {
     }
 }
 
+/// A `recv_from` failure that concerns one datagram, not the socket.
+fn is_per_datagram_error(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::ConnectionReset
+        || (cfg!(windows) && matches!(e.raw_os_error(), Some(10040 | 10054)))
+}
+
 /// Listens for phones' announcements. Hearing one only lists the phone; it never dials or trusts.
 /// This socket never sends; this computer's own announcement is `Daemon::announce_loop`.
 pub async fn listen_discovery(socket: UdpSocket, state: SharedState) -> io::Result<()> {
     let mut bytes = vec![0; discovery::MAX_IDENTITY_BYTES + 1];
     let mut limiter = SourceLimiter::default();
     loop {
-        let (size, source) = socket.recv_from(&mut bytes).await?;
+        let (size, source) = match socket.recv_from(&mut bytes).await {
+            Ok(received) => received,
+            // Windows reports a datagram larger than the buffer as an error (WSAEMSGSIZE, 10040)
+            // instead of truncating it, and ICMP "port unreachable" as WSAECONNRESET (10054). One
+            // hostile or stale packet must not end discovery: drop it and keep listening.
+            Err(e) if is_per_datagram_error(&e) => continue,
+            Err(e) => return Err(e),
+        };
         if !limiter.allow_packet(source.ip(), now_ms()) {
             continue;
         }

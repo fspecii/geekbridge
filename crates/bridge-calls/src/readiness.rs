@@ -224,6 +224,9 @@ mod tests {
         assert!(Readiness::NoAdapter.line().contains("USB"));
     }
 
+    // `hci0:256` is a valid sysfs name on Linux but ':' is not a legal file name character on
+    // Windows, where this fixture cannot be built (the code under test only runs on Linux).
+    #[cfg(not(windows))]
     #[test]
     fn only_hci_controllers_count_not_connections() {
         let d = fake_sysfs(&["hci0", "hci0:256", "hci1", "hcifoo", "hci"]);

@@ -655,6 +655,9 @@ pub fn lock_private_file(path: &Path, timeout: Duration) -> Result<FileLock> {
         &user,
     )?;
     let deadline = Instant::now() + timeout;
+    // Poll quickly at first so a lock that is held for a few milliseconds is picked up promptly
+    // (a flat 10-15 ms nap lets the releasing thread win every race), then back off.
+    let mut nap = Duration::from_millis(1);
     loop {
         let mut ov = OVERLAPPED::default();
         // SAFETY: the handle is live; `ov` is zeroed (offset 0) and not used
@@ -682,7 +685,8 @@ pub fn lock_private_file(path: &Path, timeout: Duration) -> Result<FileLock> {
                 path.display()
             )));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(nap);
+        nap = (nap * 2).min(Duration::from_millis(20));
     }
 }
 

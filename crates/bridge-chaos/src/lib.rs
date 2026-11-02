@@ -240,6 +240,11 @@ async fn pump(
     let mut writer = AbortOnDrop(tokio::spawn(async move {
         while let Some((due, chunk)) = rx.recv().await {
             sleep_until(due).await;
+            // Swallowing starts now, also for chunks queued before it (a shaped link can hold
+            // many seconds of backlog, longer still where timers are coarse, as on Windows).
+            if writer_shared.blackhole.load(Ordering::SeqCst) {
+                continue;
+            }
             let f = writer_shared.faults.lock().unwrap().clone();
             if f.fragment {
                 for b in &chunk {

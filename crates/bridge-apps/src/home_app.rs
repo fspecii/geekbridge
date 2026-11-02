@@ -1046,7 +1046,13 @@ mod tests {
             "geekbridge-nonexistent",
             Some(Path::new("/nonexistent/bin/x")),
         );
-        assert_eq!(p, PathBuf::from("geekbridge-nonexistent"));
+        // On Windows the fallback is the bare name of the executable: `.exe` included.
+        let bare = if cfg!(windows) {
+            "geekbridge-nonexistent.exe"
+        } else {
+            "geekbridge-nonexistent"
+        };
+        assert_eq!(p, PathBuf::from(bare));
     }
 
     #[test]
