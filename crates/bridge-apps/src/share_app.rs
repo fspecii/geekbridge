@@ -316,7 +316,12 @@ fn token() -> Result<Token, String> {
         ipc::default_state_dir().ok_or("This computer's private app folder couldn't be found.")?;
     let mut bytes = bridge_kde::fsutil::read_private_file(&ipc::token_path(&dir))
         .map_err(|_| "The service settings couldn't be read securely.".to_owned())?
-        .ok_or("Start the GeekBridge service first.")?;
+        .ok_or_else(|| {
+            format!(
+                "Start the GeekBridge service first. {}",
+                crate::i18n::tr("doctor.short")
+            )
+        })?;
     let t = Token::parse(&bytes).map_err(|_| "The service settings are unreadable.".to_owned());
     bytes.zeroize();
     t
@@ -325,7 +330,10 @@ fn token() -> Result<Token, String> {
 fn describe(e: ipc::IpcError) -> String {
     match e {
         ipc::IpcError::Io(_) => {
-            "The GeekBridge service isn't reachable. Start it and try again.".into()
+            format!(
+                "The GeekBridge service isn't reachable. Start it and try again. {}",
+                crate::i18n::tr("doctor.hint")
+            )
         }
         ipc::IpcError::Service(b) => b
             .message

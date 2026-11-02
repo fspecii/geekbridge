@@ -39,7 +39,7 @@ RUN="${RUN:-${GOLDEN_SCRATCH:-$HOME/.cache/gb-golden}/desktop}"
 DIFF="$ROOT/dist/golden-diff"
 JOBS=${GOLDEN_JOBS:-$(n=$(nproc 2>/dev/null || echo 4); [ "$n" -gt 8 ] && n=8; echo "$n")}   # workers; one more X server is for the Messages group
 IMG="python3 -I $ROOT/scripts/golden/golden_img.py"
-rm -rf "$RUN"; mkdir -p "$RUN"/{state,raw,xdg,xdg-data,fail}; mkdir -p /tmp/gb-golden-home "$GOLDEN_DIR" "$DIFF"; chmod 700 "$RUN/state"   # HOME is a fixed path: the share window prints its save folder
+rm -rf "$RUN"; mkdir -p "$RUN"/{state,nostate,raw,xdg,xdg-data,fail}; chmod 700 "$RUN/nostate"; mkdir -p /tmp/gb-golden-home "$GOLDEN_DIR" "$DIFF"; chmod 700 "$RUN/state"   # HOME is a fixed path: the share window prints its save folder
 [ "$MODE" = check ] && rm -f "$DIFF"/desktop-*.png
 cc -shared -fPIC -O2 -o "$RUN/fakeclock.so" scripts/golden/fakeclock.c -ldl || { echo "golden-desktop: C compiler failed"; exit 2; }
 T=target/debug
@@ -188,6 +188,7 @@ tasks_home() { # theme: screens of the home window; they show the unread count, 
   echo "geekbridge|$t|pair|ctrl+2|"
   echo "geekbridge|$t|settings|ctrl+3|"
   echo "geekbridge|$t|diagnostics|-|GEEKBRIDGE_OPEN_REPORT=1"
+  echo "geekbridge|$t|home-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"   # first-run empty state: no service token to read
 }
 tasks_rest() { # theme
   local t=$1
@@ -197,6 +198,7 @@ tasks_rest() { # theme
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
   echo "geekbridge-contacts|$t|contacts|-|"
+  echo "geekbridge-contacts|$t|contacts-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"
   echo "geekbridge-contacts|$t|contacts-details|-|GEEKBRIDGE_CONTACTS_SELECT_FIRST=1"
   echo "geekbridge-agenda|$t|calendar-month|-|"
   echo "geekbridge-agenda|$t|calendar-week|-|GEEKBRIDGE_CALENDAR_VIEW=week"

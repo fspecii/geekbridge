@@ -540,8 +540,16 @@ impl Calendar {
                             }
                         }
                         ui.add_space(14.0);
-                        ui.label(theme::overline(pal, "This computer may"));
-                        ui.add_space(4.0);
+                        // The heading is only worth showing when a phone has rows to list under it.
+                        if env
+                            .control
+                            .status
+                            .as_ref()
+                            .is_some_and(|s| !s.paired.is_empty())
+                        {
+                            ui.label(theme::overline(pal, "This computer may"));
+                            ui.add_space(4.0);
+                        }
                         action = self.permission_rows(ui, env, view);
                         let recent: Vec<&EditItem> = view.edits.iter().take(5).collect();
                         if !recent.is_empty() {

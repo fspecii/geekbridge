@@ -131,6 +131,16 @@ struct PhoneLine {
 
 fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
     let Some(status) = &state.status else {
+        // A failed check is not "still looking": the sidebar already says the service is off.
+        if state.error.is_some() {
+            return PhoneLine {
+                dots: crate::i18n::tr("home.service_off.dots"),
+                name: crate::i18n::tr("home.service_off.title").into(),
+                detail: crate::i18n::tr("home.service_off.detail").into(),
+                linked: false,
+                alert: true,
+            };
+        }
         return PhoneLine {
             dots: "...",
             name: "Looking for the service".into(),
@@ -1039,6 +1049,16 @@ pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_service_check_is_not_shown_as_still_looking() {
+        let mut state = crate::connection::ControlState::default();
+        assert_eq!(phone_line(&state).name, "Looking for the service");
+        state.error = Some("not reachable".into());
+        let line = phone_line(&state);
+        assert_eq!(line.name, "Service not running");
+        assert!(line.alert && !line.linked);
+    }
 
     #[test]
     fn sibling_falls_back_to_bare_name() {

@@ -198,16 +198,23 @@ impl DiscoveryModel {
             Self::Checking => "Checking this computer for the GeekBridge helper.".into(),
             Self::ServiceUnavailable { .. } => format!(
                 "The GeekBridge helper (geekbridge-service) isn't running, so no phone can be found. \
-                 Start it, or open this app with --api-port if it uses a port other than {api_port}."
+                 Start it (systemctl --user start geekbridge-service), or open this app with --api-port if it uses a port other than {api_port}. {}",
+                crate::i18n::tr("doctor.hint")
             ),
             Self::Ready {
                 discovery_error: Some(_),
                 ..
-            } => "The helper is running but can't listen for phones. Another program may be \
-                  using the same network port."
-                .into(),
+            } => format!(
+                "The helper is running but can't listen for phones. Another program may be \
+                 using the same network port. {}",
+                crate::i18n::tr("doctor.hint")
+            ),
             Self::Ready { devices, .. } if devices.is_empty() => {
-                "Open the phone app and join the same Wi-Fi network as this computer.".into()
+                format!(
+                    "{} {}",
+                    crate::i18n::tr("help.no_phone_found"),
+                    crate::i18n::tr("doctor.hint")
+                )
             }
             Self::Ready { .. } => "Your phone can be seen on the network, but it isn't paired. \
                   Pairing isn't available in this version yet, so nothing is read from or sent to it."
