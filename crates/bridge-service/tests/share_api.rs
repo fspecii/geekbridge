@@ -733,7 +733,8 @@ async fn cancel_and_unpair_close_the_payload_listener() {
         (transfer_id, offer.port)
     }
     async fn closes(port: u16) -> bool {
-        for _ in 0..100 {
+        // Up to 10 s: a loaded Windows runner once needed longer than the previous 2 s.
+        for _ in 0..500 {
             if tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
                 .is_err()
