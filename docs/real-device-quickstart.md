@@ -122,6 +122,8 @@ table and chain names vary, `sudo nft list ruleset` shows yours), iptables `sudo
 
 Start with `$S check`: it prints the phone's view (ping, TCP to the service, VPN, Wi-Fi validation, Battery Saver)
 and the PC's view (addresses, the QR contents, firewall) and names the section below for each WARN/FAIL.
+For the computer side alone (service up, ufw rule for 1716-1764, Wayland/X11 variables, paired phones, why Messages or
+clipboard is off) run `geekbridge-ctl doctor`; it prints the fix command under each problem.
 
 ### T0. The phone does not show up in `adb devices`
 

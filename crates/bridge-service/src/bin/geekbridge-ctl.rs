@@ -72,6 +72,9 @@ Commands:
   share cancel|dismiss TRANSFER_ID    stop a transfer / forget a finished one
   share allow DEVICE_ID on|off        let the device send us files, links and text (default off)
   share auto-accept DEVICE_ID on|off  accept files from the device without asking (default off)
+  doctor                              why something does not work, in plain words, with the fix: service,
+                                      firewall (ufw/firewalld ports 1716-1764), desktop session, paired
+                                      phones, clipboard, calls, Messages; exits 1 on a failed check
   diagnose                            redacted support bundle (versions, capabilities, counters, last
                                       errors); no names, addresses, keys or content
   report [--preview|--open|--copy]    a prefilled bug report for the public tracker: shows exactly what
@@ -89,6 +92,9 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("error: {message}");
+            if let Some(hint) = bridge_service::doctor::hint_for_error(&message) {
+                eprintln!("hint: {hint}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -177,6 +183,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "phone-state" {
         return phone_state_command(&args[1..], port, &state_dir);
+    }
+    if command == "doctor" {
+        return doctor_command(port, &state_dir);
     }
     if command == "diagnose" {
         return diagnose_command(port, &state_dir);
@@ -845,6 +854,82 @@ fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
         .map_err(|e| format!("cannot read the control token safely: {e}"))?
         .ok_or("no control token yet; start geekbridge-service with the same --state-dir first")?;
     Token::parse(&bytes).map_err(|e| e.to_string())
+}
+
+/// `doctor`: run every check, print what to do about each problem, fail if one check failed.
+fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_core::phone_view::MessagesView;
+    use bridge_service::doctor::{self, Firewall, Inputs, SessionEnv};
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let read_or_none = |p: &str| std::fs::read_to_string(p).ok();
+    let firewall = Firewall {
+        ufw_enabled: read_or_none("/etc/ufw/ufw.conf").map(|c| {
+            c.lines()
+                .any(|l| l.trim().eq_ignore_ascii_case("ENABLED=yes"))
+        }),
+        ufw_rules: read_or_none("/etc/ufw/user.rules"),
+        firewalld_active: std::path::Path::new("/run/firewalld").exists(),
+    };
+    let connected = load_token(state_dir)
+        .map_err(|e| e.to_string())
+        .and_then(|token| {
+            let status = ipc::status(port, &token).map_err(|e| e.to_string())?;
+            Ok((token, status))
+        });
+    let (status, clipboard, calling, data) = match connected {
+        Err(e) => (Err(e), None, None, Vec::new()),
+        Ok((token, status)) => {
+            let ask = |r: Request| ipc::call(port, &token, &r).ok();
+            let clipboard = match ask(Request::ClipboardStatus) {
+                Some(Response::ClipboardStatus(c)) => Some(*c),
+                _ => None,
+            };
+            let calling = match ask(Request::CallingStatus) {
+                Some(Response::CallingStatus(c)) => Some(c),
+                _ => None,
+            };
+            let data = match ask(Request::MessagesView {
+                device_id: None,
+                thread_id: None,
+                query: None,
+                message_limit: 1,
+            }) {
+                Some(Response::Messages(v)) => {
+                    let MessagesView { devices, .. } = *v;
+                    devices
+                }
+                _ => Vec::new(),
+            };
+            (Ok(status), clipboard, calling, data)
+        }
+    };
+    let checks = doctor::run(&Inputs {
+        status,
+        clipboard,
+        calling,
+        data,
+        session: SessionEnv {
+            wayland_display: set("WAYLAND_DISPLAY"),
+            display: set("DISPLAY"),
+            xdg_runtime_dir: set("XDG_RUNTIME_DIR"),
+            hyprland_signature: set("HYPRLAND_INSTANCE_SIGNATURE"),
+            desktop: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+        },
+        firewall,
+        systemd_unit: ["/usr/lib/systemd/user", "/etc/systemd/user"]
+            .iter()
+            .map(std::path::PathBuf::from)
+            .chain(
+                std::env::var_os("HOME")
+                    .map(|h| std::path::Path::new(&h).join(".config/systemd/user")),
+            )
+            .any(|d| d.join("geekbridge-service.service").exists()),
+    });
+    print!("{}", doctor::render(&checks));
+    match doctor::failures(&checks) {
+        0 => Ok(()),
+        n => Err(format!("doctor found {n} failed check(s)")),
+    }
 }
 
 fn diagnose_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {

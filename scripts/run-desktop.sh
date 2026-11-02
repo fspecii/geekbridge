@@ -158,7 +158,7 @@ echo "  phone connects to    : TCP ${port:-1716} on this PC (discovery: UDP 1716
 echo "  state dir            : $STATE"
 echo "  ctl in this shell    : eval \"\$(scripts/run-desktop.sh --env)\"   then  geekbridge-ctl status"
 if command -v ufw >/dev/null 2>&1 && [[ "$(systemctl is-active ufw 2>/dev/null)" == active ]] \
-   && ! grep -qE -- '--dport (1716|1716:1764) ' /etc/ufw/user.rules 2>/dev/null; then
+   && [[ -r /etc/ufw/user.rules ]] && ! grep -qE -- '--dport (1716|1716:1764) ' /etc/ufw/user.rules; then
   echo
   warn "ufw is active and has no rule for 1716-1764: the phone will not reach this PC."
   echo "       run:  scripts/realdevice.sh check      (prints the exact commands; add --apply to run them)"
@@ -177,4 +177,5 @@ fi
 echo
 echo "  Pair: phone app, setup wizard step 1 \"Pair with your computer\" > Scan QR code (later: Home > Pair a computer), scanning the QR in the GeekBridge window$( ((QR)) && echo ' or the one above')."
 ((QR)) || echo "        No window? rerun with --qr for a terminal QR."
+echo "  Something not working (no computer on the phone, Messages off, nothing connects)?  geekbridge-ctl doctor"
 echo "  Stop everything: scripts/run-desktop.sh --stop"

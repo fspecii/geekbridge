@@ -81,7 +81,8 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
 
 - **Android 8.0 or newer** (API 26).
 - **Same local network** for phone and computer (no guest-Wi-Fi client isolation, no full-tunnel VPN).
-- **Firewall: allow TCP and UDP 1716-1764** from your LAN to the computer. The first free port in that range is used; file
+- **Firewall: allow TCP and UDP 1716-1764** from your LAN to the computer (`geekbridge-ctl firewall` prints the commands;
+  `geekbridge-ctl doctor` checks them, the desktop session, your phones and Messages, and says what to fix). The first free port in that range is used; file
   transfers use further ports in it. The control API itself stays on loopback (17380, 17381).
 - **Bluetooth:** answering, declining and hanging up from the computer work over the GeekBridge link and need **no**
   Bluetooth. Hearing and speaking on the computer needs the computer to be the phone's Bluetooth hands-free device, so a

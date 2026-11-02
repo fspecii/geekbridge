@@ -113,7 +113,9 @@ then install it yourself. Nothing installs automatically. Turn checks off under 
 
 ## Troubleshooting
 
-Start with the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
+Start with `geekbridge-ctl doctor`: it checks the service, the firewall (ufw/firewalld ports 1716-1764), your desktop
+session (Wayland/X11 variables), paired phones, clipboard, calls and Messages, and prints the fix for each problem
+(it exits 1 if a check failed). Then the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
 `geekbridge-ctl diagnose` and, on the phone, **Diagnostics & about > Copy report** (both are redacted and safe to attach
 to a bug report).
 
@@ -126,6 +128,13 @@ to a bug report).
   Wi-Fi isolation, another network). Nothing is paired until you confirm on the phone.
 * **"Security warning: certificate changed".** The computer or phone was reinstalled. Forget the pairing on both sides
   (computer: unpair; phone: Forget) and pair again.
+
+### The phone does not show my computer / "Messages is off"
+* **No computer listed on the phone:** run `geekbridge-ctl doctor`. Usually the firewall drops UDP 1716 (the broadcast the
+  phone listens for) or the service is not running; **Pair with QR code** works even when broadcasts are blocked.
+* **Messages is off:** it is opt-in per phone. Click **Allow** in Messages, or `geekbridge-ctl consent DEVICE_ID sms on`
+  (`doctor` prints the exact line). If it then says the phone does not offer Messages, switch on Messages and allow the
+  SMS permission in the phone app.
 
 ### Phone not found
 * The computer announces itself every 15 s and listens on UDP 1716. Routers that filter broadcast traffic (guest Wi-Fi,
