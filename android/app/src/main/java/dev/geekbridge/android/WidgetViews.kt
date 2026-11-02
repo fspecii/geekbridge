@@ -150,7 +150,7 @@ object WidgetViews {
                         v.setTextViewText(titleIds[i], r.title)
                     }
                     body = s.rows.joinToString(". ") { ctx.getString(R.string.widget_agenda_row_a11y, it.spoken, it.title) } +
-                        if (s.more > 0) ". " + ctx.getString(R.string.widget_agenda_more_a11y, s.more) else ""
+                        if (s.more > 0) ". " + ctx.resources.getQuantityString(R.plurals.widget_agenda_more_a11y, s.more, s.more) else ""
                 }
             }
         }

@@ -119,14 +119,14 @@ class ClipboardPolicyTest {
     }
 
     @Test fun wordsAreHonestAndNeverLeakCodes() {
-        assertTrue(ClipboardText.HONEST_NOTE.contains("background"))
-        assertTrue(ClipboardText.summary(ClipSettings(enabled = true)).contains("unlocked"))
-        assertTrue(ClipboardText.summary(ClipSettings()).startsWith("Off"))
+        assertTrue(TestStrings.get(R.string.clip_honest_note).contains("background"))
+        assertTrue(ClipboardText.summary(ClipSettings(enabled = true), TestStrings).contains("unlocked"))
+        assertTrue(ClipboardText.summary(ClipSettings(), TestStrings).startsWith("Off"))
         for (r in listOf("locked", "expired", "empty", "disabled", "too_large", "sensitive", "not_connected", "weird")) {
-            assertFalse(ClipboardText.refusal(r).contains('_'))
+            assertFalse(ClipboardText.refusal(r, TestStrings).contains('_'))
         }
-        assertEquals("30 s", ClipboardText.windowLabel(30_000))
-        assertEquals("2 min", ClipboardText.windowLabel(120_000))
+        assertEquals("30 s", ClipboardText.windowLabel(30_000, TestStrings))
+        assertEquals("2 min", ClipboardText.windowLabel(120_000, TestStrings))
     }
 
     @Test fun snapshotToStringHidesContent() {
@@ -284,7 +284,7 @@ class ClipboardEngineTest {
         val result = engine.onGesture(snap("old", copiedAgo = 120_000))
         assertFalse(result.sent)
         assertEquals("expired", sent.single().getString("none"))
-        assertEquals("That was copied too long ago. Copy it again.", result.message)
+        assertEquals("That was copied too long ago. Copy it again.", result.message(TestStrings))
     }
 
     @Test fun anUnansweredPullExpiresAndALaterTapIsAnExplicitSend() {
@@ -366,7 +366,7 @@ class ClipboardEngineTest {
         coreReply = CoreOutcome.Rejected("not_connected", "no computer", local = false)
         val r = engine.sendText("hello")
         assertFalse(r.sent)
-        assertEquals("Not connected to a computer.", r.message)
+        assertEquals("Not connected to a computer.", r.message(TestStrings))
     }
 
     @Test fun aNewPullRefusesTheOneItReplacesInsteadOfLeavingItHanging() {

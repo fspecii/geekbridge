@@ -19,14 +19,16 @@ object DeviceName {
 
     sealed class Check {
         data class Ok(val name: String) : Check()
-        data class Bad(val reason: String) : Check()
+        data class Bad(val reasonId: Int, val limit: Int? = null) : Check() {
+            fun reason(s: Strings): String = if (limit == null) s.get(reasonId) else s.get(reasonId, limit)
+        }
     }
 
     fun check(raw: String): Check {
-        if (raw.any { Character.isISOControl(it) }) return Check.Bad("Use letters, numbers and spaces only.")
-        if (raw.trim().codePointCount(0, raw.trim().length) > MAX_CHARS) return Check.Bad("Use at most $MAX_CHARS characters.")
+        if (raw.any { Character.isISOControl(it) }) return Check.Bad(R.string.name_err_chars)
+        if (raw.trim().codePointCount(0, raw.trim().length) > MAX_CHARS) return Check.Bad(R.string.name_err_length, MAX_CHARS)
         val cleaned = raw.filter { it !in STRIPPED && !Bounds.isInvisibleFormat(it) }.trim()
-        if (cleaned.isEmpty()) return Check.Bad("Enter a name.")
+        if (cleaned.isEmpty()) return Check.Bad(R.string.name_err_empty)
         return Check.Ok(cleaned)
     }
 

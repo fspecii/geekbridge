@@ -179,16 +179,16 @@ class TransportTextTest {
         assertFalse(TransportText.isSecurity("timeout"))
         val e = LinkEvent(1, "connect_failed", null, null, "pin_mismatch")
         assertEquals(Tone.Bad, TransportText.eventTone(e))
-        assertTrue(TransportText.event(e).startsWith("SECURITY"))
+        assertTrue(TransportText.event(TestStrings, e).startsWith("SECURITY"))
     }
 
     @Test fun unknownKindsAndCodesStayGeneric() {
-        assertEquals("Event (weird_kind).", TransportText.event(LinkEvent(1, "weird_kind", null, null, null)))
-        assertTrue(TransportText.error("something_new").contains("something_new"))
+        assertEquals("Event (weird_kind).", TransportText.event(TestStrings, LinkEvent(1, "weird_kind", null, null, null)))
+        assertTrue(TransportText.error(TestStrings, "something_new").contains("something_new"))
     }
 
     @Test fun pairedEventDoesNotClaimMoreThanTheCore() {
-        assertTrue(TransportText.event(LinkEvent(1, "paired", 3, null, null)).contains("certificate"))
+        assertTrue(TransportText.event(TestStrings, LinkEvent(1, "paired", 3, null, null)).contains("certificate"))
     }
 
     @Test fun fingerprintGrouping() {
@@ -211,7 +211,7 @@ class TransportControllerTest {
     }
 
     private val opts = StartOptions("/f", "Pixel", true, null, false, false, false)
-    private fun controller(f: Fake) = TransportController(f::call, { it.run() }, { it.run() })
+    private fun controller(f: Fake) = TransportController(f::call, { it.run() }, { it.run() }, TestStrings)
 
     @Test fun nothingIsCalledUntilStart() {
         val f = Fake(); val c = controller(f)
@@ -326,7 +326,7 @@ class TransportControllerTest {
         val work = ArrayDeque<Runnable>(); val main = ArrayDeque<Runnable>()
         fun drain(q: ArrayDeque<Runnable>) { while (q.isNotEmpty()) q.removeFirst().run() }
         val f = Fake(); f.answers["transport_status"] = { ok(running()) }
-        val c = TransportController(f::call, { work.addLast(it) }, { main.addLast(it) })
+        val c = TransportController(f::call, { work.addLast(it) }, { main.addLast(it) }, TestStrings)
         c.start(opts)
         drain(work); drain(main)                    // start finished -> Running, a status poll is queued
         assertEquals(LinkPhase.Running, c.phase)

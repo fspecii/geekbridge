@@ -1,0 +1,12 @@
+{
+  "name": "GeekBridge (Rust + Android unit tests)",
+  "build": { "dockerfile": "Dockerfile", "context": "." },
+  "remoteUser": "ubuntu",
+  "containerEnv": { "GEEKBRIDGE_REQUIRE_DBUS": "1" },
+  "postCreateCommand": "scripts/dev-setup.sh || true",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "fwcd.kotlin", "tamasfe.even-better-toml", "editorconfig.editorconfig"]
+    }
+  }
+}

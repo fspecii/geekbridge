@@ -13,8 +13,10 @@ pub mod messages;
 pub mod pairing_help;
 pub mod phone_link;
 pub mod phone_view;
+pub mod report;
 pub mod share;
 pub mod statefile;
+pub mod whats_new;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},

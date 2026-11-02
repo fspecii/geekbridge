@@ -150,31 +150,24 @@ data class ClipSettings(
 
 /** Plain-language lines for the settings UI; what Android allows is stated, not hidden. */
 object ClipboardText {
-    const val HONEST_NOTE =
-        "Android doesn't let apps read the clipboard in the background. GeekBridge looks at it only when you open " +
-            "the app, tap the Clipboard tile or notification, or use \"Send to computer\" in the text menu. " +
-            "Text from your computer is placed on this phone automatically."
-
-    fun windowLabel(ms: Long): String {
-        val s = ClipboardLimits.clampWindow(ms) / 1000
-        return if (s >= 60 && s % 60 == 0L) "${s / 60} min" else "$s s"
+    fun windowLabel(ms: Long, s: Strings): String {
+        val sec = (ClipboardLimits.clampWindow(ms) / 1000).toInt()
+        return if (sec >= 60 && sec % 60 == 0) s.get(R.string.clip_window_min, sec / 60) else s.get(R.string.clip_window_sec, sec)
     }
 
-    fun summary(s: ClipSettings): String = if (!s.enabled) {
-        "Off. Nothing is shared with your computer."
-    } else {
-        "On. Your computer can ask for something you copied in the last ${windowLabel(s.windowMs)}, " +
-            "and only while this phone is unlocked."
-    }
+    fun summary(c: ClipSettings, s: Strings): String =
+        if (!c.enabled) s.get(R.string.clip_summary_off) else s.get(R.string.clip_summary_on, windowLabel(c.windowMs, s))
 
-    fun refusal(reason: String): String = when (reason) {
-        "locked" -> "Unlock your phone first."
-        "expired" -> "That was copied too long ago. Copy it again."
-        "empty" -> "The clipboard is empty."
-        "disabled" -> "Clipboard sync is off."
-        "too_large" -> "That item is too large to send."
-        "sensitive" -> "That item is marked sensitive, so it isn't sent."
-        "not_connected" -> "Not connected to a computer."
-        else -> "Couldn't send the clipboard."
-    }
+    fun refusal(reason: String, s: Strings): String = s.get(
+        when (reason) {
+            "locked" -> R.string.clip_refuse_locked
+            "expired" -> R.string.clip_refuse_expired
+            "empty" -> R.string.clip_refuse_empty
+            "disabled" -> R.string.clip_refuse_disabled
+            "too_large" -> R.string.clip_refuse_too_large
+            "sensitive" -> R.string.clip_refuse_sensitive
+            "not_connected" -> R.string.clip_refuse_not_connected
+            else -> R.string.clip_refuse_other
+        },
+    )
 }

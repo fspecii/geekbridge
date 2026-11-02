@@ -51,7 +51,7 @@ use tokio::{
 mod pairing_flow;
 
 pub const MAX_LINKS: usize = 16;
-/// Unpaired links one source address may hold at once (S2-1 in docs/security-review-2.md).
+/// Unpaired links one source address may hold at once (S2-1 in docs/reports/security-review-2.md).
 pub const MAX_UNPAIRED_PER_IP: usize = 3;
 /// File in the state directory holding the computer name the user chose.
 pub const DEVICE_NAME_FILE: &str = "device-name";
@@ -1245,7 +1245,7 @@ impl Daemon {
         let id = info.peer.device_id.to_string();
         let trusted = matches!(handshake, kde::Handshake::Trusted(_));
         let mut core = self.core();
-        // Strangers must not starve the table (docs/security-review-2.md S2-1): one address holds
+        // Strangers must not starve the table (docs/reports/security-review-2.md S2-1): one address holds
         // only a few unpaired links, and a paired phone takes the place of the oldest stranger.
         let mut evicted = None;
         match core.links.get(&id) {

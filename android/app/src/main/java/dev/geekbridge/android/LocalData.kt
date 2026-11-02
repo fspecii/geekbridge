@@ -24,7 +24,9 @@ sealed interface LoadResult<out T> {
     /** [truncated] is true when the provider had more rows than the preview bound. */
     data class Loaded<T>(val items: List<T>, val truncated: Boolean) : LoadResult<T>
 
-    data class Failed(val reason: String) : LoadResult<Nothing>
+    data class Failed(val reasonId: Int, val detail: String? = null) : LoadResult<Nothing> {
+        fun reason(s: Strings): String = if (detail == null) s.get(reasonId) else s.get(reasonId, detail)
+    }
 
     data object Cancelled : LoadResult<Nothing>
 }
@@ -56,7 +58,7 @@ object LocalProviders {
             var truncated = false
             val cursor = context.contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI, projection, args, signal,
-            ) ?: return@guarded LoadResult.Failed("Contacts provider is not available.")
+            ) ?: return@guarded LoadResult.Failed(R.string.local_contacts_unavailable)
             cursor.use {
                 var scanned = 0
                 while (it.moveToNext()) {
@@ -102,7 +104,7 @@ object LocalProviders {
             val out = ArrayList<AgendaEvent>(MAX_EVENTS)
             var truncated = false
             val cursor = context.contentResolver.query(uri, projection, args, signal)
-                ?: return@guarded LoadResult.Failed("Calendar provider is not available.")
+                ?: return@guarded LoadResult.Failed(R.string.local_calendar_unavailable)
             cursor.use {
                 while (it.moveToNext()) {
                     signal.throwIfCanceled()
@@ -129,8 +131,8 @@ object LocalProviders {
     } catch (e: OperationCanceledException) {
         LoadResult.Cancelled
     } catch (e: SecurityException) {
-        LoadResult.Failed("Android refused access; the permission may have been revoked.")
+        LoadResult.Failed(R.string.local_access_refused)
     } catch (e: RuntimeException) {
-        LoadResult.Failed("Reading failed (${e.javaClass.simpleName}).")
+        LoadResult.Failed(R.string.local_reading_failed, e.javaClass.simpleName)
     }
 }

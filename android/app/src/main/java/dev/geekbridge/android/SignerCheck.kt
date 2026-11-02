@@ -19,7 +19,7 @@ object SignerCheck {
     sealed class Verdict {
         object Match : Verdict()
         class Mismatch(val installed: Set<String>, val offered: Set<String>) : Verdict()
-        class Unreadable(val what: String) : Verdict()
+        class Unreadable(val installedApp: Boolean) : Verdict()
     }
 
     interface Source {
@@ -28,8 +28,8 @@ object SignerCheck {
     }
 
     fun compare(installed: Signers?, offered: Signers?): Verdict {
-        if (installed == null || installed.current.isEmpty()) return Verdict.Unreadable("the installed app")
-        if (offered == null || offered.current.isEmpty()) return Verdict.Unreadable("the downloaded update")
+        if (installed == null || installed.current.isEmpty()) return Verdict.Unreadable(installedApp = true)
+        if (offered == null || offered.current.isEmpty()) return Verdict.Unreadable(installedApp = false)
         if (installed.current == offered.current) return Verdict.Match
         // Key rotation: the update's lineage proves the installed certificate is an ancestor of its signer.
         if (offered.history.containsAll(installed.current)) return Verdict.Match
@@ -39,17 +39,15 @@ object SignerCheck {
     fun check(source: Source, apkPath: String): Verdict = compare(source.installed(), source.archive(apkPath))
 
     /** User-facing text for a blocking verdict; null for [Verdict.Match]. [debugBuild] is the running app's `BuildConfig.DEBUG`. */
-    fun message(v: Verdict, debugBuild: Boolean): String? = when (v) {
+    fun message(s: Strings, v: Verdict, debugBuild: Boolean): String? = when (v) {
         Verdict.Match -> null
         is Verdict.Unreadable ->
-            "Couldn't read the signing certificate of ${v.what}, so the update was not offered. Download the APK from the release page instead."
+            s.get(if (v.installedApp) R.string.signer_unreadable_installed else R.string.signer_unreadable_download)
         is Verdict.Mismatch ->
             if (debugBuild) {
-                "This is a developer (debug-signed) build. The release is signed with the release key, which Android won't accept over it. " +
-                    "To switch, uninstall this build once and install the release APK; app data is lost."
+                s.get(R.string.signer_debug_build)
             } else {
-                "The update is signed with a different key (${short(v.offered)}) than the installed app (${short(v.installed)}). " +
-                    "Android would refuse it, so it was not offered. Uninstall and reinstall the release APK to switch keys; app data is lost."
+                s.get(R.string.signer_mismatch, short(v.offered), short(v.installed))
             }
     }
 

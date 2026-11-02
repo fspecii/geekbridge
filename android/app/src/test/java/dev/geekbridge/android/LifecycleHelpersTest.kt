@@ -32,7 +32,7 @@ class ShareHoldTest {
     }
 
     @Test fun theControllerCountBalancesAcrossARotation() {
-        val c = TransportController({ _ -> CoreOutcome.Ok(null) }, { it.run() }, { it.run() })
+        val c = TransportController({ _ -> CoreOutcome.Ok(null) }, { it.run() }, { it.run() }, TestStrings)
         val token = ShareHold({ c.hold() }, { c.release() })
         token.take(); token.take(); token.giveBack()
         assertEquals(0, c.holds)

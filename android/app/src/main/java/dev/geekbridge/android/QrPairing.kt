@@ -73,11 +73,11 @@ object QrProtocol {
     }
 
     /** What to tell the user when the core rejects the text. */
-    fun parseError(code: String): String = when (code) {
-        "qr_not_geekbridge" -> "That is not a GeekBridge pairing code."
-        "qr_version" -> "That pairing code is from a different GeekBridge version. Update both apps."
-        "qr_malformed" -> "That pairing code is damaged. Show a new one on the computer and try again."
-        else -> "The pairing code could not be read."
+    fun parseError(s: Strings, code: String): String = when (code) {
+        "qr_not_geekbridge" -> s.get(R.string.qr_err_not_geekbridge)
+        "qr_version" -> s.get(R.string.qr_err_version)
+        "qr_malformed" -> s.get(R.string.qr_err_malformed)
+        else -> s.get(R.string.qr_err_unreadable)
     }
 
     fun pairRequest(connectionId: Long, token: String, certSha256: String): String = JSONObject()

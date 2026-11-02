@@ -26,8 +26,10 @@ class UpdateChecker(
 ) {
     class Cache(val etag: String, val body: String)
 
-    /** Raised for every failure; the message is safe to show. */
-    class UpdateException(message: String) : Exception(message)
+    /** Raised for every failure; [text] is safe to show and resolved to the user's language at the UI edge. */
+    class UpdateException(val text: UpdateText) : Exception("update error ${text.id}") {
+        constructor(id: Int, vararg args: Any) : this(UpdateText(id, *args))
+    }
 
     /**
      * Fetches the latest release. [cache] is the previous 200 body with its ETag; on 304 it is reused.
@@ -42,26 +44,28 @@ class UpdateChecker(
                 response.etag?.let { onFresh(Cache(it, text)) }
                 text
             }
-            304 -> cache?.body ?: throw UpdateException("GitHub answered 'not modified' without a cached copy.")
+            304 -> cache?.body ?: throw UpdateException(R.string.upd_err_not_modified)
             // Checked before 404/403: a rate-limited 403 is not "no public release".
             403, 429 -> if (response.rateLimited || response.status == 429) {
-                throw UpdateException("GitHub is rate limiting requests. Try again later.")
+                throw UpdateException(R.string.upd_err_rate_limit)
             } else {
                 return UpdateCheckResult.NoPublicRelease
             }
             404 -> return UpdateCheckResult.NoPublicRelease
-            else -> throw UpdateException("GitHub answered HTTP ${response.status}.")
+            else -> throw UpdateException(R.string.upd_err_http, response.status)
         }
         val release = try {
             UpdateModel.parseRelease(body)
+        } catch (e: UpdateModel.ReleaseFormatException) {
+            throw UpdateException(e.text)
         } catch (e: IllegalArgumentException) {
-            throw UpdateException(e.message ?: "The release information is not understood.")
+            throw UpdateException(R.string.upd_err_release_unclear)
         }
         UpdateModel.evaluate(release, currentName, currentCode, { name -> fetchSums(release, name) }, allowLoopback)
     } catch (e: UpdateException) {
-        UpdateCheckResult.Failed(e.message ?: "Update check failed.")
+        UpdateCheckResult.Failed(e.text)
     } catch (e: IOException) {
-        UpdateCheckResult.Failed("Couldn't reach GitHub: ${Bounds.clip(e.javaClass.simpleName, 40)}.")
+        UpdateCheckResult.Failed(UpdateText(R.string.upd_err_unreachable, Bounds.clip(e.javaClass.simpleName, 40)))
     }
 
     private fun fetchSums(release: UpdateModel.Release, apkName: String): String? {
@@ -88,10 +92,10 @@ class UpdateChecker(
      * throws unless the byte count and SHA-256 both match the release. Returns the verified file.
      */
     fun download(offer: UpdateOffer, dir: File, onProgress: (Long, Long) -> Unit = { _, _ -> }): File {
-        val expected = offer.sha256?.lowercase() ?: throw UpdateException("This release publishes no SHA-256 for the app, so it won't be downloaded.")
-        if (!UpdateModel.isHex64(expected) || !UpdateModel.safeFileName(offer.apkName)) throw UpdateException("The release description is not usable.")
-        if (offer.apkSize !in 1..UpdateModel.MAX_APK_BYTES) throw UpdateException("The package size is not acceptable.")
-        if (!dir.isDirectory && !dir.mkdirs()) throw UpdateException("Couldn't create the download folder.")
+        val expected = offer.sha256?.lowercase() ?: throw UpdateException(R.string.upd_err_no_sha)
+        if (!UpdateModel.isHex64(expected) || !UpdateModel.safeFileName(offer.apkName)) throw UpdateException(R.string.upd_err_bad_description)
+        if (offer.apkSize !in 1..UpdateModel.MAX_APK_BYTES) throw UpdateException(R.string.upd_err_bad_size)
+        if (!dir.isDirectory && !dir.mkdirs()) throw UpdateException(R.string.upd_err_no_folder)
         dir.listFiles()?.forEach { it.delete() } // one pending update at a time
         val file = File(dir, UPDATE_FILE_NAME)
         val digest = MessageDigest.getInstance("SHA-256")
@@ -106,15 +110,15 @@ class UpdateChecker(
                         onProgress(written, offer.apkSize)
                     }
                 }
-                if (head.status != 200) throw UpdateException("GitHub answered HTTP ${head.status} for the download.")
+                if (head.status != 200) throw UpdateException(R.string.upd_err_http_download, head.status)
             }
-            if (written != offer.apkSize) throw UpdateException("The download has the wrong size; it was deleted.")
+            if (written != offer.apkSize) throw UpdateException(R.string.upd_err_wrong_size)
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (actual != expected) throw UpdateException("The download does not match the published SHA-256; it was deleted.")
+            if (actual != expected) throw UpdateException(R.string.upd_err_sha_mismatch)
             return file
         } catch (e: Exception) {
             file.delete()
-            throw if (e is UpdateException) e else UpdateException(if (e is IOException) "The download was interrupted." else "The download failed.")
+            throw if (e is UpdateException) e else UpdateException(if (e is IOException) R.string.upd_err_interrupted else R.string.upd_err_download_failed)
         }
     }
 
@@ -134,7 +138,7 @@ class UpdateChecker(
     ): Head {
         var url = startUrl
         repeat(MAX_REDIRECTS + 1) {
-            if (!UpdateModel.urlAllowed(url, allowLoopback)) throw UpdateException("Refusing to contact an untrusted address.")
+            if (!UpdateModel.urlAllowed(url, allowLoopback)) throw UpdateException(R.string.upd_err_untrusted_addr)
             val conn = URL(url).openConnection() as HttpURLConnection
             try {
                 conn.instanceFollowRedirects = false
@@ -149,19 +153,19 @@ class UpdateChecker(
                 if (etag != null) conn.setRequestProperty("If-None-Match", etag)
                 val status = conn.responseCode
                 if (status in 301..308 && status != 304 && status != 305 && status != 306) {
-                    val location = conn.getHeaderField("Location") ?: throw UpdateException("The server redirected without a location.")
+                    val location = conn.getHeaderField("Location") ?: throw UpdateException(R.string.upd_err_redirect_nolocation)
                     url = try {
                         URL(URL(url), location).toString() // absolute or same-origin relative; re-checked on the next hop
                     } catch (_: java.net.MalformedURLException) {
-                        throw UpdateException("The server sent an unusable redirect.")
+                        throw UpdateException(R.string.upd_err_redirect_bad)
                     }
                     return@repeat
                 }
                 if (status == 200) {
                     val declared = conn.contentLengthLong
-                    if (declared > maxBytes) throw UpdateException("The response is larger than allowed.")
+                    if (declared > maxBytes) throw UpdateException(R.string.upd_err_too_big)
                     val enc = conn.contentEncoding
-                    if (enc != null && !enc.equals("identity", true)) throw UpdateException("Unexpected content encoding.")
+                    if (enc != null && !enc.equals("identity", true)) throw UpdateException(R.string.upd_err_encoding)
                     conn.inputStream.use(consume)
                 }
                 val rateLimited = conn.getHeaderField("Retry-After") != null || conn.getHeaderField("X-RateLimit-Remaining") == "0"
@@ -170,7 +174,7 @@ class UpdateChecker(
                 conn.disconnect()
             }
         }
-        throw UpdateException("Too many redirects.")
+        throw UpdateException(R.string.upd_err_redirects)
     }
 
     private fun readBounded(input: InputStream, max: Long, sink: (ByteArray, Int, Int) -> Unit) {
@@ -180,7 +184,7 @@ class UpdateChecker(
             val n = input.read(buf)
             if (n < 0) return
             total += n
-            if (total > max) throw UpdateException("The response is larger than allowed.")
+            if (total > max) throw UpdateException(R.string.upd_err_too_big)
             sink(buf, 0, n)
         }
     }

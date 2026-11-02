@@ -185,3 +185,55 @@ jobs:
             android/app/build/reports/lint-results-debug.*
             android/app/build/test-results/testDebugUnitTest/*.xml
           if-no-files-found: ignore
+
+  # Report only: this job never fails the workflow (continue-on-error) and nothing depends on it. The numbers are
+  # targets, not gates (docs/coverage.md). Same SHA pins as the jobs above; cargo-llvm-cov is built from source at an
+  # exact version with --locked rather than fetched through a third-party action.
+  coverage:
+    name: Coverage report (Rust llvm-cov, Android JaCoCo; non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Linux graphics and private D-Bus test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
+      - name: Install cargo-llvm-cov (pinned version, locked dependencies)
+        run: cargo install cargo-llvm-cov --version 0.9.1 --locked
+      - name: Rust coverage
+        env:
+          GEEKBRIDGE_REQUIRE_DBUS: '1'
+        run: scripts/coverage.sh rust | tee coverage-rust.txt
+      - name: Android SDK packages for the JVM unit tests
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+      - name: Android JVM unit-test coverage (JaCoCo, debug unit tests only)
+        run: scripts/coverage.sh android | tee coverage-android.txt
+      - name: Summary
+        if: always()
+        run: |
+          { echo '### Coverage (targets, not gates: docs/coverage.md)'; echo '```'; tail -n 40 coverage-rust.txt || true; echo; tail -n 40 coverage-android.txt || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage-rust.txt
+            coverage-android.txt
+            target/llvm-cov/html
+            android/app/build/reports/jacoco/jacocoDebugUnitTestReport
+          if-no-files-found: ignore

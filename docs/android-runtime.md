@@ -5,7 +5,7 @@ here is a debug-signed development build; there is no real-phone testing.
 
 > **Historical record (first emulator pass, 2026-11-01).** Statements below such as "ping only", "Discovery was not
 > run" or "no network" describe that early build. Pairing, discovery, sharing, clipboard, SMS, calendar, calls and
-> self-update have since been run on the emulator; see [e2e-findings.md](e2e-findings.md) for the current record.
+> self-update have since been run on the emulator; see [e2e-findings.md](reports/e2e-findings.md) for the current record.
 
 ## Environment (all project-local)
 

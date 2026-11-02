@@ -19,6 +19,7 @@ class TransportController(
     private val client: (String) -> CoreOutcome,
     private val execute: (Runnable) -> Unit,
     private val postToMain: (Runnable) -> Unit,
+    private val strings: Strings,
 ) {
     var phase: LinkPhase = LinkPhase.Stopped
         private set
@@ -49,7 +50,7 @@ class TransportController(
     /**
      * True while any screen of the app is started. The per-activity flag alone is not enough: moving
      * Home -> Diagnostics runs the new screen's onStart before the old one's onStop, which cleared the flag and
-     * made [ShareCoordinator] stop a link that had just been started (docs/e2e-findings.md, E2E-1).
+     * made [ShareCoordinator] stop a link that had just been started (docs/reports/e2e-findings.md, E2E-1).
      */
     var appVisible = false
         get() = field || ActivityTracker.startedCount > 0
@@ -73,12 +74,19 @@ class TransportController(
     /** A local, UI-side message (e.g. a field was not filled in). */
     fun postNotice(text: String, tone: Tone) { say(text, tone); changed() }
 
-    private fun rejected(o: CoreOutcome, verb: String): Notice = when (o) {
-        is CoreOutcome.Rejected -> Notice("$verb: ${TransportText.error(o.code)}", Tone.Warn)
-        is CoreOutcome.Unavailable -> Notice("$verb: native core unavailable (${o.reason}).", Tone.Bad)
-        is CoreOutcome.Malformed -> Notice("$verb: unreadable native response (${o.reason}).", Tone.Bad)
-        is CoreOutcome.Ok -> Notice("$verb: unexpected success.", Tone.Warn)
+    private fun rejected(o: CoreOutcome, verb: Int): Notice {
+        val v = strings.get(verb)
+        return when (o) {
+            is CoreOutcome.Rejected ->
+                Notice(strings.get(R.string.notice_rejected, v, TransportText.error(strings, o.code)), Tone.Warn)
+            is CoreOutcome.Unavailable -> Notice(strings.get(R.string.notice_core_unavailable, v, o.reason), Tone.Bad)
+            is CoreOutcome.Malformed -> Notice(strings.get(R.string.notice_core_unreadable, v, o.reason), Tone.Bad)
+            is CoreOutcome.Ok -> Notice(strings.get(R.string.notice_unexpected_success, v), Tone.Warn)
+        }
     }
+
+    private fun say(id: Int, tone: Tone) = say(strings.get(id), tone)
+    private fun notice(id: Int, tone: Tone = Tone.Muted) = Notice(strings.get(id), tone)
 
     /** Runs [request] on the worker thread and hands the outcome back on the main thread. */
     private fun run(request: String, thenMain: (CoreOutcome) -> Unit) {
@@ -101,20 +109,20 @@ class TransportController(
         answered.clear()
         lastSeq = 0
         snapshot = null
-        say("Starting the link…", Tone.Muted)
+        say(R.string.notice_starting, Tone.Muted)
         changed()
         run(TransportProtocol.startRequest(options)) { o ->
             if (mine != epoch) return@run
             when (o) {
                 is CoreOutcome.Ok -> {
                     phase = LinkPhase.Running
-                    say("Link running. Nothing is paired or trusted until you approve a pairing.", Tone.Ok)
+                    say(R.string.notice_running, Tone.Ok)
                     changed()
                     poll()
                 }
                 else -> {
                     phase = LinkPhase.Stopped
-                    notice = rejected(o, "Could not start")
+                    notice = rejected(o, R.string.verb_could_not_start)
                     changed()
                 }
             }
@@ -122,6 +130,8 @@ class TransportController(
     }
 
     /** Idempotent. Used by the Stop button and when the app leaves the foreground. */
+    fun stop(reasonRes: Int) = stop(strings.get(reasonRes))
+
     fun stop(reason: String? = null) {
         if (phase == LinkPhase.Stopped || phase == LinkPhase.Stopping) return
         // Leaving the foreground (reason != null) must not cut a running share; an explicit Stop still does.
@@ -130,16 +140,14 @@ class TransportController(
         epoch++
         val mine = epoch
         snapshot = null
-        say("Stopping the link…", Tone.Muted)
+        say(R.string.notice_stopping, Tone.Muted)
         changed()
         run(TransportProtocol.stopRequest()) { o ->
             if (mine != epoch) return@run
             phase = LinkPhase.Stopped
             notice = when (o) {
-                is CoreOutcome.Ok -> Notice(
-                    reason ?: "Link stopped. All connections and pending requests were closed.", Tone.Muted,
-                )
-                else -> rejected(o, "Stop")
+                is CoreOutcome.Ok -> Notice(reason ?: strings.get(R.string.notice_stopped), Tone.Muted)
+                else -> rejected(o, R.string.verb_stop)
             }
             changed()
         }
@@ -157,12 +165,12 @@ class TransportController(
                 is CoreOutcome.Ok -> {
                     val s = TransportProtocol.parseSnapshot(o.result)
                     if (s == null) {
-                        say("Status: unreadable native response.", Tone.Warn)
+                        say(R.string.notice_status_unreadable, Tone.Warn)
                     } else {
                         apply(s)
                     }
                 }
-                else -> notice = rejected(o, "Status")
+                else -> notice = rejected(o, R.string.verb_status)
             }
             changed()
             if (pollAgain) {
@@ -183,7 +191,7 @@ class TransportController(
             // The core says it is not running (e.g. it was stopped underneath us): reflect that.
             phase = LinkPhase.Stopped
             snapshot = null
-            say("The native transport is not running.", Tone.Warn)
+            say(R.string.notice_transport_not_running, Tone.Warn)
             return
         }
         snapshot = s
@@ -191,9 +199,9 @@ class TransportController(
             if (e.seq > lastSeq) {
                 events += e
                 if (TransportText.isSecurity(e.code) || e.kind == "peer_requested_repair") {
-                    say(TransportText.event(e), Tone.Bad)
+                    say(TransportText.event(strings, e), Tone.Bad)
                 } else if (e.kind == "peer_unpaired") {
-                    say(TransportText.event(e), Tone.Warn)
+                    say(TransportText.event(strings, e), Tone.Warn)
                 }
             }
         }
@@ -205,7 +213,7 @@ class TransportController(
     /** The first prompt that can be shown exactly and has not been answered yet. */
     fun pendingPrompt(): PairPrompt? = snapshot?.prompts?.firstOrNull { it.requestId !in answered }
 
-    private fun command(request: String, verb: String, success: (CoreOutcome.Ok) -> Notice?) {
+    private fun command(request: String, verb: Int, success: (CoreOutcome.Ok) -> Notice?) {
         if (phase != LinkPhase.Running) return
         val mine = epoch
         run(request) { o ->
@@ -217,16 +225,13 @@ class TransportController(
     }
 
     fun connect(host: String, port: Int, deviceId: String) = command(
-        TransportProtocol.connectRequest(host.trim(), port, deviceId.trim()), "Connect",
-    ) { Notice("Connecting… (TLS handshake only; nothing is paired yet).", Tone.Muted) }
+        TransportProtocol.connectRequest(host.trim(), port, deviceId.trim()), R.string.verb_connect,
+    ) { notice(R.string.notice_connecting) }
 
     fun pairRequest(connectionId: Long, await: Boolean) = command(
-        TransportProtocol.pairRequest(connectionId, await), "Pair",
+        TransportProtocol.pairRequest(connectionId, await), R.string.verb_pair,
     ) {
-        Notice(
-            if (await) "Waiting for the other device to ask to pair…" else "Pairing request sent. Waiting for the code…",
-            Tone.Muted,
-        )
+        notice(if (await) R.string.notice_pair_await else R.string.notice_pair_sent)
     }
 
     /**
@@ -239,10 +244,10 @@ class TransportController(
         run(QrProtocol.pairRequest(connectionId, token, certSha256)) { o ->
             if (mine != epoch) return@run
             if (o is CoreOutcome.Ok) {
-                notice = Notice("Checking the computer's identity… confirm on this phone when asked.", Tone.Muted)
+                notice = notice(R.string.notice_qr_checking)
                 done(null)
             } else {
-                notice = rejected(o, "Pair")
+                notice = rejected(o, R.string.verb_pair)
                 done((o as? CoreOutcome.Rejected)?.code ?: "unavailable")
             }
             changed()
@@ -257,30 +262,30 @@ class TransportController(
     fun decide(prompt: PairPrompt, approve: Boolean) {
         if (phase != LinkPhase.Running) return
         answered += prompt.requestId
-        command(TransportProtocol.decisionRequest(prompt, approve), if (approve) "Approve" else "Decline") {
+        command(TransportProtocol.decisionRequest(prompt, approve), if (approve) R.string.verb_approve else R.string.verb_decline) {
             if (approve) {
-                Notice("Approved on this phone. Waiting for the other device; not paired until it also accepts.", Tone.Muted)
+                notice(R.string.notice_approved)
             } else {
-                Notice("Pairing declined. Nothing was trusted.", Tone.Muted)
+                notice(R.string.notice_declined)
             }
         }
     }
 
     /** Applies a saved phone name to the running link: new connections and announcements use it. */
-    fun rename(name: String) = command(TransportProtocol.setNameRequest(name), "Rename") {
-        Notice("Name changed. A computer that is connected now shows it the next time it connects.", Tone.Muted)
+    fun rename(name: String) = command(TransportProtocol.setNameRequest(name), R.string.verb_rename) {
+        notice(R.string.notice_renamed)
     }
 
-    fun unpair(deviceId: String) = command(TransportProtocol.unpairRequest(deviceId), "Unpair") {
-        Notice("Unpaired. The stored certificate for that device was removed from this phone.", Tone.Muted)
+    fun unpair(deviceId: String) = command(TransportProtocol.unpairRequest(deviceId), R.string.verb_unpair) {
+        notice(R.string.notice_unpaired)
     }
 
-    fun disconnect(connectionId: Long) = command(TransportProtocol.disconnectRequest(connectionId), "Disconnect") {
-        Notice("Disconnected. Pairing state was not changed.", Tone.Muted)
+    fun disconnect(connectionId: Long) = command(TransportProtocol.disconnectRequest(connectionId), R.string.verb_disconnect) {
+        notice(R.string.notice_disconnected)
     }
 
-    fun ping(connectionId: Long) = command(TransportProtocol.pingRequest(connectionId), "Ping") {
-        Notice("Ping queued. It is the only message this build can send.", Tone.Muted)
+    fun ping(connectionId: Long) = command(TransportProtocol.pingRequest(connectionId), R.string.verb_ping) {
+        notice(R.string.notice_ping_queued)
     }
 
     companion object {
@@ -297,6 +302,7 @@ class TransportController(
                         Thread(r, "geekbridge-transport").apply { isDaemon = true }
                     }::execute,
                     postToMain = postToMain,
+                    strings = AppStrings,
                 ).also { instance = it }
             }
     }

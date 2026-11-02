@@ -78,6 +78,8 @@ if [[ "$VERSION" != *-* ]]; then
 else
     echo "note: packaging/arch/PKGBUILD pkgver not changed ('-' is not allowed there); set it by hand if you package this prerelease." >&2
 fi
+# The "What's new" texts (Android asset, desktop embed) come from the CHANGELOG section of this version.
+scripts/gen-whats-new.sh >/dev/null || echo "warning: scripts/gen-whats-new.sh failed; run it by hand and add its output to the release commit." >&2
 # Cargo.lock must carry the new version; if neither command works the bump is incomplete, so say so.
 if ! cargo update --workspace --offline >/dev/null 2>&1; then
     cargo check --workspace --offline >/dev/null 2>&1 || {
@@ -88,11 +90,11 @@ if ! cargo update --workspace --offline >/dev/null 2>&1; then
 fi
 
 echo
-echo "Bumped $current -> $VERSION (Cargo.toml, Cargo.lock, CHANGELOG.md, packaging/arch/PKGBUILD). Nothing is committed, tagged or pushed."
+echo "Bumped $current -> $VERSION (Cargo.toml, Cargo.lock, CHANGELOG.md, packaging/arch/PKGBUILD, what's-new files). Nothing is committed, tagged or pushed."
 echo "Review CHANGELOG.md, then run these yourself:"
 echo
 echo "  git diff"
-echo "  git add Cargo.toml Cargo.lock CHANGELOG.md packaging/arch/PKGBUILD"
+echo "  git add Cargo.toml Cargo.lock CHANGELOG.md packaging/arch/PKGBUILD crates/bridge-core/assets/whats_new.txt android/app/src/main/assets/whats_new.json"
 echo "  git commit -m \"Release v$VERSION\""
 echo "  git push origin main            # the tag must be reachable from main"
 echo "  git tag -a v$VERSION -m \"GeekBridge v$VERSION\""

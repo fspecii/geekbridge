@@ -44,5 +44,8 @@
     <string name="widget_agenda_untitled">No title</string>
     <string name="widget_agenda_today_a11y">Today, %1$s. %2$s</string>
     <string name="widget_agenda_row_a11y">%1$s, %2$s</string>
-    <string name="widget_agenda_more_a11y">%1$d more events today.</string>
+    <plurals name="widget_agenda_more_a11y">
+        <item quantity="one">%1$d more event today.</item>
+        <item quantity="other">%1$d more events today.</item>
+    </plurals>
 </resources>

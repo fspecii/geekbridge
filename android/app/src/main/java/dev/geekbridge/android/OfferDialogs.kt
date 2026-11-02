@@ -43,10 +43,10 @@ class OfferDialogs(private val activity: Activity, private val coordinator: Shar
     }
 
     private fun showOffer(t: Transfer) {
-        val size = t.size?.let { " (${ProgressText.bytes(it)})" } ?: ""
+        val shown = t.size?.let { activity.getString(R.string.share_name_size, t.name, ProgressText.bytes(it, activity.strings)) } ?: t.name
         dialog = AlertDialog.Builder(activity)
             .setTitle(activity.getString(R.string.offer_wants_file, t.peerName.ifEmpty { activity.getString(R.string.offer_a_computer) }))
-            .setMessage("${t.name}$size\n\n" + activity.getString(R.string.offer_saved_note))
+            .setMessage("$shown\n\n" + activity.getString(R.string.offer_saved_note))
             .setCancelable(false)
             .setPositiveButton(R.string.offer_accept) { _, _ -> coordinator.answer(t.id, true) }
             .setNegativeButton(R.string.offer_decline) { _, _ -> coordinator.answer(t.id, false) }

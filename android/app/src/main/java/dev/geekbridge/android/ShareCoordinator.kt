@@ -109,7 +109,7 @@ class ShareCoordinator private constructor(app: Context) {
         if (controller.needsLink()) schedule()
         // The background service owns the link while it runs: the system Share chooser covers Home (E2E-4).
         else if (!controller.appVisible && !LinkService.isRunning && controller.phase == LinkPhase.Running) {
-            controller.stop("Link stopped: the transfers finished and the app is in the background.")
+            controller.stop(R.string.share_link_stopped_done)
         }
         onChange()
     }
@@ -138,7 +138,7 @@ class ShareCoordinator private constructor(app: Context) {
                         ReceivedFiles.publish(ctx, s)
                         main.post { notifications.received(t.id, s.name, s.uri) }
                     } catch (_: Exception) {
-                        main.post { notifications.failed(t.id, "Could not finish saving ${s.name}.") }
+                        main.post { notifications.failed(t.id, ctx.getString(R.string.share_err_finish_saving, s.name)) }
                     }
                 }
                 dismiss(t.id)
@@ -146,7 +146,7 @@ class ShareCoordinator private constructor(app: Context) {
             TransferState.Failed, TransferState.Cancelled, TransferState.Declined -> if (finished.add(t.id)) {
                 notifications.clearOffer(t.id)
                 saved.remove(t.id)?.let { s -> io.execute { runCatching { ReceivedFiles.discard(ctx, s) } } }
-                if (t.state == TransferState.Failed) notifications.failed(t.id, "${t.name}: ${ShareText.failure(t.code)}")
+                if (t.state == TransferState.Failed) notifications.failed(t.id, ctx.getString(R.string.share_failed_named, t.name, ShareText.failure(t.code, ctx.strings)))
                 dismiss(t.id)
             }
             else -> Unit
@@ -184,7 +184,7 @@ class ShareCoordinator private constructor(app: Context) {
             } catch (_: Exception) {
                 main.post {
                     controller.raw(ShareProtocol.decline(t.id)) { }
-                    notifications.failed(t.id, "Could not create a file for ${t.name}.")
+                    notifications.failed(t.id, ctx.getString(R.string.share_err_create_file, t.name))
                 }
                 return@execute
             }
@@ -196,7 +196,7 @@ class ShareCoordinator private constructor(app: Context) {
                         controller.poll()
                     } else {
                         io.execute { runCatching { ReceivedFiles.discard(ctx, file) } }
-                        notifications.failed(t.id, "Could not start receiving ${t.name}.")
+                        notifications.failed(t.id, ctx.getString(R.string.share_err_start_receive, t.name))
                     }
                 }
             }
@@ -227,7 +227,7 @@ class ShareCoordinator private constructor(app: Context) {
         if (sessionActive) return
         beginSession(connectionId)
         val list = uris.take(ShareLimits.MAX_FILES).map { uri ->
-            uri to ShareItem(uri.lastPathSegment?.let { s -> NameRules.sanitize(s) } ?: "file").also { item ->
+            uri to ShareItem(uri.lastPathSegment?.let { s -> NameRules.sanitize(s) } ?: ctx.getString(R.string.share_what_file)).also { item ->
                 item.source = EarlyOpen { openShared(uri) }
             }
         }
@@ -244,7 +244,7 @@ class ShareCoordinator private constructor(app: Context) {
     fun sendText(connectionId: Long, kind: TransferKind, text: String) {
         if (sessionActive) return
         beginSession(connectionId)
-        val item = ShareItem(if (kind == TransferKind.Url) "link" else "text").also { it.inFlight = true }
+        val item = ShareItem(ctx.getString(if (kind == TransferKind.Url) R.string.share_what_link else R.string.share_what_text)).also { it.inFlight = true }
         items = listOf(item)
         controller.raw(ShareProtocol.sendText(connectionId, kind, text)) { o ->
             item.inFlight = false
@@ -263,9 +263,9 @@ class ShareCoordinator private constructor(app: Context) {
     }
 
     private fun describe(o: CoreOutcome): String = when (o) {
-        is CoreOutcome.Rejected -> ShareText.error(o.code)
-        is CoreOutcome.Unavailable -> "The native core is unavailable."
-        else -> "Unreadable response from the native core."
+        is CoreOutcome.Rejected -> ShareText.error(o.code, ctx.strings)
+        is CoreOutcome.Unavailable -> ctx.getString(R.string.share_err_core_unavailable)
+        else -> ctx.getString(R.string.share_err_core_unreadable)
     }
 
     private fun pump() {
@@ -303,7 +303,7 @@ class ShareCoordinator private constructor(app: Context) {
             val clean = NameRules.sanitize(name ?: uri.lastPathSegment)
             if (size <= 0) {
                 pfd.close()
-                main.post { fail(item, if (size == 0L) "Empty files cannot be sent." else "The app providing this file does not report its size.") }
+                main.post { fail(item, ctx.getString(if (size == 0L) R.string.share_err_empty else R.string.share_err_no_size)) }
                 return
             }
             main.post {
@@ -325,7 +325,7 @@ class ShareCoordinator private constructor(app: Context) {
                 }
             }
         } catch (e: Exception) {
-            main.post { fail(item, "Could not open this file (${e.javaClass.simpleName}).") }
+            main.post { fail(item, ctx.getString(R.string.share_err_open, e.javaClass.simpleName)) }
         }
     }
 
@@ -348,7 +348,7 @@ class ShareCoordinator private constructor(app: Context) {
 
     /** Per-item text for the share screen. */
     fun itemLine(i: ShareItem): Pair<String, Tone> {
-        i.error?.let { return "${i.label} — $it" to Tone.Bad }
+        i.error?.let { return ctx.getString(R.string.share_item_error, i.label, it) to Tone.Bad }
         val t = i.transferId?.let { id -> controller.snapshot?.transfers?.firstOrNull { it.id == id } }
         if (t != null) {
             val tone = when (t.state) {
@@ -357,12 +357,12 @@ class ShareCoordinator private constructor(app: Context) {
                 TransferState.Cancelled, TransferState.Declined -> Tone.Warn
                 else -> Tone.Normal
             }
-            return ProgressText.line(t) to tone
+            return ProgressText.line(t, ctx.strings) to tone
         }
         return when {
-            i.inFlight -> "${i.label} — starting…" to Tone.Muted
-            i.transferId != null -> "${i.label} — done" to Tone.Ok // already pruned from the snapshot
-            else -> "${i.label} — queued" to Tone.Muted
+            i.inFlight -> ctx.getString(R.string.share_item_starting, i.label) to Tone.Muted
+            i.transferId != null -> ctx.getString(R.string.share_item_done, i.label) to Tone.Ok // already pruned from the snapshot
+            else -> ctx.getString(R.string.share_item_queued, i.label) to Tone.Muted
         }
     }
 
@@ -372,7 +372,7 @@ class ShareCoordinator private constructor(app: Context) {
         val total = out.sumOf { it.size ?: 0 }
         val sent = out.sumOf { it.bytes }
         val pct = if (total > 0 && out.all { it.size != null }) (sent.coerceAtMost(total) * 100 / total).toInt() else null
-        notifications.progress("${out.size} file(s) · ${ProgressText.bytes(sent)}", pct, out.first().id)
+        notifications.progress(ctx.resources.getQuantityString(R.plurals.share_progress_summary, out.size, out.size, ProgressText.bytes(sent, ctx.strings)), pct, out.first().id)
     }
 
     companion object {

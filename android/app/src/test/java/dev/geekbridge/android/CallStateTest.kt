@@ -77,23 +77,23 @@ class CallStateTrackerTest {
 class CallStateFormatTest {
     @Test
     fun namesStates() {
-        assertEquals("Idle", Format.callState(CallState.Idle))
-        assertEquals("Ringing (incoming call)", Format.callState(CallState.Ringing))
-        assertEquals("In call", Format.callState(CallState.OffHook))
-        assertTrue(Format.callState(null).startsWith("waiting"))
+        assertEquals("Idle", Format.callState(TestStrings, CallState.Idle))
+        assertEquals("Ringing (incoming call)", Format.callState(TestStrings, CallState.Ringing))
+        assertEquals("In call", Format.callState(TestStrings, CallState.OffHook))
+        assertTrue(Format.callState(TestStrings, null).startsWith("waiting"))
     }
 
     @Test
     fun formatsTimestampInGivenZone() {
         val millis = 1_700_000_000_000L // 2023-11-14T22:13:20Z
-        assertEquals("22:13:20", Format.callChangedAt(millis, ZoneId.of("UTC")))
-        assertEquals("23:13:20", Format.callChangedAt(millis, ZoneId.of("Europe/Paris")))
-        assertEquals("none yet", Format.callChangedAt(null, ZoneId.of("UTC")))
+        assertEquals("22:13:20", Format.callChangedAt(TestStrings, millis, ZoneId.of("UTC")))
+        assertEquals("23:13:20", Format.callChangedAt(TestStrings, millis, ZoneId.of("Europe/Paris")))
+        assertEquals("none yet", Format.callChangedAt(TestStrings, null, ZoneId.of("UTC")))
     }
 
     @Test
     fun stateTextNeverCarriesANumber() {
-        for (s in CallState.entries) assertFalse(Format.callState(s).any { it.isDigit() })
+        for (s in CallState.entries) assertFalse(Format.callState(TestStrings, s).any { it.isDigit() })
     }
 }
 
@@ -178,7 +178,7 @@ class CallStateMonitorTest {
         val r = monitor.start()
         assertTrue(r is MonitorStart.Failed)
         assertFalse(monitor.isRunning)
-        assertFalse((r as MonitorStart.Failed).reason.contains("no permission")) // native text is not echoed
+        assertFalse((r as MonitorStart.Failed).reason(TestStrings).contains("no permission")) // native text is not echoed
         registrar.failWith = null
         assertEquals(MonitorStart.Started, monitor.start())
     }

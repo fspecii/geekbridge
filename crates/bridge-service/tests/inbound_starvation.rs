@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Security review 2 (docs/security-review-2.md, S2-1): strangers on the LAN must not be able to
+//! Security review 2 (docs/reports/security-review-2.md, S2-1): strangers on the LAN must not be able to
 //! use up the service's link table with unpaired connections. One source address may hold only a
 //! few unpaired links, and a paired phone that reconnects always gets in, even when the table is
 //! full of strangers from many addresses.

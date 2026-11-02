@@ -32,7 +32,7 @@ help), `crates/bridge-apps/src/pair_ui.rs` (desktop UI), `android/.../QrPairActi
   mDNS would need a multicast socket on both sides (and a `MulticastLock` on Android, which the app already holds
   while discovering).
 * The emulator's NAT drops broadcasts, so discovery itself is not exercised by the emulator tests
-  (see [e2e-findings.md](e2e-findings.md)); the unit/integration tests cover the datagram format and parsing.
+  (see [e2e-findings.md](reports/e2e-findings.md)); the unit/integration tests cover the datagram format and parsing.
 
 ## QR payload and token protocol
 
@@ -48,7 +48,7 @@ geekbridge://pair?v=1&id=<device id>&fp=<sha256 of TLS cert, hex>&t=<token, 32 h
   (`TokenBook`), at most 4 outstanding (a new QR evicts the oldest). Five wrong tokens from one source address lock out
   that address only (a stranger cannot revoke the code on the screen); everything is revoked when the QR window closes.
   One address may hold at most 3 unpaired connections, and a paired phone displaces the oldest stranger when the link
-  table is full ([security-review-2.md](security-review-2.md) S2-1, S2-2). Reuse, expiry and a wrong token are distinct, tested outcomes (`RedeemError`).
+  table is full ([security-review-2.md](reports/security-review-2.md) S2-1, S2-2). Reuse, expiry and a wrong token are distinct, tested outcomes (`RedeemError`).
 
 Flow (phone scans):
 

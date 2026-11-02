@@ -90,10 +90,10 @@ data class ComputerGrants(val byDevice: Map<String, Set<GrantFeature>> = emptyMa
 
 /** Wording of the "who is allowed" line; pure so it is tested. */
 object GrantText {
-    fun summary(allowedNames: List<String>, pairedCount: Int): String = when {
-        pairedCount == 0 -> "No computer paired yet"
-        allowedNames.isEmpty() -> "No computer allowed yet"
-        else -> "Allowed: " + allowedNames.joinToString(", ")
+    fun summary(allowedNames: List<String>, pairedCount: Int, s: Strings): String = when {
+        pairedCount == 0 -> s.get(R.string.grant_none_paired)
+        allowedNames.isEmpty() -> s.get(R.string.grant_none_allowed)
+        else -> s.get(R.string.grant_allowed, allowedNames.joinToString(s.get(R.string.list_separator)))
     }
 }
 

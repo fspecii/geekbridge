@@ -863,6 +863,13 @@ fn update_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
+fn cert_seeds() -> Vec<Vec<u8>> {
+    vec![
+        include_bytes!("../../bridge-kde/tests/fixtures/kdeconnect-real/daemon.crt.pem").to_vec(),
+        include_bytes!("../../bridge-kde/tests/fixtures/a.crt.pem").to_vec(),
+    ]
+}
+
 macro_rules! t {
     ($name:literal, $run:expr, $kinds:expr, $fx:expr, $seeds:expr) => {
         Target {
@@ -976,7 +983,7 @@ pub static TARGETS: &[Target] = &[
         dispatch_seeds
     ),
     t!("update", update_parse, &[], &[], update_seeds),
-    t!("cert", cert_parse, &[], &[], none),
+    t!("cert", cert_parse, &[], &[], cert_seeds),
     t!(
         "hub_phone_data",
         hub_phone_data,

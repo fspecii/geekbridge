@@ -20,8 +20,8 @@ class DeviceRisksTest {
             calendar = PermissionStatus.Granted, phoneState = PermissionStatus.Granted, battery = BatteryState.Unrestricted,
             oemAcknowledged = false, oem = Oem.Nothing,
         )
-        assertEquals(StepStatus.Done, SetupModel.steps(i).first { it.id == StepId.Battery }.status)
-        assertEquals(StepStatus.Todo, SetupModel.steps(i.copy(oem = Oem.Xiaomi)).first { it.id == StepId.Battery }.status)
+        assertEquals(StepStatus.Done, SetupModel.steps(TestStrings, i).first { it.id == StepId.Battery }.status)
+        assertEquals(StepStatus.Todo, SetupModel.steps(TestStrings, i.copy(oem = Oem.Xiaomi)).first { it.id == StepId.Battery }.status)
     }
 
     @Test fun launcherFallsBackWhenEveryVendorScreenIsRefused() {

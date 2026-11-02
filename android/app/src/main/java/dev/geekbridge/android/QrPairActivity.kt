@@ -102,10 +102,10 @@ class QrPairActivity : Activity() {
             when (o) {
                 is CoreOutcome.Ok -> {
                     val t = QrProtocol.parseTarget(o.result)
-                    if (t == null) fail("The pairing code could not be read.") else if (confirm) { mode = Mode.Confirm(t); render() } else begin(t)
+                    if (t == null) fail(getString(R.string.qr_err_unreadable)) else if (confirm) { mode = Mode.Confirm(t); render() } else begin(t)
                 }
-                is CoreOutcome.Rejected -> fail(QrProtocol.parseError(o.code))
-                else -> fail("GeekBridge's network core is not available on this phone.")
+                is CoreOutcome.Rejected -> fail(QrProtocol.parseError(strings, o.code))
+                else -> fail(getString(R.string.qr_err_core_missing))
             }
         }
     }
@@ -144,7 +144,7 @@ class QrPairActivity : Activity() {
             REQ_SCAN -> if (resultCode == RESULT_OK) {
                 // The user just scanned it on purpose: no extra confirmation step, the final "Pair?" still applies.
                 val text = QrProtocol.linkText(data?.getStringExtra("SCAN_RESULT"))
-                if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError("qr_not_geekbridge"))
+                if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
             }
             REQ_PICK -> if (resultCode == RESULT_OK && data != null) {
                 val clip = data.clipData
@@ -190,7 +190,7 @@ class QrPairActivity : Activity() {
         when (val step = plan?.next(controller.snapshot, SystemClock.elapsedRealtime())) {
             is QrStep.Dial -> controller.connect(step.address.host, step.address.port, m.target.deviceId)
             is QrStep.Pair -> controller.qrPairRequest(step.connectionId, m.target.token, m.target.certSha256) { code ->
-                if (code != null) failed(m.target, PairingHelp.explain(null, code, viaQr = true))
+                if (code != null) failed(m.target, PairingHelp.explain(strings, null, code, viaQr = true))
             }
             QrStep.Paired -> {
                 prompt.dismiss()
@@ -201,8 +201,8 @@ class QrPairActivity : Activity() {
             is QrStep.Failed -> {
                 val e = controller.events.lastOrNull { it.kind == "pairing_failed" || it.kind == "connect_failed" }
                 val why = when (step.why) {
-                    QrFailure.NoAddressAnswered -> PairingHelp.explain("connect_failed", e?.code ?: "timeout", viaQr = true)
-                    QrFailure.ConnectionLost -> PairingHelp.explain(e?.kind, e?.code, viaQr = true)
+                    QrFailure.NoAddressAnswered -> PairingHelp.explain(strings, "connect_failed", e?.code ?: "timeout", viaQr = true)
+                    QrFailure.ConnectionLost -> PairingHelp.explain(strings, e?.kind, e?.code, viaQr = true)
                 }
                 failed(m.target, why)
             }
@@ -254,7 +254,7 @@ class QrPairActivity : Activity() {
         }
         kit.button(card, getString(R.string.qr_continue), BtnStyle.Primary) {
             val text = QrProtocol.linkText(field.text)
-            if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError("qr_not_geekbridge"))
+            if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
         }
         kit.button(root, getString(R.string.qr_close), BtnStyle.Plain) { finish() }
     }

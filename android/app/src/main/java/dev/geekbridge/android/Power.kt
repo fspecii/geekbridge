@@ -160,41 +160,17 @@ object OemIntents {
     }
 }
 
-/** Plain-language steps for the settings the app cannot change or detect itself. */
+/** Plain-language steps for the settings the app cannot change or detect itself (string-array resources). */
 object OemGuides {
-    fun steps(oem: Oem): List<String> = when (oem) {
-        Oem.Xiaomi -> listOf(
-            "Open Autostart and switch GeekBridge on.",
-            "Open Settings › Apps › GeekBridge › Battery saver and choose “No restrictions”.",
-            "In Recent apps, pull the GeekBridge card down (or tap its lock) so it is not swiped away.",
-        )
-        Oem.Samsung -> listOf(
-            "Open Settings › Apps › GeekBridge › Battery and choose “Unrestricted”.",
-            "In Settings › Battery (“Battery and device care” on older One UI) › Background usage limits, remove GeekBridge from “Sleeping apps” and “Deep sleeping apps”.",
-            "Turn off “Put unused apps to sleep” for GeekBridge if it is listed.",
-        )
-        Oem.Huawei -> listOf(
-            "Open App launch (Settings › Battery › App launch), set GeekBridge to “Manage manually”.",
-            "Switch on Auto-launch, Secondary launch and Run in background.",
-        )
-        Oem.OnePlus -> listOf(
-            "Open Settings › Battery › Battery optimisation, find GeekBridge and choose “Don’t optimise”.",
-            "In Settings › Apps › GeekBridge › Battery usage, allow background activity and auto-launch.",
-            "In Recent apps, lock GeekBridge so it is not cleared.",
-        )
-        Oem.Oppo -> listOf(
-            "Open Auto-launch / Startup manager and switch GeekBridge on.",
-            "In Settings › Battery › GeekBridge, allow background activity.",
-            "In Recent apps, lock GeekBridge so it is not cleared.",
-        )
-        Oem.Vivo -> listOf(
-            "Open Autostart / Background start-up manager and allow GeekBridge.",
-            "In Settings › Battery › Background power consumption, set GeekBridge to “Allow high background power consumption”.",
-        )
-        Oem.Nothing -> listOf(
-            "Open Settings › Apps › GeekBridge › App battery usage and choose “Unrestricted”.",
-            "Nothing OS has no separate autostart list. If it still disconnects, check that Settings › Battery › Battery optimisation does not list GeekBridge as “Optimised”.",
-        )
-        Oem.Other -> emptyList()
+    /** The string-array of steps for [oem], or null when there is no guide. Resolve with `resources.getStringArray`. */
+    fun stepsRes(oem: Oem): Int? = when (oem) {
+        Oem.Xiaomi -> R.array.power_steps_xiaomi
+        Oem.Samsung -> R.array.power_steps_samsung
+        Oem.Huawei -> R.array.power_steps_huawei
+        Oem.OnePlus -> R.array.power_steps_oneplus
+        Oem.Oppo -> R.array.power_steps_oppo
+        Oem.Vivo -> R.array.power_steps_vivo
+        Oem.Nothing -> R.array.power_steps_nothing
+        Oem.Other -> null
     }
 }

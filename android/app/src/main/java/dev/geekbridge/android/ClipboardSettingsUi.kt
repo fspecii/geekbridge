@@ -12,7 +12,7 @@ object ClipboardSettingsUi {
         val s = ClipboardRuntime.settings
         kit.divider(parent)
         kit.row(
-            parent, R.drawable.ic_clipboard, "Clipboard sync", ClipboardText.summary(s),
+            parent, R.drawable.ic_clipboard, activity.getString(R.string.clip_sync_title), ClipboardText.summary(s, activity.strings),
             kit.toggle(s.enabled) { on ->
                 ClipboardRuntime.update { it.copy(enabled = on) }
                 if (on) ClipboardRuntime.ensureWaiting()
@@ -22,18 +22,18 @@ object ClipboardSettingsUi {
         if (s.enabled) {
             kit.divider(parent)
             kit.row(
-                parent, R.drawable.ic_check, "Time window", "Items older than ${ClipboardText.windowLabel(s.windowMs)} are not offered", null,
+                parent, R.drawable.ic_check, activity.getString(R.string.clip_window_title), activity.getString(R.string.clip_window_summary, ClipboardText.windowLabel(s.windowMs, activity.strings)), null,
             ) { chooseWindow(activity, onChanged) }
             kit.divider(parent)
-            kit.row(parent, R.drawable.ic_bell, "What Android allows", ClipboardText.HONEST_NOTE, null)
+            kit.row(parent, R.drawable.ic_bell, activity.getString(R.string.clip_allows_title), activity.getString(R.string.clip_honest_note), null)
         }
     }
 
     private fun chooseWindow(activity: Activity, onChanged: () -> Unit) {
         val choices = ClipboardLimits.WINDOW_CHOICES_MS
         AlertDialog.Builder(activity)
-            .setTitle("Offer items copied in the last…")
-            .setItems(choices.map { ClipboardText.windowLabel(it) }.toTypedArray()) { _, i ->
+            .setTitle(activity.getString(R.string.clip_window_dialog))
+            .setItems(choices.map { ClipboardText.windowLabel(it, activity.strings) }.toTypedArray()) { _, i ->
                 ClipboardRuntime.update { it.copy(windowMs = choices[i]) }
                 onChanged()
             }

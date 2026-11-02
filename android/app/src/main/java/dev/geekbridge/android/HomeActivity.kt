@@ -78,7 +78,7 @@ class HomeActivity : Activity() {
         main.removeCallbacks(poller)
         controller.observers -= observer
         prompt.dismiss()
-        if (ActivityTracker.leavingApp(this)) controller.stop("Link stopped because the app left the foreground.")
+        if (ActivityTracker.leavingApp(this)) controller.stop(R.string.link_stop_foreground)
         super.onStop()
     }
 
@@ -120,14 +120,14 @@ class HomeActivity : Activity() {
         val s = controller.snapshot
         val connected = s?.connections.orEmpty().filter { it.trusted }.map { it.peer.name.ifEmpty { getString(R.string.home_computer) } }
         val inp = inputs()
-        val steps = SetupModel.steps(inp)
+        val steps = SetupModel.steps(strings, inp)
         AppState.rememberDone(steps)
-        val warnings = SetupModel.warnings(inp, AppState.setupFinished)
+        val warnings = SetupModel.warnings(strings, inp, AppState.setupFinished)
         val hero = HomeModel.hero(
-            AppState.pairedNames, AppState.pairedCount, controller.phase, connected, AppState.keepConnected, LinkService.isRunning,
+            strings, AppState.pairedNames, AppState.pairedCount, controller.phase, connected, AppState.keepConnected, LinkService.isRunning,
         )
         val glance = TransferGlanceModel.of(s?.transfers.orEmpty())
-        val sig = listOf(hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, PhoneDataRuntime.active().sms).joinToString("|")
+        val sig = listOf(WhatsNewRuntime.pending() != null, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, PhoneDataRuntime.active().sms).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
         // The whole screen is rebuilt on a state change; put TalkBack back where the user was.
@@ -146,6 +146,9 @@ class HomeActivity : Activity() {
             startActivity(SetupActivity.intent(this@HomeActivity, review = true))
         }
         root.addView(kit.dotHeader(getString(R.string.app_name), gear), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(4) })
+
+        // Shown once after an update, until dismissed
+        WhatsNewRuntime.pending()?.let { whatsNewCard(root, it) }
 
         // Warning / unfinished setup
         if (warnings.isNotEmpty() || !AppState.setupFinished) {
@@ -207,7 +210,7 @@ class HomeActivity : Activity() {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         root.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
         val paired = AppState.pairedCount
-        val sub = HomeModel.tileSubtitle(paired, connected)
+        val sub = HomeModel.tileSubtitle(strings, paired, connected)
         kit.tile(row, R.drawable.ic_file, getString(R.string.home_send_file), sub, paired > 0) { if (paired > 0) sendFile() else needPairing() }
         val clipHook = QuickActions.sendClipboard
         kit.tile(row, R.drawable.ic_clipboard, getString(R.string.home_send_clipboard), if (clipHook == null && paired > 0) getString(R.string.home_opens_clipboard_tools) else sub, paired > 0) { if (paired > 0) sendClipboard() else needPairing() }
@@ -264,6 +267,32 @@ class HomeActivity : Activity() {
         }
     }
 
+    /** "Updated to X.Y.Z": a few highlights, a link to the release page, and Dismiss (which remembers the version). */
+    private fun whatsNewCard(root: LinearLayout, notes: WhatsNew) {
+        val card = kit.panel(root, 16)
+        (card.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12)
+        card.addView(kit.text(getString(R.string.whatsnew_title, notes.version), 17f, bold = true).apply {
+            if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+        })
+        for (line in notes.highlights) {
+            card.addView(kit.text("•  $line", 14f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
+        }
+        kit.button(card, getString(R.string.whatsnew_full_notes), BtnStyle.Tonal) {
+            val url = WhatsNewModel.releaseUrl(BuildConfig.RELEASE_REPO, notes.version)
+            try {
+                if (url == null || !UpdateModel.urlAllowed(url)) throw ActivityNotFoundException()
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            } catch (_: ActivityNotFoundException) {
+                toast(getString(R.string.whatsnew_no_browser))
+            }
+        }
+        kit.button(card, getString(R.string.whatsnew_dismiss), BtnStyle.Plain) {
+            WhatsNewRuntime.dismiss()
+            lastSig = ""
+            render()
+        }
+    }
+
     /** "This phone's name": what computers show for this phone. Applied to the running link without re-pairing. */
     private fun chooseName() {
         val input = android.widget.EditText(this).apply {
@@ -287,7 +316,7 @@ class HomeActivity : Activity() {
         dialog.setOnShowListener {
             dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 when (val c = DeviceName.check(input.text.toString())) {
-                    is DeviceName.Check.Bad -> input.error = c.reason
+                    is DeviceName.Check.Bad -> input.error = c.reason(strings)
                     is DeviceName.Check.Ok -> {
                         val saved = DeviceName.save(this, c.name) ?: return@setOnClickListener
                         controller.rename(saved)

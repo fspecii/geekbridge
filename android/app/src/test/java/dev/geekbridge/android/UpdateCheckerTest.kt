@@ -145,7 +145,7 @@ class UpdateCheckerTest {
             checker().download(offer, dir)
             error("must fail")
         } catch (e: UpdateChecker.UpdateException) {
-            assertTrue(e.message!!.contains("SHA-256"))
+            assertTrue(e.text.text(TestStrings).contains("SHA-256"))
         }
         assertEquals(0, dir.listFiles()!!.size)
     }
@@ -184,9 +184,9 @@ class UpdateCheckerTest {
         reply(latest, ByteArray(0), 500)
         assertTrue(checker().check(null) is UpdateCheckResult.Failed)
         reply(latest, ByteArray(0), 403, "X-RateLimit-Remaining" to "0")
-        assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.contains("rate"))
+        assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.text(TestStrings).contains("rate"))
         reply(latest, ByteArray(0), 429)
-        assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.contains("rate"))
+        assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.text(TestStrings).contains("rate"))
     }
 
     @Test fun privateOrEmptyRepositoryIsReportedAsNoPublicRelease() {
@@ -194,7 +194,7 @@ class UpdateCheckerTest {
         assertEquals(UpdateCheckResult.NoPublicRelease, checker().check(null))
         reply(latest, ByteArray(0), 403) // plain refusal, not a rate limit
         assertEquals(UpdateCheckResult.NoPublicRelease, checker().check(null))
-        assertTrue(UpdateCheckResult.NoPublicRelease.MESSAGE.contains("private or has no releases yet"))
+        assertTrue(UpdateCheckResult.NoPublicRelease.MESSAGE.text(TestStrings).contains("private or has no releases yet"))
     }
 
     @Test fun anotherRepositoryCanBeQueried_andNoAuthorizationIsEverSent() {

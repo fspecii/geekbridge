@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Text for the Diagnostics screen (MainActivity), the "Computer link" card (LinkSection) and the transport
+     notices/errors/events (Transport, TransportController). Translate whole sentences; keep %1$s style arguments. -->
+<resources>
+    <!-- Core error codes (TransportText.error) -->
+    <string name="err_not_running">The link is not running.</string>
+    <string name="err_already_running">The link is already running.</string>
+    <string name="err_busy">The link is busy starting or stopping. Try again in a moment.</string>
+    <string name="err_identity_storage">Could not open this app\'s private identity storage (%1$s).</string>
+    <string name="err_invalid_device_name">This phone\'s name is not usable as a device name.</string>
+    <string name="err_invalid_endpoint">Enter an IP address (not a host name) and a port from 1 to 65535.</string>
+    <string name="err_invalid_device_id">A device id is 32–38 letters, digits, \'-\' or \'_\'.</string>
+    <string name="err_loopback_not_allowed">Loopback is only allowed in debug builds with the testing option on.</string>
+    <string name="err_address_rejected">That address is not allowed. Only private local-network addresses can be used.</string>
+    <string name="err_already_connected">A connection or attempt to that device already exists.</string>
+    <string name="err_too_many_connections">Too many connections. Disconnect one first.</string>
+    <string name="err_unknown_connection">That connection no longer exists.</string>
+    <string name="err_wrong_state">That connection is not waiting for a pairing choice.</string>
+    <string name="err_not_trusted">Only a paired (trusted) connection can do that.</string>
+    <string name="err_request_gone">That pairing request is gone (expired or replaced). Nothing was approved.</string>
+    <string name="err_verification_mismatch">The code or certificate no longer matches the request. Nothing was approved.</string>
+    <string name="err_too_many_attempts">Pairing request rejected after too many mismatches.</string>
+    <string name="err_listen_failed">Could not listen on that port. Another app may be using it.</string>
+    <string name="err_discovery_requires_listener">Announcing needs listening for connections to be on.</string>
+    <string name="err_native_transport">The native transport could not run here (%1$s).</string>
+    <string name="err_store_error">The trust record could not be updated.</string>
+    <string name="err_core_refused">The native core refused the request (%1$s).</string>
+
+    <!-- Link events (TransportText.event) -->
+    <string name="event_pairing_prompt">A pairing request is waiting for your decision.</string>
+    <string name="event_paired">Paired: the other device’s exact certificate is now trusted.</string>
+    <string name="event_pair_failed_local">Pairing did not complete: declined on this phone.</string>
+    <string name="event_pair_failed_peer">Pairing did not complete: the other device declined.</string>
+    <string name="event_pair_failed_timeout">Pairing did not complete: timed out.</string>
+    <string name="event_pair_failed_clock">Pairing did not complete: the two clocks differ too much.</string>
+    <string name="event_pair_failed_changed">Pairing did not complete: the request changed while open.</string>
+    <string name="event_pair_failed_closed">Pairing did not complete: the connection closed.</string>
+    <string name="event_pair_failed_tls">Pairing did not complete: the secure channel failed.</string>
+    <string name="event_pair_failed_none">Pairing did not complete: no reason given.</string>
+    <string name="event_pair_failed_code">Pairing did not complete: %1$s.</string>
+    <string name="event_security_pin">SECURITY: a paired device presented a different certificate. The connection was refused.</string>
+    <string name="event_security_identity">SECURITY: the device at that address is not the device id you chose. The connection was refused.</string>
+    <string name="event_connect_timeout">Connection timed out.</string>
+    <string name="event_connect_tls">Secure channel could not be set up.</string>
+    <string name="event_connect_failed">Connection failed.</string>
+    <string name="event_connect_failed_code">Connection failed (%1$s).</string>
+    <string name="event_link_closed">A connection closed.</string>
+    <string name="event_link_closed_code">A connection closed (%1$s).</string>
+    <string name="event_peer_unpaired">The other device removed the pairing; it is gone from this phone too.</string>
+    <string name="event_peer_requested_repair">The other device forgot this phone and asks to pair again. Compare the code on both screens and accept only if you started this.</string>
+    <string name="event_unpaired">Unpaired on this phone.</string>
+    <string name="event_unknown">Event (%1$s).</string>
+
+    <!-- Controller notices -->
+    <string name="notice_rejected">%1$s: %2$s</string>
+    <string name="notice_core_unavailable">%1$s: native core unavailable (%2$s).</string>
+    <string name="notice_core_unreadable">%1$s: unreadable native response (%2$s).</string>
+    <string name="notice_unexpected_success">%1$s: unexpected success.</string>
+    <string name="verb_could_not_start">Could not start</string>
+    <string name="verb_stop">Stop</string>
+    <string name="verb_status">Status</string>
+    <string name="verb_connect">Connect</string>
+    <string name="verb_pair">Pair</string>
+    <string name="verb_approve">Approve</string>
+    <string name="verb_decline">Decline</string>
+    <string name="verb_rename">Rename</string>
+    <string name="verb_unpair">Unpair</string>
+    <string name="verb_disconnect">Disconnect</string>
+    <string name="verb_ping">Ping</string>
+    <string name="notice_starting">Starting the link…</string>
+    <string name="notice_running">Link running. Nothing is paired or trusted until you approve a pairing.</string>
+    <string name="notice_stopping">Stopping the link…</string>
+    <string name="notice_stopped">Link stopped. All connections and pending requests were closed.</string>
+    <string name="notice_status_unreadable">Status: unreadable native response.</string>
+    <string name="notice_transport_not_running">The native transport is not running.</string>
+    <string name="notice_connecting">Connecting… (TLS handshake only; nothing is paired yet).</string>
+    <string name="notice_pair_await">Waiting for the other device to ask to pair…</string>
+    <string name="notice_pair_sent">Pairing request sent. Waiting for the code…</string>
+    <string name="notice_qr_checking">Checking the computer\'s identity… confirm on this phone when asked.</string>
+    <string name="notice_approved">Approved on this phone. Waiting for the other device; not paired until it also accepts.</string>
+    <string name="notice_declined">Pairing declined. Nothing was trusted.</string>
+    <string name="notice_renamed">Name changed. A computer that is connected now shows it the next time it connects.</string>
+    <string name="notice_unpaired">Unpaired. The stored certificate for that device was removed from this phone.</string>
+    <string name="notice_disconnected">Disconnected. Pairing state was not changed.</string>
+    <string name="notice_ping_queued">Ping queued. It is the only message this build can send.</string>
+    <string name="notice_left_foreground">Link stopped because the app left the foreground. Pending requests were rejected.</string>
+
+    <!-- Diagnostics screen (MainActivity) -->
+    <string name="dev_title">Diagnostics</string>
+    <string name="dev_intro">GeekBridge %1$s. Technical details, the manual computer link and local previews, for troubleshooting and support. The everyday app is on the home screen.</string>
+    <string name="dev_row_licence">Licence</string>
+    <string name="dev_card_status">This phone and connection</string>
+    <string name="dev_row_phone">Phone</string>
+    <string name="dev_row_android">Android</string>
+    <string name="dev_android_value">%1$s (API %2$d)</string>
+    <string name="dev_row_paired">Paired computers</string>
+    <string name="dev_paired_unknown">start the link to read</string>
+    <string name="dev_core_checking">Native core: checking…</string>
+    <string name="dev_core_available">Native core: available</string>
+    <string name="dev_core_available_version">Native core: available (version %1$s)</string>
+    <string name="dev_core_unavailable">Native core: UNAVAILABLE — %1$s. SMS and clipboard validation are off; local previews still work.</string>
+    <string name="dev_core_error">Native core: answered with error %1$s.</string>
+    <string name="dev_core_unreadable">Native core: unreadable response (%1$s).</string>
+    <string name="dev_conn_stopped">Connection: link stopped.</string>
+    <string name="dev_recheck_core">Recheck native core</string>
+    <string name="dev_copy_report">Copy report</string>
+    <string name="dev_copy_report_hint">Copies versions, permissions and states only: no names, numbers, addresses or content.</string>
+    <string name="dev_report_copied">Report copied.</string>
+    <!-- Clip label of the copied diagnostics report; shown by some keyboards/overlays. -->
+    <string name="dev_report_clip_label" translatable="false">GeekBridge report</string>
+    <string name="dev_no_file_picker">No file picker is available.</string>
+    <string name="dev_interrupted">Interrupted when the app left the foreground. Run it again.</string>
+
+    <string name="dev_calls_title">Calls</string>
+    <string name="dev_calls_intro">Shows whether this phone is idle, ringing or in a call, after you allow it. Only that coarse state is read: no phone numbers, call log or contacts are requested, shown or stored, so an incoming call is just \"Ringing\". This preview stays on the phone; sharing call status with a computer is a separate switch in Setup > Answer calls.</string>
+    <string name="dev_calls_row_access">Call state access</string>
+    <string name="dev_calls_row_state">Phone state</string>
+    <string name="dev_calls_row_changed">Last change seen</string>
+    <string name="dev_calls_allow">Allow call state</string>
+    <string name="dev_open_app_settings">Open app settings</string>
+    <string name="dev_calls_bluetooth_note">Call audio is carried by your phone\'s regular Bluetooth hands-free (HFP) link to the computer, managed by Android. This app cannot capture or inject cellular call audio and does not try to. To use the phone as a headset for the computer, pair the two in Bluetooth settings.</string>
+    <string name="dev_open_bluetooth">Open Bluetooth settings</string>
+    <string name="dev_no_bluetooth_settings">No Bluetooth settings screen found.</string>
+    <string name="dev_calls_listening">Listening for call state changes while this screen is open.</string>
+    <string name="dev_calls_denied">Access denied. The feature stays off; you can ask again.</string>
+    <string name="dev_calls_blocked">Access denied and Android will not ask again. Enable it in app settings.</string>
+    <string name="dev_calls_not_allowed">Access not allowed yet. Nothing is observed until you allow it.</string>
+    <string name="dev_perm_allowed">allowed</string>
+    <string name="dev_perm_not_allowed">not allowed yet</string>
+    <string name="dev_perm_denied">denied</string>
+    <string name="dev_perm_blocked">denied · use app settings</string>
+    <string name="dev_calls_off">off</string>
+    <string name="dev_calls_none_yet">none yet</string>
+
+    <string name="dev_clip_title">Clipboard · manual only</string>
+    <string name="dev_clip_intro">The app never reads the clipboard in the background or on its own. Only the buttons below touch it, and only while this screen is open. Android 12+ shows its own notice when text is pasted.</string>
+    <string name="dev_clip_hint">Text to prepare</string>
+    <string name="dev_clip_not_prepared">Not prepared.</string>
+    <string name="dev_clip_paste">Paste</string>
+    <string name="dev_clip_copy">Copy</string>
+    <string name="dev_clip_share">Share</string>
+    <string name="dev_clip_buttons_hint">Paste reads the Android clipboard once, when tapped. Copy puts the field text on it. Share opens the Android share sheet.</string>
+    <string name="dev_clip_prepare">Prepare: validate with native core</string>
+    <string name="dev_clip_clear">Clear field</string>
+    <string name="dev_clip_cleared">Cleared.</string>
+    <string name="dev_send_files">Send files to computer…</string>
+    <string name="dev_clip_empty">The Android clipboard has no text.</string>
+    <string name="dev_clip_too_big_load">Clipboard text is over 64 KiB; not loaded.</string>
+    <string name="dev_clip_pasted">Pasted into the field. Not prepared.</string>
+    <string name="dev_clip_nothing_copy">Nothing to copy.</string>
+    <!-- Label of the clip the user copies from the field. -->
+    <string name="dev_clip_label" translatable="false">GeekBridge</string>
+    <string name="dev_clip_copied">Copied. Other apps on this phone can read the clipboard.</string>
+    <string name="dev_clip_nothing_share">Nothing to share.</string>
+    <string name="dev_clip_too_big_share">Text is over 64 KiB.</string>
+    <string name="dev_clip_share_title">Share text</string>
+    <string name="dev_clip_no_receiver">No app can receive shared text.</string>
+    <string name="dev_validating">Validating with the native core…</string>
+
+    <string name="dev_msg_title">Messages · draft check</string>
+    <string name="dev_msg_banner" translatable="false">MESSAGES</string>
+    <string name="dev_msg_row_check">Check a draft against the shared rules</string>
+    <string name="dev_msg_available_offline">available offline</string>
+    <string name="dev_msg_row_share">Share texts with your computer</string>
+    <string name="dev_msg_on">on</string>
+    <string name="dev_msg_off_optional">off · optional</string>
+    <string name="dev_msg_intro">Checks a draft against the shared message rules in the native core; nothing is sent from this box. Reading and sending texts for a paired computer is optional and set up in Setup > Share with computer. It needs the SMS permissions, which Android restricts: stores generally allow them only for the default SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". A denial at the runtime prompt is final until you change it in app settings. Nothing is ever sent automatically.</string>
+    <string name="dev_msg_recipient">Recipient number</string>
+    <string name="dev_msg_message">Message</string>
+    <string name="dev_msg_subscription">SIM subscription id (optional)</string>
+    <string name="dev_msg_not_checked">Not checked.</string>
+    <string name="dev_msg_validate">Validate draft (nothing is sent)</string>
+    <string name="dev_msg_sub_invalid">Subscription id must be a whole number.</string>
+
+    <string name="dev_contacts_title">Contacts · preview</string>
+    <plurals name="dev_contacts_intro">
+        <item quantity="one">Reads the first %1$d contact with a phone number, on this phone only, after you allow access. Not copied, stored or sent.</item>
+        <item quantity="other">Reads the first %1$d contacts with a phone number, on this phone only, after you allow access. Not copied, stored or sent.</item>
+    </plurals>
+    <string name="dev_contacts_allow">Allow contacts access</string>
+    <string name="dev_contacts_show">Show contacts preview</string>
+    <plurals name="dev_contacts_shown">
+        <item quantity="one">Showing %1$d contact.</item>
+        <item quantity="other">Showing %1$d contacts.</item>
+    </plurals>
+    <plurals name="dev_contacts_shown_truncated">
+        <item quantity="one">Showing the first %1$d contact; more exist on this phone.</item>
+        <item quantity="other">Showing the first %1$d contacts; more exist on this phone.</item>
+    </plurals>
+    <string name="dev_agenda_title">Agenda · preview</string>
+    <plurals name="dev_agenda_intro">
+        <item quantity="one">Reads up to %1$d calendar event in the next %2$d days from Android\'s calendar provider, after you allow access. Titles and locations only.</item>
+        <item quantity="other">Reads up to %1$d calendar events in the next %2$d days from Android\'s calendar provider, after you allow access. Titles and locations only.</item>
+    </plurals>
+    <string name="dev_agenda_allow">Allow calendar access</string>
+    <string name="dev_agenda_show">Show agenda preview</string>
+    <plurals name="dev_events_shown">
+        <item quantity="one">Showing %1$d event.</item>
+        <item quantity="other">Showing %1$d events.</item>
+    </plurals>
+    <plurals name="dev_events_shown_truncated">
+        <item quantity="one">Showing the first %1$d event; more exist on this phone.</item>
+        <item quantity="other">Showing the first %1$d events; more exist on this phone.</item>
+    </plurals>
+    <string name="dev_clear_preview">Clear preview</string>
+    <string name="dev_preview_not_allowed">Access not allowed yet. Nothing is read until you allow it.</string>
+    <string name="dev_preview_allowed">Access allowed. Tap to read a preview from this phone.</string>
+    <string name="dev_preview_denied">Access denied. The feature stays off; you can ask again.</string>
+    <string name="dev_preview_blocked">Access denied and Android will not ask again. Enable it in app settings.</string>
+    <string name="dev_reading">Reading…</string>
+    <string name="dev_reading_failed">Reading failed (%1$s).</string>
+    <string name="dev_preview_empty">Access allowed, but there is nothing to show.</string>
+
+    <string name="dev_privacy_title">Privacy</string>
+    <string name="dev_privacy_body">The network is used to talk to the computers you paired (encrypted, certificate-pinned) and by update checks, which only read GitHub\'s public release list when the app opens (at most every 12 hours, can be switched off) or when you tap Check for updates. A small background service keeps the phone reachable only while \"Stay connected\" is on, and only for computers you paired. Updates are installed only after a SHA-256 check and your confirmation in Android\'s installer. The app never asks for accessibility, root or ADB access. Contacts, calendar, clipboard and message text are shared only with a paired computer you allowed, are not logged or saved here, and previews are cleared when you leave the app.</string>
+
+    <!-- Computer link card (LinkSection) -->
+    <string name="link_title">Computer link</string>
+    <string name="link_intro">Your phone and your computer talk over an encrypted link on your own network (TCP + TLS with certificate pinning). Pairing needs your approval of an exact code and certificate. Once paired you can share the clipboard, send files and answer calls, and, if you switch them on, share texts, contacts and calendar. The link starts when you tap Start and stops when you leave the app.</string>
+    <string name="link_state_stopped_short">Link: stopped.</string>
+    <string name="link_start">Start link</string>
+    <string name="link_stop">Stop link</string>
+    <string name="link_dev_title">Developer options</string>
+    <string name="link_dev_sub">Ports, discovery and connecting by address</string>
+    <string name="link_opt_listen">Accept connections from computers (TCP port below)</string>
+    <string name="link_opt_port">Listen port (default 1716)</string>
+    <string name="link_opt_discover">Look for computers on this network (UDP discovery)</string>
+    <string name="link_opt_announce">Announce this phone on this network</string>
+    <string name="link_opt_loopback">Testing only: allow loopback peers (debug build)</string>
+    <string name="link_row_name">This phone’s name</string>
+    <string name="link_row_id">Device id</string>
+    <string name="link_row_listen">Listening</string>
+    <string name="link_row_discovery">Discovery</string>
+    <string name="link_own_cert">This phone’s certificate (SHA-256) — the other device shows the same value:</string>
+    <string name="link_connect_intro">Connect to a computer by address. Only private local-network IP addresses are accepted; this does not pair.</string>
+    <string name="link_hint_host">IP address, e.g. 192.168.1.20</string>
+    <string name="link_hint_port">Port (e.g. 1716)</string>
+    <string name="link_hint_device_id">Device id of that computer</string>
+    <string name="link_connect">Connect</string>
+    <string name="link_sec_discovered">Found on this network</string>
+    <string name="link_sec_connections">Connections</string>
+    <string name="link_sec_paired">Paired computers</string>
+    <string name="link_sec_events">Recent events</string>
+    <string name="link_port_range">Listen port must be a number from 0 to 65535.</string>
+    <string name="link_enter_connect">Enter an IP address, a port and the computer’s device id.</string>
+    <string name="link_state_stopped">Link: stopped. Nothing is listening and no connection is open.</string>
+    <string name="link_summary_stopped">Connection: link stopped. Nothing is listening, no port is open, and no computer is connected.</string>
+    <string name="link_paired_none_read">start the link to read</string>
+    <string name="link_state_starting">Link: starting…</string>
+    <string name="link_state_stopping">Link: stopping…</string>
+    <string name="link_state_running">Link: running.</string>
+    <string name="link_summary_running">Connection: link running — %1$d open, %2$d trusted.</string>
+    <string name="link_paired_unreadable">unreadable</string>
+    <string name="link_paired_none">none</string>
+    <string name="link_listen_none">not listening (outbound only)</string>
+    <string name="link_disc_off">off</string>
+    <string name="link_disc_problem">problem (%1$s)</string>
+    <string name="link_disc_both">listening and announcing (UDP %1$s)</string>
+    <string name="link_disc_listening">listening (UDP %1$s)</string>
+    <string name="link_disc_announcing">announcing</string>
+    <string name="link_notice_with_ignored">%1$s A pairing request could not be shown exactly and was ignored.</string>
+    <string name="link_disc_intro">Heard on the network, not verified. Connecting only opens an encrypted channel; it does not pair.</string>
+    <string name="link_no_name">(no name)</string>
+    <string name="link_disc_paired_before">%1$s · paired before</string>
+    <string name="link_this_computer">this computer</string>
+    <string name="link_this_device">this device</string>
+    <string name="link_a_device">A device</string>
+    <string name="link_connect_to">Connect to %1$s</string>
+    <string name="link_phase_trusted">Paired and trusted · pings received: %1$d</string>
+    <string name="link_phase_parked">Connected over TLS. Not paired.</string>
+    <string name="link_phase_pairing_request">Pairing request sent — waiting for the other device.</string>
+    <string name="link_phase_pairing_await">Waiting for the other device to ask to pair (this phone cannot ask on an incoming connection).</string>
+    <string name="link_phase_other">State: %1$s</string>
+    <string name="link_conn_head">%1$s · %2$s · %3$s</string>
+    <string name="link_their_cert">Their certificate (SHA-256):</string>
+    <string name="link_send_ping">Send ping</string>
+    <string name="link_pair_ellipsis">Pair…</string>
+    <string name="link_wait_for_request">Wait for their request</string>
+    <string name="link_disconnect">Disconnect</string>
+    <string name="link_auto_accept">Auto-accept files from this computer</string>
+    <string name="link_unpair_button">Unpair %1$s…</string>
+    <string name="link_unpair_title">Unpair %1$s?</string>
+    <string name="link_unpair_message">This removes its stored certificate from this phone. It will have to be paired again, with a new approval, before it is trusted.</string>
+    <string name="link_unpair">Unpair</string>
+    <string name="link_cancel">Cancel</string>
+    <string name="link_prompt_outgoing">You asked %1$s to pair. Compare this code with the one it shows:</string>
+    <string name="link_prompt_incoming">%1$s asks to pair. Compare this code with the one it shows:</string>
+    <string name="link_their_device_id">Their device id</string>
+    <string name="link_their_cert_must_match">Their certificate (SHA-256) — must match what that device shows for itself</string>
+    <string name="link_own_cert_short">This phone’s certificate (SHA-256)</string>
+    <plurals name="link_prompt_warning">
+        <item quantity="one">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: pairing also needs the other device to accept. This request expires in about %1$d second.</item>
+        <item quantity="other">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: pairing also needs the other device to accept. This request expires in about %1$d seconds.</item>
+    </plurals>
+    <string name="link_prompt_title_outgoing">Pair with %1$s?</string>
+    <string name="link_prompt_title_incoming">Pairing request</string>
+    <string name="link_prompt_pair">Pair</string>
+    <string name="link_prompt_decline">Decline</string>
+</resources>

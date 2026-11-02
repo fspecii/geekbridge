@@ -40,7 +40,7 @@ crashes or OEM kills only, `$S logs` (look for `FATAL EXCEPTION`, `am_proc_died`
 | 11 | **Kill the app and reconnect.** Swipe it out of Recents; also `adb shell am force-stop dev.geekbridge.android`, then open the app. | Link back to `connected` without re-pairing (within 30 s of opening; after a swipe the foreground service should return on its own). | `geekbridge-ctl status` link `connected`; `geekbridge-ctl events 0` shows `link_lost` then `connected`. | |
 | 12 | **Wi-Fi off/on.** Phone: Wi-Fi off 1 min, on again. Optional: mobile data only for 30 s. | No crash; reconnects within 30 s of Wi-Fi returning. | `status`/`events 0` as above; `$S logs` shows empty `logcat-crash.txt`. | |
 
-### Unpair, re-pair, rename (verified on the emulator, see [first-run-audit.md](first-run-audit.md))
+### Unpair, re-pair, rename (verified on the emulator, see [first-run-audit.md](reports/first-run-audit.md))
 
 - **Forget on the PC:** Pair a phone > **Forget...** > **Forget phone**. The phone still shows the computer as paired; scanning a fresh QR re-pairs at once.
 - **Unpair on the phone:** Home > **Diagnostics & about** > **Unpair**. The PC keeps showing "Paired, offline" until you forget it there too. If you re-pair with only one side cleared, the **first** attempt times out ("Pairing timed out before it was confirmed") and clears the stale record; show a new QR and scan again, the second attempt pairs. To avoid the detour, forget on both sides first.

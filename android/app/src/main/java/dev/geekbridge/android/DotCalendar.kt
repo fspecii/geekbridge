@@ -200,7 +200,7 @@ fun UiKit.agendaCard(parent: LinearLayout, dayOfMonth: Int, monthLabel: String, 
             orientation = LinearLayout.HORIZONTAL
             minimumHeight = dp(Tok.TARGET)
             setPadding(0, dp(6), 0, dp(6))
-            contentDescription = "${e.time}, ${e.title}" + (e.detail?.let { ", $it" } ?: "")
+            contentDescription = if (e.detail != null) context.getString(R.string.cd_cal_entry_detail, e.time, e.title, e.detail) else context.getString(R.string.cd_cal_entry, e.time, e.title)
             isFocusable = true
         }
         row.addView(TimelineDot(context, i == 0, i == entries.lastIndex), LinearLayout.LayoutParams(dp(20), Ui.MATCH))

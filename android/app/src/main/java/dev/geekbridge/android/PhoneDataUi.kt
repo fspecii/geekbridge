@@ -20,10 +20,10 @@ object PhoneDataUi {
     private fun granted(a: Activity, perms: Array<String>) = perms.all { a.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
 
     /** Wording for one feature row's state; pure so it is tested. */
-    fun state(enabled: Boolean, permitted: Boolean): String = when {
-        !enabled -> "Off"
-        permitted -> "On"
-        else -> "Waiting for permission"
+    fun state(enabled: Boolean, permitted: Boolean, s: Strings): String = when {
+        !enabled -> s.get(R.string.pd_state_off)
+        permitted -> s.get(R.string.pd_state_on)
+        else -> s.get(R.string.pd_state_waiting)
     }
 
     fun addSection(a: Activity, kit: UiKit, parent: LinearLayout, rerender: () -> Unit) {
@@ -34,7 +34,7 @@ object PhoneDataUi {
         fun feature(icon: Int, title: Int, sub: Int, enabled: Boolean, perms: Array<String>, grant: GrantFeature, set: (Boolean) -> Unit) {
             val ok = granted(a, perms)
             kit.row(
-                parent, icon, a.getString(title), a.getString(sub) + "\n" + state(enabled, ok),
+                parent, icon, a.getString(title), a.getString(sub) + "\n" + state(enabled, ok, a.strings),
                 kit.toggle(enabled) { on ->
                     set(on)
                     GrantsUi.switched(a, grant, on, rerender)
@@ -59,7 +59,7 @@ object PhoneDataUi {
         if (s.calendar && granted(a, calendarPerms)) {
             val n = s.calendarIds.size
             kit.button(parent, a.getString(R.string.pd_calendar_pick) + " · " +
-                (if (n == 0) a.getString(R.string.pd_calendar_none) else a.getString(R.string.pd_calendar_picked, n)), BtnStyle.Tonal) {
+                (if (n == 0) a.getString(R.string.pd_calendar_none) else a.resources.getQuantityString(R.plurals.pd_calendar_shared_count, n, n)), BtnStyle.Tonal) {
                 pickCalendars(a, rerender)
             }
             kit.divider(parent)
@@ -93,7 +93,7 @@ object PhoneDataUi {
                 AlertDialog.Builder(a)
                     .setTitle(R.string.pd_calendar)
                     .setMultiChoiceItems(
-                        cals.map { PhoneDataProtocol.clean(it.name, 60).ifEmpty { "Calendar ${it.id}" } }.toTypedArray(),
+                        cals.map { PhoneDataProtocol.clean(it.name, 60).ifEmpty { a.getString(R.string.pd_calendar_fallback_name, it.id) } }.toTypedArray(),
                         BooleanArray(cals.size) { cals[it].id in chosen },
                     ) { _, i, on -> if (on) chosen += cals[i].id else chosen -= cals[i].id }
                     .setPositiveButton(android.R.string.ok) { _, _ -> PhoneDataRuntime.setCalendarIds(chosen); rerender() }
@@ -121,7 +121,7 @@ object GrantsUi {
         val ids = ComputerGrantsRuntime.grants.devicesFor(f)
         val names = peers.filter { it.first in ids }.map { it.second }
         parent.addView(
-            kit.text(GrantText.summary(names, peers.size), 13f, if (names.isEmpty()) Tone.Warn else Tone.Muted)
+            kit.text(GrantText.summary(names, peers.size, a.strings), 13f, if (names.isEmpty()) Tone.Warn else Tone.Muted)
                 .apply { setPadding(0, kit.dp(4), 0, 0) },
         )
         if (peers.isNotEmpty()) kit.button(parent, a.getString(R.string.grant_choose), BtnStyle.Tonal) { choose(a, f, rerender) }

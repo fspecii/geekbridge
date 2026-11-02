@@ -462,8 +462,8 @@ class PhoneDataTest {
     }
 
     @Test fun uiStateWording() {
-        assertEquals("Off", PhoneDataUi.state(false, true)); assertEquals("On", PhoneDataUi.state(true, true))
-        assertEquals("Waiting for permission", PhoneDataUi.state(true, false))
+        assertEquals("Off", PhoneDataUi.state(false, true, TestStrings)); assertEquals("On", PhoneDataUi.state(true, true, TestStrings))
+        assertEquals("Waiting for permission", PhoneDataUi.state(true, false, TestStrings))
         assertNotNull(PhoneDataProtocol.clean("a\u0000b", 10)); assertEquals("a b", PhoneDataProtocol.clean("a\u0000b", 10))
     }
 }

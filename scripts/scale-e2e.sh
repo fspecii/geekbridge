@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Phone-data scale run: seeds an emulator with a heavy phone's worth of contacts, calendar events and texts,
 # pairs it with a desktop service, and measures sync time, bytes, phone CPU / memory and desktop memory
-# (docs/scale-report.md). Real providers, real link, real desktop service; made-up data.
+# (docs/reports/scale-report.md). Real providers, real link, real desktop service; made-up data.
 #
 #   scripts/scale-e2e.sh [STAGE[,STAGE...]] [--stop]
 #

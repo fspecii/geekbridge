@@ -94,7 +94,9 @@ object CallStateExecutor {
 sealed interface MonitorStart {
     data object Started : MonitorStart
     data object AlreadyRunning : MonitorStart
-    data class Failed(val reason: String) : MonitorStart
+    data class Failed(val reasonId: Int, val detail: String? = null) : MonitorStart {
+        fun reason(s: Strings): String = if (detail == null) s.get(reasonId) else s.get(reasonId, detail)
+    }
 }
 
 /**
@@ -124,10 +126,10 @@ class CallStateMonitor(
             MonitorStart.Started
         } catch (e: SecurityException) {
             generation++
-            MonitorStart.Failed("Android refused call state access.")
+            MonitorStart.Failed(R.string.call_state_refused)
         } catch (e: RuntimeException) {
             generation++
-            MonitorStart.Failed("Call state is unavailable on this device (${e.javaClass.simpleName}).")
+            MonitorStart.Failed(R.string.call_state_unavailable, e.javaClass.simpleName)
         }
     }
 

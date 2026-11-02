@@ -60,6 +60,8 @@ Commands:
   update [status|check|download|skip VERSION|enable|disable]
                                       look for a newer GitHub release, download and SHA-256-verify
                                       it (never installs anything); default: status
+  whats-new                           what changed in this version (the same text as the card Home shows
+                                      once after an update), and where the full release notes are
   send-file DEVICE_ID PATH...         send files to a connected, paired device
   send-text DEVICE_ID TEXT            send text (at most 8 KiB)
   send-url DEVICE_ID URL              send an http(s) link
@@ -70,6 +72,9 @@ Commands:
   share auto-accept DEVICE_ID on|off  accept files from the device without asking (default off)
   diagnose                            redacted support bundle (versions, capabilities, counters, last
                                       errors); no names, addresses, keys or content
+  report [--preview|--open|--copy]    a prefilled bug report for the public tracker: shows exactly what
+                                      it carries (the redacted diagnose output), --open opens it in your
+                                      browser, --copy copies it. Nothing is sent by this program.
   autostart [status|enable|disable]   start the service at login (XDG autostart, LaunchAgent or the
                                       per-user Run key); default: status
   tray [status|enable|disable]        the tray / menu-bar icon: show it or hide it for good (takes effect
@@ -130,6 +135,15 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         println!("{}", bridge_service::autostart::firewall_help());
         return Ok(());
     }
+    if command == "whats-new" {
+        let notes = bridge_core::whats_new::embedded();
+        print!("{}", notes.render());
+        println!(
+            "Full release notes: {}",
+            bridge_core::whats_new::release_url(&notes.version)
+        );
+        return Ok(());
+    }
     if command == "token-path" {
         println!("{}", ipc::token_path(&state_dir).display());
         return Ok(());
@@ -158,6 +172,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "diagnose" {
         return diagnose_command(port, &state_dir);
+    }
+    if command == "report" {
+        return report_command(&args[1..], port, &state_dir);
     }
     if command == "update" {
         return update_command(&args[1..], port, &state_dir);
@@ -471,6 +488,13 @@ fn describe_pull(p: &ipc::ClipboardPullStatus) -> String {
     }
 }
 
+/// One short desktop notification for the hotkey command, which has no terminal to print to.
+fn notify_clipboard(line: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "GeekBridge", "-t", "3000", "--", "Clipboard", line])
+        .status();
+}
+
 fn clipboard_command(
     args: &[OsString],
     port: u16,
@@ -478,8 +502,14 @@ fn clipboard_command(
 ) -> Result<(), String> {
     let word = |i: usize, what: &str| text(args.get(i), what);
     let sub = word(0, "clipboard subcommand")?;
-    let token = load_token(state_dir)?;
     let notify = args.iter().any(|a| a == "--notify");
+    let token = load_token(state_dir).inspect_err(|e| {
+        // Started from a hotkey there is no terminal: say that the service is not running.
+        if notify && sub == "paste-from-phone" {
+            notify_clipboard("GeekBridge is not running; start it, then try again.");
+            eprintln!("{e}");
+        }
+    })?;
     let device = args
         .iter()
         .skip(1)
@@ -555,9 +585,7 @@ fn clipboard_command(
             };
             println!("{line}");
             if notify {
-                let _ = std::process::Command::new("notify-send")
-                    .args(["-a", "GeekBridge", "-t", "3000", "Clipboard", &line])
-                    .status();
+                notify_clipboard(&line);
             }
             if ok { Ok(()) } else { Err(line) }
         }
@@ -788,6 +816,70 @@ fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
 }
 
 fn diagnose_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    print!("{}", diagnose_text(port, state_dir)?);
+    Ok(())
+}
+
+/// `report [--open|--copy]`: a prefilled bug report for the public tracker. Shows exactly what the
+/// link carries; nothing is sent by this program (the browser does it, only with `--open`).
+fn report_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_core::report;
+    let mode = args.first().and_then(|a| a.to_str()).unwrap_or("--preview");
+    if !matches!(mode, "--preview" | "--open" | "--copy") || args.len() > 1 {
+        return Err("usage: geekbridge-ctl report [--preview|--open|--copy]".into());
+    }
+    // A stopped service is itself worth reporting: fall back to a report that says so.
+    let text = diagnose_text(port, state_dir).unwrap_or_else(|e| {
+        format!(
+            "GeekBridge support report (redacted)\nservice not reachable: {}\nhost: {} {}\n",
+            bridge_bin_scrub(&e),
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )
+    });
+    let link = report::desktop_link(&report::repo_from_env(), &text, env!("CARGO_PKG_VERSION"));
+    println!("{}", link.preview());
+    if link.truncated {
+        println!("(Shortened to fit a link; `geekbridge-ctl diagnose` prints everything.)\n");
+    }
+    match mode {
+        "--open" => {
+            if report::open_in_browser(&link.url) {
+                println!("Opened your browser. Review the form there before you submit it.");
+            } else {
+                let copied = report::copy_to_clipboard(&link.preview());
+                println!(
+                    "No browser could be opened.{} Open this link yourself:\n{}",
+                    if copied {
+                        " The report above is on your clipboard."
+                    } else {
+                        ""
+                    },
+                    link.url
+                );
+            }
+        }
+        "--copy" => {
+            if report::copy_to_clipboard(&link.preview()) {
+                println!("Copied the report above to your clipboard.");
+            } else {
+                return Err("no clipboard tool found (wl-copy, xclip, xsel, pbcopy, clip)".into());
+            }
+        }
+        _ => {
+            println!("Link: {}\n", link.url);
+            println!("Nothing has been sent. `geekbridge-ctl report --open` opens this in your");
+            println!("browser; GitHub receives it only if you press Submit there.");
+        }
+    }
+    Ok(())
+}
+
+fn bridge_bin_scrub(text: &str) -> String {
+    bridge_service::diagnose::scrub(text)
+}
+
+fn diagnose_text(port: u16, state_dir: &std::path::Path) -> Result<String, String> {
     use bridge_service::diagnose::{Inputs, render};
     let token = load_token(state_dir)?;
     let mut notes = Vec::new();
@@ -823,21 +915,17 @@ fn diagnose_command(port: u16, state_dir: &std::path::Path) -> Result<(), String
         _ => None,
     };
     let host = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
-    print!(
-        "{}",
-        render(
-            &Inputs {
-                status,
-                events,
-                calling,
-                clipboard,
-                update,
-                notes
-            },
-            &host
-        )
-    );
-    Ok(())
+    Ok(render(
+        &Inputs {
+            status,
+            events,
+            calling,
+            clipboard,
+            update,
+            notes,
+        },
+        &host,
+    ))
 }
 
 fn update_call(port: u16, token: &Token, request: &Request) -> Result<UpdateStatus, String> {

@@ -26,11 +26,22 @@ pub struct Inputs {
 /// or a phone-number-like digit run in a service-generated message, and bounds its length.
 pub fn scrub(text: &str) -> String {
     let mut out = String::new();
+    let mut in_phone = false;
     for word in text.split_whitespace().take(40) {
         if !out.is_empty() {
             out.push(' ');
         }
-        out.push_str(&scrub_word(word));
+        // "+49 170 1234567": the groups after a leading "+digits" belong to the same number.
+        let digits_only = |w: &str| w.chars().all(|c| c.is_ascii_digit() || "-()".contains(c));
+        let starts_number =
+            word.starts_with('+') && word[1..].starts_with(|c: char| c.is_ascii_digit());
+        if starts_number || (in_phone && digits_only(word)) {
+            in_phone = true;
+            out.push_str("<redacted>");
+        } else {
+            in_phone = false;
+            out.push_str(&scrub_word(word));
+        }
     }
     out.chars().take(160).collect()
 }
@@ -43,7 +54,15 @@ fn scrub_word(word: &str) -> String {
         || (core.matches(':').count() >= 2 && hex_run >= 4);
     let looks_secret = core.len() >= 16 && hex_run * 10 >= core.len() * 9;
     let looks_number = digits >= 6;
-    if looks_ip || looks_secret || looks_number {
+    // E-mail addresses and file paths can sit in OS error texts; they name people and folders.
+    let bare = word.trim_matches(|c: char| ",;()[]\"'".contains(c));
+    let looks_personal = bare.contains('@')
+        || (bare.starts_with('/') && bare[1..].contains('/'))
+        || bare.starts_with("~/")
+        || bare.contains('\\');
+    if looks_personal {
+        "<redacted>".to_owned()
+    } else if looks_ip || looks_secret || looks_number {
         word.replace(core, "<redacted>")
     } else {
         word.to_owned()
@@ -302,6 +321,102 @@ mod tests {
         assert!(!s.contains("1701234567"), "{s}");
         assert!(!s.contains("AABBCC"), "{s}");
         assert!(s.contains("failed"));
+    }
+
+    #[test]
+    fn scrub_hides_emails_and_paths() {
+        let s =
+            scrub("open /home/alice/Documents/x.txt failed for alice@example.com C:\\Users\\Alice");
+        for bad in ["alice", "example", "Documents", "Users"] {
+            assert!(!s.contains(bad), "{bad} leaked: {s}");
+        }
+        assert!(s.contains("failed"));
+    }
+
+    /// The report URL must carry none of the personal data a hostile or sloppy service could put in
+    /// names, ids, addresses or error texts.
+    #[test]
+    fn report_link_carries_no_seeded_personal_data() {
+        use bridge_core::report;
+        let status: Status = serde_json::from_value(serde_json::json!({
+            "ipc_version": 1,
+            "service_version": "0.1.0",
+            "device_id": "3f2a9c1e-1111-2222-3333-444455556666",
+            "device_name": "Alice Smith's Laptop",
+            "own_cert_sha256": "ab".repeat(32),
+            "paired": [{
+                "device_id": "0123456789abcdef0123456789abcdef",
+                "name": "Alice Smith's Pixel",
+                "device_type": "phone",
+                "cert_sha256": "cd".repeat(32),
+                "paired_at_unix": 1,
+                "consents": []
+            }],
+            "links": [{
+                "device_id": "0123456789abcdef0123456789abcdef",
+                "name": "Alice Smith's Pixel",
+                "phase": "connected",
+                "role": null, "connection_id": 1,
+                "peer_ip": "192.168.1.77",
+                "peer_cert_sha256": "ef".repeat(32),
+                "negotiated": [], "since_unix_ms": 1, "pings_received": 2,
+                "last_ping_unix_ms": null, "rejected_packets": 0
+            }],
+            "challenges": [],
+            "event_seq": 2,
+            "inbound_listener": "192.168.1.5:1716"
+        }))
+        .expect("status");
+        let reason = "refused by 192.168.1.77:1716 for +49 170 1234567 alice@example.com \
+                      /home/alice/Documents/secret.txt device 0123456789abcdef0123456789abcdef";
+        let events: EventPage = serde_json::from_value(serde_json::json!({
+            "events": [
+                {"seq": 1, "at_unix_ms": 1, "device_id": "0123456789abcdef0123456789abcdef",
+                 "kind": "connect_failed", "reason": reason},
+                {"seq": 2, "at_unix_ms": 2, "device_id": null,
+                 "kind": "link_lost", "reason": reason}
+            ],
+            "next_after": 2, "gap": false
+        }))
+        .expect("events");
+        let report_text = render(
+            &Inputs {
+                status,
+                events: Some(events),
+                calling: None,
+                clipboard: None,
+                update: None,
+                notes: vec![format!("events: {reason}")],
+            },
+            "linux x86_64",
+        );
+        let link = report::desktop_link("fspecii/geekbridge", &report_text, "0.1.0");
+        let sent = format!("{}\n{}", link.url, report::decode(&link.url));
+        for secret in [
+            "Alice",
+            "Smith",
+            "Pixel",
+            "192.168",
+            "1234567",
+            "170",
+            "example.com",
+            "/home",
+            "Documents",
+            "secret.txt",
+            "0123456789abcdef",
+            "3f2a9c1e",
+            "abab",
+            "cdcd",
+            "efef",
+        ] {
+            assert!(
+                !sent.contains(secret),
+                "`{secret}` leaked into the link: {sent}"
+            );
+        }
+        assert!(link.fields.iter().any(|(id, _)| id == report::FIELD_LOGS));
+        assert!(sent.contains("connect_failed"), "{sent}");
+        assert!(link.url.len() <= report::MAX_URL_BYTES);
     }
 
     #[test]

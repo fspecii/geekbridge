@@ -291,60 +291,59 @@ object TransportText {
     /** Is this code a security-relevant state rather than an ordinary failure? */
     fun isSecurity(code: String?): Boolean = code == "pin_mismatch" || code == "identity_mismatch" || code == "peer_requested_repair"
 
-    fun error(code: String): String = when (code) {
-        "not_running" -> "The link is not running."
-        "already_running" -> "The link is already running."
-        "busy" -> "The link is busy starting or stopping. Try again in a moment."
+    fun error(s: Strings, code: String): String = when (code) {
+        "not_running" -> s.get(R.string.err_not_running)
+        "already_running" -> s.get(R.string.err_already_running)
+        "busy" -> s.get(R.string.err_busy)
         "invalid_state_dir", "insecure_state", "identity_unusable", "state_corrupt", "state_unavailable" ->
-            "Could not open this app's private identity storage ($code)."
-        "invalid_device_name" -> "This phone's name is not usable as a device name."
-        "invalid_endpoint" -> "Enter an IP address (not a host name) and a port from 1 to 65535."
-        "invalid_device_id" -> "A device id is 32–38 letters, digits, '-' or '_'."
-        "loopback_not_allowed" -> "Loopback is only allowed in debug builds with the testing option on."
-        "address_rejected" -> "That address is not allowed. Only private local-network addresses can be used."
-        "already_connected" -> "A connection or attempt to that device already exists."
-        "too_many_connections" -> "Too many connections. Disconnect one first."
-        "unknown_connection" -> "That connection no longer exists."
-        "wrong_state" -> "That connection is not waiting for a pairing choice."
-        "not_trusted" -> "Only a paired (trusted) connection can do that."
-        "unknown_request", "request_expired" -> "That pairing request is gone (expired or replaced). Nothing was approved."
-        "verification_mismatch", "certificate_mismatch" -> "The code or certificate no longer matches the request. Nothing was approved."
-        "too_many_attempts" -> "Pairing request rejected after too many mismatches."
-        "listen_failed" -> "Could not listen on that port. Another app may be using it."
-        "discovery_requires_listener" -> "Announcing needs listening for connections to be on."
-        "unsupported_platform", "runtime_failed" -> "The native transport could not run here ($code)."
-        "store_error" -> "The trust record could not be updated."
-        else -> "The native core refused the request ($code)."
+            s.get(R.string.err_identity_storage, code)
+        "invalid_device_name" -> s.get(R.string.err_invalid_device_name)
+        "invalid_endpoint" -> s.get(R.string.err_invalid_endpoint)
+        "invalid_device_id" -> s.get(R.string.err_invalid_device_id)
+        "loopback_not_allowed" -> s.get(R.string.err_loopback_not_allowed)
+        "address_rejected" -> s.get(R.string.err_address_rejected)
+        "already_connected" -> s.get(R.string.err_already_connected)
+        "too_many_connections" -> s.get(R.string.err_too_many_connections)
+        "unknown_connection" -> s.get(R.string.err_unknown_connection)
+        "wrong_state" -> s.get(R.string.err_wrong_state)
+        "not_trusted" -> s.get(R.string.err_not_trusted)
+        "unknown_request", "request_expired" -> s.get(R.string.err_request_gone)
+        "verification_mismatch", "certificate_mismatch" -> s.get(R.string.err_verification_mismatch)
+        "too_many_attempts" -> s.get(R.string.err_too_many_attempts)
+        "listen_failed" -> s.get(R.string.err_listen_failed)
+        "discovery_requires_listener" -> s.get(R.string.err_discovery_requires_listener)
+        "unsupported_platform", "runtime_failed" -> s.get(R.string.err_native_transport, code)
+        "store_error" -> s.get(R.string.err_store_error)
+        else -> s.get(R.string.err_core_refused, code)
     }
 
-    fun event(e: LinkEvent): String = when (e.kind) {
-        "pairing_prompt" -> "A pairing request is waiting for your decision."
-        "paired" -> "Paired: the other device’s exact certificate is now trusted."
-        "pairing_failed" -> "Pairing did not complete: " + when (e.code) {
-            "pairing_rejected_locally" -> "declined on this phone."
-            "pairing_rejected_by_peer" -> "the other device declined."
-            "pairing_timeout" -> "timed out."
-            "clock_skew" -> "the two clocks differ too much."
-            "pairing_binding_changed" -> "the request changed while open."
-            "link_closed" -> "the connection closed."
-            "tls_failed" -> "the secure channel failed."
-            null -> "no reason given."
-            else -> "${e.code}."
+    fun event(s: Strings, e: LinkEvent): String = when (e.kind) {
+        "pairing_prompt" -> s.get(R.string.event_pairing_prompt)
+        "paired" -> s.get(R.string.event_paired)
+        "pairing_failed" -> when (e.code) {
+            "pairing_rejected_locally" -> s.get(R.string.event_pair_failed_local)
+            "pairing_rejected_by_peer" -> s.get(R.string.event_pair_failed_peer)
+            "pairing_timeout" -> s.get(R.string.event_pair_failed_timeout)
+            "clock_skew" -> s.get(R.string.event_pair_failed_clock)
+            "pairing_binding_changed" -> s.get(R.string.event_pair_failed_changed)
+            "link_closed" -> s.get(R.string.event_pair_failed_closed)
+            "tls_failed" -> s.get(R.string.event_pair_failed_tls)
+            null -> s.get(R.string.event_pair_failed_none)
+            else -> s.get(R.string.event_pair_failed_code, e.code)
         }
         "connect_failed" -> when (e.code) {
-            "pin_mismatch" -> "SECURITY: a paired device presented a different certificate. The connection was refused."
-            "identity_mismatch" -> "SECURITY: the device at that address is not the device id you chose. The connection was refused."
-            "timeout" -> "Connection timed out."
-            "tls_failed" -> "Secure channel could not be set up."
-            null -> "Connection failed."
-            else -> "Connection failed (${e.code})."
+            "pin_mismatch" -> s.get(R.string.event_security_pin)
+            "identity_mismatch" -> s.get(R.string.event_security_identity)
+            "timeout" -> s.get(R.string.event_connect_timeout)
+            "tls_failed" -> s.get(R.string.event_connect_tls)
+            null -> s.get(R.string.event_connect_failed)
+            else -> s.get(R.string.event_connect_failed_code, e.code)
         }
-        "link_closed" -> "A connection closed" + (e.code?.let { " ($it)" } ?: "") + "."
-        "peer_unpaired" -> "The other device removed the pairing; it is gone from this phone too."
-        "peer_requested_repair" ->
-            "The other device forgot this phone and asks to pair again. Compare the code on both screens and accept only if you started this."
-        "unpaired" -> "Unpaired on this phone."
-        else -> "Event (${e.kind})."
+        "link_closed" -> e.code?.let { s.get(R.string.event_link_closed_code, it) } ?: s.get(R.string.event_link_closed)
+        "peer_unpaired" -> s.get(R.string.event_peer_unpaired)
+        "peer_requested_repair" -> s.get(R.string.event_peer_requested_repair)
+        "unpaired" -> s.get(R.string.event_unpaired)
+        else -> s.get(R.string.event_unknown, e.kind)
     }
 
     fun eventTone(e: LinkEvent): Tone = when {

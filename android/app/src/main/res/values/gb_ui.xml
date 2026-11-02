@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- User-facing text for Home, Setup, Share and pairing. English only for now; every string is a resource so a
-     translation is a values-xx/gb_ui.xml copy. Text built by the pure models (HomeModel, SetupModel) still lives
-     in those Kotlin files, see docs/android-app.md. -->
+     translation is a values-xx/gb_ui.xml copy. Text built by the pure models (HomeModel, SetupModel, Format, ...)
+     comes through the Strings interface and lives in gb_misc.xml; see docs/translating.md. -->
 <resources>
     <!-- Home -->
     <string name="home_cd_setup">Setup and permissions</string>
@@ -183,4 +183,23 @@
     <string name="offer_open">Open</string>
     <string name="offer_copy">Copy</string>
     <string name="core_info">Core info: %1$s</string>
+
+    <!-- Report a problem (Diagnostics & about) -->
+    <string name="report_button">Report a problem…</string>
+    <string name="report_hint">Shows a redacted report first. Nothing is sent automatically.</string>
+    <string name="report_title">Report a problem</string>
+    <string name="report_nothing_sent">Nothing is sent automatically. GeekBridge does not use the network for this: your browser loads a pre-filled GitHub form, and GitHub receives it only if you press Submit there.</string>
+    <string name="report_preview_title">Exactly what will be sent</string>
+    <string name="report_preview_cd">Report text that will be put into the GitHub form</string>
+    <string name="report_truncated">Shortened to fit a link. Copy keeps what is shown here.</string>
+    <string name="report_open">Open in browser</string>
+    <string name="report_copy">Copy</string>
+    <string name="report_close">Close</string>
+    <string name="report_copied">Report copied.</string>
+    <string name="report_no_browser_title">No browser found</string>
+    <string name="report_no_browser_body">The report is on your clipboard. Open this link on any device, or paste the report into a new issue:</string>
+    <string name="whatsnew_title">Updated to %1$s</string>
+    <string name="whatsnew_full_notes">Full release notes</string>
+    <string name="whatsnew_dismiss">Dismiss</string>
+    <string name="whatsnew_no_browser">No browser was found to open the release notes.</string>
 </resources>

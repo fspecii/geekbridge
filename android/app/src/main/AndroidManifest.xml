@@ -99,6 +99,12 @@
             android:label="@string/diagnostics_label"
             android:windowSoftInputMode="adjustResize" />
 
+        <!-- Preview of a redacted bug report; opens a GitHub form in the browser only on request. -->
+        <activity
+            android:name=".ReportActivity"
+            android:exported="false"
+            android:label="@string/report_title" />
+
         <!-- Keeps the link to paired computers reachable while the app is closed (only when a computer is paired). -->
         <service
             android:name=".LinkService"

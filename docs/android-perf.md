@@ -100,7 +100,7 @@ the emulator's redirect on `eth0`, so the speeds say nothing about a phone.
 
 ## Open items found while measuring
 
-1. **Resolved: the 100 MB and 500 MB transfers.** Root cause and evidence: [e2e-findings.md](e2e-findings.md) E2E-14. The receiver bound its
+1. **Resolved: the 100 MB and 500 MB transfers.** Root cause and evidence: [e2e-findings.md](reports/e2e-findings.md) E2E-14. The receiver bound its
    payload socket to the control link's address, and Android sent it out through the default network, whose NAT killed it after the first data.
    Other findings from the attempts: phone -> desktop through the Share sheet showed a stale result for every share after the first (E2E-16).
    Driving that in this harness needs the chooser tapped by label, a URI grant made as the shell user (a grant made by root does not let the

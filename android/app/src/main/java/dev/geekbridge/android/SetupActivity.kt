@@ -35,7 +35,7 @@ class SetupActivity : Activity() {
         kit = UiKit(this, Ui(this))
         screen = Screen(this, kit).also { it.install() }
         screen.footer.visibility = View.VISIBLE
-        steps = SetupModel.steps(inputs())
+        steps = SetupModel.steps(strings, inputs())
         page = when {
             savedInstanceState != null -> savedInstanceState.getInt(KEY_PAGE, 0)
             intent.getStringExtra(EXTRA_STEP) != null ->
@@ -111,7 +111,7 @@ class SetupActivity : Activity() {
     )
 
     private fun refresh() {
-        steps = SetupModel.steps(inputs())
+        steps = SetupModel.steps(strings, inputs())
         AppState.rememberDone(steps)
     }
 
@@ -144,7 +144,7 @@ class SetupActivity : Activity() {
         syncBackCallback()
         screen.announcePage(
             if (page >= steps.size) getString(R.string.setup_overview_pane)
-            else getString(R.string.setup_step_pane, page + 1, steps.size, SetupModel.title(steps[page].id)),
+            else getString(R.string.setup_step_pane, page + 1, steps.size, SetupModel.title(strings, steps[page].id)),
         )
         screen.requestInsets()
         screen.scroll.scrollTo(0, 0)
@@ -170,7 +170,7 @@ class SetupActivity : Activity() {
 
     private fun stepPage(root: LinearLayout, s: StepInfo) {
         val (icon, why) = copy(s.id)
-        val title = SetupModel.title(s.id)
+        val title = SetupModel.title(strings, s.id)
         val head = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = android.view.Gravity.START }
         head.addView(kit.badge(icon, tone(s.status), 64, solid = s.status == StepStatus.Done).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(24) })
         head.addView(DotText(this, title, maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(20) })
@@ -201,7 +201,7 @@ class SetupActivity : Activity() {
         when (s.status) {
             StepStatus.Done -> panel.addView(kit.text(getString(R.string.setup_all_set), 14f, Tone.Ok))
             StepStatus.Blocked -> {
-                panel.addView(kit.text(getString(R.string.setup_blocked, SetupModel.title(s.id)), 14f, Tone.Muted))
+                panel.addView(kit.text(getString(R.string.setup_blocked, SetupModel.title(strings, s.id)), 14f, Tone.Muted))
                 kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
             }
             else -> {
@@ -267,7 +267,7 @@ class SetupActivity : Activity() {
             kit.divider(panel)
             panel.addView(kit.text(getString(R.string.setup_oem_title, oem.label), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
             panel.addView(kit.text(getString(R.string.setup_oem_intro), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
-            OemGuides.steps(oem).forEachIndexed { i, line ->
+            (OemGuides.stepsRes(oem)?.let { resources.getStringArray(it).toList() } ?: emptyList()).forEachIndexed { i, line ->
                 panel.addView(kit.text("${i + 1}.  $line", 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
             }
             kit.button(panel, getString(R.string.setup_oem_open, oem.label.substringBefore(' ')), BtnStyle.Tonal) {
@@ -301,7 +301,7 @@ class SetupActivity : Activity() {
         steps.forEachIndexed { i, s ->
             if (i > 0) kit.divider(panel)
             kit.row(
-                panel, copy(s.id).first, SetupModel.title(s.id), s.detail,
+                panel, copy(s.id).first, SetupModel.title(strings, s.id), s.detail,
                 kit.chip(chipText(s), tone(s.status)), tone(s.status),
             ) { page = i; render() }
         }

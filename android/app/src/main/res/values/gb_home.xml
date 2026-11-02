@@ -38,7 +38,10 @@
     <string name="diagnostics_label">Diagnostics</string>
     <string name="channel_link">Background connection</string>
     <string name="channel_link_desc">Quiet notice shown while GeekBridge stays reachable from your paired computers.</string>
-    <string name="notif_ready">Ready for your computer · %1$d paired</string>
+    <plurals name="notif_ready">
+        <item quantity="one">Ready for your computer · %1$d paired</item>
+        <item quantity="other">Ready for your computer · %1$d paired</item>
+    </plurals>
     <string name="notif_battery">Battery optimisation is on</string>
     <string name="notif_stop">Stop</string>
 </resources>

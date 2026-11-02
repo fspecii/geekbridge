@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Text built by the pure models (Format, HomeModel, SetupModel, QrProtocol, SignerCheck) and small widgets. -->
+<resources>
+    <!-- Format -->
+    <string name="fmt_joined" translatable="false">%1$s · %2$s</string>
+    <string name="fmt_all_day">%1$s · all day</string>
+    <string name="fmt_time_range" translatable="false">%1$s–%2$s</string>
+    <plurals name="fmt_clip_prepared">
+        <item quantity="one">Prepared: the native core accepts this text (%1$d byte). Held in memory only. Not sent — this build cannot send clipboard text to a computer.</item>
+        <item quantity="other">Prepared: the native core accepts this text (%1$d bytes). Held in memory only. Not sent — this build cannot send clipboard text to a computer.</item>
+    </plurals>
+    <string name="fmt_clip_not_prepared">Not prepared: %1$s</string>
+    <string name="fmt_cannot_validate_unavailable">Cannot validate: native core unavailable (%1$s).</string>
+    <string name="fmt_cannot_validate_unreadable">Cannot validate: unreadable native response (%1$s).</string>
+    <string name="fmt_sms_valid">Valid according to the native core. Nothing was sent and nothing will be.</string>
+    <string name="fmt_sms_not_valid">Not valid: %1$s</string>
+    <string name="fmt_rejection" translatable="false">%1$s [%2$s]</string>
+    <string name="fmt_call_waiting">waiting for Android…</string>
+    <string name="fmt_call_idle">Idle</string>
+    <string name="fmt_call_ringing">Ringing (incoming call)</string>
+    <string name="fmt_call_in_call">In call</string>
+
+    <!-- Setup model -->
+    <plurals name="setup_paired_count">
+        <item quantity="one">%1$d paired</item>
+        <item quantity="other">%1$d paired</item>
+    </plurals>
+    <string name="setup_detail_none_paired">No computer paired yet</string>
+    <string name="setup_detail_notif_na">Not needed on this Android version</string>
+    <string name="setup_detail_sms">Optional · contacts, calendar and texts for your computer, off until you switch them on</string>
+    <string name="setup_detail_allowed">Allowed</string>
+    <string name="setup_detail_not_allowed">Not allowed yet</string>
+    <string name="setup_detail_denied">Denied · you can allow it again</string>
+    <string name="setup_detail_blocked">Denied · allow it in app settings</string>
+    <string name="setup_detail_bg_restricted">Background use is restricted · change it in app settings</string>
+    <string name="setup_detail_battery_todo">Android may stop the connection to save battery</string>
+    <string name="setup_detail_extra_switch">Unrestricted · %1$s has an extra autostart switch</string>
+    <string name="setup_detail_unrestricted">Unrestricted</string>
+    <string name="setup_warn_battery_revoked">Battery restriction was turned back on. GeekBridge may disconnect in the background.</string>
+    <string name="setup_warn_battery">Battery optimisation is on. GeekBridge may disconnect in the background.</string>
+    <string name="setup_warn_notifications">Notifications are off. The background connection notice and alerts will not show.</string>
+    <string name="setup_warn_revoked">%1$s access was turned off. Related features are paused.</string>
+    <string name="setup_title_pair">Pair with your computer</string>
+    <string name="setup_title_notifications">Notifications</string>
+    <string name="setup_title_contacts">Contacts</string>
+    <string name="setup_title_calendar">Calendar</string>
+    <string name="setup_title_phonestate">Phone state</string>
+    <string name="setup_title_answercalls">Answer calls</string>
+    <string name="setup_title_callernumber">Caller number</string>
+    <string name="setup_title_sms">Share with computer</string>
+    <string name="setup_title_battery">Battery</string>
+
+    <!-- Home model -->
+    <string name="hm_none_title">No computer paired</string>
+    <string name="hm_none_sub">Pair this phone with your computer to send files and the clipboard between them.</string>
+    <string name="hm_your_computer">your computer</string>
+    <string name="hm_connected">Connected to %1$s</string>
+    <string name="hm_connected_more">Connected to %1$s +%2$d</string>
+    <string name="hm_ready">Ready to send and receive.</string>
+    <string name="hm_waiting">Waiting for %1$s</string>
+    <string name="hm_waiting_sub">Open GeekBridge on your computer, on the same Wi-Fi network.</string>
+    <string name="hm_connecting">Connecting…</string>
+    <string name="hm_one_moment">One moment.</string>
+    <string name="hm_not_connected">Not connected</string>
+    <string name="hm_bg_off">Staying connected in the background is off. The phone connects while this app is open.</string>
+    <string name="hm_bg_not_running">The background connection is not running. Check battery settings, then reopen the app.</string>
+    <string name="hm_pair_first">Pair a computer first</string>
+    <string name="hm_to">To %1$s</string>
+    <string name="hm_not_connected_sub">Computer not connected</string>
+
+    <!-- Signer check -->
+    <string name="signer_unreadable_installed">Couldn\'t read the signing certificate of the installed app, so the update was not offered. Download the APK from the release page instead.</string>
+    <string name="signer_unreadable_download">Couldn\'t read the signing certificate of the downloaded update, so the update was not offered. Download the APK from the release page instead.</string>
+    <string name="signer_debug_build">This is a developer (debug-signed) build. The release is signed with the release key, which Android won\'t accept over it. To switch, uninstall this build once and install the release APK; app data is lost.</string>
+    <string name="signer_mismatch">The update is signed with a different key (%1$s) than the installed app (%2$s). Android would refuse it, so it was not offered. Uninstall and reinstall the release APK to switch keys; app data is lost.</string>
+    <!-- QR pairing errors -->
+    <string name="qr_err_not_geekbridge">That is not a GeekBridge pairing code.</string>
+    <string name="qr_err_version">That pairing code is from a different GeekBridge version. Update both apps.</string>
+    <string name="qr_err_malformed">That pairing code is damaged. Show a new one on the computer and try again.</string>
+    <string name="qr_err_unreadable">The pairing code could not be read.</string>
+    <string name="qr_err_core_missing">GeekBridge\'s network core is not available on this phone.</string>
+    <string name="whatsnew_fallback">See the release notes</string>
+
+    <!-- Reasons shown when the link is stopped automatically -->
+    <string name="link_stop_background">Background connection stopped.</string>
+    <string name="link_stop_network">Network changed; announcing again.</string>
+    <string name="link_stop_foreground">Link stopped because the app left the foreground.</string>
+
+    <!-- Accessibility -->
+    <string name="cd_expander_expanded">%1$s, expanded. %2$s</string>
+    <string name="cd_expander_collapsed">%1$s, collapsed. %2$s</string>
+    <string name="state_expanded">Expanded</string>
+    <string name="state_collapsed">Collapsed</string>
+    <string name="cd_cal_entry">%1$s, %2$s</string>
+    <string name="cd_cal_entry_detail">%1$s, %2$s, %3$s</string>
+</resources>

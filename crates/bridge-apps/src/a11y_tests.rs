@@ -251,6 +251,31 @@ fn home_window_controls_have_names() {
 }
 
 #[test]
+fn home_whats_new_card_is_named_and_reads_as_text() {
+    let ctx = egui::Context::default();
+    let notes = bridge_core::whats_new::parse("- First change\n- Second change\n", "9.8.7");
+    let mut home = HomeApp::new(1, &ctx).with_whats_new(notes);
+    let tree = capture(egui::vec2(960.0, 680.0), move |ctx| {
+        theme::apply(ctx, AppKind::Calls);
+        home.frame(ctx);
+    });
+    for name in [
+        "Full release notes",
+        "Dismiss",
+        "First change",
+        "Updated to 9.8.7",
+    ] {
+        assert!(tree.find(name).is_some(), "{name}: {}", tree.outline());
+    }
+    assert_eq!(
+        tree.unnamed_controls(),
+        Vec::<String>::new(),
+        "{}",
+        tree.outline()
+    );
+}
+
+#[test]
 fn dot_matrix_text_is_exposed_as_words() {
     let tree = capture(egui::vec2(400.0, 200.0), |ctx| {
         theme::apply(ctx, AppKind::Calls);

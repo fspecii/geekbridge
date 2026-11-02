@@ -264,7 +264,7 @@ class CallControlTest {
             calendar = PermissionStatus.Granted, phoneState = PermissionStatus.Granted,
             battery = BatteryState.Unrestricted, oemAcknowledged = true, oem = Oem.Other,
         )
-        val steps = SetupModel.steps(inputs)
+        val steps = SetupModel.steps(TestStrings, inputs)
         val ids = steps.map { it.id }
         assertEquals(ids.indexOf(StepId.PhoneState) + 1, ids.indexOf(StepId.AnswerCalls))
         assertEquals(ids.indexOf(StepId.AnswerCalls) + 1, ids.indexOf(StepId.CallerNumber))

@@ -3,6 +3,7 @@
 //! when nothing is shown, and the explicit "Allow ... from <phone>" buttons. Consent is never
 //! switched on by anything but a click on one of these (or `geekbridge-ctl consent`).
 use crate::{
+    i18n::{tr, tr_args, tr_n},
     shell::Env,
     theme::{self, ButtonKind, Palette},
 };
@@ -12,17 +13,44 @@ use bridge_core::{
 };
 use eframe::egui;
 
+/// What a phone-data line is about; the names come from the catalogue so each language inflects them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Noun {
+    Contacts,
+    Messages,
+    Calendar,
+    CalendarEditing,
+}
+
+impl Noun {
+    fn key(self) -> &'static str {
+        match self {
+            Noun::Contacts => "phone.noun.contacts",
+            Noun::Messages => "phone.noun.messages",
+            Noun::Calendar => "phone.noun.calendar",
+            Noun::CalendarEditing => "phone.noun.calendar_editing",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        tr(self.key())
+    }
+
+    fn lower(self) -> String {
+        tr_args(&format!("{}.lower", self.key()), &[])
+    }
+}
+
 /// Plain-language line for a feature that is not showing data yet.
-pub fn state_line(state: DataState, noun: &str) -> Option<String> {
+pub fn state_line(state: DataState, noun: Noun) -> Option<String> {
     Some(match state {
         DataState::Ready => return None,
-        DataState::ConsentOff => format!("{noun} is not shared from this phone."),
-        DataState::Offline => "The phone is not connected right now.".to_owned(),
-        DataState::NotOffered => format!(
-            "The phone is connected but does not offer {}. Turn it on in the GeekBridge app on the phone (Share with computer) and grant the Android permission.",
-            noun.to_lowercase()
-        ),
-        DataState::Waiting => format!("Asking the phone for {} ...", noun.to_lowercase()),
+        DataState::ConsentOff => tr_args("phone.state.consent_off", &[("noun", &noun.title())]),
+        DataState::Offline => tr("phone.state.offline").to_owned(),
+        DataState::NotOffered => {
+            tr_args("phone.state.not_offered", &[("noun_lower", &noun.lower())])
+        }
+        DataState::Waiting => tr_args("phone.state.waiting", &[("noun_lower", &noun.lower())]),
     })
 }
 
@@ -32,7 +60,7 @@ pub fn allow_buttons(
     pal: &Palette,
     env: &Env,
     feature: Feature,
-    noun: &str,
+    noun: Noun,
 ) -> Option<Request> {
     let status = env.control.status.as_ref()?;
     let mut out = None;
@@ -43,7 +71,10 @@ pub fn allow_buttons(
             .any(|c| c.feature == feature && !c.enabled);
         if off {
             ui.add_space(6.0);
-            let label = format!("Allow {noun} from {}", phone.name);
+            let label = tr_args(
+                "phone.allow",
+                &[("noun", &noun.title()), ("phone", &phone.name)],
+            );
             if theme::pill_button(ui, pal, &label, ButtonKind::Primary, true).clicked() {
                 out = Some(Request::SetConsent {
                     device_id: phone.device_id.clone(),
@@ -60,21 +91,24 @@ pub fn allow_buttons(
 pub fn device_summary(d: &DataDevice) -> String {
     let mut parts = Vec::new();
     if d.contacts != DataState::ConsentOff {
-        parts.push(format!("{} contacts", d.contacts_count));
+        parts.push(tr_n("phone.contacts", d.contacts_count as u64, &[]));
     }
     if d.calendar != DataState::ConsentOff {
-        parts.push(format!("{} events", d.events_count));
+        parts.push(tr_n("phone.events", d.events_count as u64, &[]));
     }
-    format!("{}: {}", d.name, parts.join(", "))
+    tr_args(
+        "phone.device_summary",
+        &[("name", &d.name), ("parts", &parts.join(", "))],
+    )
 }
 
 pub fn age_label(now_ms: u64, then_ms: u64) -> String {
     let s = now_ms.saturating_sub(then_ms) / 1000;
     match s {
-        0..=59 => "just now".into(),
-        60..=3599 => format!("{} min ago", s / 60),
-        3600..=86_399 => format!("{} h ago", s / 3600),
-        _ => format!("{} d ago", s / 86_400),
+        0..=59 => tr("phone.age.now").to_owned(),
+        60..=3599 => tr_args("phone.age.minutes", &[("n", &(s / 60))]),
+        3600..=86_399 => tr_args("phone.age.hours", &[("n", &(s / 3600))]),
+        _ => tr_args("phone.age.days", &[("n", &(s / 86_400))]),
     }
 }
 
@@ -84,14 +118,14 @@ mod tests {
 
     #[test]
     fn lines_explain_each_state_and_stay_quiet_when_ready() {
-        assert!(state_line(DataState::Ready, "Contacts").is_none());
+        assert!(state_line(DataState::Ready, Noun::Contacts).is_none());
         assert!(
-            state_line(DataState::ConsentOff, "Contacts")
+            state_line(DataState::ConsentOff, Noun::Contacts)
                 .unwrap()
                 .contains("not shared")
         );
         assert!(
-            state_line(DataState::NotOffered, "Messages")
+            state_line(DataState::NotOffered, Noun::Messages)
                 .unwrap()
                 .contains("Share with computer")
         );

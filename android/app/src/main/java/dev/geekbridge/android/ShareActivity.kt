@@ -99,7 +99,7 @@ class ShareActivity : Activity() {
         request = if (i.action != Intent.ACTION_SEND && i.action != Intent.ACTION_SEND_MULTIPLE) {
             ShareRequest.Invalid(getString(R.string.share_nothing_shared))
         } else {
-            ShareIntentLogic.classify(uris.map { it.toString() }, i.getCharSequenceExtra(Intent.EXTRA_TEXT))
+            ShareIntentLogic.classify(uris.map { it.toString() }, i.getCharSequenceExtra(Intent.EXTRA_TEXT), strings)
         }
         if (request is ShareRequest.Files) uris = uris.take(ShareLimits.MAX_FILES)
     }

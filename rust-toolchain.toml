@@ -1,0 +1,15 @@
+# Used by rustup only (distro rustc and the project-local .tools toolchain, which pins RUSTUP_TOOLCHAIN, ignore it).
+# `stable` is the supported channel; the minimum is `rust-version` in Cargo.toml (1.88) and CI runs stable.
+# The extra targets are what `scripts/xcheck.sh` (Windows/macOS type-checks) and the Android library need; they add
+# a few tens of MB of std each. Delete the `targets` line if you only build for your own machine.
+[toolchain]
+channel = "stable"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "aarch64-linux-android",
+  "x86_64-linux-android",
+]

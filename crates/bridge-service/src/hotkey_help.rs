@@ -60,7 +60,11 @@ sway / i3 (config file):\n\
     if popup_rules {
         s.push_str(
             "  # keep the call and share windows on top of everything\n\
-  for_window [app_id=\"dev.geekbridge.(Calls|Share)\"] floating enable, sticky enable, resize set 420 700, move position center\n\
+  # one command per line: sway runs only the first of a comma chain on a window that just became floating\n\
+  for_window [app_id=\"dev.geekbridge.(Calls|Share)\"] floating enable\n\
+  for_window [app_id=\"dev.geekbridge.(Calls|Share)\"] sticky enable\n\
+  for_window [app_id=\"dev.geekbridge.(Calls|Share)\"] resize set 420 700\n\
+  for_window [app_id=\"dev.geekbridge.(Calls|Share)\"] move position center\n\
   # i3 (X11): for_window [class=\"dev.geekbridge.(Calls|Share)\"] floating enable, sticky enable\n",
         );
     }

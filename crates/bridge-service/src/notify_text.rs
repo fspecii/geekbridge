@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Text from a phone, made safe to hand to `notify-send` (docs/security-review-2.md S2-3).
+//! Text from a phone, made safe to hand to `notify-send` (docs/reports/security-review-2.md S2-3).
 //!
 //! Names, titles and caller labels are chosen by the other side. Notification daemons render some
 //! markup (`<b>`, `<a href>`, `<img>`) and a hostile string can also reorder what is displayed with

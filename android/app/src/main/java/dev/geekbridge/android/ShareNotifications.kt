@@ -23,8 +23,8 @@ class ShareNotifications(private val ctx: Context) {
 
     init {
         nm?.createNotificationChannel(
-            NotificationChannel(CHANNEL, "File sharing", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Progress and results of sharing files with a paired computer"
+            NotificationChannel(CHANNEL, ctx.getString(R.string.share_channel_name), NotificationManager.IMPORTANCE_LOW).apply {
+                description = ctx.getString(R.string.share_channel_desc)
             },
         )
     }
@@ -68,28 +68,28 @@ class ShareNotifications(private val ctx: Context) {
 
     /** Ongoing progress for the outgoing transfers; [percent] null means indeterminate. */
     fun progress(summary: String, percent: Int?, cancelTransferId: Long?) {
-        val b = builder("Sending to computer", summary).setOngoing(true).setContentIntent(open())
+        val b = builder(ctx.getString(R.string.share_notif_sending), summary).setOngoing(true).setContentIntent(open())
             .setProgress(100, percent ?: 0, percent == null)
         if (cancelTransferId != null) {
-            b.addAction(Notification.Action.Builder(null, "Cancel", action(ShareActionReceiver.ACTION_CANCEL, cancelTransferId)).build())
+            b.addAction(Notification.Action.Builder(null, ctx.getString(R.string.share_cancel), action(ShareActionReceiver.ACTION_CANCEL, cancelTransferId)).build())
         }
         post(ID_PROGRESS, b.build())
     }
 
     fun offer(t: Transfer) {
-        val size = t.size?.let { " (${ProgressText.bytes(it)})" } ?: ""
-        val b = builder("${t.peerName.ifEmpty { "A computer" }} wants to send a file", t.name + size)
+        val shown = t.size?.let { ctx.getString(R.string.share_name_size, t.name, ProgressText.bytes(it, ctx.strings)) } ?: t.name
+        val b = builder(ctx.getString(R.string.offer_wants_file, t.peerName.ifEmpty { ctx.getString(R.string.offer_a_computer) }), shown)
             .setContentIntent(open()).setAutoCancel(true)
-            .addAction(Notification.Action.Builder(null, "Accept", action(ShareActionReceiver.ACTION_ACCEPT, t.id)).build())
-            .addAction(Notification.Action.Builder(null, "Decline", action(ShareActionReceiver.ACTION_DECLINE, t.id)).build())
+            .addAction(Notification.Action.Builder(null, ctx.getString(R.string.offer_accept), action(ShareActionReceiver.ACTION_ACCEPT, t.id)).build())
+            .addAction(Notification.Action.Builder(null, ctx.getString(R.string.offer_decline), action(ShareActionReceiver.ACTION_DECLINE, t.id)).build())
         post(ID_BASE + t.id.toInt(), b.build())
     }
 
     fun clearOffer(transferId: Long) = cancel(ID_BASE + transferId.toInt())
 
     fun received(transferId: Long, name: String, uri: Uri?) {
-        toastIfSilent("File received: $name (Downloads/GeekBridge)")
-        val b = builder("File received", name).setAutoCancel(true)
+        toastIfSilent(ctx.getString(R.string.share_toast_received, name))
+        val b = builder(ctx.getString(R.string.share_notif_received), name).setAutoCancel(true)
         if (uri != null) {
             val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, NameRules.mimeFor(name))
                 .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -101,18 +101,18 @@ class ShareNotifications(private val ctx: Context) {
     }
 
     fun failed(transferId: Long, what: String) {
-        toastIfSilent("Transfer failed: $what")
-        post(ID_BASE + transferId.toInt(), builder("Transfer failed", what).setAutoCancel(true).setContentIntent(open()).build())
+        toastIfSilent(ctx.getString(R.string.share_toast_failed, what))
+        post(ID_BASE + transferId.toInt(), builder(ctx.getString(R.string.share_notif_failed), what).setAutoCancel(true).setContentIntent(open()).build())
     }
 
     fun text(item: ReceivedText) {
-        val b = builder(if (item.kind == TransferKind.Url) "Link from computer" else "Text from computer", item.text).setAutoCancel(true)
+        val b = builder(ctx.getString(if (item.kind == TransferKind.Url) R.string.share_notif_link else R.string.share_notif_text), item.text).setAutoCancel(true)
         if (item.kind == TransferKind.Url && ShareIntentLogic.isWebUrl(item.text)) {
             val view = Intent(Intent.ACTION_VIEW, Uri.parse(item.text.trim())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             b.setContentIntent(PendingIntent.getActivity(ctx, item.id.toInt(), view, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
         } else {
             b.setContentIntent(open())
-            b.addAction(Notification.Action.Builder(null, "Copy", action(ShareActionReceiver.ACTION_COPY, item.id)).build())
+            b.addAction(Notification.Action.Builder(null, ctx.getString(R.string.offer_copy), action(ShareActionReceiver.ACTION_COPY, item.id)).build())
         }
         post(ID_BASE + item.id.toInt(), b.build())
     }

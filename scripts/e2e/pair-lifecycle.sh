@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Pairing lifecycle end to end on the emulator (docs/pairing.md, docs/first-run-audit.md rows 3 and 15):
+# Pairing lifecycle end to end on the emulator (docs/pairing.md, docs/reports/first-run-audit.md rows 3 and 15):
 #
 #   scripts/e2e/pair-lifecycle.sh [--repeat N] [--no-build] [SCENARIO...]
 #

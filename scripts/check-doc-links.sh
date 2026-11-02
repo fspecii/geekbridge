@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Check that relative links and image paths in README.md, CHANGELOG.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, docs/*.md and
+# Check that relative links and image paths in README.md, CHANGELOG.md, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, ARCHITECTURE.md, SUPPORT.md, docs/*.md, docs/reports/*.md and
 # third_party/*/README.md exist and are not git-ignored (an ignored target would be a dead link in the public repo).
 #   scripts/check-doc-links.sh
 # External (http, mailto) links and in-page anchors to other files are not fetched; same-file anchors are not checked.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
-exec python3 -I - README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md docs/*.md third_party/*/README.md <<'PY'
+exec python3 -I - README.md CHANGELOG.md SECURITY.md CONTRIBUTING.md CODE_OF_CONDUCT.md ARCHITECTURE.md SUPPORT.md docs/*.md docs/reports/*.md third_party/*/README.md <<'PY'
 import os, re, subprocess, sys
 bad = 0
 link = re.compile(r'!?\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)|<img[^>]+src="([^"]+)"')

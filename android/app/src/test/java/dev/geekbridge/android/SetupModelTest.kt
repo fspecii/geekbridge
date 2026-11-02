@@ -22,7 +22,7 @@ class SetupModelTest {
         callLog: PermissionStatus = PermissionStatus.NotAsked,
     ) = SetupInputs(sdk, paired, notifications, contacts, calendar, phone, battery, oemAck, oem, wasDone, answerCalls, callLog)
 
-    private fun status(i: SetupInputs, id: StepId) = SetupModel.steps(i).first { it.id == id }.status
+    private fun status(i: SetupInputs, id: StepId) = SetupModel.steps(TestStrings, i).first { it.id == id }.status
 
     @Test fun permissionStatusFromAndroidSignals() {
         assertEquals(PermissionStatus.Granted, PermissionStatusLogic.compute(true, true, false))
@@ -34,7 +34,7 @@ class SetupModelTest {
     @Test fun stepOrderIsStable() {
         assertEquals(
             listOf(StepId.Pair, StepId.Notifications, StepId.Contacts, StepId.Calendar, StepId.PhoneState, StepId.AnswerCalls, StepId.CallerNumber, StepId.Sms, StepId.Battery),
-            SetupModel.steps(inputs()).map { it.id },
+            SetupModel.steps(TestStrings, inputs()).map { it.id },
         )
     }
 
@@ -50,7 +50,7 @@ class SetupModelTest {
     }
 
     @Test fun smsIsInformationalNeverDone() {
-        val s = SetupModel.steps(inputs()).first { it.id == StepId.Sms }
+        val s = SetupModel.steps(TestStrings, inputs()).first { it.id == StepId.Sms }
         assertEquals(StepStatus.Info, s.status)
         assertTrue(!s.required)
     }
@@ -70,9 +70,9 @@ class SetupModelTest {
     }
 
     @Test fun firstOpenSkipsDoneAndInfo() {
-        val all = SetupModel.steps(inputs(paired = 1, notifications = PermissionStatus.Granted))
+        val all = SetupModel.steps(TestStrings, inputs(paired = 1, notifications = PermissionStatus.Granted))
         assertEquals(StepId.Contacts, SetupModel.firstOpen(all)?.id)
-        val done = SetupModel.steps(
+        val done = SetupModel.steps(TestStrings, 
             inputs(
                 paired = 1, notifications = PermissionStatus.Granted, contacts = PermissionStatus.Granted,
                 calendar = PermissionStatus.Granted, phone = PermissionStatus.Granted, battery = BatteryState.Unrestricted,
@@ -83,27 +83,27 @@ class SetupModelTest {
     }
 
     @Test fun batteryWarningOnlyWhenAppIsInUse() {
-        assertTrue(SetupModel.warnings(inputs(), setupFinished = false).none { it.step == StepId.Battery })
-        assertTrue(SetupModel.warnings(inputs(paired = 1), setupFinished = false).any { it.step == StepId.Battery })
-        assertTrue(SetupModel.warnings(inputs(), setupFinished = true).any { it.step == StepId.Battery })
-        assertTrue(SetupModel.warnings(inputs(paired = 1, battery = BatteryState.Unrestricted, notifications = PermissionStatus.Granted), true).isEmpty())
+        assertTrue(SetupModel.warnings(TestStrings, inputs(), setupFinished = false).none { it.step == StepId.Battery })
+        assertTrue(SetupModel.warnings(TestStrings, inputs(paired = 1), setupFinished = false).any { it.step == StepId.Battery })
+        assertTrue(SetupModel.warnings(TestStrings, inputs(), setupFinished = true).any { it.step == StepId.Battery })
+        assertTrue(SetupModel.warnings(TestStrings, inputs(paired = 1, battery = BatteryState.Unrestricted, notifications = PermissionStatus.Granted), true).isEmpty())
     }
 
     @Test fun revokedBatteryExemptionIsCalledOut() {
-        val w = SetupModel.warnings(inputs(paired = 1, wasDone = setOf(StepId.Battery)), setupFinished = true)
+        val w = SetupModel.warnings(TestStrings, inputs(paired = 1, wasDone = setOf(StepId.Battery)), setupFinished = true)
             .first { it.step == StepId.Battery }
         assertTrue(w.text.contains("turned back on"))
     }
 
     @Test fun optionalPermissionWarnsOnlyWhenRevoked() {
         val base = inputs(paired = 1, battery = BatteryState.Unrestricted, notifications = PermissionStatus.Granted)
-        assertTrue(SetupModel.warnings(base, true).isEmpty()) // never granted: not a warning
+        assertTrue(SetupModel.warnings(TestStrings, base, true).isEmpty()) // never granted: not a warning
         val revoked = base.copy(contacts = PermissionStatus.Denied, wasDone = setOf(StepId.Contacts))
-        assertEquals(listOf(StepId.Contacts), SetupModel.warnings(revoked, true).map { it.step })
+        assertEquals(listOf(StepId.Contacts), SetupModel.warnings(TestStrings, revoked, true).map { it.step })
     }
 
     @Test fun deniedNotificationsWarnWhenInUse() {
         val i = inputs(paired = 1, battery = BatteryState.Unrestricted, notifications = PermissionStatus.Denied)
-        assertEquals(listOf(StepId.Notifications), SetupModel.warnings(i, true).map { it.step })
+        assertEquals(listOf(StepId.Notifications), SetupModel.warnings(TestStrings, i, true).map { it.step })
     }
 }

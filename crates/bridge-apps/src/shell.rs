@@ -5,6 +5,7 @@ use crate::a11y::ScrollBars as _;
 use crate::{
     cli::ThemeChoice,
     connection::{Connections, ControlState},
+    i18n::tr,
     icons::Icon,
     identity,
     poller::Poller,
@@ -118,23 +119,18 @@ impl Shell {
             crate::a11y::live_region(ui.ctx(), status.id, crate::a11y::Live::Polite);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (icon, text) = if self.details_open {
-                    (Icon::ChevronDown, "Hide details")
+                    (Icon::ChevronDown, tr("shell.hide_details"))
                 } else {
-                    (Icon::ChevronUp, "Details")
+                    (Icon::ChevronUp, tr("shell.details"))
                 };
-                if theme::tool_button(
-                    ui,
-                    pal,
-                    icon,
-                    Some(text),
-                    true,
-                    "Show or hide connection details",
-                )
-                .clicked()
+                if theme::tool_button(ui, pal, icon, Some(text), true, tr("shell.toggle_details"))
+                    .clicked()
                 {
                     self.details_open = !self.details_open;
                 }
-                if theme::tool_button(ui, pal, Icon::Refresh, None, true, "Check again").clicked() {
+                if theme::tool_button(ui, pal, Icon::Refresh, None, true, tr("shell.check_again"))
+                    .clicked()
+                {
                     self.poller.refresh();
                     self.connections.refresh();
                 }
@@ -158,7 +154,7 @@ impl Shell {
                         .wrap(),
                 );
                 ui.add_space(2.0);
-                ui.label(theme::overline(pal, "Available now"));
+                ui.label(theme::overline(pal, tr("shell.available_now")));
                 ui.add(
                     egui::Label::new(theme::secondary(
                         pal,
@@ -169,16 +165,16 @@ impl Shell {
                 let devices = self.model.devices();
                 if !devices.is_empty() {
                     ui.add_space(2.0);
-                    ui.label(theme::overline(pal, "Nearby phones"));
+                    ui.label(theme::overline(pal, tr("shell.nearby_phones")));
                     for d in devices {
                         ui.horizontal_wrapped(|ui| {
                             ui.label(theme::semibold(&d.name, 13.0));
                             ui.label(theme::caption(
                                 pal,
                                 if d.trusted {
-                                    "Paired"
+                                    tr("shell.paired")
                                 } else {
-                                    "Found, not paired"
+                                    tr("shell.found_not_paired")
                                 },
                             ));
                         });
@@ -186,7 +182,7 @@ impl Shell {
                 }
                 self.connections.details(ui, pal, &self.model);
                 self.updates.details(ui, pal);
-                egui::CollapsingHeader::new(theme::caption(pal, "Technical details"))
+                egui::CollapsingHeader::new(theme::caption(pal, tr("shell.technical_details")))
                     .id_salt("technical")
                     .show(ui, |ui| {
                         for line in self.model.technical_lines(self.app, self.api_port) {

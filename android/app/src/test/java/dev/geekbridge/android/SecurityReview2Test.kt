@@ -75,9 +75,9 @@ class SecurityReview2Test {
     }
 
     @Test fun theSettingsLineSaysWhichComputerIsAllowed() {
-        assertEquals("Allowed: Laptop, Desk", GrantText.summary(listOf("Laptop", "Desk"), 2))
-        assertEquals("No computer allowed yet", GrantText.summary(emptyList(), 1))
-        assertEquals("No computer paired yet", GrantText.summary(emptyList(), 0))
+        assertEquals("Allowed: Laptop, Desk", GrantText.summary(listOf("Laptop", "Desk"), 2, TestStrings))
+        assertEquals("No computer allowed yet", GrantText.summary(emptyList(), 1, TestStrings))
+        assertEquals("No computer paired yet", GrantText.summary(emptyList(), 0, TestStrings))
     }
 
     // ---- S2-4

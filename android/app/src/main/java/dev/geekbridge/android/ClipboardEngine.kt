@@ -25,7 +25,7 @@ interface ClipboardHost {
 
 /** Result shown to the user after a tap or an explicit send. */
 data class SendResult(val sent: Boolean, val reason: String?) {
-    val message: String get() = if (sent) "Sent to your computer." else ClipboardText.refusal(reason ?: "")
+    fun message(s: Strings): String = if (sent) s.get(R.string.clip_sent) else ClipboardText.refusal(reason ?: "", s)
 }
 
 /**

@@ -14,6 +14,7 @@ use crate::{
     nothing::{self, PITCH_LABEL, PITCH_TITLE, S1, S2, S3, S4, S5},
     phone_feed::{self, Feed},
     poller::Poller,
+    report_ui::{self, ReportPanel},
     state::DiscoveryModel,
     theme::{self, ButtonKind, Palette},
     update_ui::Updates,
@@ -100,11 +101,16 @@ pub struct HomeApp {
     view: View,
     hotkey_draft: Option<String>,
     notice: Option<String>,
+    /// Open "Report a problem" preview, and whether the diagnostics being collected are for it.
+    report: Option<ReportPanel>,
+    diagnostics_for_report: bool,
     diagnostics: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     calls: Option<CallFeed>,
     agenda: Option<Feed<AgendaView>>,
     agenda_day: String,
     messages: Option<Feed<MessagesView>>,
+    /// The one-time "what's new" card after an update (until dismissed).
+    whats_new: Option<bridge_core::whats_new::Notes>,
 }
 
 fn now_ms() -> i64 {
@@ -180,7 +186,7 @@ impl HomeApp {
         let repaint = ctx.clone();
         let poller = Poller::spawn(LOOK, api_port, move || repaint.request_repaint());
         let repaint = ctx.clone();
-        Self {
+        let mut app = Self {
             api_port,
             model: DiscoveryModel::Checking,
             poller,
@@ -190,11 +196,79 @@ impl HomeApp {
             view: View::Home,
             hotkey_draft: None,
             notice: None,
+            report: None,
+            diagnostics_for_report: false,
             diagnostics: None,
             calls: None,
             agenda: None,
             agenda_day: String::new(),
             messages: None,
+            whats_new: startup_whats_new(),
+        };
+        // Screenshots and tests: open Settings with the "Report a problem" preview already built.
+        if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
+            app.view = View::Settings;
+            app.diagnostics_for_report = true;
+            app.collect_diagnostics(ctx);
+        }
+        app
+    }
+
+    /// Show the "what's new" card for these notes (tests and screenshots).
+    pub fn with_whats_new(mut self, notes: bridge_core::whats_new::Notes) -> Self {
+        self.whats_new = Some(notes);
+        self
+    }
+
+    /// The card shown once after an update. "Dismiss" remembers the version; the link opens the release
+    /// page in the browser and leaves the card up.
+    fn whats_new_card(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        let Some(notes) = self.whats_new.clone() else {
+            return;
+        };
+        let mut dismiss = false;
+        nothing::card(ui, pal, |ui| {
+            ui.horizontal(|ui| {
+                theme::dot(ui, pal.accent_fill, false);
+                ui.add(egui::Label::new(theme::semibold(
+                    format!("Updated to {}", notes.version),
+                    15.0,
+                )));
+            });
+            ui.add_space(S2);
+            for line in &notes.highlights {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = S2;
+                    let (r, _) = ui.allocate_exact_size(vec2(8.0, 16.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 2.5, pal.text3);
+                    ui.add(
+                        egui::Label::new(RichText::new(line).size(13.0).color(pal.text2)).wrap(),
+                    );
+                });
+            }
+            ui.add_space(S2);
+            ui.horizontal_wrapped(|ui| {
+                if theme::pill_button(ui, pal, "Full release notes", ButtonKind::Plain, true)
+                    .clicked()
+                {
+                    let url = bridge_core::whats_new::release_url(&notes.version);
+                    if !bridge_core::report::open_in_browser(&url) {
+                        self.notice = Some(format!(
+                            "Could not open the browser. The notes are at {url}"
+                        ));
+                    }
+                }
+                if theme::pill_button(ui, pal, "Dismiss", ButtonKind::Primary, true).clicked() {
+                    dismiss = true;
+                }
+            });
+        });
+        ui.add_space(S3);
+        if dismiss {
+            self.whats_new = None;
+            if let Some(dir) = bridge_core::ipc::default_state_dir() {
+                let _ = bridge_core::whats_new::mark_seen(&dir, &notes.version);
+            }
         }
     }
 
@@ -740,6 +814,27 @@ impl HomeApp {
         nothing::card(ui, pal, |ui| {
             sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
         });
+        nothing::section(ui, pal, report_ui::section());
+        if let Some(panel) = &mut self.report {
+            if !panel.show(ui, pal) {
+                self.report = None;
+            }
+        } else {
+            nothing::card(ui, pal, |ui| {
+                ui.add(egui::Label::new(theme::caption(pal, report_ui::intro())).wrap());
+                ui.add_space(S1);
+                let busy = self.diagnostics.is_some();
+                let label = if busy {
+                    report_ui::collecting()
+                } else {
+                    report_ui::review()
+                };
+                if theme::pill_button(ui, pal, label, ButtonKind::Plain, !busy).clicked() {
+                    self.diagnostics_for_report = true;
+                    self.collect_diagnostics(&ctx);
+                }
+            });
+        }
         nothing::section(ui, pal, "Diagnostics");
         nothing::card(ui, pal, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -750,6 +845,7 @@ impl HomeApp {
                     "Copy diagnostics"
                 };
                 if theme::pill_button(ui, pal, label, ButtonKind::Plain, !busy).clicked() {
+                    self.diagnostics_for_report = false;
                     self.collect_diagnostics(&ctx);
                 }
             });
@@ -805,13 +901,26 @@ impl HomeApp {
             && let Ok(result) = rx.try_recv()
         {
             self.diagnostics = None;
-            self.notice = Some(match result {
-                Ok(report) => {
-                    ctx.copy_text(report);
-                    "Diagnostics copied. Paste them where you ask for help.".to_owned()
+            let for_report = std::mem::take(&mut self.diagnostics_for_report);
+            self.notice = match result {
+                Ok(text) if for_report => {
+                    self.report = Some(ReportPanel::new(&text));
+                    None
                 }
-                Err(e) => format!("Could not collect diagnostics: {e}"),
-            });
+                Ok(text) => {
+                    ctx.copy_text(text);
+                    Some("Diagnostics copied. Paste them where you ask for help.".to_owned())
+                }
+                // A stopped service is worth reporting too: the report says so.
+                Err(e) if for_report => {
+                    self.report = Some(ReportPanel::new(&format!(
+                        "GeekBridge support report (redacted)\nservice not reachable: {}\n",
+                        crate::state::display_text(&e)
+                    )));
+                    None
+                }
+                Err(e) => Some(format!("Could not collect diagnostics: {e}")),
+            };
         }
         // A hidden window does no periodic work at all: it wakes only when a worker reports news.
         if !ctx.input(|i| i.viewport().minimized.unwrap_or(false)) {
@@ -843,10 +952,12 @@ impl HomeApp {
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_max_width(ui.available_width() - 12.0);
+                        // A Wayland surface can be configured at 0x0 before its first real size.
+                        ui.set_max_width((ui.available_width() - 12.0).max(0.0));
                         match self.view {
                             View::Home => {
                                 self.header(ui, &pal, "HOME");
+                                self.whats_new_card(ui, &pal);
                                 self.tile_grid(ui, &pal, hovering);
                             }
                             View::Pair => self.pair_view(ui, &pal),
@@ -861,6 +972,21 @@ impl HomeApp {
             });
         self.connections.dialogs(ctx, &pal);
     }
+}
+
+/// The notes to show now, if this start follows an update. A first start records the version silently;
+/// a computer that has paired before counts as an existing install. Tests never touch the real state.
+fn startup_whats_new() -> Option<bridge_core::whats_new::Notes> {
+    if cfg!(test) {
+        return None;
+    }
+    // Screenshots: show the card without any stored state.
+    if std::env::var_os("GEEKBRIDGE_FORCE_WHATS_NEW").is_some() {
+        return Some(bridge_core::whats_new::embedded());
+    }
+    let dir = bridge_core::ipc::default_state_dir()?;
+    let prior = dir.join("trusted_peers.json").is_file();
+    bridge_core::whats_new::check(&dir, env!("CARGO_PKG_VERSION"), prior)
 }
 
 pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {

@@ -69,7 +69,7 @@ class LinkService : Service() {
         main.removeCallbacksAndMessages(null)
         callback?.let { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(it) }
         callback = null
-        controller.stop("Background connection stopped.")
+        controller.stop(R.string.link_stop_background)
         super.onDestroy()
     }
 
@@ -118,7 +118,7 @@ class LinkService : Service() {
         if (!isRunning) return
         if (!ServicePolicy.shouldRun(AppState.pairedCount, AppState.keepConnected)) return stopSelf()
         when (controller.phase) {
-            LinkPhase.Running -> { controller.stop("Network changed; announcing again."); retryStart(attempt) }
+            LinkPhase.Running -> { controller.stop(R.string.link_stop_network); retryStart(attempt) }
             LinkPhase.Stopped -> controller.start(serviceOptions())
             else -> retryStart(attempt)
         }
@@ -153,7 +153,7 @@ class LinkService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val paired = AppState.pairedCount
-        var text = getString(R.string.notif_ready, paired)
+        var text = resources.getQuantityString(R.plurals.notif_ready, paired, paired)
         if (PowerChecks.batteryState(this) != BatteryState.Unrestricted) text += " · " + getString(R.string.notif_battery)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_link)

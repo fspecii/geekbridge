@@ -112,14 +112,19 @@ data class UpdateOffer(
     val sha256: String?,
 )
 
+/** A user-visible update message as a string resource id plus arguments; resolved where a [Strings] exists. */
+class UpdateText(val id: Int, vararg val args: Any) {
+    fun text(s: Strings): String = s.get(id, *args)
+}
+
 sealed class UpdateCheckResult {
     data class UpToDate(val latest: String?) : UpdateCheckResult()
     data class Available(val offer: UpdateOffer) : UpdateCheckResult()
-    data class Failed(val reason: String) : UpdateCheckResult()
+    data class Failed(val reason: UpdateText) : UpdateCheckResult()
 
     /** GitHub answered 404/403 for the release list: private repository, or nothing published yet. */
     data object NoPublicRelease : UpdateCheckResult() {
-        const val MESSAGE = "No public release found: the project repository may be private or has no releases yet."
+        val MESSAGE = UpdateText(R.string.upd_no_public_release)
     }
 }
 
@@ -202,17 +207,19 @@ object UpdateModel {
     /** Parsed `releases/latest` payload; throws [IllegalArgumentException] for anything malformed. */
     class Release(val tag: String, val htmlUrl: String, val body: String, val assets: List<Triple<String, String, Long>>)
 
+    class ReleaseFormatException(val text: UpdateText) : IllegalArgumentException("malformed release")
+
     fun parseRelease(json: String): Release {
         val o = try {
             JSONObject(json)
         } catch (_: JSONException) {
-            throw IllegalArgumentException("The release information is not understood.")
+            throw ReleaseFormatException(UpdateText(R.string.upd_err_release_unclear))
         }
         val tag = o.optString("tag_name", "")
-        require(tag.isNotEmpty() && tag.length <= 64) { "The release has no usable tag." }
-        require(!o.optBoolean("draft", false) && !o.optBoolean("prerelease", false)) { "Not a published release." }
+        if (!(tag.isNotEmpty() && tag.length <= 64)) throw ReleaseFormatException(UpdateText(R.string.upd_err_no_tag))
+        if (o.optBoolean("draft", false) || o.optBoolean("prerelease", false)) throw ReleaseFormatException(UpdateText(R.string.upd_err_not_published))
         val arr: JSONArray = o.optJSONArray("assets") ?: JSONArray()
-        require(arr.length() <= 200) { "The release lists too many files." }
+        if (arr.length() > 200) throw ReleaseFormatException(UpdateText(R.string.upd_err_too_many_files))
         val assets = ArrayList<Triple<String, String, Long>>()
         for (i in 0 until arr.length()) {
             val a = arr.optJSONObject(i) ?: continue
@@ -232,15 +239,15 @@ object UpdateModel {
         sums: (String) -> String?,
         allowLoopback: Boolean = false,
     ): UpdateCheckResult {
-        val remote = AppVersion.parse(release.tag) ?: return UpdateCheckResult.Failed("The release tag is not a version.")
-        val local = AppVersion.parse(currentName) ?: return UpdateCheckResult.Failed("This app's version is not recognised.")
+        val remote = AppVersion.parse(release.tag) ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_tag_not_version))
+        val local = AppVersion.parse(currentName) ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_app_version))
         if (remote.isPrerelease) return UpdateCheckResult.UpToDate(remote.toString())
         val code = remote.toVersionCode()
         if (remote <= local || code == null || code <= currentCode) return UpdateCheckResult.UpToDate(remote.toString())
         val apk = pickApk(release.assets.map { it.first to it.third })
-            ?: return UpdateCheckResult.Failed("Version $remote is out, but no Android package is published.")
+            ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_no_package, remote.toString()))
         val url = release.assets.first { it.first == apk.first }.second
-        if (!urlAllowed(url, allowLoopback)) return UpdateCheckResult.Failed("The download address is not trusted.")
+        if (!urlAllowed(url, allowLoopback)) return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_addr_not_trusted))
         val page = if (urlAllowed(release.htmlUrl, allowLoopback)) release.htmlUrl else ""
         return UpdateCheckResult.Available(
             UpdateOffer(remote.toString(), release.tag, cleanNotes(release.body), page, apk.first, url, apk.second, sums(apk.first)),

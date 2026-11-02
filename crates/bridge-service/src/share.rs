@@ -1277,7 +1277,7 @@ mod tests {
 
     #[test]
     fn a_device_name_cannot_become_an_option_or_markup() {
-        // The title starts with the peer's chosen device name (S2-3 in docs/security-review-2.md).
+        // The title starts with the peer's chosen device name (S2-3 in docs/reports/security-review-2.md).
         let a = NotifySend::args("--action=accept=Open invoice", "<b>x</b>.txt", None);
         let dashdash = a.iter().position(|s| s == "--").expect("positional marker");
         assert!(a[..dashdash].iter().all(|s| !s.contains("Open invoice")));

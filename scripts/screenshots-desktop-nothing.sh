@@ -8,7 +8,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"; cd "$ROOT"
 source scripts/android-env.sh >/dev/null 2>&1
-OUT="$ROOT/dist/screenshots/desktop"; RUN="${RUN:-$ROOT/target/shots-nothing}"; rm -rf "$RUN/state"; mkdir -p "$OUT" "$RUN/state"; chmod 700 "$RUN/state"
+OUT="${OUT:-$ROOT/dist/screenshots/desktop}"; PREFIX="${PREFIX:-nothing}"; RUN="${RUN:-$ROOT/target/shots-nothing}"; rm -rf "$RUN/state"; mkdir -p "$OUT" "$RUN/state"; chmod 700 "$RUN/state"
 DISP=${DISP:-:94}; CP=${CP:-17711}; AP=${AP:-17710}; DP=${DP:-17712}
 cargo build -q -p bridge-service -p bridge-apps --bins && cargo build -q -p bridge-phone-sim --example data_sim || exit 1
 T=target/debug
@@ -36,15 +36,16 @@ shot() {
   if [ -n "$wid" ]; then
     local WIDTH HEIGHT X Y SCREEN WINDOW
     eval "$(DISPLAY=$DISP xdotool getwindowgeometry --shell "$wid")"
-    DISPLAY=$DISP import -window root -crop "${WIDTH}x${HEIGHT}+${X}+${Y}" +repage "$OUT/nothing-$name-$theme.png"
+    DISPLAY=$DISP import -window root -crop "${WIDTH}x${HEIGHT}+${X}+${Y}" +repage "$OUT/$PREFIX-$name-$theme.png"
   else
-    DISPLAY=$DISP import -window root "$OUT/nothing-$name-$theme.png"
+    DISPLAY=$DISP import -window root "$OUT/$PREFIX-$name-$theme.png"
   fi
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
 }
 THEMES=("$@"); [ ${#THEMES[@]} -eq 0 ] && THEMES=(light dark)
 for t in "${THEMES[@]}"; do
   shot geekbridge $t home - 
+  shot geekbridge $t whatsnew - GEEKBRIDGE_FORCE_WHATS_NEW=1
   shot geekbridge $t pair ctrl+2
   shot geekbridge $t settings ctrl+3
   shot geekbridge-clipboard $t clipboard -
@@ -59,4 +60,4 @@ for t in "${THEMES[@]}"; do
   shot geekbridge-agenda $t calendar-agenda - GEEKBRIDGE_CALENDAR_VIEW=agenda
 done
 kill $SIM $SVC 2>/dev/null; pkill -f "Xvfb $DISP" 2>/dev/null
-ls -1 "$OUT" | grep -E "^nothing-"
+ls -1 "$OUT" | grep -E "^$PREFIX-"

@@ -57,7 +57,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // en-XA (accented, 30% longer) and ar-XB (right-to-left) pseudo-locales, to catch hard-coded text,
+            // truncation and RTL breakage; never in the release APK (docs/translating.md).
+            isPseudoLocalesEnabled = true
+        }
         release {
+            isPseudoLocalesEnabled = false
             // R8 + resource shrinking (docs/android-perf.md). Keep rules: proguard-rules.pro.
             isMinifyEnabled = true
             isShrinkResources = true
@@ -148,5 +154,42 @@ fun containsAscii(haystack: ByteArray, needle: String): Boolean {
 tasks.configureEach {
     if (name.startsWith("merge") && name.endsWith("JniLibFolders") && !name.contains("AndroidTest")) {
         dependsOn(verifyNativeLibs)
+    }
+}
+
+// JVM unit-test coverage, opt-in so ordinary builds neither instrument tests nor fetch JaCoCo:
+//   ./gradlew -Pgb.coverage=true :app:jacocoDebugUnitTestReport   (or `make coverage`)
+// Debug unit tests only; JaCoCo is a build-time tool (agent + report task) and is never packaged in the APK.
+// The version is pinned and its artifacts are covered by gradle/verification-metadata.xml. Report:
+// app/build/reports/jacoco/jacocoDebugUnitTestReport/html/index.html (and .xml/.csv beside it).
+if (findProperty("gb.coverage") == "true") {
+    apply(plugin = "jacoco")
+    extensions.configure<JacocoPluginExtension> { toolVersion = "0.8.13" }
+
+    tasks.withType<Test>().configureEach {
+        extensions.configure<JacocoTaskExtension> {
+            isEnabled = name == "testDebugUnitTest"
+            isIncludeNoLocationClasses = true
+            excludes = listOf("jdk.internal.*")
+        }
+    }
+
+    tasks.register<JacocoReport>("jacocoDebugUnitTestReport") {
+        group = "verification"
+        description = "Line/branch coverage of the debug JVM unit tests"
+        dependsOn("testDebugUnitTest")
+        val build = layout.buildDirectory
+        executionData.setFrom(build.file("jacoco/testDebugUnitTest.exec"))
+        sourceDirectories.setFrom(layout.projectDirectory.dir("src/main/java"))
+        classDirectories.setFrom(
+            fileTree(build.dir("tmp/kotlin-classes/debug")) {
+                exclude("**/R.class", "**/R$*.class", "**/BuildConfig.*", "**/*\$\$serializer.class")
+            },
+        )
+        reports {
+            xml.required.set(true)
+            csv.required.set(true)
+            html.required.set(true)
+        }
     }
 }

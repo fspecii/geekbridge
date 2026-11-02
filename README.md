@@ -29,7 +29,7 @@ one red accent.
 ## Feature matrix
 
 "Emulator" means the debug APK on an Android 16 x86_64 emulator talking to the real desktop service
-(`scripts/e2e-*.sh`, results in [docs/e2e-findings.md](docs/e2e-findings.md)). "Scripted" means automated tests against
+(`scripts/e2e-*.sh`, results in [docs/reports/e2e-findings.md](docs/reports/e2e-findings.md)). "Scripted" means automated tests against
 generated peers or a simulated phone/modem on loopback. **No row has been verified on a physical phone.**
 
 | Feature | What it does | Verified how | Real phone |
@@ -51,7 +51,7 @@ generated peers or a simulated phone/modem on loopback. **No row has been verifi
 | **Linux** (X11 and Wayland; Hyprland / Omarchy hotkey, window rules, notifications, waybar) | Built, packaged (`.deb`, installer tarball) and run on Arch/Omarchy; the main supported target |
 | **Windows** | Compiles and type-checks, CI jobs defined, installer script written; **never run on Windows**, unsigned |
 | **macOS** | Compiles and type-checks for both Apple targets, `.dmg` script written; **never run on a Mac**, unsigned |
-| **Android** | Android 8+ (min SDK 26), arm64-v8a and x86_64; debug-signed builds; emulator only |
+| **Android** | Android 8+ (min SDK 26), arm64-v8a and x86_64; debug and release-signed builds; tested on an emulator, not yet on a physical phone |
 
 **Release builds: Linux and Android only. Windows and macOS: build from source** (releases are built on a Linux
 machine, which cannot produce signed or tested Windows/macOS binaries; see [docs/release-local.md](docs/release-local.md)).
@@ -91,25 +91,41 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
 
 ## Documentation
 
+Full index: [docs/README.md](docs/README.md).
+
 - [User guide](docs/user-guide.md), with symptom-keyed troubleshooting
 - [Omarchy / Hyprland setup](docs/omarchy.md) (also GNOME, KDE, sway)
 - [Real-device quickstart](docs/real-device-quickstart.md) and [full test plan](docs/real-device-test-plan.md)
 - [Pairing](docs/pairing.md), [sharing](docs/sharing.md), [clipboard](docs/clipboard-sync.md),
   [call control](docs/call-control.md), [phone data (contacts, calendar, SMS)](docs/phone-data-link.md),
   [updates](docs/updates.md), [Android power and battery](docs/android-power.md)
-- Security: [SECURITY.md](SECURITY.md), [security review](docs/security-review.md),
-  [second security review](docs/security-review-2.md)
+- Security: [SECURITY.md](SECURITY.md), [security review](docs/reports/security-review.md),
+  [second security review](docs/reports/security-review-2.md)
 - [CHANGELOG](CHANGELOG.md), [release checklist](docs/release-checklist.md), [architecture](docs/architecture.md),
-  [builds](docs/builds.md), [e2e findings](docs/e2e-findings.md), [performance](docs/performance.md)
+  [builds](docs/builds.md), [e2e findings](docs/reports/e2e-findings.md), [performance](docs/performance.md)
 
 ## Build from source
+
+Fresh clone, Linux / macOS / Windows with WSL2:
+
+```sh
+git clone https://github.com/fspecii/geekbridge && cd geekbridge
+scripts/dev-setup.sh          # checks Rust >= 1.88, JDK 17, Android SDK, system libraries; installs nothing (add --install to fix gaps)
+make check                    # cargo fmt --check, clippy -D warnings, all Rust tests
+make android                  # Android unit tests + lint (./gradlew with your JDK 17 and ANDROID_HOME)
+make desktop                  # build and start the service and the Home window
+make help                     # all targets (perf, docs-links, ...)
+```
+
+The same steps without make:
 
 ```sh
 cargo build --workspace                 # whole Rust workspace
 scripts/build-desktop.sh                # release binaries into dist/linux/
-scripts/bootstrap-android.sh            # one-time: project-local JDK, Gradle, SDK, NDK, Rust Android targets in .tools/
-scripts/build-android.sh                # host tests, native libs, unit tests, lint, debug APK -> dist/android/geekbridge-debug.apk
-source scripts/android-env.sh           # put the local Android toolchain on PATH for gradle / adb in this shell
+(cd android && ./gradlew :app:testDebugUnitTest :app:lintDebug)   # Android JVM tests and lint; the Gradle wrapper is checksum-pinned
+scripts/bootstrap-android.sh            # optional, Linux x86_64: project-local JDK, Gradle, SDK, NDK, Rust Android targets in .tools/
+scripts/build-android.sh                # with that toolchain: native libs, unit tests, lint, debug APK -> dist/android/geekbridge-debug.apk
+source scripts/android-env.sh           # put the project-local toolchain on PATH for gradle / adb in this shell
 ```
 
 Nothing is installed globally. Details, pinned versions and release flow: [docs/builds.md](docs/builds.md). Run the
@@ -121,7 +137,8 @@ cargo run -p bridge-apps --bin geekbridge                 # Home window; also ge
                                                           # -agenda (the Calendar app), -clipboard, -share
 ```
 
-Every app supports `--help`, `--status`, `--api-port PORT` and `--theme light|dark|system`. Service options include
+Every app supports `--help`, `--api-port PORT` and `--theme light|dark|system`; the helper apps (not Home) also take
+`--status`, and `geekbridge-ctl --state-dir DIR status` reports the service. Service options include
 `--api-port`, `--control-port`, `--state-dir`, `--discovery-port`, `--no-listen-inbound`, `--no-announce`. If KDE Connect
 or GSConnect already owns UDP 1716, GeekBridge reports the conflict instead of taking over.
 
@@ -133,7 +150,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 scripts/perf-check.sh --build     # idle service budget
 scripts/build-android.sh          # Android tests, lint, debug APK
-scripts/e2e-android.sh            # emulator end to end (see docs/e2e-findings.md)
+scripts/e2e-android.sh            # emulator end to end (see docs/reports/e2e-findings.md)
 ```
 
 Calls can be exercised without a phone or Bluetooth: `scripts/emulate-call.sh fake` drives the real call state machine

@@ -44,7 +44,9 @@ else targets="$target"; fi
 rc=0
 for t in $targets; do
   echo "== $t ($secs s)"
-  ( cd fuzz && nice -n 10 cargo fuzz run "$t" --sanitizer address -- \
+  # New finds go to the run directory; fuzz/corpus holds only the committed fixture seeds.
+  mkdir -p "$out/corpus/$t"
+  ( cd fuzz && nice -n 10 cargo fuzz run "$t" --sanitizer address "../$out/corpus/$t" "corpus/$t" -- \
       -max_total_time="$secs" -timeout=10 -rss_limit_mb=2048 -max_len=65536 \
       -artifact_prefix="../$out/" 2>&1 ) | tee "$out/$t.log" | tail -n 4 || rc=1
 done

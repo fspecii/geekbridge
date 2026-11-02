@@ -708,7 +708,7 @@ impl Messages {
             if let Some(n) = &state.notice {
                 ui.label(theme::caption(pal, n.clone()));
             }
-            if let Some(r) = phone_ui::allow_buttons(ui, pal, env, Feature::Sms, "Messages") {
+            if let Some(r) = phone_ui::allow_buttons(ui, pal, env, Feature::Sms, phone_ui::Noun::Messages) {
                 action = Some(r);
             }
             ui.add_space(10.0);
@@ -992,7 +992,7 @@ impl Messages {
                                 .to_owned()
                         },
                         |d| {
-                            phone_ui::state_line(d.sms, "Messages")
+                            phone_ui::state_line(d.sms, phone_ui::Noun::Messages)
                                 .unwrap_or_else(|| "Shared with this computer".into())
                         },
                     );
@@ -1167,7 +1167,7 @@ fn sms_blocker(d: &DataDevice) -> Option<String> {
             "The phone is connected but does not offer Messages. On the phone: GeekBridge, Share with computer, switch on Messages and allow SMS. If Android blocks the permission (Android 13 and newer, app installed outside a store): Settings, Apps, GeekBridge, the three-dot menu, Allow restricted settings; then Permissions, SMS, Allow. GeekBridge does not need to be your default SMS app: picture messages (MMS) and RCS stay in your messaging app."
                 .into(),
         ),
-        other => phone_ui::state_line(other, "Messages"),
+        other => phone_ui::state_line(other, phone_ui::Noun::Messages),
     }
 }
 

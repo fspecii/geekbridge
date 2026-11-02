@@ -2604,7 +2604,7 @@ mod tests {
 
     #[test]
     fn notification_text_has_no_markup_or_direction_overrides() {
-        // Sender and title are chosen by the other side (S2-3 in docs/security-review-2.md).
+        // Sender and title are chosen by the other side (S2-3 in docs/reports/security-review-2.md).
         let a = NotifySendSms::args("Pixel", "<a href=\"http://evil\">Bank</a>\u{202E}");
         let e = NotifySendSms::event_args("Pi<b>xel", "<img src=x>Dentist", 5);
         for s in a.iter().chain(e.iter()).filter(|s| !s.starts_with("--")) {

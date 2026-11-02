@@ -60,6 +60,7 @@ elsewhere; mode 0700.
 | `share.json` | per-device receive / auto-accept | `version` 1 | nothing allowed | per-device unknown fields kept |
 | `clipboard-settings.json` | window, hotkey, max image size | no field before; now `version` 1 | defaults | hotkey/tray hotkey settings live here |
 | `update-state.json` | updater switch, ETag, last answer, skipped version | no field before; now `version` 1 | defaults (checks on) | written by `bridge-update` through `PlainIo` |
+| `whats-new.json` | the version whose "What's new" card was last shown/dismissed (`{"version":1,"last_seen":"X.Y.Z"}`) | `version` 1 | no card, rewritten with the running version | written by Home via `PlainIo`; missing + no paired phone = fresh install (recorded silently), downgrade is silent |
 | `device-name` | UTF-8 text, the computer's chosen name | plain text, unversioned | configured name is kept | validated again on read; atomic write |
 | `ipc-token` | 64 hex chars, local control token | unversioned | replaced with a new token (clients re-read it), line logged | holds no pairing data |
 | `tray-paused` | JSON list of device ids paused from the tray | unversioned list | treated as empty | atomic write |
@@ -94,6 +95,7 @@ keys additively and rely on defaults.
 | `share_policy` | prefs: `auto_accept:<id>` | scalar |
 | `geekbridge_device_name` | prefs: `name` | scalar |
 | `updates` | prefs: check state, ETag, cached body | cache, safe to lose |
+| `geekbridge_whatsnew` | prefs: `state_version` (1), `last_seen_code` (versionCode of the last card shown) | scalar; damaged or `<= 0` is repaired silently, a newer `state_version` is never rewritten |
 | `filesDir/kde/` | identity, trust store | Rust side, rules above |
 | `last-crash.txt`, `cacheDir/updates`, spool dir | files | diagnostic / disposable |
 
@@ -104,7 +106,7 @@ Android tests: `StateMigrationsTest.kt` with golden fixtures in
 `android/app/src/test/resources/state-v1/` (fixtures, pairing and per-computer opt-ins, fake v2
 step, crash-resume, newer-version no-clobber, corrupt blobs) and
 `scripts/e2e/update-install.sh android` (APK upgrade with clipboard sync on, renamed device,
-pinned widget, pairing and opt-ins; see `docs/e2e-findings.md`).
+pinned widget, pairing and opt-ins; see `docs/reports/e2e-findings.md`).
 
 ## Tests that enforce this
 

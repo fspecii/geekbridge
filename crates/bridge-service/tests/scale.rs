@@ -3,7 +3,7 @@
 //! entry points the link uses (`link_up`, `on_packet`, `agenda_view_range`, `messages_view`).
 //!
 //! Default sizes are small so `cargo test` stays quick; `GEEKBRIDGE_SCALE=1` runs a heavy phone (5,000 contacts,
-//! 1,000 events per sync, 20,000 texts over 800 threads) and enforces the time budgets in docs/scale-report.md.
+//! 1,000 events per sync, 20,000 texts over 800 threads) and enforces the time budgets in docs/reports/scale-report.md.
 //! Numbers are printed (`cargo test -p bridge-service --test scale --release -- --nocapture`).
 
 use bridge_core::{

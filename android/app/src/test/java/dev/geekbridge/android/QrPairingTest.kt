@@ -111,7 +111,7 @@ class QrPairingTest {
 
     @Test fun parseErrorsAreInPlainLanguage() {
         for (c in listOf("qr_not_geekbridge", "qr_version", "qr_malformed", "whatever")) {
-            val m = QrProtocol.parseError(c)
+            val m = QrProtocol.parseError(TestStrings, c)
             assertTrue(m, m.endsWith("."))
             assertFalse(m.contains("qr_"))
         }
@@ -123,35 +123,35 @@ class PairingHelpTest {
         NetFacts(wifi, own, vpn, peer, probe)
 
     @Test fun reachableComputerIsOk() {
-        val r = NetCheck.report(facts(Probe.Connected))
+        val r = NetCheck.report(TestStrings, facts(Probe.Connected))
         assertTrue(r.ok)
         assertTrue(r.advice.isEmpty())
         assertTrue(r.steps.all { it.ok })
     }
 
     @Test fun refusedMeansTheServiceIsNotRunning() {
-        val r = NetCheck.report(facts(Probe.Refused))
+        val r = NetCheck.report(TestStrings, facts(Probe.Refused))
         assertFalse(r.ok)
         assertTrue(r.headline, r.headline.contains("not listening"))
     }
 
     @Test fun silenceOnTheSameSubnetBlamesFirewallAndIsolation() {
-        val r = NetCheck.report(facts(Probe.TimedOut))
+        val r = NetCheck.report(TestStrings, facts(Probe.TimedOut))
         assertTrue(r.advice.any { it.contains("firewall") })
         assertTrue(r.advice.any { it.contains("Guest") })
         assertFalse(r.advice.any { it.contains("VPN") })
     }
 
     @Test fun anotherSubnetIsCalledOutAndVpnIsMentionedOnlyWhenActive() {
-        val r = NetCheck.report(facts(Probe.TimedOut, peer = "10.0.0.7", vpn = true))
+        val r = NetCheck.report(TestStrings, facts(Probe.TimedOut, peer = "10.0.0.7", vpn = true))
         assertTrue(r.headline, r.headline.contains("different network"))
         assertTrue(r.advice.any { it.contains("VPN") })
         assertTrue(r.steps.any { !it.ok && it.label.contains("same network") })
     }
 
     @Test fun noWifiAndNoComputerSeen() {
-        assertTrue(NetCheck.report(facts(Probe.NotTried, wifi = false)).headline.contains("not on Wi-Fi"))
-        assertTrue(NetCheck.report(facts(Probe.NotTried, peer = null)).headline.contains("No computer"))
+        assertTrue(NetCheck.report(TestStrings, facts(Probe.NotTried, wifi = false)).headline.contains("not on Wi-Fi"))
+        assertTrue(NetCheck.report(TestStrings, facts(Probe.NotTried, peer = null)).headline.contains("No computer"))
     }
 
     @Test fun subnetComparison() {
@@ -162,11 +162,11 @@ class PairingHelpTest {
     }
 
     @Test fun failuresGetPlainWords() {
-        assertTrue(PairingHelp.explain("pairing_failed", "pairing_rejected_by_peer", viaQr = true).headline.contains("QR code"))
-        assertTrue(PairingHelp.explain("pairing_failed", "pairing_rejected_by_peer").headline.contains("declined"))
-        assertTrue(PairingHelp.explain("connect_failed", "timeout").headline.contains("did not answer"))
-        assertTrue(PairingHelp.explain(null, "qr_certificate_mismatch", viaQr = true).headline.contains("not the computer"))
-        assertTrue(PairingHelp.explain("pairing_failed", "clock_skew").headline.contains("clocks"))
-        assertTrue(PairingHelp.explain("x", "unheard-of").headline.contains("did not work"))
+        assertTrue(PairingHelp.explain(TestStrings, "pairing_failed", "pairing_rejected_by_peer", viaQr = true).headline.contains("QR code"))
+        assertTrue(PairingHelp.explain(TestStrings, "pairing_failed", "pairing_rejected_by_peer").headline.contains("declined"))
+        assertTrue(PairingHelp.explain(TestStrings, "connect_failed", "timeout").headline.contains("did not answer"))
+        assertTrue(PairingHelp.explain(TestStrings, null, "qr_certificate_mismatch", viaQr = true).headline.contains("not the computer"))
+        assertTrue(PairingHelp.explain(TestStrings, "pairing_failed", "clock_skew").headline.contains("clocks"))
+        assertTrue(PairingHelp.explain(TestStrings, "x", "unheard-of").headline.contains("did not work"))
     }
 }

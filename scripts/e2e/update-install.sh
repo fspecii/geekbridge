@@ -132,6 +132,8 @@ android() {
   if [[ "${E2E_UPD_REBUILD:-}" == 1 ]]; then
     for v in 0.1.0 0.2.0; do
       rsync -a --delete --exclude build --exclude .gradle --exclude .kotlin android/ "$W/v$v/android/"
+      # The bundled "What's new" text is generated for the repository's version; label this scratch build's copy.
+      sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$v\"/" "$W/v$v/android/app/src/main/assets/whats_new.json"
       (cd "$W/v$v/android" && gradle --no-daemon -q assembleDebug -Pgb.abis=x86_64 >"$W/build-$v.log" 2>&1) || { rec android FAIL "build v$v failed"; return 1; }
       cp "$W/v$v/android/app/build/outputs/apk/debug/"*.apk "$W/gb-$v.apk"
     done
@@ -198,6 +200,8 @@ android() {
   $ADB shell "run-as $PKG sh -c 'mkdir -p -m 700 files/kde && cp /data/local/tmp/trusted_peers.json files/kde/trusted_peers.json && chmod 600 files/kde/trusted_peers.json'"
   $ADB shell am start -n "$PKG/.HomeActivity" >/dev/null; sleep 4
   upshot home-after-setup
+  # A fresh install is not an update: no "What's new" card, and the version is recorded without one
+  check android-whatsnew-not-on-fresh-install $([[ -z "$(ui dump 2>/dev/null | cut -f1 | grep '^Updated to')" ]]; echo $?) "no card after a fresh install"
   # add a home-screen widget (debug helper); the launcher asks to confirm the pin
   $ADB shell am start -n "$PKG/.DebugPinWidgetActivity" -e w quick >/dev/null; sleep 3
   for _ in 1 2 3 4 5; do ui dump | grep -q "^Add to home screen" && { tap "Add to home screen"; sleep 3; break; }; sleep 2; done
@@ -321,6 +325,15 @@ android() {
   check android-data-survived $([[ "$(appstate)" == "$before" && "$($ADB shell run-as $PKG cat files/e2e-marker.txt | tr -d '\r')" == before-update-marker ]]; echo $?) "files/ shared_prefs/ databases/ hashes unchanged, marker intact"
   $ADB shell dumpsys package $PKG | grep -q "versionCode=$NEWCODE" ; check android-version-code $? "versionCode $NEWCODE"
   $ADB shell am start -n "$PKG/.HomeActivity" >/dev/null; sleep 6
+  # What's new (the AFTER view; the release notes above were the BEFORE view): shown once, dismissable, never again
+  $ADB exec-out screencap -p >"$SHOTS/whatsnew-upgrade.png" 2>/dev/null
+  check android-whatsnew-shown-after-upgrade $([[ -n "$(ui dump 2>/dev/null | cut -f1 | grep "^Updated to $NEWV")" ]]; echo $?) "card titled Updated to $NEWV on the first launch after the upgrade"
+  check android-whatsnew-has-link-and-dismiss $([[ -n "$(ui dump 2>/dev/null | cut -f1 | grep '^Full release notes')" && -n "$(ui dump 2>/dev/null | cut -f1 | grep '^Dismiss')" ]]; echo $?) ""
+  tap "Dismiss"; sleep 2
+  $ADB exec-out screencap -p >"$SHOTS/whatsnew-dismissed.png" 2>/dev/null
+  check android-whatsnew-dismissed $([[ -z "$(ui dump 2>/dev/null | cut -f1 | grep '^Updated to')" ]]; echo $?) "card gone after Dismiss"
+  $ADB shell am force-stop $PKG; $ADB shell am start -n "$PKG/.HomeActivity" >/dev/null; sleep 5
+  check android-whatsnew-not-shown-again $([[ -z "$(ui dump 2>/dev/null | cut -f1 | grep '^Updated to')" ]]; echo $?) "not shown on the next launch"
   check android-app-starts-after-update $([[ -n "$($ADB shell pidof $PKG | tr -d '\r')" ]]; echo $?) ""
   # settings and pairing survived, and the new build stamped the schema version without rewriting anything else
   check android-clipboard-sync-survived $([[ "$(prefval geekbridge_clipboard)" == *'name="enabled" value="true"'* ]]; echo $?) "clipboard sync still on"

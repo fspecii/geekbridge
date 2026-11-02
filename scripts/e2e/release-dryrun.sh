@@ -6,7 +6,7 @@
 # Covered: YAML structure + pinned actions, tag/Cargo.toml version gate, desktop Package step (Linux branch),
 # scripts/package-linux.sh, SHA256SUMS step, Android signing step (stable without keystore refused; prerelease
 # debug-signed; with a generated keystore the real zipalign + apksigner path, plus signature/versionCode check),
-# updater asset-name compatibility. NOT covered (only on GitHub): see docs/e2e-findings.md "release workflow".
+# updater asset-name compatibility. NOT covered (only on GitHub): see docs/reports/e2e-findings.md "release workflow".
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd "$ROOT"

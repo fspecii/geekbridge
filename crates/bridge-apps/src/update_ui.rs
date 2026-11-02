@@ -4,7 +4,10 @@
 //! The service owns the schedule, the network and the SHA-256 check (`bridge-update`). This
 //! module only shows its state and forwards explicit clicks. It never installs anything: after a
 //! verified download it reveals the file and the user opens it.
-use crate::theme::{self, ButtonKind, Palette};
+use crate::{
+    i18n::{tr, tr_args},
+    theme::{self, ButtonKind, Palette},
+};
 use bridge_core::ipc::{self, Request, Response, Token, UpdateState, UpdateStatus};
 use eframe::egui::{self, Frame, Margin, Stroke};
 use std::{
@@ -31,7 +34,7 @@ enum Command {
 type Published = Option<Result<UpdateStatus, String>>;
 
 fn call(request: &Request) -> Result<UpdateStatus, String> {
-    let unreachable = || "The update status isn't available right now.".to_owned();
+    let unreachable = || tr("update.unavailable").to_owned();
     let dir = ipc::default_state_dir().ok_or_else(unreachable)?;
     let mut bytes = bridge_kde::fsutil::read_private_file(&ipc::token_path(&dir))
         .ok()
@@ -159,7 +162,7 @@ impl Updates {
                         ui.horizontal_wrapped(|ui| {
                             theme::dot(ui, pal.accent_fill, false);
                             ui.label(theme::semibold(
-                                format!("Update available: v{version}"),
+                                tr_args("update.available", &[("version", &version)]),
                                 13.0,
                             ));
                             ui.label(theme::caption(pal, banner_detail(&status)));
@@ -169,7 +172,7 @@ impl Updates {
                                     if theme::pill_button(
                                         ui,
                                         pal,
-                                        "Show file",
+                                        tr("update.show_file"),
                                         theme::ButtonKind::Primary,
                                         true,
                                     )
@@ -183,7 +186,7 @@ impl Updates {
                                         && theme::pill_button(
                                             ui,
                                             pal,
-                                            "Download",
+                                            tr("update.download"),
                                             theme::ButtonKind::Primary,
                                             true,
                                         )
@@ -196,7 +199,7 @@ impl Updates {
                             if theme::pill_button(
                                 ui,
                                 pal,
-                                "Release notes",
+                                tr("update.release_notes"),
                                 theme::ButtonKind::Plain,
                                 true,
                             )
@@ -207,7 +210,7 @@ impl Updates {
                             if theme::pill_button(
                                 ui,
                                 pal,
-                                "Skip this version",
+                                tr("update.skip"),
                                 theme::ButtonKind::Plain,
                                 true,
                             )
@@ -215,8 +218,14 @@ impl Updates {
                             {
                                 action = Some(Action::Skip);
                             }
-                            if theme::pill_button(ui, pal, "Later", theme::ButtonKind::Plain, true)
-                                .clicked()
+                            if theme::pill_button(
+                                ui,
+                                pal,
+                                tr("update.later"),
+                                theme::ButtonKind::Plain,
+                                true,
+                            )
+                            .clicked()
                             {
                                 later = true;
                             }
@@ -249,13 +258,13 @@ impl Updates {
     pub fn details(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         self.poll();
         ui.add_space(2.0);
-        ui.label(theme::overline(pal, "Updates"));
+        ui.label(theme::overline(pal, tr("update.section")));
         let Some(status) = self.status.clone() else {
             ui.label(theme::caption(
                 pal,
                 self.problem
                     .as_deref()
-                    .unwrap_or("Checking update settings…"),
+                    .unwrap_or_else(|| tr("update.checking_settings")),
             ));
             return;
         };
@@ -265,22 +274,19 @@ impl Updates {
                 status.state,
                 UpdateState::Checking | UpdateState::Downloading
             );
-            if theme::pill_button(ui, pal, "Check for updates", ButtonKind::Plain, idle).clicked() {
+            if theme::pill_button(ui, pal, tr("update.check"), ButtonKind::Plain, idle).clicked() {
                 self.dismissed = None;
                 self.send(Command::Check);
             }
             let mut automatic = status.enabled;
             if ui
-                .checkbox(&mut automatic, "Check automatically (about daily)")
+                .checkbox(&mut automatic, tr("update.automatic"))
                 .changed()
             {
                 self.send(Command::SetEnabled(automatic));
             }
         });
-        ui.label(theme::caption(
-            pal,
-            "Only GitHub's release list is contacted. Nothing is installed automatically.",
-        ));
+        ui.label(theme::caption(pal, tr("update.privacy")));
     }
 }
 
@@ -311,38 +317,42 @@ fn banner_detail(status: &UpdateStatus) -> String {
             .downloaded_bytes
             .saturating_mul(100)
             .checked_div(status.download_total)
-            .map_or("Downloading…".to_owned(), |pct| {
-                format!("Downloading… {}%", pct.min(100))
+            .map_or(tr("update.downloading").to_owned(), |pct| {
+                tr_args("update.downloading_pct", &[("pct", &pct.min(100))])
             }),
-        UpdateState::Downloaded => {
-            "Downloaded and checked against the published SHA-256. Open it to install.".into()
-        }
+        UpdateState::Downloaded => tr("update.downloaded").to_owned(),
         _ => match (&status.error, status.downloadable) {
             (Some(error), _) => crate::state::display_text(error),
-            (None, true) => format!("You have v{}.", status.current_version),
-            (None, false) => {
-                "No verified installer is published for this system; see the release notes.".into()
-            }
+            (None, true) => tr_args("update.you_have", &[("version", &status.current_version)]),
+            (None, false) => tr("update.no_installer").to_owned(),
         },
     }
 }
 
 fn summary_line(status: &UpdateStatus) -> String {
-    let when = status
-        .last_checked_unix
-        .map_or("not checked yet".to_owned(), |_| "checked".to_owned());
     let line = match (&status.latest, status.newer) {
         _ if status.state == UpdateState::NoPublicRelease => {
             ipc::UPDATE_NO_PUBLIC_RELEASE.to_owned()
         }
-        (Some(latest), true) => format!(
-            "v{} is available (you have v{}).",
-            latest.version, status.current_version
+        (Some(latest), true) => tr_args(
+            "update.summary_available",
+            &[
+                ("latest", &latest.version),
+                ("version", &status.current_version),
+            ],
         ),
-        (Some(_), false) | (None, _) if status.last_checked_unix.is_some() => {
-            format!("GeekBridge v{} is up to date.", status.current_version)
-        }
-        _ => format!("GeekBridge v{}, {when}.", status.current_version),
+        (Some(_), false) | (None, _) if status.last_checked_unix.is_some() => tr_args(
+            "update.summary_current",
+            &[("version", &status.current_version)],
+        ),
+        _ => tr_args(
+            if status.last_checked_unix.is_some() {
+                "update.summary_checked"
+            } else {
+                "update.summary_unchecked"
+            },
+            &[("version", &status.current_version)],
+        ),
     };
     match &status.error {
         Some(error) => format!("{line} {}", crate::state::display_text(error)),

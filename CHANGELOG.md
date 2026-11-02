@@ -6,7 +6,15 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Highlights
+- Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
+- Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
+- Answer or decline phone calls from your computer
+- Read and send texts, see your contacts, and keep your Google Calendar in sync with the desktop
+- Pair by scanning a QR code; updates are checked against GitHub and verified before you install
+
 ### Added
+- "What's new" after an update: a dismissible card at the top of Home on Android and the desktop (once per version, never on a fresh install), `geekbridge-ctl whats-new`, and a link to the full release notes. The text is generated from this file by `scripts/gen-whats-new.sh` and checked for drift by tests.
 - Tray / menu-bar icon in the service (Linux StatusNotifierItem + dbusmenu, Windows notification area; the macOS menu-bar
   item is type-checked only): dot-matrix icon with connected / disconnected / ringing / update / transfer states, a menu
   with Open, Paste from phone, Send file, Answer / Decline, Pause sync, Check for updates and Quit. Optional: no tray
@@ -21,6 +29,14 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Everything below is verified on
 Linux and an Android emulator with scripted peers; **no real phone has been paired yet** and Windows and macOS builds
 have not been run on real hardware (see "Known limitations").
+
+
+### Highlights
+- Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
+- Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
+- Answer or decline phone calls from your computer
+- Read and send texts, see your contacts, and keep your Google Calendar in sync with the desktop
+- Pair by scanning a QR code; updates are checked against GitHub and verified before you install
 
 ### Added
 
@@ -41,8 +57,8 @@ have not been run on real hardware (see "Known limitations").
 - Unpairing on the computer reaches the phone even with the app closed (the phone forgets the computer and stops its
   service); KDE-style unpair on both sides.
 - Two security reviews with the findings fixed and covered by regression tests (replay, reconnect, leaks, per-computer
-  opt-ins, QR token lock-out, SMS and notification handling): [docs/security-review.md](docs/security-review.md),
-  [docs/security-review-2.md](docs/security-review-2.md), [SECURITY.md](SECURITY.md).
+  opt-ins, QR token lock-out, SMS and notification handling): [docs/reports/security-review.md](docs/reports/security-review.md),
+  [docs/reports/security-review-2.md](docs/reports/security-review-2.md), [SECURITY.md](SECURITY.md).
 
 **Clipboard**
 - Text, links, HTML and images; per-phone opt-in, freshness window, loop and echo suppression, sensitive items

@@ -117,8 +117,8 @@ Tag operations happen only after verification succeeded.
 
 ## `--dry-run`
 
-`scripts/release-local.sh v0.0.0-dryrun --prerelease --dry-run --skip-tests` exercises everything except publishing:
-it copies the working tree (tracked and untracked, not ignored) to `$GB_RELEASE_DIR/v0.0.0-dryrun/src`, patches the
+`scripts/release-local.sh v0.0.1-dryrun --prerelease --dry-run --skip-tests` exercises everything except publishing:
+it copies the working tree (tracked and untracked, not ignored) to `$GB_RELEASE_DIR/v0.0.1-dryrun/src`, patches the
 version of **the copy** (Cargo.toml, Cargo.lock, PKGBUILD) to the tag, and builds and verifies all assets from it. A dirty
 tree, a branch other than `main` and a version mismatch are reported as `a real release would refuse here` warnings
 instead of errors, and the final summary counts them. `gh` and the mutating `git` calls are printing stubs, so the real
@@ -139,7 +139,24 @@ All scratch lives in `$GB_RELEASE_DIR` (default `~/.cache/gb-release`), one dire
                           /r8-mapping-*.txt      R8 mappings (to decode release crash traces; not uploaded)
     ~/.cache/gb-release/zig-venv, zig-wrappers   only with --with-windows
 
-MEASUREMENTS_PLACEHOLDER
+Measured on this machine (24 threads, 31 GB RAM) with `GB_JOBS=3`, tests skipped, for the rehearsal `v0.0.1-dryrun`
+(`--prerelease --dry-run --skip-tests --with-windows`):
+
+| Step | Time | Scratch it leaves |
+|---|---|---|
+| Linux release build (nine binaries, fat LTO) + tarball, installer, `.deb` | 4 to 8 min | 1.0 GB |
+| Arch package (`makepkg`, a second full release build) | 9 to 11 min | 2.9 GB in `tmp/` (cargo home + makepkg tree) |
+| Android: two native libs, R8, two signed APKs | about 11 min cold, 3 min with warm target dir | 0.6 GB |
+| Windows zig cross-build (`--with-windows`) | 3 to 4 min (plus a one-time `pip install ziglang`) | 0.7 GB |
+| Verification, `SHA256SUMS` | under 1 min | |
+| `cargo fmt` + `clippy` + `test --workspace` (not in that table) | add 10 to 20 min, uses `<repo>/target` | the existing `target/` |
+| **Total** | **about 30 to 40 min** | **about 5.5 GB scratch, 123 MB of finished assets** |
+
+Keep at least 10 GB free (`GB_MIN_FREE_GB`); `--prune` gives the scratch back. Cargo's and Gradle's own caches
+(`.tools/cargo`, `.tools/gradle-home`) are shared with the normal builds and not counted.
+
+The rehearsal tag cannot be `v0.0.0-dryrun`: Android's `versionCode` for 0.0.0 is 0, which Gradle rejects (the script
+says so up front). Use `v0.0.1-dryrun` or higher.
 
 Cleanup: `--prune` removes the build trees after a successful run and keeps `out/`. By hand:
 `rm -rf ~/.cache/gb-release/vX.Y.Z/{target-*,src,stage,tmp,arch-out,apk}`, or `rm -rf ~/.cache/gb-release/vX.Y.Z`

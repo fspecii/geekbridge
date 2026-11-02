@@ -35,7 +35,7 @@ class UpdateSection(
     private val prefs = activity.getSharedPreferences("updates", Context.MODE_PRIVATE)
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-update").apply { isDaemon = true } }
 
-    private val card = ui.card(root, "App updates")
+    private val card = ui.card(root, activity.getString(R.string.upd_title))
     private val status: TextView
     private val notes: TextView
     private val autoCheck: CompoundButton
@@ -52,19 +52,17 @@ class UpdateSection(
     init {
         ui.body(
             card,
-            "GeekBridge ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}). Checking only asks GitHub for the " +
-                "latest public release of this project; nothing about you or this phone is sent. Android always asks you to " +
-                "confirm an install, and an update only installs over the same signing key.",
+            activity.getString(R.string.upd_intro, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE),
             Tone.Muted,
         )
-        status = ui.statusLine(card, "Not checked yet.", Tone.Muted)
+        status = ui.statusLine(card, activity.getString(R.string.upd_not_checked), Tone.Muted)
         notes = ui.body(card, "", Tone.Muted).apply { visibility = android.view.View.GONE }
-        autoCheck = ui.check(card, "Check when the app opens (at most every 12 hours)", checked = prefs.getBoolean(KEY_AUTO, true))
+        autoCheck = ui.check(card, activity.getString(R.string.upd_auto), checked = prefs.getBoolean(KEY_AUTO, true))
         autoCheck.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(KEY_AUTO, on).apply() }
-        checkButton = ui.button(card, "Check for updates") { startCheck(manual = true) }
-        downloadButton = ui.button(card, "Download and verify", emphasis = Emphasis.Primary) { startDownload() }
-        installButton = ui.button(card, "Install update", emphasis = Emphasis.Primary) { startInstall() }
-        pageButton = ui.button(card, "Open release page") { openPage() }
+        checkButton = ui.button(card, activity.getString(R.string.upd_check)) { startCheck(manual = true) }
+        downloadButton = ui.button(card, activity.getString(R.string.upd_download), emphasis = Emphasis.Primary) { startDownload() }
+        installButton = ui.button(card, activity.getString(R.string.upd_install), emphasis = Emphasis.Primary) { startInstall() }
+        pageButton = ui.button(card, activity.getString(R.string.upd_open_page)) { openPage() }
         render()
     }
 
@@ -110,7 +108,7 @@ class UpdateSection(
         if (busy) return
         busy = true
         verified = false
-        say(if (manual) "Checking GitHub…" else "Checking for updates…", Tone.Muted)
+        say(activity.getString(if (manual) R.string.upd_checking_github else R.string.upd_checking), Tone.Muted)
         render()
         val cache = prefs.getString(KEY_ETAG, null)?.let { etag -> prefs.getString(KEY_BODY, null)?.let { UpdateChecker.Cache(etag, it) } }
         worker.execute {
@@ -129,20 +127,20 @@ class UpdateSection(
                 offer = result.offer
                 val o = result.offer
                 if (o.sha256 == null) {
-                    say("Version ${o.version} is available, but the release publishes no SHA-256 for the app, so it can't be downloaded here.", Tone.Warn)
+                    say(activity.getString(R.string.upd_available_no_sha, o.version), Tone.Warn)
                 } else {
-                    say("Version ${o.version} is available (you have ${BuildConfig.VERSION_NAME}).", Tone.Ok)
+                    say(activity.getString(R.string.upd_available, o.version, BuildConfig.VERSION_NAME), Tone.Ok)
                 }
             }
             is UpdateCheckResult.UpToDate -> {
                 offer = null
-                say("GeekBridge ${BuildConfig.VERSION_NAME} is up to date.", Tone.Ok)
+                say(activity.getString(R.string.upd_up_to_date, BuildConfig.VERSION_NAME), Tone.Ok)
             }
             is UpdateCheckResult.NoPublicRelease -> {
                 offer = null
-                say(UpdateCheckResult.NoPublicRelease.MESSAGE, Tone.Muted)
+                say(UpdateCheckResult.NoPublicRelease.MESSAGE.text(activity.strings), Tone.Muted)
             }
-            is UpdateCheckResult.Failed -> say(result.reason, Tone.Warn)
+            is UpdateCheckResult.Failed -> say(result.reason.text(activity.strings), Tone.Warn)
         }
         render()
     }
@@ -152,7 +150,7 @@ class UpdateSection(
         if (busy) return
         busy = true
         cancelled = false
-        say("Downloading ${o.apkName}…", Tone.Muted)
+        say(activity.getString(R.string.upd_downloading_name, o.apkName), Tone.Muted)
         render()
         val dir = UpdateFileProvider.dir(activity)
         worker.execute {
@@ -160,18 +158,18 @@ class UpdateSection(
                 checker.download(o, dir) { done, total ->
                     if (cancelled) throw IOException("cancelled")
                     if (done == total || done % (256 * 1024) < 32 * 1024) {
-                        main.post { say("Downloading… ${(done * 100 / total).coerceIn(0, 100)}%", Tone.Muted) }
+                        main.post { say(activity.getString(R.string.upd_downloading_pct, (done * 100 / total).coerceIn(0, 100)), Tone.Muted) }
                     }
                 }
                 signerProblem(dir)
             } catch (e: UpdateChecker.UpdateException) {
-                e.message ?: "The download failed."
+                e.text.text(activity.strings)
             }
             main.post {
                 busy = false
                 if (outcome == null) {
                     verified = true
-                    say("Version ${o.version} downloaded and verified against the published SHA-256. Tap Install to continue.", Tone.Ok)
+                    say(activity.getString(R.string.upd_verified, o.version), Tone.Ok)
                 } else {
                     say(outcome, Tone.Warn)
                 }
@@ -184,7 +182,7 @@ class UpdateSection(
     private fun signerProblem(dir: File?): String? {
         val file = dir?.let { File(it, UpdateChecker.UPDATE_FILE_NAME) } ?: return null
         val verdict = SignerCheck.check(SignerCheck.AndroidSource(activity.packageManager, activity.packageName), file.path)
-        val text = SignerCheck.message(verdict, BuildConfig.DEBUG) ?: return null
+        val text = SignerCheck.message(activity.strings, verdict, BuildConfig.DEBUG) ?: return null
         file.delete()
         return text
     }
@@ -195,13 +193,13 @@ class UpdateSection(
         if (busy) return
         val file = UpdateFileProvider.file(activity)
         if (!activity.packageManager.canRequestPackageInstalls()) {
-            say("Android needs your permission first: allow GeekBridge to install apps on the next screen, then come back and tap Install again.", Tone.Warn)
+            say(activity.getString(R.string.upd_need_permission), Tone.Warn)
             try {
                 activity.startActivity(
                     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")),
                 )
             } catch (_: ActivityNotFoundException) {
-                say("Open Settings > Apps > GeekBridge > Install unknown apps, allow it, then tap Install again.", Tone.Warn)
+                say(activity.getString(R.string.upd_need_permission_manual), Tone.Warn)
             }
             return
         }
@@ -220,7 +218,7 @@ class UpdateSection(
                 } else if (!ok) {
                     file.delete()
                     verified = false
-                    say("The downloaded file changed or disappeared. Download it again.", Tone.Warn)
+                    say(activity.getString(R.string.upd_file_changed), Tone.Warn)
                 } else {
                     handOff()
                 }
@@ -235,9 +233,9 @@ class UpdateSection(
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         try {
             activity.startActivity(intent)
-            say("Android's installer is open. Confirm there to finish the update.", Tone.Ok)
+            say(activity.getString(R.string.upd_installer_open), Tone.Ok)
         } catch (_: ActivityNotFoundException) {
-            say("No package installer was found on this phone.", Tone.Warn)
+            say(activity.getString(R.string.upd_no_installer), Tone.Warn)
         }
     }
 
@@ -246,7 +244,7 @@ class UpdateSection(
         try {
             activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         } catch (_: ActivityNotFoundException) {
-            say("No browser was found to open the release page.", Tone.Warn)
+            say(activity.getString(R.string.upd_no_browser), Tone.Warn)
         }
     }
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Desktop -> phone payloads through a model of the emulator's two networks (docs/e2e-findings.md E2E-14).
+//! Desktop -> phone payloads through a model of the emulator's two networks (docs/reports/e2e-findings.md E2E-14).
 //!
 //! The control link arrives on one interface (`adb emu redir` -> eth0, here a redirect proxy to the phone's
 //! own loopback address) while the default route is another (wlan0). A payload socket bound to the control

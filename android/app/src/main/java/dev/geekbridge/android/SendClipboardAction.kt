@@ -11,7 +11,7 @@ object SendClipboardAction : QuickActionHandler {
     }
 
     override fun unavailableReason(activity: Activity): String? =
-        "Turn on Clipboard sync in Settings first."
+        activity.getString(R.string.clip_turn_on_first)
 
     override fun launch(activity: Activity) {
         activity.startActivity(ClipboardFloatingActivity.intent(activity))

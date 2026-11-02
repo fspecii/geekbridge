@@ -254,8 +254,8 @@ class Ui(private val ctx: Context) {
             openExpanders[key] = open
             body.visibility = if (open) View.VISIBLE else View.GONE
             mark.text = if (open) "\u2212" else "+"
-            head.contentDescription = "$title, ${if (open) "expanded" else "collapsed"}. $hint"
-            if (Build.VERSION.SDK_INT >= 30) head.stateDescription = if (open) "Expanded" else "Collapsed"
+            head.contentDescription = ctx.getString(if (open) R.string.cd_expander_expanded else R.string.cd_expander_collapsed, title, hint)
+            if (Build.VERSION.SDK_INT >= 30) head.stateDescription = ctx.getString(if (open) R.string.state_expanded else R.string.state_collapsed)
         }
         head.setOnClickListener { apply(openExpanders[key] != true) }
         apply(openExpanders[key] == true)

@@ -1,9 +1,15 @@
-# GeekBridge: source analysis and proposed Rust architecture
+# GeekBridge: source analysis and architecture rationale
 
-Research date: 2026-11-01; status note 2026-11-02. This began as a design and is now largely implemented: see the
-[README](../README.md) for the current feature matrix and what has and has not been verified. The text below keeps the
-original research reasoning; sections under "Work still required" and "Product correction" are updated. Real-phone
-interoperability and call audio are still unverified.
+> **Status.** GeekBridge is implemented: the KDE Connect protocol transport, certificate-pinned pairing, the desktop
+> service and apps, the Android companion, clipboard, file sharing, calls (Bluetooth hands-free control), contacts,
+> calendar and messages all exist and are tested. For a short map of the code start with
+> [ARCHITECTURE.md](../ARCHITECTURE.md); for what works and what has not been verified on real hardware see the
+> [README](../README.md) and [platform-status.md](platform-status.md).
+>
+> This page is the **original research and design reasoning** (written 2026-11-01, status updated 2026-11-02). It is kept
+> because the decisions and the protocol findings below still explain why the code looks the way it does. Where it says
+> "proposed" or "work still required", check the code and the README first: many items have since been built. Real-phone
+> interoperability and call audio are still unverified.
 
 ## Recommendation
 

@@ -1,0 +1,50 @@
+name: Bug report
+description: Something does not work (pairing, transfers, calls, clipboard, contacts, calendar, messages, updates, UI)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not paste personal data.** Remove phone numbers, names, message text, contact and calendar entries,
+        IP addresses, device fingerprints and pairing codes or QR links from everything you attach. The reports
+        from `geekbridge-ctl diagnose` and the phone's *Diagnostics & about > Copy report* are redacted, but read
+        them before posting. Vulnerabilities go to [SECURITY.md](https://github.com/fspecii/geekbridge/blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Steps to reproduce, in order. Say whether it happens every time.
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model, OEM and Android version
+      description: "For example: Pixel 8, Google, Android 15. OEM matters for background limits (Samsung, Xiaomi, OnePlus, Huawei, ...)."
+    validations:
+      required: true
+  - type: input
+    id: desktop
+    attributes:
+      label: Desktop OS and how GeekBridge was installed
+      description: "For example: Arch Linux + Hyprland (Wayland), .deb 0.1.0; Windows 11; macOS 15. Or built from source at commit abc1234."
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: GeekBridge versions
+      description: "Desktop: `geekbridge --version`. Phone: Diagnostics & about."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `geekbridge-ctl diagnose` (and the phone's Copy report, if relevant)
+      render: text
+      description: Redact anything personal before pasting.
+  - type: textarea
+    id: network
+    attributes:
+      label: Network (optional)
+      description: Same Wi-Fi? Guest network, VPN, firewall (TCP/UDP 1716-1764), KDE Connect or GSConnect also installed?

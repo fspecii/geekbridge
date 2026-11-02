@@ -60,49 +60,49 @@ data class SetupInputs(
 )
 
 object SetupModel {
-    fun steps(i: SetupInputs): List<StepInfo> {
+    fun steps(s: Strings, i: SetupInputs): List<StepInfo> {
         val out = ArrayList<StepInfo>()
         out += StepInfo(
             StepId.Pair,
             if (i.pairedCount > 0) StepStatus.Done else StepStatus.Todo,
             required = true,
-            detail = if (i.pairedCount > 0) "${i.pairedCount} paired" else "No computer paired yet",
+            detail = if (i.pairedCount > 0) s.plural(R.plurals.setup_paired_count, i.pairedCount, i.pairedCount) else s.get(R.string.setup_detail_none_paired),
         )
         out += if (i.sdk >= 33) {
-            permissionStep(StepId.Notifications, i.notifications, required = true)
+            permissionStep(s, StepId.Notifications, i.notifications, required = true)
         } else {
-            StepInfo(StepId.Notifications, StepStatus.Done, true, "Not needed on this Android version")
+            StepInfo(StepId.Notifications, StepStatus.Done, true, s.get(R.string.setup_detail_notif_na))
         }
-        out += permissionStep(StepId.Contacts, i.contacts, required = false)
-        out += permissionStep(StepId.Calendar, i.calendar, required = false)
-        out += permissionStep(StepId.PhoneState, i.phoneState, required = false)
-        out += permissionStep(StepId.AnswerCalls, i.answerCalls, required = false)
-        out += permissionStep(StepId.CallerNumber, i.callLog, required = false)
+        out += permissionStep(s, StepId.Contacts, i.contacts, required = false)
+        out += permissionStep(s, StepId.Calendar, i.calendar, required = false)
+        out += permissionStep(s, StepId.PhoneState, i.phoneState, required = false)
+        out += permissionStep(s, StepId.AnswerCalls, i.answerCalls, required = false)
+        out += permissionStep(s, StepId.CallerNumber, i.callLog, required = false)
         out += StepInfo(
             StepId.Sms, StepStatus.Info, required = false,
-            detail = "Optional · contacts, calendar and texts for your computer, off until you switch them on",
+            detail = s.get(R.string.setup_detail_sms),
         )
-        out += batteryStep(i)
+        out += batteryStep(s, i)
         return out
     }
 
-    private fun permissionStep(id: StepId, p: PermissionStatus, required: Boolean): StepInfo = when (p) {
-        PermissionStatus.Granted -> StepInfo(id, StepStatus.Done, required, "Allowed")
-        PermissionStatus.NotAsked -> StepInfo(id, StepStatus.Todo, required, "Not allowed yet")
-        PermissionStatus.Denied -> StepInfo(id, StepStatus.Denied, required, "Denied · you can allow it again")
-        PermissionStatus.Blocked -> StepInfo(id, StepStatus.Blocked, required, "Denied · allow it in app settings")
+    private fun permissionStep(s: Strings, id: StepId, p: PermissionStatus, required: Boolean): StepInfo = when (p) {
+        PermissionStatus.Granted -> StepInfo(id, StepStatus.Done, required, s.get(R.string.setup_detail_allowed))
+        PermissionStatus.NotAsked -> StepInfo(id, StepStatus.Todo, required, s.get(R.string.setup_detail_not_allowed))
+        PermissionStatus.Denied -> StepInfo(id, StepStatus.Denied, required, s.get(R.string.setup_detail_denied))
+        PermissionStatus.Blocked -> StepInfo(id, StepStatus.Blocked, required, s.get(R.string.setup_detail_blocked))
     }
 
-    private fun batteryStep(i: SetupInputs): StepInfo = when (i.battery) {
+    private fun batteryStep(s: Strings, i: SetupInputs): StepInfo = when (i.battery) {
         BatteryState.BackgroundRestricted ->
-            StepInfo(StepId.Battery, StepStatus.Blocked, true, "Background use is restricted · change it in app settings")
+            StepInfo(StepId.Battery, StepStatus.Blocked, true, s.get(R.string.setup_detail_bg_restricted))
         BatteryState.Optimised ->
-            StepInfo(StepId.Battery, StepStatus.Todo, true, "Android may stop the connection to save battery")
+            StepInfo(StepId.Battery, StepStatus.Todo, true, s.get(R.string.setup_detail_battery_todo))
         BatteryState.Unrestricted -> if (i.oem.hasExtraSwitch && i.oem != Oem.Other && !i.oemAcknowledged) {
             // The system exemption is verified; the vendor's extra switch cannot be read, so it stays a to-do.
-            StepInfo(StepId.Battery, StepStatus.Todo, true, "Unrestricted · ${i.oem.label} has an extra autostart switch")
+            StepInfo(StepId.Battery, StepStatus.Todo, true, s.get(R.string.setup_detail_extra_switch, i.oem.label))
         } else {
-            StepInfo(StepId.Battery, StepStatus.Done, true, "Unrestricted")
+            StepInfo(StepId.Battery, StepStatus.Done, true, s.get(R.string.setup_detail_unrestricted))
         }
     }
 
@@ -116,38 +116,38 @@ object SetupModel {
      * Persistent warnings for the home screen. Required steps warn whenever the app is in use (a computer is
      * paired or setup was finished); optional steps only warn when a permission that worked was later revoked.
      */
-    fun warnings(i: SetupInputs, setupFinished: Boolean): List<Warning> {
+    fun warnings(s: Strings, i: SetupInputs, setupFinished: Boolean): List<Warning> {
         val inUse = i.pairedCount > 0 || setupFinished
         val out = ArrayList<Warning>()
-        for (s in steps(i)) {
-            if (s.status == StepStatus.Done || s.status == StepStatus.Info) continue
-            val revoked = s.id in i.wasDone
+        for (st in steps(s, i)) {
+            if (st.status == StepStatus.Done || st.status == StepStatus.Info) continue
+            val revoked = st.id in i.wasDone
             when {
-                s.id == StepId.Battery && inUse -> out += Warning(
-                    s.id,
-                    if (revoked) "Battery restriction was turned back on. GeekBridge may disconnect in the background."
-                    else "Battery optimisation is on. GeekBridge may disconnect in the background.",
+                st.id == StepId.Battery && inUse -> out += Warning(
+                    st.id,
+                    if (revoked) s.get(R.string.setup_warn_battery_revoked)
+                    else s.get(R.string.setup_warn_battery),
                 )
-                s.id == StepId.Notifications && inUse && s.required -> out += Warning(
-                    s.id, "Notifications are off. The background connection notice and alerts will not show.",
+                st.id == StepId.Notifications && inUse && st.required -> out += Warning(
+                    st.id, s.get(R.string.setup_warn_notifications),
                 )
-                revoked && s.id != StepId.Pair -> out += Warning(s.id, "${title(s.id)} access was turned off. Related features are paused.")
+                revoked && st.id != StepId.Pair -> out += Warning(st.id, s.get(R.string.setup_warn_revoked, title(s, st.id)))
             }
         }
         // Most impactful first: the battery exemption decides whether the connection survives at all.
         return out.sortedBy { if (it.step == StepId.Battery) 0 else 1 }
     }
 
-    fun title(id: StepId): String = when (id) {
-        StepId.Pair -> "Pair with your computer"
-        StepId.Notifications -> "Notifications"
-        StepId.Contacts -> "Contacts"
-        StepId.Calendar -> "Calendar"
-        StepId.PhoneState -> "Phone state"
-        StepId.AnswerCalls -> "Answer calls"
-        StepId.CallerNumber -> "Caller number"
-        StepId.Sms -> "Share with computer"
-        StepId.Battery -> "Battery"
+    fun title(s: Strings, id: StepId): String = when (id) {
+        StepId.Pair -> s.get(R.string.setup_title_pair)
+        StepId.Notifications -> s.get(R.string.setup_title_notifications)
+        StepId.Contacts -> s.get(R.string.setup_title_contacts)
+        StepId.Calendar -> s.get(R.string.setup_title_calendar)
+        StepId.PhoneState -> s.get(R.string.setup_title_phonestate)
+        StepId.AnswerCalls -> s.get(R.string.setup_title_answercalls)
+        StepId.CallerNumber -> s.get(R.string.setup_title_callernumber)
+        StepId.Sms -> s.get(R.string.setup_title_sms)
+        StepId.Battery -> s.get(R.string.setup_title_battery)
     }
 
     fun permissionFor(id: StepId): String? = when (id) {

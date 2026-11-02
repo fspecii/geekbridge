@@ -191,7 +191,7 @@ payload size, not full equality, for mutated input.
 * `scripts/soak.sh`: the above at large counts in release mode, then the real binary under junk
   TCP/UDP traffic with fd and RSS growth checks.
 * `scripts/soak-e2e.sh`: a multi-hour soak of the release service and release APK on an emulator (clipboard, files, link flaps,
-  calls, phone data, restarts, screen-off gaps) with leak charts; results in `docs/soak-report.md`.
+  calls, phone data, restarts, screen-off gaps) with leak charts; results in `docs/reports/soak-report.md`.
 
 The phone side in these tests is a real `bridge-kde` endpoint. `bridge-phone-sim` simulates a
 Bluetooth telephony stack, not the KDE Connect transport, and `bridge-android` has its own tests

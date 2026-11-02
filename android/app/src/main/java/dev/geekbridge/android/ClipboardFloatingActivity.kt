@@ -35,7 +35,7 @@ class ClipboardFloatingActivity : Activity() {
             val snapshot = clip?.let { AndroidClipboardHost.snapshot(appCtx, it) }
             val result = engine?.onGesture(snapshot) ?: SendResult(false, "disabled")
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(appCtx, result.message, Toast.LENGTH_SHORT).show()
+                Toast.makeText(appCtx, result.message(appCtx.strings), Toast.LENGTH_SHORT).show()
             }
         }
         finish()

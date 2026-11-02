@@ -125,17 +125,17 @@ class ShareLogicTest {
     }
 
     @Test fun classifiesIntents() {
-        val files = ShareIntentLogic.classify(listOf("content://a/1", "content://a/2", "content://a/1"), "caption")
+        val files = ShareIntentLogic.classify(listOf("content://a/1", "content://a/2", "content://a/1"), "caption", TestStrings)
         assertEquals(ShareRequest.Files(listOf("content://a/1", "content://a/2"), false), files)
-        val many = ShareIntentLogic.classify((1..80).map { "content://a/$it" }, null) as ShareRequest.Files
+        val many = ShareIntentLogic.classify((1..80).map { "content://a/$it" }, null, TestStrings) as ShareRequest.Files
         assertEquals(ShareLimits.MAX_FILES, many.uris.size); assertTrue(many.truncated)
-        assertEquals(ShareRequest.Text("https://example.com/x", TransferKind.Url), ShareIntentLogic.classify(emptyList(), "  https://example.com/x \n"))
-        assertEquals(ShareRequest.Text("hello world", TransferKind.Text), ShareIntentLogic.classify(emptyList(), "hello world"))
-        assertEquals(TransferKind.Text, (ShareIntentLogic.classify(emptyList(), "see https://a.b now") as ShareRequest.Text).kind)
-        assertEquals(TransferKind.Text, (ShareIntentLogic.classify(emptyList(), "javascript:alert(1)") as ShareRequest.Text).kind)
-        assertTrue(ShareIntentLogic.classify(emptyList(), null) is ShareRequest.Invalid)
-        assertTrue(ShareIntentLogic.classify(emptyList(), "   ") is ShareRequest.Invalid)
-        assertTrue(ShareIntentLogic.classify(emptyList(), "x".repeat(ShareLimits.MAX_TEXT_BYTES + 1)) is ShareRequest.Invalid)
+        assertEquals(ShareRequest.Text("https://example.com/x", TransferKind.Url), ShareIntentLogic.classify(emptyList(), "  https://example.com/x \n", TestStrings))
+        assertEquals(ShareRequest.Text("hello world", TransferKind.Text), ShareIntentLogic.classify(emptyList(), "hello world", TestStrings))
+        assertEquals(TransferKind.Text, (ShareIntentLogic.classify(emptyList(), "see https://a.b now", TestStrings) as ShareRequest.Text).kind)
+        assertEquals(TransferKind.Text, (ShareIntentLogic.classify(emptyList(), "javascript:alert(1)", TestStrings) as ShareRequest.Text).kind)
+        assertTrue(ShareIntentLogic.classify(emptyList(), null, TestStrings) is ShareRequest.Invalid)
+        assertTrue(ShareIntentLogic.classify(emptyList(), "   ", TestStrings) is ShareRequest.Invalid)
+        assertTrue(ShareIntentLogic.classify(emptyList(), "x".repeat(ShareLimits.MAX_TEXT_BYTES + 1), TestStrings) is ShareRequest.Invalid)
         assertFalse(ShareIntentLogic.isWebUrl("ftp://x")); assertFalse(ShareIntentLogic.isWebUrl("https://a b"))
     }
 
@@ -179,10 +179,10 @@ class ShareLogicTest {
 
     @Test fun progressWording() {
         val t = ShareProtocol.parseTransfers(JSONArray().put(transfer(direction = "outgoing", state = "active", bytes = 500)))[0]
-        assertEquals("report.pdf — 50% (500 B)", ProgressText.line(t))
-        assertEquals("1.5 MiB", ProgressText.bytes(1_572_864))
+        assertEquals("report.pdf — 50% (500 B)", ProgressText.line(t, TestStrings))
+        assertEquals("1.5 MiB", ProgressText.bytes(1_572_864, TestStrings, java.util.Locale.ENGLISH))
         val failed = ShareProtocol.parseTransfers(JSONArray().put(transfer(state = "failed").put("code", "timeout")))[0]
-        assertEquals("report.pdf — failed (timeout)", ProgressText.line(failed))
+        assertEquals("report.pdf — failed (timeout)", ProgressText.line(failed, TestStrings))
         assertTrue(failed.state.finished); assertFalse(TransferState.Active.finished)
     }
 }

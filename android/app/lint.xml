@@ -15,8 +15,13 @@
     <!-- x86_64 is packaged by default (packagedAbis); only the release-slimming override drops it. The emulator
          and ChromeOS-on-x86 are supported through that default, so the warning is about a non-default build. -->
     <issue id="ChromeOsAbiSupport" severity="ignore" />
-    <!-- English-only app: no language needs a plural form beyond the "%d x" strings that exist. -->
-    <issue id="PluralsCandidate" severity="ignore" />
+    <!-- Translation is planned (docs/translating.md): user-visible text must live in res/values, never in code or layouts.
+         Both are errors so a new hard-coded string fails the build instead of reaching a translator as a surprise. -->
+    <issue id="HardcodedText" severity="error" />
+    <issue id="SetTextI18n" severity="error" />
+    <!-- "%d x" strings that are not plurals yet are real candidates once a language needs a second form; the check stays
+         on as a warning and counts are written as <plurals>. -->
+    <issue id="PluralsCandidate" severity="warning" />
     <!-- DotKit draws a handful of points per frame into two short lists; the allocation is dwarfed by the canvas
          work and the view only redraws on state changes, never in a continuous animation. -->
     <issue id="DrawAllocation">

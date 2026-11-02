@@ -1,0 +1,49 @@
+# GeekBridge documentation
+
+Start with the [project README](../README.md). Troubleshooting is a section of the [user guide](user-guide.md).
+Documents under [reports/](reports/) are dated snapshots, not living documentation; each says so in its first lines.
+
+## Using GeekBridge
+
+- [User guide](user-guide.md): install, pair, daily use, symptom-keyed troubleshooting
+- [Real-device quickstart](real-device-quickstart.md): install the Android app on a phone and pair it
+- [Omarchy / Hyprland setup](omarchy.md): hotkeys, window rules, notifications; also GNOME, KDE and sway
+- [Pairing](pairing.md): QR and code pairing, discovery, what is trusted
+- [Sharing](sharing.md), [clipboard sync](clipboard-sync.md), [call control](call-control.md), [phone data: contacts, calendar, SMS](phone-data-link.md): feature behaviour and consents
+- [Call audio options](call-audio-options.md): how call audio can reach the computer
+- [Android setup and battery](android-power.md): setup wizard, background connection, power use
+- [Accessibility](accessibility.md): keyboard, screen reader and contrast support
+- [Updates](updates.md): the optional update check and how updates are verified
+- [Packaging for Linux](packaging-linux.md) and [local release builds](release-local.md): building installable packages
+
+## Contributing and architecture
+
+- [Contributor onboarding](contributor-onboarding.md) and [CONTRIBUTING](../CONTRIBUTING.md)
+- [Architecture](architecture.md) and [builds](builds.md): crates, data flow, how to build every target
+- [Service integration](service-integration.md): daemon, control API, client wiring
+- [State formats](state-formats.md): on-disk files and their versioning
+- [KDE Connect interoperability](kdeconnect-interop.md): protocol coverage and what stock peers do
+- Android: [app](android-app.md), [native library](android-native.md), [contract](android-contract.md), [transport](android-transport.md), [runtime notes](android-runtime.md), [call state](android-calls.md), [performance](android-perf.md)
+- [Desktop design](design-desktop.md): the Nothing x macOS/iOS visual language
+- [Performance](performance.md): budgets and how to measure them
+- [Golden images](golden-images.md): visual regression tests for the desktop and Android UI, and how to update them
+- [Translating](translating.md): adding a language on Android and desktop, pseudo-locales, glossary, tone
+- [Test coverage](coverage.md): measured line/function/region coverage, targets and how to regenerate
+- [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [CI dry run](ci-dry-run.md)
+- [Emulated calls](emulated-calls.md) and [updater end to end](updater-e2e.md): development test setups
+- [Platform status](platform-status.md): what is verified on which OS
+
+## Maintainers: releasing
+
+- [Release checklist](release-checklist.md), [public release runbook](public-release-runbook.md), [licence decision](licence-decision.md)
+- [Real-device test plan](real-device-test-plan.md): the full manual checklist for a physical phone
+
+## Reports (snapshots)
+
+Findings from reviews, audits and long runs. Open items are kept visible; later status is in git history and the
+[CHANGELOG](../CHANGELOG.md).
+
+- Security: [security review](reports/security-review.md), [second security review](reports/security-review-2.md); to report a vulnerability see [SECURITY](../SECURITY.md)
+- Code correctness: [code review](reports/code-review.md), [code review 2](reports/code-review-2.md)
+- Testing: [emulator end-to-end findings](reports/e2e-findings.md), [soak report](reports/soak-report.md), [scale report](reports/scale-report.md), [chaos findings](reports/chaos-findings.md), [release-candidate report](reports/release-candidate-report.md)
+- Audits: [production readiness](reports/production-readiness.md), [first-run audit](reports/first-run-audit.md), [desktop UI review](reports/desktop-ui-review.md), [Android device risks](reports/android-device-risks.md)

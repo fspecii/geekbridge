@@ -1561,7 +1561,7 @@ impl ClipboardService {
             let mut stream_ended = false;
             if first_pass {
                 // Take the baseline right away: waiting a whole poll interval would swallow a copy
-                // made just after the link came up (docs/chaos-findings.md, C-10).
+                // made just after the link came up (docs/reports/chaos-findings.md, C-10).
                 first_pass = false;
             } else {
                 tokio::select! {

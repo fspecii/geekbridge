@@ -10,7 +10,7 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * Phone-data logic at realistic size (docs/scale-report.md): a real phone has thousands of contacts, years of
+ * Phone-data logic at realistic size (docs/reports/scale-report.md): a real phone has thousands of contacts, years of
  * recurring events and tens of thousands of texts. The default sizes match a heavy phone; set GEEKBRIDGE_SCALE=1 for
  * the 5x variant. Everything here runs on the JVM against fakes of the provider ports; the emulator run is
  * scripts/scale-e2e.sh.

@@ -35,7 +35,7 @@ the stock KDE Connect apps; **nothing here has been run against a real phone or 
   it try a socket bound to the control link's local address (a multi-homed host whose default route shows the sender
   an address it does not accept: the sender closes at once), then the plain route once more with the full connect budget.
   Binding first looks safer but is wrong on Android: a bound socket does not leave through that address's interface, and
-  it can connect and then die (`docs/e2e-findings.md` E2E-14). A pinned-certificate failure is final on any route.
+  it can connect and then die (`docs/reports/e2e-findings.md` E2E-14). A pinned-certificate failure is final on any route.
 * Payload context is only obtainable from a `TrustedLink` (`TrustedLink::payload_context`), so an unpaired peer can
   never be a payload peer.
 

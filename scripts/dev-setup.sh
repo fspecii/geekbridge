@@ -29,6 +29,7 @@ done
 
 if [[ -t 1 ]]; then G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; N=$'\e[0m'; else G=; R=; Y=; N=; fi
 MISSING=0
+INSTALLED=0
 HINTS=()
 ok()   { printf '  %sok%s    %s\n' "$G" "$N" "$*"; }
 warn() { printf '  %swarn%s  %s\n' "$Y" "$N" "$*"; }
@@ -98,8 +99,9 @@ if [[ "$OS" == Linux ]]; then
         else
             miss "packages: ${TO_INSTALL[*]}"
             if ((INSTALL)); then
-                echo "  installing system packages with sudo ($PM)"; pkg_install "${TO_INSTALL[@]}" && MISSING=0 || true
-                MISSING=1  # re-evaluated below by a second run; keep the safe default
+                echo "  installing system packages with sudo ($PM)"
+                pkg_install "${TO_INSTALL[@]}" || echo "  package installation failed; run the command above yourself"
+                INSTALLED=1
             else
                 case "$PM" in
                     apt) hint "sudo apt-get install -y ${TO_INSTALL[*]}" ;;
@@ -109,8 +111,8 @@ if [[ "$OS" == Linux ]]; then
             fi
         fi
     fi
-    have wl-copy || have xclip && ok "clipboard tool (wl-clipboard or xclip; only needed to run clipboard sync)" \
-        || warn "no wl-clipboard / xclip: clipboard sync cannot run here (tests do not need it)"
+    if have wl-copy || have xclip; then ok "clipboard tool (wl-clipboard or xclip)"
+    else warn "no wl-clipboard / xclip: clipboard sync cannot run here (tests do not need it)"; fi
 elif [[ "$OS" == Darwin ]]; then
     echo "System libraries"
     xcode-select -p >/dev/null 2>&1 && ok "Xcode command line tools" || { miss "Xcode command line tools"; hint "xcode-select --install"; }
@@ -156,7 +158,8 @@ if ((ANDROID)); then
             hint "scripts/bootstrap-android.sh   # project-local JDK, Gradle, SDK, NDK and Rust Android targets under .tools/, no sudo; then: source scripts/android-env.sh"
             if ((INSTALL)); then
                 echo "  running scripts/bootstrap-android.sh"
-                scripts/bootstrap-android.sh && MISSING=0 || true
+                scripts/bootstrap-android.sh || echo "  bootstrap-android.sh failed; see its output"
+                INSTALLED=1
             fi
         else
             hint "install Android Studio (or the command-line tools) and set ANDROID_HOME; scripts/bootstrap-android.sh supports Linux x86_64 only"
@@ -174,6 +177,7 @@ if ((INSTALL && !RUST_OK)); then
     echo "Installing Rust with rustup (official installer, https://rustup.rs)"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default
     echo "  done. Open a new shell (or: source \"\$HOME/.cargo/env\") and run this script again."
+    INSTALLED=1
 fi
 
 echo
@@ -182,5 +186,6 @@ if ((${#HINTS[@]})); then
     for h in "${HINTS[@]}"; do printf '  %s\n' "$h"; done
     ((INSTALL)) || echo "  (or run: scripts/dev-setup.sh --install)"
 fi
-if ((MISSING)); then echo "${R}Not ready.${N} Items marked MISSING must be fixed."; exit 1; fi
+if ((INSTALLED)); then echo "Installed what was missing; run scripts/dev-setup.sh again (new shell) to confirm."; exit 0; fi
+if ((MISSING)); then echo "${R}Not ready.${N} Items marked MISSING must be fixed (Android ones are optional if you only work on the desktop: --desktop-only)."; exit 1; fi
 echo "${G}Ready.${N} Next: make check   (Rust)   |   make android   (phone app)   |   make desktop   (run the desktop apps)"

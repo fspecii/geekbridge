@@ -502,6 +502,9 @@ internal fun smsActionToken(random: java.security.SecureRandom = java.security.S
     return b.joinToString("") { "%02x".format(it) }
 }
 
+/** `getSystemService(SmsManager::class.java)` exists from Android 12 (API 31); earlier releases return null. */
+internal fun smsManagerIsSystemService(sdk: Int = Build.VERSION.SDK_INT): Boolean = sdk >= 31
+
 class AndroidSmsSender(context: Context) : SmsSender {
     private val app = context.applicationContext
     // Status callbacks run here, never on the main thread: the listener takes the engine lock, which the
@@ -511,9 +514,14 @@ class AndroidSmsSender(context: Context) : SmsSender {
     )
     private val requestCodes = java.security.SecureRandom()
 
+    // SmsManager is a system service by class only from API 31; before that getSystemService returns null.
+    @Suppress("DEPRECATION")
+    private fun defaultSmsManager(): SmsManager =
+        if (smsManagerIsSystemService()) app.getSystemService(SmsManager::class.java) else SmsManager.getDefault()
+
     override fun send(address: String, text: String, subId: Int?, listener: SmsStatusListener) {
         val manager = if (subId != null) SmsManager.getSmsManagerForSubscriptionId(subId)
-        else app.getSystemService(SmsManager::class.java)
+        else defaultSmsManager()
         val parts = manager.divideMessage(text)
         val token = smsActionToken()
         val n = requestCodes.nextInt()
@@ -677,7 +685,7 @@ object PhoneDataRuntime {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
             val controller = LinkRuntime.controller()
-            controller.stop("Messages, contacts or calendar sharing changed; reconnecting.")
+            controller.stop(R.string.pd_reconnecting)
             restartAttempt(a, 0)
         } else {
             startObserving()

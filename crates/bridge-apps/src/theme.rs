@@ -282,7 +282,9 @@ pub fn install_fonts(ctx: &egui::Context) {
     embed_fonts(&mut fonts);
     let mut regular_name = None;
     let mut bold_name = None;
-    for face in candidate_faces() {
+    // Golden-image tests: render with the embedded fonts only so results do not depend on the machine.
+    let bundled_only = std::env::var_os("GEEKBRIDGE_BUNDLED_FONTS_ONLY").is_some();
+    for face in candidate_faces().into_iter().filter(|_| !bundled_only) {
         let Some(regular) = read_font(&face.regular) else {
             continue;
         };
@@ -310,7 +312,10 @@ pub fn install_fonts(ctx: &egui::Context) {
         "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
         "/usr/share/fonts/google-noto-emoji/NotoEmoji-Regular.ttf",
         "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
-    ] {
+    ]
+    .into_iter()
+    .filter(|_| !bundled_only)
+    {
         if let Some(bytes) = read_font(&paths(&[path])) {
             fonts
                 .font_data

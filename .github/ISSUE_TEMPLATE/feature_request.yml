@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an improvement or a new capability
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste personal data (names, numbers, messages, addresses) into examples. GeekBridge is local-first:
+        proposals that send phone data to a server or require an account will not be accepted.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the problem or workflow, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platforms involved
+      description: "For example: Android 14 phone + Linux/Wayland desktop."
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and privacy impact
+      description: Workarounds you use now, and what data would move between phone and computer.

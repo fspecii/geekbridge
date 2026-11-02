@@ -16,39 +16,26 @@ data class Explained(val headline: String, val advice: String)
 
 object PairingHelp {
     /** Plain-language meaning of a core event ([kind] + [code]); [viaQr] when a scanned code was in use. */
-    fun explain(kind: String?, code: String?, viaQr: Boolean = false): Explained = when {
-        code == "qr_certificate_mismatch" || code == "pin_mismatch" || code == "pairing_binding_changed" ->
-            Explained(
-                "This is not the computer you scanned.",
-                "Nothing was paired. Check that you are on your own Wi-Fi, then scan the code again.",
-            )
-        code == "identity_mismatch" ->
-            Explained("A different device answered at that address.", "Nothing was paired. Check the Wi-Fi and scan again.")
-        code == "clock_skew" ->
-            Explained("The clocks on the two devices disagree.", "Turn on automatic date and time on the phone and the computer.")
-        code == "pairing_rejected_locally" ->
-            Explained("Pairing was declined on this phone.", "Start again and tap Pair when you are ready.")
-        code == "pairing_rejected_by_peer" && viaQr ->
-            Explained(
-                "The computer did not accept the QR code.",
-                "It may have expired or been used already. Show a new QR code on the computer and scan it again.",
-            )
-        code == "pairing_rejected_by_peer" ->
-            Explained("The computer declined the pairing.", "Start again and confirm on both devices.")
-        code == "pairing_timeout" ->
-            Explained("Pairing timed out before it was confirmed.", "Start again and confirm on both devices within half a minute.")
-        code == "timeout" || code == "connect_timeout" || kind == "connect_failed" && code == null ->
-            Explained(
-                "The computer did not answer.",
-                "Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the computer's firewall (TCP and UDP 1716-1764).",
-            )
-        code == "address_rejected" || code == "network_unreachable" ->
-            Explained("The computer is on a different network.", "Put both devices on the same Wi-Fi and switch off VPNs.")
-        code == "link_closed" || code == "peer_closed" || code == "park_timeout" || code == "io_error" ->
-            Explained("The connection closed before pairing finished.", "Keep both apps open and the screens on, then try again. Still failing? Tap Test connection to check the Wi-Fi.")
-        code == "tls_failed" ->
-            Explained("A secure connection could not be set up.", "Try again. If it keeps failing, restart GeekBridge on the computer.")
-        else -> Explained("Pairing did not work.", "Tap \"Test connection\" for a step-by-step check.")
+    fun explain(s: Strings, kind: String?, code: String?, viaQr: Boolean = false): Explained {
+        fun e(h: Int, a: Int) = Explained(s.get(h), s.get(a))
+        return when {
+            code == "qr_certificate_mismatch" || code == "pin_mismatch" || code == "pairing_binding_changed" ->
+                e(R.string.help_not_scanned_h, R.string.help_not_scanned_a)
+            code == "identity_mismatch" -> e(R.string.help_different_device_h, R.string.help_different_device_a)
+            code == "clock_skew" -> e(R.string.help_clock_h, R.string.help_clock_a)
+            code == "pairing_rejected_locally" -> e(R.string.help_declined_local_h, R.string.help_declined_local_a)
+            code == "pairing_rejected_by_peer" && viaQr -> e(R.string.help_qr_rejected_h, R.string.help_qr_rejected_a)
+            code == "pairing_rejected_by_peer" -> e(R.string.help_declined_peer_h, R.string.help_declined_peer_a)
+            code == "pairing_timeout" -> e(R.string.help_pair_timeout_h, R.string.help_pair_timeout_a)
+            code == "timeout" || code == "connect_timeout" || kind == "connect_failed" && code == null ->
+                e(R.string.help_no_answer_h, R.string.help_no_answer_a)
+            code == "address_rejected" || code == "network_unreachable" ->
+                e(R.string.help_other_network_h, R.string.help_other_network_a)
+            code == "link_closed" || code == "peer_closed" || code == "park_timeout" || code == "io_error" ->
+                e(R.string.help_closed_h, R.string.help_closed_a)
+            code == "tls_failed" -> e(R.string.help_tls_h, R.string.help_tls_a)
+            else -> e(R.string.help_default_h, R.string.help_default_a)
+        }
     }
 }
 
@@ -68,12 +55,6 @@ data class NetFacts(
 
 /** The "Test connection" check. [report] is pure; [probe] and [facts] touch the network. */
 object NetCheck {
-    private const val WIFI = "Make sure the phone and the computer are on the same Wi-Fi network (not a guest network)."
-    private const val GUEST = "Guest and public Wi-Fi often block devices from talking to each other (\"client isolation\"). Use your main Wi-Fi."
-    private const val VPN = "Turn off any VPN on the phone and on the computer while pairing."
-    private const val FIREWALL = "Allow GeekBridge through the computer's firewall on your home network (TCP and UDP 1716-1764)."
-    private const val OPEN_APP = "Open GeekBridge on the computer and keep both screens on while pairing."
-
     /** Same /24 for IPv4, which is how nearly every home network is laid out; anything else is not judged. */
     fun sameSubnet(a: String?, b: String?): Boolean {
         if (a == null || b == null) return true
@@ -82,57 +63,71 @@ object NetCheck {
         return x.take(3) == y.take(3)
     }
 
-    fun report(f: NetFacts): NetReport {
+    fun report(str: Strings, f: NetFacts): NetReport {
+        val wifi = str.get(R.string.help_adv_wifi)
+        val guest = str.get(R.string.help_adv_guest)
+        val vpn = str.get(R.string.help_adv_vpn)
+        val firewall = str.get(R.string.help_adv_firewall)
+        val openApp = str.get(R.string.help_adv_open_app)
         val steps = ArrayList<NetStep>()
         val advice = LinkedHashSet<String>()
-        steps += NetStep("Phone is on Wi-Fi or Ethernet", f.wifi, if (f.wifi) (f.ownIp ?: "Connected") else "No Wi-Fi connection found")
+        steps += NetStep(
+            str.get(R.string.help_step_phone_wifi), f.wifi,
+            if (f.wifi) (f.ownIp ?: str.get(R.string.help_step_connected)) else str.get(R.string.help_step_no_wifi),
+        )
         val different = f.peerIp != null && f.ownIp != null && !sameSubnet(f.ownIp, f.peerIp)
         if (f.peerIp != null) {
             steps += NetStep(
-                "Computer is on the same network", !different,
-                if (different) "The computer is at ${f.peerIp}, which is not next to this phone (${f.ownIp})" else "Computer at ${f.peerIp}",
+                str.get(R.string.help_step_same_network), !different,
+                if (different) str.get(R.string.help_step_not_next, f.peerIp, f.ownIp ?: "")
+                else str.get(R.string.help_step_computer_at, f.peerIp),
             )
             steps += NetStep(
-                "Computer answers", f.probe == Probe.Connected,
-                when (f.probe) {
-                    Probe.Connected -> "Connected"
-                    Probe.Refused -> "The computer refused: GeekBridge is not running there"
-                    Probe.TimedOut -> "No answer"
-                    Probe.NoRoute -> "No route to the computer"
-                    Probe.NotTried -> "Not tried"
-                    Probe.Other -> "Could not connect"
-                },
+                str.get(R.string.help_step_answers), f.probe == Probe.Connected,
+                str.get(
+                    when (f.probe) {
+                        Probe.Connected -> R.string.help_probe_connected
+                        Probe.Refused -> R.string.help_probe_refused
+                        Probe.TimedOut -> R.string.help_probe_timed_out
+                        Probe.NoRoute -> R.string.help_probe_no_route
+                        Probe.NotTried -> R.string.help_probe_not_tried
+                        Probe.Other -> R.string.help_probe_other
+                    },
+                ),
             )
         } else {
-            steps += NetStep("Computer has been found", false, "No computer announced itself yet")
+            steps += NetStep(str.get(R.string.help_step_found), false, str.get(R.string.help_step_not_found))
         }
-        if (f.vpn) steps += NetStep("No VPN in the way", false, "A VPN is active on this phone")
+        if (f.vpn) steps += NetStep(str.get(R.string.help_step_no_vpn), false, str.get(R.string.help_step_vpn_active))
         val ok = f.wifi && f.probe == Probe.Connected
         val headline: String
         when {
-            !f.wifi -> { headline = "This phone is not on Wi-Fi"; advice += "Connect the phone to the same Wi-Fi as the computer." }
-            f.peerIp == null -> {
-                headline = "No computer has been found yet"
-                advice += OPEN_APP; advice += WIFI; advice += GUEST
-                if (f.vpn) advice += VPN
-                advice += FIREWALL
+            !f.wifi -> {
+                headline = str.get(R.string.help_head_no_wifi)
+                advice += str.get(R.string.help_adv_connect_phone)
             }
-            ok -> headline = "Your computer is reachable - you can pair now"
+            f.peerIp == null -> {
+                headline = str.get(R.string.help_head_not_found)
+                advice += openApp; advice += wifi; advice += guest
+                if (f.vpn) advice += vpn
+                advice += firewall
+            }
+            ok -> headline = str.get(R.string.help_head_ok)
             f.probe == Probe.Refused -> {
-                headline = "The computer is reachable, but GeekBridge is not listening on it"
-                advice += OPEN_APP
-                advice += "Start the GeekBridge service on the computer (it starts at login once installed)."
+                headline = str.get(R.string.help_head_refused)
+                advice += openApp
+                advice += str.get(R.string.help_adv_start_service)
             }
             different || f.probe == Probe.NoRoute -> {
-                headline = "The computer seems to be on a different network"
-                advice += WIFI; advice += GUEST
-                if (f.vpn) advice += VPN
+                headline = str.get(R.string.help_head_different)
+                advice += wifi; advice += guest
+                if (f.vpn) advice += vpn
             }
             else -> {
-                headline = "The computer does not answer"
-                advice += FIREWALL; advice += GUEST
-                if (f.vpn) advice += VPN
-                advice += WIFI; advice += OPEN_APP
+                headline = str.get(R.string.help_head_no_answer)
+                advice += firewall; advice += guest
+                if (f.vpn) advice += vpn
+                advice += wifi; advice += openApp
             }
         }
         return NetReport(ok, headline, steps, advice.toList())
@@ -181,7 +176,7 @@ object NetCheck {
         Thread({
             val (wifi, ip, vpn) = localFacts(app)
             val probe = if (host != null) probe(host, port) else Probe.NotTried
-            val r = report(NetFacts(wifi, ip, vpn, host, probe))
+            val r = report(app.strings, NetFacts(wifi, ip, vpn, host, probe))
             main.post { onDone(r) }
         }, "geekbridge-nettest").apply { isDaemon = true }.start()
     }

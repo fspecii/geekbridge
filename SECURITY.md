@@ -31,7 +31,7 @@ Only the latest released version receives fixes while the project is pre-1.0.
 - Updates are only offered with a published SHA-256, verified before the file is shown; nothing installs itself.
 - Windows and macOS builds are unsigned and have not been run on real systems yet.
 
-The internal review is in [docs/security-review.md](docs/security-review.md).
+The internal review is in [docs/reports/security-review.md](docs/reports/security-review.md).
 
 In scope: pairing and TLS handling, the control API, file/clipboard handling, update verification, packaging
 scripts. Out of scope: attacks that need root/administrator or physical access to an unlocked device, and denial of

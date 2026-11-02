@@ -4,7 +4,7 @@
 
   python3 -I scripts/soak-report.py DIR [--publish]
 
---publish also writes docs/soak-report.md and docs/img/soak-*.png (image links relative to docs/).
+--publish also writes docs/reports/soak-report.md and docs/img/soak-*.png (image links relative to docs/reports/).
 Charts use Pillow when it is importable; without it the report falls back to ASCII sparkline tables (no
 matplotlib or gnuplot needed). Stdlib only otherwise.
 """
@@ -259,7 +259,7 @@ def main():
         charts = ["soak-desktop.png", "soak-phone-memory.png", "soak-phone-handles.png", "soak-latency.png"]
         w("## Charts\n")
         for c in charts:
-            w(f"![{c}]({'img/' if publish else ''}{c})\n")
+            w(f"![{c}]({'../img/' if publish else ''}{c})\n")
 
     w("## Resource trends (leak check)\n")
     w("Growth = median of the last quarter minus the median of the first quarter of the samples after the first "
@@ -353,9 +353,9 @@ def main():
         os.makedirs(os.path.join(root, "docs", "img"), exist_ok=True)
         for c in charts:
             shutil.copy(os.path.join(d, c), os.path.join(root, "docs", "img", "soak-" + c.replace("soak-", "")))
-        with open(os.path.join(root, "docs", "soak-report.md"), "w") as f:
+        with open(os.path.join(root, "docs", "reports", "soak-report.md"), "w") as f:
             f.write(text)
-        print("published docs/soak-report.md")
+        print("published docs/reports/soak-report.md")
 
 
 if __name__ == "__main__":

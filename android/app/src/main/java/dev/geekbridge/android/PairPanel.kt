@@ -67,7 +67,7 @@ class PairPanel(
         main.removeCallbacks(poller)
         prompt.dismiss()
         releaseMulticast()
-        if (stopLink) controller.stop("Link stopped because the app left the foreground.")
+        if (stopLink) controller.stop(R.string.link_stop_foreground)
     }
 
     private fun start() {

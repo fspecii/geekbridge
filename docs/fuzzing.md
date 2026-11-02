@@ -63,7 +63,7 @@ literals). The first pass replays every seed unchanged. Input *i* of a run is a 
 
 Seeds are the recorded real packets in `crates/bridge-kde/tests/fixtures/kdeconnect-real` and
 `kdeconnect-android-real` (selected per target by packet type) plus hand-written seeds for non-packet
-inputs (QR text, vCards, release JSON, `SHA256SUMS`, control-API lines, JNI requests).
+inputs (certificates, QR text, vCards, release JSON, `SHA256SUMS`, control-API lines, JNI requests).
 
 ## Running
 
@@ -104,10 +104,10 @@ To reduce a finding, minimise it (`cargo fuzz tmin`), then put the reduced input
 
 ## Findings
 
-Runs: libFuzzer + ASAN, 300 s per target (20 targets, 1.3–8.5 million executions each, coverage
+Runs: libFuzzer + ASAN, 300 s per target (20 targets, 0.7–8.5 million executions each, coverage
 590–3055 edges); then the deterministic fuzzer, 300 s per target (1–14 million inputs each, seed 7), on top of
-the libFuzzer-grown corpus. Everything below was found by the deterministic fuzzer or by its oracles
-(libFuzzer found no crash, timeout or OOM in the product code).
+the libFuzzer-grown corpus. The findings below came from the deterministic fuzzer's oracles (short smoke runs and the long run);
+libFuzzer found no crash, timeout or OOM in the product code.
 
 | # | Target | Finding | Status |
 |---|---|---|---|

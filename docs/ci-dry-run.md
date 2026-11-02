@@ -8,7 +8,7 @@ written, and the rest was checked by reading and by scripted logic checks. **Not
 
 - Fresh `git clone` of HEAD (`d12b9c5`) in a scratch directory under `~/.cache/gb-tmp/ci`, then every non-ignored working-tree
   file (`git ls-files -co --exclude-standard`) copied over and committed *in the clone* (same overlay as
-  `docs/release-candidate-report.md`), so the state of the working tree is what ran.
+  `docs/reports/release-candidate-report.md`), so the state of the working tree is what ran.
 - `run:` blocks were extracted from the YAML by script and executed unchanged (`${{ }}` expressions substituted by hand
   for matrix values). `sudo apt-get install` was replaced by a check that the Arch equivalents are installed:
   `pkgconf libxkbcommon wayland mesa libxrandr libxi libpulse dbus librsvg` (all present).

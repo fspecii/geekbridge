@@ -253,7 +253,7 @@ impl PayloadContext {
     }
 
     /// A pinned TLS connection to the sender. A route only counts once its handshake finished: a
-    /// connect can succeed on a path that then goes silent or resets (docs/e2e-findings.md E2E-14).
+    /// connect can succeed on a path that then goes silent or resets (docs/reports/e2e-findings.md E2E-14).
     /// A certificate the pin rejects ends the search; another route would not change the verdict.
     async fn dial_secure(
         &self,
@@ -393,7 +393,7 @@ const ROUTE_TRIAL_TIMEOUT: Duration = Duration::from_secs(3);
 /// The plain route comes first: it is the one the routing table vouches for. A socket bound to the
 /// control link's address does not leave through that link's interface; Android routes it by the
 /// default network with a source that network does not own, and such a socket can connect and then
-/// die (docs/e2e-findings.md E2E-14). If the plain route shows the sender an address it does not
+/// die (docs/reports/e2e-findings.md E2E-14). If the plain route shows the sender an address it does not
 /// accept, the sender closes at once and the bound attempt follows. The last entry retries the plain
 /// route with the full budget, for a network that is merely slow.
 fn dial_plan(

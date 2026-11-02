@@ -20,7 +20,7 @@ import java.util.Random
 
 /**
  * Debug builds only: fills the phone's own Contacts and Calendar providers with a realistic amount of made-up data so
- * scripts/scale-e2e.sh can measure the real query path (docs/scale-report.md).
+ * scripts/scale-e2e.sh can measure the real query path (docs/reports/scale-report.md).
  *
  *   adb shell am broadcast -n dev.geekbridge.android/.ScaleSeedReceiver -a dev.geekbridge.debug.SEED \
  *       --es what contacts|calendar|clear --ei n 5000

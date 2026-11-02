@@ -52,7 +52,7 @@ class SendToComputerActivity : Activity() {
         if (engine != null) {
             ClipboardRuntime.async {
                 val r = engine.sendText(text)
-                Handler(Looper.getMainLooper()).post { Toast.makeText(appCtx, r.message, Toast.LENGTH_SHORT).show() }
+                Handler(Looper.getMainLooper()).post { Toast.makeText(appCtx, r.message(appCtx.strings), Toast.LENGTH_SHORT).show() }
             }
         }
         finish()

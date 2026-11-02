@@ -194,15 +194,15 @@ object ShareIntentLogic {
      * Streams win over text (a photo shared with a caption sends the photo). Text that is exactly one web
      * URL is a link; anything else is text. Oversized text is refused, not truncated.
      */
-    fun classify(streams: List<String>, text: CharSequence?): ShareRequest {
+    fun classify(streams: List<String>, text: CharSequence?, s: Strings): ShareRequest {
         val uris = streams.filter { it.isNotBlank() }.distinct()
         if (uris.isNotEmpty()) {
             return ShareRequest.Files(uris.take(ShareLimits.MAX_FILES), uris.size > ShareLimits.MAX_FILES)
         }
         val t = text?.toString()?.trim().orEmpty()
-        if (t.isEmpty()) return ShareRequest.Invalid("There is nothing to send.")
+        if (t.isEmpty()) return ShareRequest.Invalid(s.get(R.string.share_nothing))
         if (isWebUrl(t)) return ShareRequest.Text(t, TransferKind.Url)
-        if (Bounds.utf8Size(t) > ShareLimits.MAX_TEXT_BYTES) return ShareRequest.Invalid("That text is too long to send (limit 48 KiB).")
+        if (Bounds.utf8Size(t) > ShareLimits.MAX_TEXT_BYTES) return ShareRequest.Invalid(s.get(R.string.share_text_too_long, s.get(R.string.share_size_kib, java.text.NumberFormat.getIntegerInstance().format(ShareLimits.MAX_TEXT_BYTES / 1024))))
         return ShareRequest.Text(t, TransferKind.Text)
     }
 }
@@ -245,11 +245,18 @@ object TargetPicker {
 }
 
 object ProgressText {
-    fun bytes(n: Long): String = when {
-        n < 1024 -> "$n B"
-        n < 1024L * 1024 -> "%.1f KiB".format(java.util.Locale.ROOT, n / 1024.0)
-        n < 1024L * 1024 * 1024 -> "%.1f MiB".format(java.util.Locale.ROOT, n / 1048576.0)
-        else -> "%.2f GiB".format(java.util.Locale.ROOT, n / 1073741824.0)
+    /** Locale-aware size; the unit symbols (B, KiB, MiB, GiB) live in resources so a locale can localise them. */
+    fun bytes(n: Long, s: Strings, locale: java.util.Locale = java.util.Locale.getDefault()): String {
+        fun num(v: Double, digits: Int): String =
+            java.text.NumberFormat.getNumberInstance(locale).apply {
+                minimumFractionDigits = digits; maximumFractionDigits = digits
+            }.format(v)
+        return when {
+            n < 1024 -> s.get(R.string.share_size_b, java.text.NumberFormat.getIntegerInstance(locale).format(n))
+            n < 1024L * 1024 -> s.get(R.string.share_size_kib, num(n / 1024.0, 1))
+            n < 1024L * 1024 * 1024 -> s.get(R.string.share_size_mib, num(n / 1048576.0, 1))
+            else -> s.get(R.string.share_size_gib, num(n / 1073741824.0, 2))
+        }
     }
 
     /** 0..100, or null when the total is unknown. */
@@ -259,43 +266,44 @@ object ProgressText {
         return (t.bytes.coerceAtMost(size) * 100 / size).toInt()
     }
 
-    fun line(t: Transfer): String {
-        val what = if (t.kind == TransferKind.File) t.name.ifEmpty { "file" } else if (t.kind == TransferKind.Url) "link" else "text"
+    fun line(t: Transfer, s: Strings): String {
+        val what = if (t.kind == TransferKind.File) t.name.ifEmpty { s.get(R.string.share_what_file) }
+            else if (t.kind == TransferKind.Url) s.get(R.string.share_what_link) else s.get(R.string.share_what_text)
         val state = when (t.state) {
-            TransferState.Offered -> "waiting for your answer"
-            TransferState.Waiting -> "waiting for the computer (it may need Share files > Allow this phone to send me files)"
-            TransferState.Active -> percent(t)?.let { "$it% (${bytes(t.bytes)})" } ?: bytes(t.bytes)
-            TransferState.Done -> "done"
-            TransferState.Cancelled -> "cancelled"
-            TransferState.Declined -> "declined"
-            TransferState.Failed -> "failed" + (t.code?.let { " ($it)" } ?: "")
+            TransferState.Offered -> s.get(R.string.share_state_offered)
+            TransferState.Waiting -> s.get(R.string.share_state_waiting)
+            TransferState.Active -> percent(t)?.let { s.get(R.string.share_state_active, it, bytes(t.bytes, s)) } ?: bytes(t.bytes, s)
+            TransferState.Done -> s.get(R.string.share_state_done)
+            TransferState.Cancelled -> s.get(R.string.share_state_cancelled)
+            TransferState.Declined -> s.get(R.string.share_state_declined)
+            TransferState.Failed -> t.code?.let { s.get(R.string.share_state_failed_code, it) } ?: s.get(R.string.share_state_failed)
         }
-        return "$what — $state"
+        return s.get(R.string.share_line, what, state)
     }
 }
 
 object ShareText {
-    fun error(code: String): String = when (code) {
-        "not_running" -> "The link is not running."
-        "unknown_connection", "not_trusted" -> "The computer is not connected and paired."
-        "unknown_transfer", "wrong_state" -> "That transfer is no longer waiting."
-        "invalid_fd" -> "The file could not be opened for transfer."
-        "too_large" -> "The file is over the 8 GiB limit."
-        "empty" -> "Empty files cannot be sent."
-        "busy" -> "Too many transfers at once."
-        "invalid_field" -> "The request was not acceptable."
-        else -> "The native core refused the request ($code)."
+    fun error(code: String, s: Strings): String = when (code) {
+        "not_running" -> s.get(R.string.err_not_running)
+        "unknown_connection", "not_trusted" -> s.get(R.string.share_err_not_connected)
+        "unknown_transfer", "wrong_state" -> s.get(R.string.share_err_not_waiting)
+        "invalid_fd" -> s.get(R.string.share_err_invalid_fd)
+        "too_large" -> s.get(R.string.share_err_too_large)
+        "empty" -> s.get(R.string.share_err_empty)
+        "busy" -> s.get(R.string.share_err_busy)
+        "invalid_field" -> s.get(R.string.share_err_invalid_field)
+        else -> s.get(R.string.err_core_refused, code)
     }
 
-    fun failure(code: String?): String = when (code) {
-        "cancelled" -> "cancelled"
-        "timeout" -> "timed out"
-        "too_large" -> "too large"
-        "pin_mismatch" -> "SECURITY: certificate mismatch"
-        "tls_failed" -> "secure channel failed"
-        "truncated" -> "connection ended early"
-        "expired" -> "offer expired"
-        null -> "failed"
-        else -> "failed ($code)"
+    fun failure(code: String?, s: Strings): String = when (code) {
+        "cancelled" -> s.get(R.string.share_fail_cancelled)
+        "timeout" -> s.get(R.string.share_fail_timeout)
+        "too_large" -> s.get(R.string.share_fail_too_large)
+        "pin_mismatch" -> s.get(R.string.share_fail_pin_mismatch)
+        "tls_failed" -> s.get(R.string.share_fail_tls)
+        "truncated" -> s.get(R.string.share_fail_truncated)
+        "expired" -> s.get(R.string.share_fail_expired)
+        null -> s.get(R.string.share_state_failed)
+        else -> s.get(R.string.share_state_failed_code, code)
     }
 }

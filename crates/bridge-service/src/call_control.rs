@@ -1028,7 +1028,7 @@ mod tests {
 
     #[test]
     fn a_caller_label_cannot_become_an_option_or_markup() {
-        // A caller-ID name is chosen by the caller (S2-3 in docs/security-review-2.md).
+        // A caller-ID name is chosen by the caller (S2-3 in docs/reports/security-review-2.md).
         let a = NotifySendCalls::args("--action=answer=Ignore me", true, true);
         let dashdash = a.iter().position(|s| s == "--").expect("positional marker");
         assert!(a[dashdash + 1..].iter().any(|s| s == "Incoming call"));

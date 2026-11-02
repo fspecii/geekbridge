@@ -330,7 +330,7 @@ impl Contacts {
         }
         view.devices
             .iter()
-            .find_map(|d| phone_ui::state_line(d.contacts, "Contacts"))
+            .find_map(|d| phone_ui::state_line(d.contacts, phone_ui::Noun::Contacts))
             .unwrap_or_else(|| {
                 "Nothing has been shared from a phone yet. Allow Contacts for a paired phone below."
                     .into()
@@ -373,9 +373,13 @@ impl Contacts {
                     {
                         action = Some(Request::AgendaRefresh { device_id: None });
                     }
-                    if let Some(r) =
-                        phone_ui::allow_buttons(ui, pal, env, Feature::Contacts, "Contacts")
-                    {
+                    if let Some(r) = phone_ui::allow_buttons(
+                        ui,
+                        pal,
+                        env,
+                        Feature::Contacts,
+                        phone_ui::Noun::Contacts,
+                    ) {
                         action = Some(r);
                     }
                 });

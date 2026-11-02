@@ -47,12 +47,12 @@ class SignerCheckTest {
 
     @Test fun messagesExplainTheMismatch() {
         val mismatch = SignerCheck.compare(s("a".repeat(64)), s("b".repeat(64)))
-        assertNull(SignerCheck.message(SignerCheck.Verdict.Match, false))
-        val debug = SignerCheck.message(mismatch, debugBuild = true)!!
+        assertNull(SignerCheck.message(TestStrings, SignerCheck.Verdict.Match, false))
+        val debug = SignerCheck.message(TestStrings, mismatch, debugBuild = true)!!
         assertTrue(debug, debug.contains("debug-signed") && debug.contains("uninstall"))
-        val release = SignerCheck.message(mismatch, debugBuild = false)!!
+        val release = SignerCheck.message(TestStrings, mismatch, debugBuild = false)!!
         assertTrue(release, release.contains("aaaaaaaaaaaa") && release.contains("bbbbbbbbbbbb"))
-        assertNotNull(SignerCheck.message(SignerCheck.Verdict.Unreadable("the downloaded update"), false))
+        assertNotNull(SignerCheck.message(TestStrings, SignerCheck.Verdict.Unreadable(installedApp = false), false))
     }
 
     @Test fun certificateDigestIsSha256Hex() {

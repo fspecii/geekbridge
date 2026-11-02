@@ -443,7 +443,7 @@ t_flap() {
     sleep 3
   else                 # silent: every packet to/from the guest is dropped for 25 s (no FIN, no RST), then restored.
     # The emulator's own network stack terminates the desktop's TCP connection on the host, so the desktop's keepalive
-    # cannot see this outage (see docs/soak-report.md); what is measured is that the link survives or recovers.
+    # cannot see this outage (see docs/reports/soak-report.md); what is measured is that the link survives or recovers.
     A shell "iptables -I INPUT -j DROP; iptables -I OUTPUT -j DROP" >/dev/null 2>&1
     sleep 25
     A shell "iptables -D INPUT -j DROP; iptables -D OUTPUT -j DROP" >/dev/null 2>&1

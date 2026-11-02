@@ -16,20 +16,41 @@ other project: GeekBridge implements the KDE Connect protocol independently from
 
 ## Build and test
 
-Rust 1.88 or newer (see `rust-version` in `Cargo.toml`); the Android app needs the toolchain from `scripts/bootstrap-android.sh`.
+Start with `scripts/dev-setup.sh`: it checks Rust 1.88 or newer (`rust-version` in `Cargo.toml`; `rust-toolchain.toml` selects
+stable for rustup users), the desktop system libraries, JDK 17 and an Android SDK, prints what is missing and installs
+nothing unless you pass `--install`. Then `make help` lists the entry points. A [dev container](.devcontainer/devcontainer.json)
+with the Linux toolchain is provided. Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md);
+a walkthrough from a fresh clone: [docs/contributor-onboarding.md](docs/contributor-onboarding.md).
 
 ```sh
+make check                         # = the three cargo commands below
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
-scripts/perf-check.sh --build      # idle service budget
-scripts/build-android.sh           # Android native libs, unit tests, lint, debug APK
-scripts/check-doc-links.sh         # relative links in the docs
-scripts/add-spdx.sh --check        # every source file has its SPDX header
-scripts/gen-notices.sh --check     # THIRD_PARTY_NOTICES.md is current (run without --check after changing Cargo.lock)
+make android                       # Android JVM unit tests + lint via ./gradlew (APK too with scripts/bootstrap-android.sh)
+make perf                          # = scripts/perf-check.sh --build, idle service budget
+make docs-links                    # relative links in the docs
+make hygiene                       # SPDX headers + THIRD_PARTY_NOTICES.md current (run scripts/gen-notices.sh after changing Cargo.lock)
 ```
 
-Cross-platform type-checks: `scripts/xcheck.sh`. Emulator end-to-end scripts are described in [docs/e2e-findings.md](docs/e2e-findings.md).
+On the Android side, `./gradlew` (in `android/`) is the documented entry point. Dependencies are hash-verified
+(`android/gradle/verification-metadata.xml`): when you add or bump one, regenerate it with
+`./gradlew --write-verification-metadata sha256 help testDebugUnitTest lintDebug assembleDebug assembleRelease` and commit the diff.
+`scripts/build-android.sh` builds the phone's native libraries and the debug APK with the project-local toolchain from
+`scripts/bootstrap-android.sh`.
+
+Cross-platform type-checks: `scripts/xcheck.sh`. Emulator end-to-end scripts are described in [docs/reports/e2e-findings.md](docs/reports/e2e-findings.md).
+
+## Golden images
+
+The desktop and Android screens are protected by golden-image tests: `make golden` (see `docs/golden-images.md`). If you
+change the UI and it goes red, look at `dist/golden-diff/`; update with `scripts/golden-desktop.sh --update` /
+`scripts/golden-android.sh --update` **only after a visual review** of every diff, and commit the new PNGs with the change.
+
+## Translations and UI text
+
+User-visible text lives in string resources (Android) and the catalogue `crates/bridge-apps/i18n/en.properties` (desktop), never
+in a literal; tests and lint enforce it. To add a language, see `docs/translating.md`. Translations are GPL contributions.
 
 ## Code style
 

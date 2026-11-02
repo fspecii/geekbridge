@@ -41,3 +41,6 @@ __pycache__/
 !/fuzz/corpus/*/builtin-*
 /fuzz/artifacts/
 /fuzz/target/
+
+# Local-only detail kept out of the public tree
+/docs/private-notes/

@@ -29,7 +29,7 @@ pub const TOKEN_TTL: Duration = Duration::from_secs(120);
 const MAX_OUTSTANDING: usize = 4;
 /// Wrong tokens tolerated from one source before that source is refused until the next QR code.
 /// Other sources and the outstanding tokens are not affected, so a stranger on the network cannot
-/// revoke the code its owner is about to scan (docs/security-review-2.md S2-2).
+/// revoke the code its owner is about to scan (docs/reports/security-review-2.md S2-2).
 const MAX_BAD_ATTEMPTS: u32 = 5;
 /// Sources remembered for the count above.
 const MAX_SOURCES: usize = 32;

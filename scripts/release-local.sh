@@ -73,6 +73,9 @@ VERSION="${TAG#v}"
 if [[ "$VERSION" == *-* && $PRERELEASE == 0 ]]; then die "$TAG has a pre-release suffix; pass --prerelease"; fi
 if [[ "$VERSION" != *-* && $PRERELEASE == 1 ]]; then die "--prerelease given but $TAG looks stable"; fi
 (( DRY )) && PUBLISH=0
+# Android refuses versionCode 0 (so v0.0.0 and v0.0.0-alpha.0 cannot be built); fail now, not after 25 minutes.
+[[ "$(scripts/version-code.sh --code "$VERSION")" =~ ^[1-9][0-9]*$ ]] \
+    || die "$TAG gives Android versionCode 0, which Gradle rejects; use e.g. v0.0.1-dryrun for rehearsals"
 
 JOBS="${GB_JOBS:-3}"
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || die "GB_JOBS must be a positive integer"
@@ -321,7 +324,7 @@ sign_apk() { # sign_apk unsigned.apk signed.apk
     zipalign -f -P 16 4 "$1" "$1.aligned"
     # v1 + v2 + v3, exactly as release.yml (minSdk 26: v2/v3 are what the platform checks).
     apksigner sign --ks "$ks" --ks-pass "$pass" --ks-key-alias "$alias" --key-pass "$pass" \
-        --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out "$2" "$1.aligned"
+        --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false --out "$2" "$1.aligned"
     rm -f "$1.aligned"
 }
 android_all() {
@@ -496,11 +499,11 @@ ls -l "$OUT"
 # ---------------------------------------------------------------- tag, publish (only on request)
 # run: git tag/push, only ever called when --tag/--push-tag was given. grun: gh, executes only with --publish.
 if (( DRY )); then
-    run()  { printf '[dry-run stub] %s\n' "$*"; }
-    grun() { printf '[dry-run stub] %s\n' "$*"; }
+    run()  { local IFS=' '; printf '[dry-run stub] %s\n' "$*"; }
+    grun() { local IFS=' '; printf '[dry-run stub] %s\n' "$*"; }
 else
-    run()  { printf '+ %s\n' "$*"; "$@"; }
-    if (( PUBLISH )); then grun() { printf '+ %s\n' "$*"; "$@"; }; else grun() { printf '  %s\n' "$*"; }; fi
+    run()  { ( local IFS=' '; printf '+ %s\n' "$*" ); "$@"; }
+    if (( PUBLISH )); then grun() { ( local IFS=' '; printf '+ %s\n' "$*" ); "$@"; }; else grun() { local IFS=' '; printf '  %s\n' "$*"; }; fi
 fi
 repo_default="$(git remote get-url "$REMOTE" 2>/dev/null | sed -E 's#^(git@github\.com:|https://github\.com/)##; s#\.git$##' || true)"
 REPO="${GB_RELEASE_REPO:-${repo_default:-fspecii/geekbridge}}"

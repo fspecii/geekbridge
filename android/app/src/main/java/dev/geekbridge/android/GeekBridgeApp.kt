@@ -8,8 +8,10 @@ import android.os.StrictMode
 class GeekBridgeApp : Application() {
     override fun onCreate() {
         super.onCreate()
+        AppStrings.init(this)
         // Before anything reads a preferences file: bring saved state to this build's format (or note a downgrade).
         StateMigrations.run(this)
+        WhatsNewRuntime.init(this) // decides whether the one-time "What's new" card is due (a fresh install is recorded, not shown)
         CrashNote.install(this, BuildConfig.VERSION_NAME)
         warmPrivateStorage()
         WidgetUpdater.attach(this)
@@ -34,6 +36,6 @@ class GeekBridgeApp : Application() {
     }
 
     private companion object {
-        val PREFS = listOf("geekbridge_state", "geekbridge_clipboard", "geekbridge_calls", "geekbridge_grants", "geekbridge_phonedata", "share_policy", "updates")
+        val PREFS = listOf("geekbridge_state", "geekbridge_clipboard", "geekbridge_calls", "geekbridge_grants", "geekbridge_phonedata", "share_policy", "updates", WhatsNewStore.FILE)
     }
 }

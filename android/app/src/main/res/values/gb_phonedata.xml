@@ -9,7 +9,6 @@
     <string name="pd_calendar_edit_sub">Off by default. Lets a paired computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
     <string name="pd_calendar_google">GeekBridge never signs in to Google. Edits are written to this phone\'s calendar and Google Calendar receives them through the phone\'s own sync. Remove the permission here or in Android settings to stop it at any time.</string>
     <string name="pd_calendar_pick">Choose calendars…</string>
-    <string name="pd_calendar_picked">%1$d calendar(s) shared</string>
     <string name="pd_calendar_none">No calendar ticked: nothing is shared yet</string>
     <string name="pd_calendar_loading">No calendars found on this phone.</string>
     <string name="pd_sms">Share text messages (SMS)</string>

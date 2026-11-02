@@ -571,7 +571,7 @@ impl Calendar {
         }
         view.devices
             .iter()
-            .find_map(|d| phone_ui::state_line(d.calendar, "Calendar"))
+            .find_map(|d| phone_ui::state_line(d.calendar, phone_ui::Noun::Calendar))
             .unwrap_or_else(|| "No calendar is shared yet. On the phone, choose the calendars to share in the GeekBridge app, or allow Calendar below.".into())
     }
 
@@ -640,7 +640,8 @@ impl Calendar {
                     && on
                     && let Some(d) = view.devices.iter().find(|d| d.device_id == phone.device_id)
                     && d.calendar_edit != DataState::Ready
-                    && let Some(line) = phone_ui::state_line(d.calendar_edit, "Calendar editing")
+                    && let Some(line) =
+                        phone_ui::state_line(d.calendar_edit, phone_ui::Noun::CalendarEditing)
                 {
                     ui.add(egui::Label::new(theme::caption(pal, line)).wrap());
                 }
@@ -744,7 +745,7 @@ impl Calendar {
                         action = Some(Request::AgendaRefresh { device_id: None });
                     }
                     if let Some(r) =
-                        phone_ui::allow_buttons(ui, pal, env, Feature::Calendar, "Calendar")
+                        phone_ui::allow_buttons(ui, pal, env, Feature::Calendar, phone_ui::Noun::Calendar)
                     {
                         action = Some(r);
                     }

@@ -150,11 +150,11 @@ class MainActivity : Activity() {
         sections.forEach { it.clear() }
         if (clipBusy) {
             clipBusy = false
-            ui.setTone(clipStatus, "Interrupted when the app left the foreground. Run it again.", Tone.Warn)
+            ui.setTone(clipStatus, getString(R.string.dev_interrupted), Tone.Warn)
         }
         if (smsBusy) {
             smsBusy = false
-            ui.setTone(smsStatus, "Interrupted when the app left the foreground. Run it again.", Tone.Warn)
+            ui.setTone(smsStatus, getString(R.string.dev_interrupted), Tone.Warn)
         }
         super.onStop()
     }
@@ -167,7 +167,7 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(pick, REQ_PICK_SHARE)
         } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, "No file picker is available.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, getString(R.string.dev_no_file_picker), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -240,20 +240,16 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ header & status
 
     private fun buildHeader(root: LinearLayout) {
-        root.addView(DotText(this, "Diagnostics", maxPitchDp = Tok.DOT_NUMERAL, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = ui.dp(8) })
+        root.addView(DotText(this, getString(R.string.dev_title), maxPitchDp = Tok.DOT_NUMERAL, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = ui.dp(8) })
         root.addView(
-            ui.text(
-                "GeekBridge ${BuildConfig.VERSION_NAME}. Technical details, the manual computer link and local " +
-                    "previews, for troubleshooting and support. The everyday app is on the home screen.",
-                Tone.Muted,
-            ),
+            ui.text(getString(R.string.dev_intro, BuildConfig.VERSION_NAME), Tone.Muted),
             LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP),
         )
     }
 
     private fun buildAboutCard(root: LinearLayout) {
         val card = ui.card(root, getString(R.string.about_licence_title))
-        ui.row(card, 0, "Licence", getString(R.string.about_licence_spdx), Tone.Normal)
+        ui.row(card, 0, getString(R.string.dev_row_licence), getString(R.string.about_licence_spdx), Tone.Normal)
         ui.body(card, getString(R.string.about_licence_summary), Tone.Muted)
         ui.body(card, getString(R.string.about_thirdparty), Tone.Muted)
         val open = { url: Int ->
@@ -267,79 +263,76 @@ class MainActivity : Activity() {
     }
 
     private fun buildStatusCard(root: LinearLayout) {
-        val card = ui.card(root, "This phone and connection")
-        ui.row(card, 0, "Phone", "${Build.MANUFACTURER} ${Build.MODEL}", Tone.Normal)
-        ui.row(card, 1, "Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})", Tone.Normal)
-        pairedRow = ui.row(card, 2, "Paired computers", "start the link to read", Tone.Muted)
-        coreStatus = ui.statusLine(card, "Native core: checking\u2026", Tone.Muted)
+        val card = ui.card(root, getString(R.string.dev_card_status))
+        ui.row(card, 0, getString(R.string.dev_row_phone), "${Build.MANUFACTURER} ${Build.MODEL}", Tone.Normal)
+        ui.row(card, 1, getString(R.string.dev_row_android), getString(R.string.dev_android_value, Build.VERSION.RELEASE, Build.VERSION.SDK_INT), Tone.Normal)
+        pairedRow = ui.row(card, 2, getString(R.string.dev_row_paired), getString(R.string.dev_paired_unknown), Tone.Muted)
+        coreStatus = ui.statusLine(card, getString(R.string.dev_core_checking), Tone.Muted)
         coreDetail = ui.body(card, "", Tone.Muted).apply {
             typeface = android.graphics.Typeface.MONOSPACE
             setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12f)
             setTextIsSelectable(false)
         }
-        connSummary = ui.statusLine(card, "Connection: link stopped.", Tone.Muted)
-        ui.button(card, "Recheck native core") { refreshCore() }
-        ui.button(card, "Copy report") { copyReport() }
-        ui.body(card, "Copies versions, permissions and states only: no names, numbers, addresses or content.", Tone.Muted)
+        connSummary = ui.statusLine(card, getString(R.string.dev_conn_stopped), Tone.Muted)
+        ui.button(card, getString(R.string.dev_recheck_core)) { refreshCore() }
+        ui.button(card, getString(R.string.dev_copy_report)) { copyReport() }
+        ui.button(card, getString(R.string.report_button)) {
+            startActivity(
+                Intent(this, ReportActivity::class.java)
+                    .putExtra(ReportActivity.EXTRA_CORE, coreStatus.text.toString())
+                    .putExtra(ReportActivity.EXTRA_ISSUE, connSummary.text.toString()),
+            )
+        }
+        ui.body(card, getString(R.string.report_hint), Tone.Muted)
+        ui.body(card, getString(R.string.dev_copy_report_hint), Tone.Muted)
     }
 
     private fun copyReport() {
         val report = DiagnosticsReport.build(this, coreStatus.text.toString(), connSummary.text.toString())
-        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("GeekBridge report", report))
-        Toast.makeText(this, "Report copied.", Toast.LENGTH_SHORT).show()
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(getString(R.string.dev_report_clip_label), report))
+        Toast.makeText(this, getString(R.string.dev_report_copied), Toast.LENGTH_SHORT).show()
     }
 
     private fun refreshCore() {
-        ui.setStatus(coreStatus, "Native core: checking…", Tone.Muted)
+        ui.setStatus(coreStatus, getString(R.string.dev_core_checking), Tone.Muted)
         coreDetail.text = ""
         work.submit("core", { core.version() }) { r ->
             when (val o = r.outcome()) {
                 is CoreOutcome.Ok -> {
                     val v = CoreProtocol.coreVersionOf(o.result)
-                    ui.setStatus(coreStatus, "Native core: available" + (if (v != null) " (version $v)" else ""), Tone.Ok)
+                    ui.setStatus(coreStatus, if (v != null) getString(R.string.dev_core_available_version, v) else getString(R.string.dev_core_available), Tone.Ok)
                     coreDetail.text = getString(R.string.core_info, CoreProtocol.summarize(o.result))
                 }
                 is CoreOutcome.Unavailable -> {
                     ui.setStatus(
                         coreStatus,
-                        "Native core: UNAVAILABLE — ${o.reason}. SMS and clipboard validation are off; local previews still work.",
+                        getString(R.string.dev_core_unavailable, o.reason),
                         Tone.Bad,
                     )
                 }
-                is CoreOutcome.Rejected -> ui.setStatus(coreStatus, "Native core: answered with error ${o.code}.", Tone.Warn)
-                is CoreOutcome.Malformed -> ui.setStatus(coreStatus, "Native core: unreadable response (${o.reason}).", Tone.Warn)
+                is CoreOutcome.Rejected -> ui.setStatus(coreStatus, getString(R.string.dev_core_error, o.code), Tone.Warn)
+                is CoreOutcome.Malformed -> ui.setStatus(coreStatus, getString(R.string.dev_core_unreadable, o.reason), Tone.Warn)
             }
         }
     }
 
     private fun buildCallsCard(root: LinearLayout) {
-        val card = ui.card(root, "Calls")
-        ui.body(
-            card,
-            "Shows whether this phone is idle, ringing or in a call, after you allow it. Only that coarse state " +
-                "is read: no phone numbers, call log or contacts are requested, shown or stored, so an incoming " +
-                "call is just \"Ringing\". This preview stays on the phone; sharing call status with a computer is a " +
-                "separate switch in Setup > Answer calls.",
-        )
-        callPermissionRow = ui.row(card, 0, "Call state access", "", Tone.Muted)
-        callStateRow = ui.row(card, 1, "Phone state", "", Tone.Muted)
-        callChangedRow = ui.row(card, 2, "Last change seen", "", Tone.Muted)
+        val card = ui.card(root, getString(R.string.dev_calls_title))
+        ui.body(card, getString(R.string.dev_calls_intro))
+        callPermissionRow = ui.row(card, 0, getString(R.string.dev_calls_row_access), "", Tone.Muted)
+        callStateRow = ui.row(card, 1, getString(R.string.dev_calls_row_state), "", Tone.Muted)
+        callChangedRow = ui.row(card, 2, getString(R.string.dev_calls_row_changed), "", Tone.Muted)
         callStatus = ui.body(card, "", Tone.Muted)
-        callAllowButton = ui.button(card, "Allow call state", emphasis = Emphasis.Primary) {
+        callAllowButton = ui.button(card, getString(R.string.dev_calls_allow), emphasis = Emphasis.Primary) {
             requestPermissions(arrayOf(Manifest.permission.READ_PHONE_STATE), REQ_PHONE_STATE)
         }
-        callSettingsButton = ui.button(card, "Open app settings") { openAppSettings() }
-        ui.body(
-            card,
-            "Call audio is carried by your phone's regular Bluetooth hands-free (HFP) link to the computer, " +
-                "managed by Android. This app cannot capture or inject cellular call audio and does not try to. " +
-                "To use the phone as a headset for the computer, pair the two in Bluetooth settings.",
-        )
-        ui.button(card, "Open Bluetooth settings") {
+        callSettingsButton = ui.button(card, getString(R.string.dev_open_app_settings)) { openAppSettings() }
+        ui.body(card, getString(R.string.dev_calls_bluetooth_note))
+        ui.button(card, getString(R.string.dev_open_bluetooth)) {
             try {
                 startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
             } catch (e: ActivityNotFoundException) {
-                Toast.makeText(this, "No Bluetooth settings screen found.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.dev_no_bluetooth_settings), Toast.LENGTH_SHORT).show()
             }
         }
         renderCalls(false) // onStart (next) checks the permission and starts observing
@@ -355,17 +348,17 @@ class MainActivity : Activity() {
             val started = callMonitor.start()
             if (started is MonitorStart.Failed) {
                 callTracker.reset()
-                ui.setTone(callStatus, started.reason, Tone.Bad)
+                ui.setTone(callStatus, started.reason(strings), Tone.Bad)
             } else {
-                ui.setTone(callStatus, "Listening for call state changes while this screen is open.", Tone.Ok)
+                ui.setTone(callStatus, getString(R.string.dev_calls_listening), Tone.Ok)
             }
         } else {
             callMonitor.stop()
             callTracker.reset()
             val msg = when (callPermission) {
-                PermissionUi.Denied -> "Access denied. The feature stays off; you can ask again."
-                PermissionUi.Blocked -> "Access denied and Android will not ask again. Enable it in app settings."
-                else -> "Access not allowed yet. Nothing is observed until you allow it."
+                PermissionUi.Denied -> getString(R.string.dev_calls_denied)
+                PermissionUi.Blocked -> getString(R.string.dev_calls_blocked)
+                else -> getString(R.string.dev_calls_not_allowed)
             }
             ui.setTone(callStatus, msg, if (callPermission == PermissionUi.NotGranted) Tone.Muted else Tone.Warn)
         }
@@ -379,15 +372,15 @@ class MainActivity : Activity() {
 
     private fun renderCalls(granted: Boolean) {
         val (permText, permTone) = when (callPermission) {
-            PermissionUi.Granted -> "allowed" to Tone.Ok
-            PermissionUi.NotGranted -> "not allowed yet" to Tone.Muted
-            PermissionUi.Denied -> "denied" to Tone.Warn
-            PermissionUi.Blocked -> "denied \u00b7 use app settings" to Tone.Warn
+            PermissionUi.Granted -> getString(R.string.dev_perm_allowed) to Tone.Ok
+            PermissionUi.NotGranted -> getString(R.string.dev_perm_not_allowed) to Tone.Muted
+            PermissionUi.Denied -> getString(R.string.dev_perm_denied) to Tone.Warn
+            PermissionUi.Blocked -> getString(R.string.dev_perm_blocked) to Tone.Warn
         }
         ui.setTone(callPermissionRow, permText, permTone)
         if (!granted) {
-            ui.setTone(callStateRow, "off", Tone.Muted)
-            ui.setTone(callChangedRow, "none yet", Tone.Muted)
+            ui.setTone(callStateRow, getString(R.string.dev_calls_off), Tone.Muted)
+            ui.setTone(callChangedRow, getString(R.string.dev_calls_none_yet), Tone.Muted)
             return
         }
         val state = callTracker.state
@@ -396,8 +389,8 @@ class MainActivity : Activity() {
             CallState.OffHook -> Tone.Ok
             else -> Tone.Normal
         }
-        ui.setTone(callStateRow, Format.callState(state), tone)
-        ui.setTone(callChangedRow, Format.callChangedAt(callTracker.changedAtMillis, ZoneId.systemDefault()), Tone.Normal)
+        ui.setTone(callStateRow, Format.callState(strings, state), tone)
+        ui.setTone(callChangedRow, Format.callChangedAt(strings, callTracker.changedAtMillis, ZoneId.systemDefault()), Tone.Normal)
     }
 
     private fun visibleIf(b: Boolean) = if (b) View.VISIBLE else View.GONE
@@ -405,43 +398,33 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ clipboard
 
     private fun buildClipboardCard(root: LinearLayout) {
-        val card = ui.card(root, "Clipboard \u00b7 manual only")
-        ui.body(
-            card,
-            "The app never reads the clipboard in the background or on its own. Only the buttons below " +
-                "touch it, and only while this screen is open. Android 12+ shows its own notice when text is pasted.",
-            Tone.Muted,
-        )
+        val card = ui.card(root, getString(R.string.dev_clip_title))
+        ui.body(card, getString(R.string.dev_clip_intro), Tone.Muted)
         clipField = ui.input(
-            card, "Text to prepare", InputType.TYPE_CLASS_TEXT, maxChars = Limits.CLIPBOARD_MAX_BYTES, lines = 4,
+            card, getString(R.string.dev_clip_hint), InputType.TYPE_CLASS_TEXT, maxChars = Limits.CLIPBOARD_MAX_BYTES, lines = 4,
         )
-        clipStatus = ui.body(card, "Not prepared.", Tone.Muted)
+        clipStatus = ui.body(card, getString(R.string.dev_clip_not_prepared), Tone.Muted)
         clipField.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
             override fun afterTextChanged(s: Editable?) {
-                if (!clipBusy) ui.setTone(clipStatus, "Not prepared.", Tone.Muted)
+                if (!clipBusy) ui.setTone(clipStatus, getString(R.string.dev_clip_not_prepared), Tone.Muted)
             }
         })
 
         ui.buttonRow(
             card,
-            "Paste" to { pasteIntoField() },
-            "Copy" to { copyFromField() },
-            "Share" to { shareFromField() },
+            getString(R.string.dev_clip_paste) to { pasteIntoField() },
+            getString(R.string.dev_clip_copy) to { copyFromField() },
+            getString(R.string.dev_clip_share) to { shareFromField() },
         )
-        ui.body(
-            card,
-            "Paste reads the Android clipboard once, when tapped. Copy puts the field text on it. " +
-                "Share opens the Android share sheet.",
-            Tone.Muted,
-        )
-        ui.button(card, "Prepare: validate with native core", emphasis = Emphasis.Primary) { prepareClipboard() }
-        ui.button(card, "Clear field") {
+        ui.body(card, getString(R.string.dev_clip_buttons_hint), Tone.Muted)
+        ui.button(card, getString(R.string.dev_clip_prepare), emphasis = Emphasis.Primary) { prepareClipboard() }
+        ui.button(card, getString(R.string.dev_clip_clear)) {
             clipField.setText("")
-            ui.setTone(clipStatus, "Cleared.", Tone.Muted)
+            ui.setTone(clipStatus, getString(R.string.dev_clip_cleared), Tone.Muted)
         }
-        ui.button(card, "Send files to computer…", emphasis = Emphasis.Quiet) { pickFilesToShare() }
+        ui.button(card, getString(R.string.dev_send_files), emphasis = Emphasis.Quiet) { pickFilesToShare() }
     }
 
     private fun pasteIntoField() {
@@ -449,159 +432,139 @@ class MainActivity : Activity() {
         val item = cm?.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)
         val text = item?.coerceToText(this)
         when {
-            text == null || text.isEmpty() -> ui.setTone(clipStatus, "The Android clipboard has no text.", Tone.Warn)
+            text == null || text.isEmpty() -> ui.setTone(clipStatus, getString(R.string.dev_clip_empty), Tone.Warn)
             text.length > Limits.CLIPBOARD_MAX_BYTES ->
-                ui.setTone(clipStatus, "Clipboard text is over 64 KiB; not loaded.", Tone.Warn)
+                ui.setTone(clipStatus, getString(R.string.dev_clip_too_big_load), Tone.Warn)
             else -> {
                 clipField.setText(text)
-                ui.setTone(clipStatus, "Pasted into the field. Not prepared.", Tone.Muted)
+                ui.setTone(clipStatus, getString(R.string.dev_clip_pasted), Tone.Muted)
             }
         }
     }
 
     private fun copyFromField() {
         val text = clipField.text.toString()
-        if (text.isEmpty()) return ui.setTone(clipStatus, "Nothing to copy.", Tone.Warn)
-        val clip = ClipData.newPlainText("GeekBridge", text)
+        if (text.isEmpty()) return ui.setTone(clipStatus, getString(R.string.dev_clip_nothing_copy), Tone.Warn)
+        val clip = ClipData.newPlainText(getString(R.string.dev_clip_label), text)
         clip.description.extras = PersistableBundle().apply {
             // Asks the system to hide the preview in clipboard overlays (honoured on Android 13+).
             putBoolean("android.content.extra.IS_SENSITIVE", true)
         }
         getSystemService(ClipboardManager::class.java).setPrimaryClip(clip)
-        ui.setTone(clipStatus, "Copied. Other apps on this phone can read the clipboard.", Tone.Muted)
+        ui.setTone(clipStatus, getString(R.string.dev_clip_copied), Tone.Muted)
     }
 
     private fun shareFromField() {
         val text = clipField.text.toString()
-        if (text.isEmpty()) return ui.setTone(clipStatus, "Nothing to share.", Tone.Warn)
+        if (text.isEmpty()) return ui.setTone(clipStatus, getString(R.string.dev_clip_nothing_share), Tone.Warn)
         if (Bounds.utf8Size(text) > Limits.CLIPBOARD_MAX_BYTES) {
-            return ui.setTone(clipStatus, "Text is over 64 KiB.", Tone.Warn)
+            return ui.setTone(clipStatus, getString(R.string.dev_clip_too_big_share), Tone.Warn)
         }
         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
         try {
-            startActivity(Intent.createChooser(send, "Share text"))
+            startActivity(Intent.createChooser(send, getString(R.string.dev_clip_share_title)))
         } catch (e: ActivityNotFoundException) {
-            ui.setTone(clipStatus, "No app can receive shared text.", Tone.Warn)
+            ui.setTone(clipStatus, getString(R.string.dev_clip_no_receiver), Tone.Warn)
         }
     }
 
     private fun prepareClipboard() {
         val text = clipField.text.toString()
         clipBusy = true
-        ui.setTone(clipStatus, "Validating with the native core…", Tone.Muted)
+        ui.setTone(clipStatus, getString(R.string.dev_validating), Tone.Muted)
         work.submit("clipboard", { core.validateClipboard(text) }) { r ->
             clipBusy = false
             val o = r.outcome()
-            ui.setTone(clipStatus, Format.clipboardOutcome(o, Bounds.utf8Size(text)), if (o is CoreOutcome.Ok) Tone.Ok else Tone.Warn)
+            ui.setTone(clipStatus, Format.clipboardOutcome(strings, o, Bounds.utf8Size(text)), if (o is CoreOutcome.Ok) Tone.Ok else Tone.Warn)
         }
     }
 
     // ------------------------------------------------------------------ messages (validation only)
 
     private fun buildMessagesCard(root: LinearLayout) {
-        val card = ui.card(root, "Messages \u00b7 draft check", accent = true)
-        ui.dotBanner(card, "MESSAGES")
+        val card = ui.card(root, getString(R.string.dev_msg_title), accent = true)
+        ui.dotBanner(card, getString(R.string.dev_msg_banner))
         val red = getColor(R.color.gb_red)
         val shared = PhoneDataRuntime.active().sms
-        ui.row(card, 0, "Check a draft against the shared rules", "available offline", Tone.Normal)
-        ui.row(card, 1, "Share texts with your computer", if (shared) "on" else "off \u00b7 optional", if (shared) Tone.Ok else Tone.Muted)
-        ui.body(
-            card,
-            "Checks a draft against the shared message rules in the native core; nothing is sent from this box. " +
-                "Reading and sending texts for a paired computer is optional and set up in Setup > Share with computer. " +
-                "It needs the SMS permissions, which Android restricts: stores generally allow them only for the default " +
-                "SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". " +
-                "A denial at the runtime prompt is final until you change it in app settings. " +
-                "Nothing is ever sent automatically.",
-            Tone.Muted,
-        )
-        smsRecipient = ui.input(card, "Recipient number", InputType.TYPE_CLASS_PHONE, Limits.SMS_MAX_ADDRESS_CHARS)
-        smsText = ui.input(card, "Message", InputType.TYPE_CLASS_TEXT, Limits.SMS_MAX_TEXT_CHARS, lines = 3)
-        smsSubscription = ui.input(card, "SIM subscription id (optional)", InputType.TYPE_CLASS_NUMBER, 9)
-        smsStatus = ui.body(card, "Not checked.", Tone.Muted)
-        ui.button(card, "Validate draft (nothing is sent)", emphasis = Emphasis.Primary, accent = red) { validateSms() }
+        ui.row(card, 0, getString(R.string.dev_msg_row_check), getString(R.string.dev_msg_available_offline), Tone.Normal)
+        ui.row(card, 1, getString(R.string.dev_msg_row_share), if (shared) getString(R.string.dev_msg_on) else getString(R.string.dev_msg_off_optional), if (shared) Tone.Ok else Tone.Muted)
+        ui.body(card, getString(R.string.dev_msg_intro), Tone.Muted)
+        smsRecipient = ui.input(card, getString(R.string.dev_msg_recipient), InputType.TYPE_CLASS_PHONE, Limits.SMS_MAX_ADDRESS_CHARS)
+        smsText = ui.input(card, getString(R.string.dev_msg_message), InputType.TYPE_CLASS_TEXT, Limits.SMS_MAX_TEXT_CHARS, lines = 3)
+        smsSubscription = ui.input(card, getString(R.string.dev_msg_subscription), InputType.TYPE_CLASS_NUMBER, 9)
+        smsStatus = ui.body(card, getString(R.string.dev_msg_not_checked), Tone.Muted)
+        ui.button(card, getString(R.string.dev_msg_validate), emphasis = Emphasis.Primary, accent = red) { validateSms() }
     }
 
     private fun validateSms() {
         val subText = smsSubscription.text.toString().trim()
         val sub = if (subText.isEmpty()) null else subText.toIntOrNull()
         if (subText.isNotEmpty() && sub == null) {
-            return ui.setTone(smsStatus, "Subscription id must be a whole number.", Tone.Warn)
+            return ui.setTone(smsStatus, getString(R.string.dev_msg_sub_invalid), Tone.Warn)
         }
         val recipient = smsRecipient.text.toString()
         val text = smsText.text.toString()
         smsBusy = true
-        ui.setTone(smsStatus, "Validating with the native core…", Tone.Muted)
+        ui.setTone(smsStatus, getString(R.string.dev_validating), Tone.Muted)
         work.submit("sms", { core.validateSms(recipient, text, sub) }) { r ->
             smsBusy = false
             val o = r.outcome()
-            ui.setTone(smsStatus, Format.smsOutcome(o), if (o is CoreOutcome.Ok) Tone.Ok else Tone.Warn)
+            ui.setTone(smsStatus, Format.smsOutcome(strings, o), if (o is CoreOutcome.Ok) Tone.Ok else Tone.Warn)
         }
     }
 
     // ------------------------------------------------------------------ contacts & agenda
 
     private fun buildContactsCard(root: LinearLayout) {
-        val card = ui.card(root, "Contacts \u00b7 preview")
-        ui.body(
-            card,
-            "Reads the first ${LocalProviders.MAX_CONTACTS} contacts with a phone number, on this phone only, " +
-                "after you allow access. Not copied, stored or sent.",
-        )
+        val card = ui.card(root, getString(R.string.dev_contacts_title))
+        ui.body(card, resources.getQuantityString(R.plurals.dev_contacts_intro, LocalProviders.MAX_CONTACTS, LocalProviders.MAX_CONTACTS))
         sections += PreviewSection<ContactPreview>(
             card = card,
             subject = "contacts",
+            allowLabel = R.string.dev_contacts_allow,
+            shown = R.plurals.dev_contacts_shown,
+            shownTruncated = R.plurals.dev_contacts_shown_truncated,
             permission = Manifest.permission.READ_CONTACTS,
             requestCode = REQ_CONTACTS,
-            noun = "contacts",
-            loadLabel = "Show contacts preview",
+            loadLabel = getString(R.string.dev_contacts_show),
             loader = { c, sig -> LocalProviders.loadContacts(c, sig) },
-            render = { Format.contactLine(it) },
+            render = { Format.contactLine(strings, it) },
         )
     }
 
     private fun buildAgendaCard(root: LinearLayout) {
-        val card = ui.card(root, "Agenda \u00b7 preview")
-        ui.body(
-            card,
-            "Reads up to ${LocalProviders.MAX_EVENTS} calendar events in the next ${LocalProviders.AGENDA_DAYS} days " +
-                "from Android's calendar provider, after you allow access. Titles and locations only.",
-        )
+        val card = ui.card(root, getString(R.string.dev_agenda_title))
+        ui.body(card, resources.getQuantityString(R.plurals.dev_agenda_intro, LocalProviders.MAX_EVENTS, LocalProviders.MAX_EVENTS, LocalProviders.AGENDA_DAYS))
         val zone = ZoneId.systemDefault()
         val locale = Locale.getDefault()
         sections += PreviewSection<AgendaEvent>(
             card = card,
             subject = "calendar",
+            allowLabel = R.string.dev_agenda_allow,
+            shown = R.plurals.dev_events_shown,
+            shownTruncated = R.plurals.dev_events_shown_truncated,
             permission = Manifest.permission.READ_CALENDAR,
             requestCode = REQ_CALENDAR,
-            noun = "events",
-            loadLabel = "Show agenda preview",
+            loadLabel = getString(R.string.dev_agenda_show),
             loader = { c, sig -> LocalProviders.loadAgenda(c, System.currentTimeMillis(), sig) },
-            render = { Format.eventLines(it, zone, locale) },
+            render = { Format.eventLines(strings, it, zone, locale) },
         )
     }
 
     private fun buildPrivacyCard(root: LinearLayout) {
-        val card = ui.card(root, "Privacy")
-        ui.body(
-            card,
-            "The network is used to talk to the computers you paired (encrypted, certificate-pinned) and by update " +
-                "checks, which only read GitHub's public release list when the app opens (at most every 12 hours, can be " +
-                "switched off) or when you tap Check for updates. A small background service keeps the phone reachable only " +
-                "while \"Stay connected\" is on, and only for computers you paired. Updates are installed only after a SHA-256 " +
-                "check and your confirmation in Android's installer. The app never asks for accessibility, root or ADB " +
-                "access. Contacts, calendar, clipboard and message text are shared only with a paired computer you allowed, " +
-                "are not logged or saved here, and previews are cleared when you leave the app.",
-        )
+        val card = ui.card(root, getString(R.string.dev_privacy_title))
+        ui.body(card, getString(R.string.dev_privacy_body))
     }
 
     /** One permission-gated, bounded, cancellable local preview. */
     private inner class PreviewSection<T>(
         card: LinearLayout,
         private val subject: String,
+        private val allowLabel: Int,
+        private val shown: Int,
+        private val shownTruncated: Int,
         private val permission: String,
         val requestCode: Int,
-        private val noun: String,
         loadLabel: String,
         private val loader: (Context, CancellationSignal) -> LoadResult<T>,
         private val render: (T) -> String,
@@ -610,13 +573,13 @@ class MainActivity : Activity() {
         private var showingData = false
 
         private val status: TextView = ui.body(card, "", Tone.Muted)
-        private val allowButton: Button = ui.button(card, "Allow $subject access", emphasis = Emphasis.Primary) {
+        private val allowButton: Button = ui.button(card, getString(allowLabel), emphasis = Emphasis.Primary) {
             requestPermissions(arrayOf(permission), requestCode)
         }
         private val loadButton: Button = ui.button(card, loadLabel) { load() }
-        private val settingsButton: Button = ui.button(card, "Open app settings") { openAppSettings() }
+        private val settingsButton: Button = ui.button(card, getString(R.string.dev_open_app_settings)) { openAppSettings() }
         private val list = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.VERTICAL }
-        private val clearButton: Button = ui.button(card, "Clear preview") { clear() }
+        private val clearButton: Button = ui.button(card, getString(R.string.dev_clear_preview)) { clear() }
 
         init {
             card.addView(list, card.indexOfChild(clearButton), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
@@ -633,16 +596,16 @@ class MainActivity : Activity() {
             if (!showingData) {
                 when (state) {
                     PermissionUi.NotGranted -> ui.setTone(
-                        status, "Access not allowed yet. Nothing is read until you allow it.", Tone.Muted,
+                        status, getString(R.string.dev_preview_not_allowed), Tone.Muted,
                     )
                     PermissionUi.Granted -> ui.setTone(
-                        status, "Access allowed. Tap to read a preview from this phone.", Tone.Ok,
+                        status, getString(R.string.dev_preview_allowed), Tone.Ok,
                     )
                     PermissionUi.Denied -> ui.setTone(
-                        status, "Access denied. The feature stays off; you can ask again.", Tone.Warn,
+                        status, getString(R.string.dev_preview_denied), Tone.Warn,
                     )
                     PermissionUi.Blocked -> ui.setTone(
-                        status, "Access denied and Android will not ask again. Enable it in app settings.", Tone.Warn,
+                        status, getString(R.string.dev_preview_blocked), Tone.Warn,
                     )
                 }
             }
@@ -655,7 +618,7 @@ class MainActivity : Activity() {
         }
 
         private fun load() {
-            ui.setTone(status, "Reading…", Tone.Muted)
+            ui.setTone(status, getString(R.string.dev_reading), Tone.Muted)
             work.submit(
                 subject,
                 { token ->
@@ -664,11 +627,11 @@ class MainActivity : Activity() {
                     loader(applicationContext, signal)
                 },
             ) { r ->
-                when (val res = r.getOrElse { LoadResult.Failed("Reading failed (${it.javaClass.simpleName}).") }) {
+                when (val res = r.getOrElse { LoadResult.Failed(R.string.dev_reading_failed, it.javaClass.simpleName) }) {
                     is LoadResult.Loaded<T> -> show(res)
                     is LoadResult.Failed -> {
                         showingData = false
-                        ui.setTone(status, res.reason, Tone.Bad)
+                        ui.setTone(status, res.reason(strings), Tone.Bad)
                         sync()
                     }
                     LoadResult.Cancelled -> Unit
@@ -680,9 +643,9 @@ class MainActivity : Activity() {
             list.removeAllViews()
             showingData = true
             if (res.items.isEmpty()) {
-                ui.setTone(status, "Access allowed, but there is nothing to show.", Tone.Muted)
+                ui.setTone(status, getString(R.string.dev_preview_empty), Tone.Muted)
             } else {
-                ui.setTone(status, Format.truncationNote(res.items.size, res.truncated, noun), Tone.Muted)
+                ui.setTone(status, resources.getQuantityString(if (res.truncated) shownTruncated else shown, res.items.size, res.items.size), Tone.Muted)
                 res.items.forEachIndexed { i, item -> ui.listRow(list, i, render(item)) }
             }
             clearButton.visibility = View.VISIBLE
