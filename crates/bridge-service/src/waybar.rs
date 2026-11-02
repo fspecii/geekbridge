@@ -28,6 +28,8 @@ pub struct BarState {
     pub unread_sms: Option<u32>,
     /// A newer release exists and was not skipped.
     pub update: Option<String>,
+    /// Battery of the first connected phone that reports one.
+    pub battery: Option<bridge_core::ipc::BatteryStatus>,
 }
 
 /// Highest-priority state, used for `alt` and as the first `class`.
@@ -84,6 +86,18 @@ pub fn render(s: &BarState) -> String {
         }
     }
     let mut classes = vec![state];
+    let shown = s
+        .battery
+        .filter(|_| state == "connected" || state == "ringing");
+    if let Some(b) = shown {
+        tip.push(b.text());
+        if b.charging {
+            classes.push("charging".into());
+        }
+        if b.low {
+            classes.push("battery-low".into());
+        }
+    }
     if let Some(n) = s.unread_sms.filter(|n| *n > 0) {
         text.push_str(&format!(" {MAIL} {n}"));
         tip.push(format!(
@@ -102,6 +116,7 @@ pub fn render(s: &BarState) -> String {
         "tooltip": tip.join("\n"),
         "class": classes,
         "alt": state,
+        "battery": shown.map(|b| b.percent),
     })
     .to_string()
 }
@@ -112,6 +127,71 @@ mod tests {
 
     fn parse(s: &str) -> serde_json::Value {
         serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn battery_shows_in_the_tooltip_with_classes_only_while_connected() {
+        let b = bridge_core::ipc::BatteryStatus {
+            percent: 12,
+            charging: false,
+            low: true,
+        };
+        let connected = BarState {
+            service_up: true,
+            paired: 1,
+            connected: vec!["Pixel".into()],
+            battery: Some(b),
+            ..BarState::default()
+        };
+        let v = parse(&render(&connected));
+        assert!(v["tooltip"].as_str().unwrap().contains("Battery 12%"));
+        assert_eq!(v["battery"], 12);
+        assert!(
+            v["class"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == "battery-low")
+        );
+        assert!(
+            !v["class"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == "charging")
+        );
+        let charging = BarState {
+            battery: Some(bridge_core::ipc::BatteryStatus {
+                charging: true,
+                low: false,
+                ..b
+            }),
+            ..connected.clone()
+        };
+        let v = parse(&render(&charging));
+        assert!(v["tooltip"].as_str().unwrap().contains("(charging)"));
+        assert!(
+            v["class"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == "charging")
+        );
+        // A disconnected phone shows no stale level.
+        let gone = BarState {
+            connected: vec![],
+            ..connected
+        };
+        let v = parse(&render(&gone));
+        assert!(!v["tooltip"].as_str().unwrap().contains("Battery"));
+        assert!(v["battery"].is_null());
+        assert!(
+            v["class"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|c| c != "battery-low")
+        );
     }
 
     #[test]

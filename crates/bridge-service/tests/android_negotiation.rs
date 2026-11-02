@@ -22,6 +22,7 @@ fn negotiated_with_stock_android_is_exactly_what_was_verified_live() {
         gate::negotiated_incoming(&p),
         [
             "kdeconnect.ping",
+            "kdeconnect.battery",
             "kdeconnect.clipboard",
             "kdeconnect.clipboard.connect",
             "kdeconnect.share.request",
@@ -48,10 +49,9 @@ fn negotiated_with_stock_android_is_exactly_what_was_verified_live() {
 }
 
 #[test]
-fn stock_android_battery_notification_and_telephony_packets_are_dropped() {
+fn stock_android_notification_and_telephony_packets_are_dropped() {
     let neg = gate::negotiated_incoming(&stock_android());
     for kind in [
-        "kdeconnect.battery",
         "kdeconnect.notification",
         "kdeconnect.telephony",
         "kdeconnect.connectivity_report",
@@ -65,5 +65,38 @@ fn stock_android_battery_notification_and_telephony_packets_are_dropped() {
     assert_eq!(
         gate::classify_incoming("kdeconnect.sms.messages", &neg),
         Incoming::PhoneData
+    );
+}
+
+#[test]
+fn stock_android_battery_is_negotiated_but_only_acted_on_with_consent() {
+    use bridge_core::ipc::Feature;
+    let p = stock_android();
+    let neg = gate::negotiated_incoming(&p);
+    // The packet is routed to the battery handler (which drops it unless the `battery` consent is on).
+    assert_eq!(
+        gate::classify_incoming("kdeconnect.battery", &neg),
+        Incoming::Battery
+    );
+    assert_eq!(
+        gate::feature_of("kdeconnect.battery"),
+        Some(Feature::Battery)
+    );
+    assert_eq!(
+        gate::feature_of("kdeconnect.battery.request"),
+        Some(Feature::Battery)
+    );
+    assert!(gate::adapter_integrated(Feature::Battery));
+    // This stock build lists only `kdeconnect.battery` as accepted, so no request is offered to it; it sends
+    // its state on connect by itself.
+    assert!(
+        !gate::negotiated_outgoing(&p)
+            .iter()
+            .any(|k| k == "kdeconnect.battery.request")
+    );
+    // A peer that declares neither direction never gets a battery packet through.
+    assert_eq!(
+        gate::classify_incoming("kdeconnect.battery", &["kdeconnect.ping".to_owned()]),
+        Incoming::Reject
     );
 }

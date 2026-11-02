@@ -127,6 +127,47 @@ Note that `kdeconnect.contacts.*` and `kdeconnect.sms.*` are stock types but are
 phone answers*; GeekBridge also adds a `requestId` field to `kdeconnect.sms.request` that stock
 phones ignore (SPEC-CHECKED: `SMSPlugin.kt` reads named keys only).
 
+## Battery status (`kdeconnect.battery`)
+
+Phone battery level and charging state use the stock packets, so a stock KDE Connect peer interoperates in both
+directions. Stock names and fields only; nothing GeekBridge-specific is on the wire.
+
+| packet | direction | body |
+| --- | --- | --- |
+| `kdeconnect.battery` | phone to computer | `currentCharge` (integer 0 to 100, -1 = unknown), `isCharging` (bool), `thresholdEvent` (0 none, 1 low; optional) |
+| `kdeconnect.battery.request` | computer to phone | `request: true`; the phone answers with a `kdeconnect.battery` packet |
+
+* **Consent, default off on both ends.** Battery is a private signal (it says when a phone is idle or away), so it
+  follows the other opt-ins. Phone: a "Share battery level" switch in Settings (off by default) plus a per-computer
+  allow (`GrantFeature.Battery`, the same list as SMS and contacts; a computer paired later never inherits it). Computer:
+  `Feature::Battery` consent per phone (`geekbridge-ctl consent DEVICE_ID battery on`, or the "Show phone battery"
+  button on Home, offered only when the phone declared the packet).
+* **Capabilities.** The phone declares `kdeconnect.battery` (outgoing) and `kdeconnect.battery.request` (incoming)
+  only while its switch is on, so a stock computer is never told otherwise. The native core sends only to computers
+  in the per-computer list. The computer always declares incoming `kdeconnect.battery` and outgoing
+  `kdeconnect.battery.request`; negotiation still needs the peer to declare the matching side.
+* **Unasked packets are dropped, not punished.** Stock phones send their level unasked; without the computer's
+  `battery` consent the packet is dropped unread and does not count toward the link's rejected-packet budget. A
+  malformed one (missing fields, charge outside 0 to 100, wrong types) does count. `-1` shows nothing.
+* **Storage.** In memory only, on the live link's status (`links[].battery` in `geekbridge-ctl status`:
+  `percent`, `charging`, `low`). It is gone when the link ends, and withdrawing the consent erases it at once.
+* **Phone sends on change, with no polling and no wake lock.** The app listens to the system's sticky
+  `ACTION_BATTERY_CHANGED` broadcast only while the link runs and the switch is on. A change of charging state or of
+  the low flag (15 percent or less while not charging) goes out at once; a plain percentage change at most once per
+  minute with one trailing send; an unchanged reading is never repeated. A computer that is allowed, connects, or
+  sends `kdeconnect.battery.request` gets the current state immediately.
+* **Shown on the computer** in the tray tooltip and menu status line, the Home phone card, and
+  `geekbridge-ctl status --waybar` (tooltip line, `charging` / `battery-low` classes, numeric `battery` field);
+  `geekbridge-ctl status` carries it in the JSON.
+* **Interop evidence.** The negotiated list against the real stock Android identity capture (1.37.0,
+  `android-identity-secure.json`, which lists `kdeconnect.battery` both ways) is pinned in
+  `crates/bridge-service/tests/android_negotiation.rs`. That build accepts only `kdeconnect.battery` (not `.request`),
+  so no request is offered to it; it sends its own state on connect. The end-to-end flow over a pinned-TLS link with a
+  scripted phone is `battery_is_read_only_with_consent_asked_for_and_erased_when_withdrawn`
+  (`crates/bridge-phone-sim/tests/data_link.rs`); the phone core is `crates/bridge-android/tests/data_transport.rs`,
+  and the Kotlin policy is `BatteryReportTest`. **SPEC-CHECKED only** against a live stock desktop or phone: no
+  stock daemon capture of battery packets exists yet (next hardware step).
+
 ## Not covered / next hardware step
 
 Everything about the stock **Android** app: its Conscrypt TLS 1.2 stack against our certificate and
@@ -181,7 +222,7 @@ server (the desktop dialled the app); the app dialling the desktop was **not** e
 | Share file desktop -> phone and phone -> desktop, 300 000 random bytes | VERIFIED byte-identical (SHA-256 compared on both sides) | `android-share-file.json`, payload port 1752 |
 | `kdeconnect.sms.messages` pushed on an incoming SMS, `request_conversations`, `request_conversation`, `sms.request` send | VERIFIED | the sent SMS is in the phone's SMS store (type 2) and the app echoed it as `sms.messages`; messages parsed and shown by `geekbridge-ctl messages` |
 | `kdeconnect.contacts.*` (uids/timestamps, then vCards) | VERIFIED | one contact parsed (name, phone, email); the app's `X-KDECONNECT-ID-DEV-<our id>` vCard line is accepted |
-| Battery, notifications, telephony | NOT CLAIMED by GeekBridge: the app sends none of them (zero `kdeconnect.battery` / `notification` / `telephony` lines in the capture) and `negotiated` is exactly `ping, clipboard, clipboard.connect, share.request, contacts.response_*, sms.messages`. The tests also pin that these types would be rejected | no handler exists, so there is nothing to verify |
+| Battery, notifications, telephony | Historical capture, before battery support (see "Battery status" below; `kdeconnect.battery` is now declared and negotiated, and consent-gated). Notifications and telephony are NOT CLAIMED by GeekBridge: the app sends none of them (zero `kdeconnect.battery` / `notification` / `telephony` lines in the capture) and `negotiated` is exactly `ping, clipboard, clipboard.connect, share.request, contacts.response_*, sms.messages`. The tests also pin that these types would be rejected | no handler exists, so there is nothing to verify |
 | Our `geekbridge.*` extensions towards the app | not sent (not negotiated) | `negotiated_outgoing` has none |
 | mDNS / UDP broadcast discovery, the app dialling us, protocol-7 phones, Wi-Fi/trusted networks, multi-file batches, `share.request.update`, image clipboard | NOT tested | emulator limits |
 

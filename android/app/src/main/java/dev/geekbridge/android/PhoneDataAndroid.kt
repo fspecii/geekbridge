@@ -16,6 +16,7 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -581,6 +582,8 @@ object PhoneDataRuntime {
         private set
     @Volatile private var engine: PhoneDataEngine? = null
     @Volatile private var declared = ActiveFeatures()
+    @Volatile private var battery: BatteryReporter? = null
+    private var batteryReceiver: BroadcastReceiver? = null
     private val main = Handler(Looper.getMainLooper())
     private val core: CoreClient by lazy { CoreClient.native() }
     private var smsPort: AndroidSmsPort? = null
@@ -604,7 +607,15 @@ object PhoneDataRuntime {
             calendarIds = p.getStringSet("calendar_ids", emptySet()).orEmpty().toSet(),
             calendarEdit = p.getBoolean("calendar_edit", false),
             smsSpecialNumbers = p.getBoolean("sms_special", false),
+            battery = p.getBoolean("battery", false),
         )
+        val reporter = BatteryReporter(
+            read = { currentBattery() },
+            core = { core.dataAction(it) },
+            enabled = { active().battery && linkRunning },
+            later = { ms, action -> main.postDelayed({ worker.execute(action) }, ms) },
+        )
+        battery = reporter
         val cancel = QueryCancel()
         val sms = AndroidSmsPort(a, cancel)
         smsPort = sms
@@ -627,6 +638,7 @@ object PhoneDataRuntime {
                 }),
             ) { settings.calendarIds },
             allowSpecialNumbers = { settings.smsSpecialNumbers },
+            battery = reporter,
             smsLedger = RequestLedger(object : BlobStore {
                 override fun read() = p.getString("sms_requests", "") ?: ""
                 override fun write(text: String) {
@@ -656,13 +668,14 @@ object PhoneDataRuntime {
     /** Called when the transport is (re)started so the declared capabilities are what [active] says right now. */
     fun startFeatures(): ActiveFeatures = active().also {
         declared = it
-        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms}")
+        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms} battery=${it.battery}")
     }
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
     fun setCalendar(on: Boolean) = update { it.copy(calendar = on) }
     fun setCalendarEdit(on: Boolean) = update { it.copy(calendarEdit = on) }
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
+    fun setBattery(on: Boolean) = update { it.copy(battery = on) }
     fun setSmsSpecialNumbers(on: Boolean) = update { it.copy(smsSpecialNumbers = on) }
     fun setCalendarIds(ids: Set<String>) {
         update { it.copy(calendarIds = ids.take(PhoneDataLimits.MAX_CALENDARS).toSet()) }
@@ -674,7 +687,7 @@ object PhoneDataRuntime {
         prefs?.edit()
             ?.putBoolean("contacts", settings.contacts)?.putBoolean("calendar", settings.calendar)
             ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)
-            ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.apply()
+            ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.putBoolean("battery", settings.battery)?.apply()
         resync()
     }
 
@@ -687,7 +700,7 @@ object PhoneDataRuntime {
         if (CapabilityRedeclare.onChange(declared, now, linkRunning) == CapabilityRedeclare.Action.Reconnect) {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
-            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms}): reconnecting to re-declare")
+            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms} battery=${now.battery}): reconnecting to re-declare")
             val controller = LinkRuntime.controller()
             controller.stop(R.string.pd_reconnecting)
             restartAttempt(a, 0)
@@ -709,6 +722,7 @@ object PhoneDataRuntime {
         if (running == linkRunning) return
         linkRunning = running
         val e = engine ?: return
+        battery?.reset()
         if (!running) {
             stopObserving()
             e.cancelInFlight() // a long provider read has nowhere to send its answer any more
@@ -743,6 +757,7 @@ object PhoneDataRuntime {
         } else if (!f.calendar) {
             stopObserver()
         }
+        if (f.battery) startBatteryReceiver(a) else stopBatteryReceiver()
         if (waiter?.isAlive != true) {
             waiter = Thread({ waitLoop(e) }, "geekbridge-data-wait").apply { isDaemon = true; start() }
         }
@@ -762,7 +777,49 @@ object PhoneDataRuntime {
     }
 
     @Synchronized
-    private fun stopObserving() = stopObserver()
+    private fun stopObserving() {
+        stopObserver()
+        stopBatteryReceiver()
+    }
+
+    /** The sticky battery state, read without registering anything. Null when unknown. */
+    private fun currentBattery(): BatteryReading? {
+        val a = app ?: return null
+        val i = a.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return null
+        return BatteryRules.reading(
+            i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1),
+            i.getIntExtra(BatteryManager.EXTRA_SCALE, -1),
+            i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0),
+        )
+    }
+
+    /**
+     * Listens to the system's battery broadcast only while the link runs and the feature is on. The broadcast is
+     * sticky, so registering also delivers the current state once: that is the send at link start. No polling.
+     */
+    @Synchronized
+    private fun startBatteryReceiver(a: Context) {
+        if (batteryReceiver != null) return
+        val r = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                worker.execute { battery?.onChanged() }
+            }
+        }
+        batteryReceiver = r
+        a.registerReceiver(r, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    }
+
+    @Synchronized
+    private fun stopBatteryReceiver() {
+        val r = batteryReceiver ?: return
+        batteryReceiver = null
+        try { app?.unregisterReceiver(r) } catch (_: RuntimeException) { }
+    }
+
+    /** A computer was allowed (or withdrawn) for the battery: tell the new one the current level at once. */
+    fun onBatteryGrantsChanged() {
+        worker.execute { battery?.sendNow() }
+    }
 
     private fun waitLoop(e: PhoneDataEngine) {
         var since = 0L

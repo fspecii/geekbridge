@@ -15,6 +15,8 @@ enum class GrantFeature(val key: String) {
     Calendar("calendar"),
     CalendarEdit("calendar_edit"),
     Sms("sms"),
+    /** Battery level and charging state (`kdeconnect.battery`). Off for every computer until allowed here. */
+    Battery("battery"),
 }
 
 /**
@@ -43,7 +45,7 @@ data class ComputerGrants(val byDevice: Map<String, Set<GrantFeature>> = emptyMa
     /** Drops computers that are no longer paired, so a device id cannot come back with old rights. */
     fun keepOnly(paired: Set<String>) = copy(byDevice = byDevice.filterKeys { it in paired })
 
-    /** The `permits` object of `transport_start` / `transport_permits`: all five features, empty = nobody. */
+    /** The `permits` object of `transport_start` / `transport_permits`: all six features, empty = nobody. */
     fun permitsObject(): JSONObject = JSONObject().also { o ->
         for (f in GrantFeature.entries) {
             // Editing needs reading, whatever a stored or migrated list says (set() only enforces it when reading is withdrawn).
@@ -126,9 +128,12 @@ object ComputerGrantsRuntime {
     fun update(change: (ComputerGrants) -> ComputerGrants) {
         val g = change(GrantsHolder.current)
         if (g == GrantsHolder.current) return
+        val before = GrantsHolder.current.devicesFor(GrantFeature.Battery)
         GrantsHolder.current = g
         blob?.write(g.toJson())
         worker.execute { core.transportAction(g.permitsRequest()) }
+        // A computer just allowed to see the battery gets the current state without waiting for the next change.
+        if (g.devicesFor(GrantFeature.Battery) != before) PhoneDataRuntime.onBatteryGrantsChanged()
     }
 
     fun allow(device: String, f: GrantFeature, on: Boolean) = update { it.set(device, f, on) }

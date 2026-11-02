@@ -26,7 +26,7 @@ Commands:
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
-  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony, debug
+  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony, debug, battery
   phone-log DEVICE_ID [-f] [-n N]     last N (default 200) lines of a debug-build phone's log; -f follows
   phone-state DEVICE_ID               ask a debug-build phone for its redacted state dump and print it
   ping DEVICE_ID                      interoperability check on a paired link
@@ -818,6 +818,11 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
             .filter(|l| l.phase == ipc::LinkPhase::Connected)
             .map(|l| l.name.clone())
             .collect();
+        bar.battery = status
+            .links
+            .iter()
+            .filter(|l| l.phase == ipc::LinkPhase::Connected)
+            .find_map(|l| l.battery);
         if let Ok(Response::Calls(c)) = ipc::call(port, &token, &Request::Calls) {
             bar.ringing = c.view.rows.iter().filter(|r| r.ringing()).count();
         }

@@ -80,6 +80,8 @@ pub struct Caps {
     pub sms_read: bool,
     pub sms_send: bool,
     pub sms_status: bool,
+    /// The phone accepts `kdeconnect.battery.request`.
+    pub battery_request: bool,
 }
 impl Caps {
     pub fn from_negotiated(outgoing: &[String], incoming: &[String]) -> Self {
@@ -97,6 +99,7 @@ impl Caps {
                 && inc(sms::MESSAGES),
             sms_send: out(sms::REQUEST),
             sms_status: inc(wire::SMS_STATUS),
+            battery_request: out(bridge_core::battery_link::REQUEST),
         }
     }
 }
@@ -952,6 +955,20 @@ impl PhoneData {
                 CALENDAR => d.ask_calendar(now, true),
                 _ => d.ask_sms(now),
             }
+        }
+    }
+
+    /// Ask a connected phone for its battery state now (it answers with a `kdeconnect.battery` packet).
+    /// Only if the phone declared the request; the caller checked the `battery` consent.
+    pub fn request_battery(&self, id: &str) {
+        let g = self.lock();
+        if let Some(d) = g.devices.get(id)
+            && d.caps.battery_request
+        {
+            d.send(
+                bridge_core::battery_link::REQUEST,
+                bridge_core::battery_link::request_body(),
+            );
         }
     }
 
@@ -2006,6 +2023,7 @@ mod tests {
             sms_read: true,
             sms_send: true,
             sms_status: true,
+            battery_request: true,
         }
     }
     const ID: &str = "pppppppppppppppppppppppppppppppp";

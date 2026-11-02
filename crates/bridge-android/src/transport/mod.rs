@@ -437,7 +437,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
     })
 }
 
-/// `{"sms": ["<device id>", ...], ...}`: the five known features only, at most 16 valid device ids each.
+/// `{"sms": ["<device id>", ...], ...}`: the six known features only, at most 16 valid device ids each.
 fn parse_permits(mut o: Fields) -> Result<engine::PermitMap, ApiError> {
     let mut map = engine::PermitMap::new();
     for feature in engine::PERMIT_FEATURES {
@@ -465,6 +465,7 @@ fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
         calendar_edit: o.take_opt_bool("calendar_edit")?.unwrap_or(false),
         sms: o.take_opt_bool("sms")?.unwrap_or(false),
         debug: o.take_opt_bool("debug")?.unwrap_or(false),
+        battery: o.take_opt_bool("battery")?.unwrap_or(false),
     };
     Ok(flags)
 }
@@ -742,6 +743,7 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                     .unwrap_or(current.calendar_edit),
                 sms: f.take_opt_bool("sms")?.unwrap_or(current.sms),
                 debug: f.take_opt_bool("debug")?.unwrap_or(current.debug),
+                battery: f.take_opt_bool("battery")?.unwrap_or(current.battery),
             };
             f.finish()?;
             core.data().set_flags(flags);

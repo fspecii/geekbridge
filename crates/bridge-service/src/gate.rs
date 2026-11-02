@@ -28,6 +28,8 @@ pub use bridge_kde::sms::{
     REQUEST_CONVERSATIONS as SMS_REQUEST_CONVERSATIONS,
 };
 
+pub use bridge_core::battery_link::{BATTERY, REQUEST as BATTERY_REQUEST};
+
 pub use bridge_core::debug_link::{
     LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
 };
@@ -36,8 +38,9 @@ pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 16] = [
+pub const LOCAL_INCOMING: [&str; 17] = [
     PING,
+    BATTERY,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_ITEM,
@@ -54,8 +57,9 @@ pub const LOCAL_INCOMING: [&str; 16] = [
     DEBUG_LOG,
     DEBUG_STATE,
 ];
-pub const LOCAL_OUTGOING: [&str; 15] = [
+pub const LOCAL_OUTGOING: [&str; 16] = [
     PING,
+    BATTERY_REQUEST,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_PULL,
@@ -107,6 +111,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::phone_link::is_calendar_kind(kind) {
         return Some(Feature::Calendar);
     }
+    if bridge_core::battery_link::is_battery_kind(kind) {
+        return Some(Feature::Battery);
+    }
     if kind == SMS_STATUS {
         return Some(Feature::Sms);
     }
@@ -134,6 +141,7 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::CalendarEdit
             | Feature::CalendarAlerts
             | Feature::Debug
+            | Feature::Battery
     )
 }
 
@@ -150,6 +158,9 @@ pub enum Incoming {
     /// A `geekbridge.debug.log` / `geekbridge.debug.state` packet from a debug-build phone. Acted on
     /// only for a paired device whose `debug` consent is on (`phone_debug`).
     Debug,
+    /// A `kdeconnect.battery` packet from the phone. Acted on only for a paired device whose `battery`
+    /// consent is on; otherwise dropped unread (stock phones send it unasked).
+    Battery,
     Reject,
 }
 
@@ -172,6 +183,8 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
     ) && negotiated.iter().any(|k| k == kind)
     {
         Incoming::PhoneData
+    } else if kind == BATTERY && negotiated.iter().any(|k| k == kind) {
+        Incoming::Battery
     } else if matches!(kind, DEBUG_LOG | DEBUG_STATE) && negotiated.iter().any(|k| k == kind) {
         Incoming::Debug
     } else {
@@ -346,6 +359,31 @@ mod tests {
                 true
             }),
             Outgoing::NotNegotiated
+        );
+    }
+
+    #[test]
+    fn battery_packets_are_negotiated_both_ways_and_need_consent_to_leave() {
+        let phone = peer(&[BATTERY_REQUEST], &[BATTERY]);
+        assert_eq!(negotiated_incoming(&phone), [BATTERY]);
+        assert_eq!(negotiated_outgoing(&phone), [BATTERY_REQUEST]);
+        assert_eq!(
+            classify_incoming(BATTERY, &negotiated_incoming(&phone)),
+            Incoming::Battery
+        );
+        // The request is a consent-gated feature packet with an adapter.
+        assert_eq!(
+            check_outgoing(BATTERY_REQUEST, &negotiated_outgoing(&phone), |_| false),
+            Outgoing::ConsentRequired(Feature::Battery)
+        );
+        assert_eq!(
+            check_outgoing(BATTERY_REQUEST, &negotiated_outgoing(&phone), |_| true),
+            Outgoing::Allowed
+        );
+        // Not declared by the phone: neither direction opens.
+        assert_eq!(
+            classify_incoming(BATTERY, &[PING.to_owned()]),
+            Incoming::Reject
         );
     }
 }

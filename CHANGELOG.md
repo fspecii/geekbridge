@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Added
+- Phone battery level and charging state on the computer (stock `kdeconnect.battery` packets, so stock KDE Connect
+  interoperates). Off by default on both ends: a "Share battery level" switch plus a per-computer allow on the phone,
+  and a per-phone consent on the computer. Shown in the tray tooltip, the Home phone card and
+  `geekbridge-ctl status` / `status --waybar`; kept in memory only. See docs/kdeconnect-interop.md.
+
 ## [0.1.0] - 2026-11-02
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Everything below is verified on

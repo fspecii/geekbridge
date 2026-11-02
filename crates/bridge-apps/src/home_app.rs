@@ -157,10 +157,19 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
         .map(|l| l.name.clone())
         .or_else(|| status.paired.first().map(|p| p.name.clone()));
     if linked {
+        let battery = status
+            .links
+            .iter()
+            .filter(|l| l.phase == bridge_core::ipc::LinkPhase::Connected)
+            .find_map(|l| l.battery);
         PhoneLine {
             dots: "LINKED",
             name: crate::state::display_text(&name.unwrap_or_else(|| "Phone".into())),
-            detail: "Connected over your network".into(),
+            detail: match battery {
+                Some(b) => crate::i18n::tr_args("home.battery.detail", &[("battery", &b.text())]),
+                None => "Connected over your network".into(),
+            },
+
             linked,
             alert: false,
         }
@@ -197,6 +206,27 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
             alert: false,
         }
     }
+}
+
+/// The connected phone that can report its battery but is not allowed to yet: the Home card then offers a
+/// one-click "Show phone battery". Nothing is switched on without that click (or `geekbridge-ctl consent`).
+fn battery_offer(state: &crate::connection::ControlState) -> Option<(String, String)> {
+    let status = state.status.as_ref()?;
+    status.links.iter().find_map(|l| {
+        let off = status
+            .paired
+            .iter()
+            .find(|p| p.device_id == l.device_id)?
+            .consents
+            .iter()
+            .any(|c| c.feature == bridge_core::ipc::Feature::Battery && !c.enabled);
+        (l.phase == bridge_core::ipc::LinkPhase::Connected
+            && off
+            && l.negotiated
+                .iter()
+                .any(|k| k == bridge_core::battery_link::BATTERY))
+        .then(|| (l.device_id.clone(), l.name.clone()))
+    })
 }
 
 impl HomeApp {
@@ -517,6 +547,25 @@ impl HomeApp {
             let on = if line.linked { pal.text } else { pal.text3 };
             let lit = if line.linked { 12 } else { 0 };
             nothing::dot_progress(ui, pal, 12, lit, on, ui.available_width().min(190.0));
+            if let Some((device_id, _)) = battery_offer(&self.connections.state) {
+                ui.add_space(S2);
+                if theme::pill_button(
+                    ui,
+                    pal,
+                    crate::i18n::tr("home.battery.allow"),
+                    ButtonKind::Plain,
+                    true,
+                )
+                .clicked()
+                    && let Some(feed) = &self.messages
+                {
+                    feed.run(Request::SetConsent {
+                        device_id,
+                        feature: bridge_core::ipc::Feature::Battery,
+                        enabled: true,
+                    });
+                }
+            }
             // Only when the listener moved off 1716 (another program, usually KDE Connect, has it).
             if let Some(note) = self
                 .connections
@@ -1058,6 +1107,83 @@ mod tests {
         let line = phone_line(&state);
         assert_eq!(line.name, "Service not running");
         assert!(line.alert && !line.linked);
+    }
+
+    fn linked_state(
+        battery: Option<bridge_core::ipc::BatteryStatus>,
+        negotiated: &[&str],
+        consent: bool,
+    ) -> crate::connection::ControlState {
+        use bridge_core::ipc::{
+            ConsentEntry, Feature, LinkPhase, LinkStatus, PairedDevice, Status,
+        };
+        let id = "a".repeat(32);
+        let status = Status {
+            ipc_version: 1,
+            service_version: "t".into(),
+            device_id: "x".repeat(32),
+            device_name: "Desk".into(),
+            own_cert_sha256: "00".repeat(32),
+            paired: vec![PairedDevice {
+                device_id: id.clone(),
+                name: "Pixel".into(),
+                device_type: "phone".into(),
+                cert_sha256: String::new(),
+                paired_at_unix: 0,
+                consents: vec![ConsentEntry {
+                    feature: Feature::Battery,
+                    enabled: consent,
+                    adapter_integrated: true,
+                }],
+            }],
+            links: vec![LinkStatus {
+                device_id: id,
+                name: "Pixel".into(),
+                phase: LinkPhase::Connected,
+                role: None,
+                connection_id: Some(1),
+                peer_ip: None,
+                peer_cert_sha256: None,
+                negotiated: negotiated.iter().map(|k| (*k).to_owned()).collect(),
+                since_unix_ms: 0,
+                pings_received: 0,
+                last_ping_unix_ms: None,
+                rejected_packets: 0,
+                battery,
+            }],
+            challenges: vec![],
+            event_seq: 0,
+            inbound_listener: None,
+            reconnecting: vec![],
+        };
+        crate::connection::ControlState {
+            status: Some(status),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_home_card_shows_the_phone_battery_and_offers_it_only_when_not_yet_allowed() {
+        let on = linked_state(
+            Some(bridge_core::ipc::BatteryStatus {
+                percent: 64,
+                charging: true,
+                low: false,
+            }),
+            &["kdeconnect.ping", "kdeconnect.battery"],
+            true,
+        );
+        assert_eq!(
+            phone_line(&on).detail,
+            "Connected \u{b7} Battery 64% (charging)"
+        );
+        assert!(battery_offer(&on).is_none());
+        let off = linked_state(None, &["kdeconnect.battery"], false);
+        assert_eq!(phone_line(&off).detail, "Connected over your network");
+        assert_eq!(battery_offer(&off).unwrap().1, "Pixel");
+        // The phone did not offer battery packets (its switch is off): nothing to ask for.
+        let none = linked_state(None, &["kdeconnect.ping"], false);
+        assert!(battery_offer(&none).is_none());
     }
 
     #[test]

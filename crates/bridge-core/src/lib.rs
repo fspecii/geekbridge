@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Shared domain types and a bounded, read-only local discovery API.
 pub mod agenda;
+pub mod battery_link;
 pub mod calls;
 pub mod calls_link;
 pub mod calls_view;

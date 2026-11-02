@@ -590,3 +590,87 @@ fn debug_packets_flow_only_with_the_flag_a_declaring_computer_and_within_limits(
         "data_disabled"
     );
 }
+
+fn battery_peer() -> Peer {
+    // A desktop (or stock KDE Connect) that accepts `kdeconnect.battery` and can ask for it.
+    Peer::new(
+        &["kdeconnect.ping", "kdeconnect.battery"],
+        &["kdeconnect.ping", "kdeconnect.battery.request"],
+    )
+}
+
+#[test]
+fn battery_is_declared_only_when_enabled_in_the_stock_names() {
+    let off = Phone::start(Some(ALL()));
+    assert!(!off.started.to_string().contains("battery"));
+    let on = Phone::start(Some(json!({"battery": true})));
+    let caps = &on.started["capabilities"];
+    assert!(
+        caps["outgoing"]
+            .to_string()
+            .contains("\"kdeconnect.battery\""),
+        "{caps}"
+    );
+    assert!(
+        caps["incoming"]
+            .to_string()
+            .contains("\"kdeconnect.battery.request\""),
+        "{caps}"
+    );
+    // No other private data comes with it.
+    assert!(!caps.to_string().contains("sms") && !caps.to_string().contains("contacts"));
+}
+
+#[test]
+fn battery_goes_only_to_allowed_computers_and_a_request_surfaces_as_an_event() {
+    let phone = Phone::start(Some(json!({"battery": true})));
+    let mut peer = battery_peer();
+    peer.pair(&phone);
+    // Until the app sends the permit list nothing is restricted; once it has, this computer needs to be on it.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"battery": ["e".repeat(32)]}}),
+    );
+    let level = json!({"currentCharge": 55, "isCharging": true, "thresholdEvent": 0});
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "kdeconnect.battery", "body": level})
+        ),
+        "not_connected"
+    );
+    peer.send("kdeconnect.battery.request", body(json!({"request": true})));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"battery": ["d".repeat(32)]}}),
+    );
+    peer.send("kdeconnect.battery.request", body(json!({"request": true})));
+    let evs = phone.events(0, 1);
+    assert_eq!(evs[0]["kind"], "kdeconnect.battery.request");
+    // The reply goes to that connection only, with the stock field names.
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "kdeconnect.battery", "body": level, "connection_id": evs[0]["connection_id"]}),
+    );
+    let p = peer.recv_kind("kdeconnect.battery");
+    assert_eq!(p.body["currentCharge"], 55);
+    assert_eq!(p.body["isCharging"], true);
+
+    // Switching the feature off in the app refuses further sends and drops requests.
+    phone.ok("transport_data_config", json!({"battery": false}));
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "kdeconnect.battery", "body": level})
+        ),
+        "data_disabled"
+    );
+}

@@ -36,6 +36,7 @@ fn caps() -> Caps {
         sms_read: true,
         sms_send: true,
         sms_status: true,
+        battery_request: true,
     }
 }
 fn rss_kib() -> u64 {

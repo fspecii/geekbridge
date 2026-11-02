@@ -136,6 +136,8 @@ class PhoneDataEngine(
     private val cancel: QueryCancel = QueryCancel(),
     /** Waits between retries of a rate-limited packet; injected so tests do not sleep. */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
+    /** Answers a computer's `kdeconnect.battery.request`; null = the phone has no battery reporting. */
+    private val battery: BatteryReporter? = null,
 ) {
     // calendar sync state for the current link
     private var calToken: String? = null
@@ -190,6 +192,7 @@ class PhoneDataEngine(
             }
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
             PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
+            PhoneDataKinds.BATTERY_REQ -> if (f.battery) battery?.sendNow(e.connectionId)
             else -> if (e.kind.startsWith("geekbridge.debug.")) DebugHooks.onDataEvent?.invoke(e)
         }
     }

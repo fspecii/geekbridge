@@ -37,6 +37,14 @@ pub fn capabilities() -> (Vec<String>, Vec<String>) {
     )
 }
 
+/// Capabilities of a phone whose user also switched on battery sharing (stock `kdeconnect.battery` names).
+pub fn capabilities_with_battery() -> (Vec<String>, Vec<String>) {
+    let (mut i, mut o) = capabilities();
+    i.push(bridge_core::battery_link::REQUEST.to_owned());
+    o.push(bridge_core::battery_link::BATTERY.to_owned());
+    (i, o)
+}
+
 /// Capabilities of a phone whose user did not enable calendar editing (the default in the app).
 pub fn capabilities_read_only() -> (Vec<String>, Vec<String>) {
     let (mut i, mut o) = capabilities();

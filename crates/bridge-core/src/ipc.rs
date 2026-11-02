@@ -274,10 +274,13 @@ pub enum Feature {
     /// Debug-build diagnostics from the phone (`geekbridge.debug.*`): its log and a redacted state dump.
     /// Only a debug build of the phone ever advertises it; it is on by default for such a phone.
     Debug,
+    /// The phone's battery level and charging state (`kdeconnect.battery`). Off by default; read
+    /// only while on, kept in memory for the life of the link.
+    Battery,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 9] = [
+    pub const ALL: [Feature; 10] = [
         Feature::Sms,
         Feature::Contacts,
         Feature::Calendar,
@@ -287,6 +290,7 @@ impl Feature {
         Feature::Notifications,
         Feature::Telephony,
         Feature::Debug,
+        Feature::Battery,
     ];
 }
 
@@ -592,6 +596,30 @@ pub struct LinkStatus {
     pub pings_received: u64,
     pub last_ping_unix_ms: Option<u64>,
     pub rejected_packets: u64,
+    /// Latest battery reading from this phone while the link is up and `Feature::Battery` is on.
+    /// Memory only; gone with the link.
+    #[serde(default)]
+    pub battery: Option<BatteryStatus>,
+}
+
+/// A phone's battery as last reported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatteryStatus {
+    pub percent: u8,
+    pub charging: bool,
+    /// The phone flagged its low-battery threshold.
+    pub low: bool,
+}
+
+impl BatteryStatus {
+    /// Short plain text for tooltips and tiles: `Battery 80%` or `Battery 80% (charging)`.
+    pub fn text(&self) -> String {
+        format!(
+            "Battery {}%{}",
+            self.percent,
+            if self.charging { " (charging)" } else { "" }
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

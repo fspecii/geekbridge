@@ -79,6 +79,8 @@ object PhoneDataUi {
             parent.addView(kit.text(a.getString(R.string.pd_calendar_google), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
         }
         kit.divider(parent)
+        feature(R.drawable.ic_battery, R.string.pd_battery, R.string.pd_battery_sub, s.battery, emptyArray(), GrantFeature.Battery, PhoneDataRuntime::setBattery)
+        kit.divider(parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, GrantFeature.Sms, PhoneDataRuntime::setSms)
         if (s.sms) {
             kit.row(

@@ -705,6 +705,7 @@ fn hub_phone_data(input: &[u8]) {
         sms_read: true,
         sms_send: true,
         sms_status: true,
+        battery_request: true,
     };
     let (_rx, gen_) = hub.link_up(
         "0123456789abcdef0123456789abcdef",

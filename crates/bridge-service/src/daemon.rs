@@ -847,6 +847,7 @@ impl Daemon {
             pings_received: 0,
             last_ping_unix_ms: None,
             rejected_packets: 0,
+            battery: None,
         };
         self.install(&mut core, status, vec![], Entry::Dial(addr));
         core.emit(Some(device_id), EventKind::Connecting);
@@ -1111,6 +1112,14 @@ impl Daemon {
             self.calls.set_enabled(device_id, enabled);
         }
         self.data.set_enabled(device_id, feature, enabled);
+        if feature == Feature::Battery {
+            if enabled {
+                self.data.request_battery(device_id);
+            } else if let Some(link) = self.core().links.get_mut(device_id) {
+                // Withdrawn: what was shown is erased at once.
+                link.status.battery = None;
+            }
+        }
         self.core().emit(
             Some(device_id),
             EventKind::ConsentChanged { feature, enabled },
@@ -1500,6 +1509,7 @@ fn describe(info: &kde::LinkInfo, trusted: bool) -> (LinkStatus, Vec<String>) {
         pings_received: 0,
         last_ping_unix_ms: None,
         rejected_packets: 0,
+        battery: None,
     };
     (
         status,
@@ -1747,6 +1757,15 @@ async fn trusted_loop(
                         }
                         continue;
                     }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Battery {
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        if (!clean || !on_battery_packet(d, id, attempt, &packet))
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
                     if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Debug {
                         let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
                         let verdict = if clean {
@@ -1945,7 +1964,11 @@ fn data_link(
     );
     drop(c);
     let edit = c_edit(d, id);
+    let battery = d.consents().is_enabled(id, Feature::Battery);
     let (rx, generation) = d.data.link_up(id, &peer.device_name, caps, consents);
+    if battery {
+        d.data.request_battery(id);
+    }
     d.data.set_enabled(id, Feature::CalendarEdit, edit.0);
     d.data.set_enabled(id, Feature::CalendarAlerts, edit.1);
     (
@@ -2004,6 +2027,32 @@ fn on_debug_packet(d: &Daemon, id: &str, packet: &kde::Packet) -> crate::phone_d
         gate::DEBUG_STATE => d.debug.on_state(id, consent, &packet.body),
         _ => crate::phone_debug::Disposition::Invalid,
     }
+}
+
+/// One `kdeconnect.battery` packet from a negotiated, trusted phone. False only when it is malformed.
+/// Without the `battery` consent it is dropped unread (and counts as fine: stock phones send it unasked).
+fn on_battery_packet(d: &Daemon, id: &str, attempt: u64, packet: &kde::Packet) -> bool {
+    if !d.consents().is_enabled(id, Feature::Battery) {
+        return true;
+    }
+    let Ok(reading) = bridge_core::battery_link::parse(&packet.body) else {
+        return false;
+    };
+    if let bridge_core::battery_link::Reading::Level {
+        percent,
+        charging,
+        low,
+    } = reading
+    {
+        d.update(id, attempt, |link, _| {
+            link.status.battery = Some(bridge_core::ipc::BatteryStatus {
+                percent,
+                charging,
+                low,
+            });
+        });
+    }
+    true
 }
 
 /// (calendar editing, calendar alerts) consents of one phone.
@@ -2163,6 +2212,7 @@ fn on_packet(
         | Incoming::Calls
         | Incoming::PhoneData
         | Incoming::Debug
+        | Incoming::Battery
         | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {

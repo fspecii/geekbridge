@@ -12,8 +12,10 @@ data class ActiveFeatures(
     val sms: Boolean = false,
     /** Computer may create/change/delete events: its own switch AND WRITE_CALENDAR, never without [calendar]. */
     val calendarEdit: Boolean = false,
+    /** Report the battery level and charging state (no Android permission needed; its own switch only). */
+    val battery: Boolean = false,
 ) {
-    val any: Boolean get() = contacts || calendar || sms
+    val any: Boolean get() = contacts || calendar || sms || battery
 }
 
 /** The user's opt-ins. All off by default; [calendarIds] is the read-only calendar selection (default none). */
@@ -26,6 +28,8 @@ data class PhoneDataSettings(
     val smsSpecialNumbers: Boolean = false,
     /** "Let the computer edit my calendar" - off by default, asked for separately from reading. */
     val calendarEdit: Boolean = false,
+    /** "Share battery level": off by default; which computers get it is the per-computer grant. */
+    val battery: Boolean = false,
 )
 
 data class PhoneDataPermissions(
@@ -45,6 +49,7 @@ object PhoneDataGate {
         calendar = s.calendar && p.readCalendar,
         sms = s.sms && p.smsComplete,
         calendarEdit = s.calendarEdit && s.calendar && p.readCalendar && p.writeCalendar,
+        battery = s.battery,
     )
 }
 
@@ -63,6 +68,7 @@ object PhoneDataKinds {
     const val SMS_REQUEST = "kdeconnect.sms.request"
     const val SMS_MESSAGES = "kdeconnect.sms.messages"
     const val SMS_STATUS = "geekbridge.sms.status"
+    const val BATTERY_REQ = BatteryRules.REQUEST_KIND
 
     val outgoing: Set<String> =
         setOf(CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, CALENDAR_WRITE_RESULT, SMS_MESSAGES, SMS_STATUS)
@@ -117,19 +123,22 @@ object PhoneDataProtocol {
         val debug = DebugHooks.streaming // debug builds only; always false in release
         if (!a.any && !debug) return null
         return JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
-            .put("calendar_edit", a.calendarEdit && a.calendar).also { if (debug) it.put("debug", true) }
+            .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
+            .also { if (debug) it.put("debug", true) }
     }
 
     fun configRequest(a: ActiveFeatures): String =
         base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
-            .put("calendar_edit", a.calendarEdit && a.calendar).also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
+            .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
+            .also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
 
     fun waitRequest(since: Long, timeoutMs: Long = PhoneDataLimits.WAIT_MS): String =
         base("transport_data_wait").put("since", since)
             .put("timeout_ms", timeoutMs.coerceIn(0, PhoneDataLimits.WAIT_MS)).toString()
 
-    fun sendRequest(kind: String, body: JSONObject): String =
-        base("transport_data_send").put("kind", kind).put("body", body).toString()
+    fun sendRequest(kind: String, body: JSONObject, connectionId: Long? = null): String =
+        base("transport_data_send").put("kind", kind).put("body", body)
+            .also { if (connectionId != null) it.put("connection_id", connectionId) }.toString()
 
     fun validRequestId(s: String?): Boolean = s != null && requestId.matches(s)
 

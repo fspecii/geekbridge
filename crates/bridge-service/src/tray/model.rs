@@ -57,6 +57,8 @@ pub struct TrayInput {
     pub paused: bool,
     /// A connected phone has the clipboard feature on, so "paste from phone" can work.
     pub can_paste: bool,
+    /// Battery of the first connected phone that reports one (its `battery` consent is on).
+    pub battery: Option<bridge_core::ipc::BatteryStatus>,
 }
 
 impl TrayInput {
@@ -94,11 +96,16 @@ impl TrayInput {
                 k => format!("{k} file transfers in progress"),
             }
         } else if n > 0 {
-            if self.paused {
+            let mut line = if self.paused {
                 "Connected \u{b7} clipboard sync paused".to_owned()
             } else {
                 "Connected".to_owned()
+            };
+            if let Some(b) = &self.battery {
+                line.push_str(" \u{b7} ");
+                line.push_str(&b.text());
             }
+            line
         } else if self.paired == 0 {
             "No phone paired yet".to_owned()
         } else {
@@ -284,6 +291,21 @@ mod tests {
             can_paste: true,
             ..TrayInput::default()
         }
+    }
+
+    #[test]
+    fn the_battery_shows_in_the_status_line_only_when_connected_and_known() {
+        let mut i = phone();
+        assert_eq!(i.status_line(), "Connected");
+        i.battery = Some(bridge_core::ipc::BatteryStatus {
+            percent: 80,
+            charging: true,
+            low: false,
+        });
+        assert_eq!(i.status_line(), "Connected \u{b7} Battery 80% (charging)");
+        assert_eq!(i.tooltip().1, i.status_line());
+        i.connected.clear();
+        assert_eq!(i.status_line(), "No phone connected");
     }
 
     #[test]

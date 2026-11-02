@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Which paired computers may use the phone-side opt-ins (call control, contacts, calendar, calendar editing, SMS).
+//! Which paired computers may use the phone-side opt-ins (call control, contacts, calendar, calendar editing, SMS, battery).
 //!
 //! The app's switches say *what* the phone may share; this says *with which computer*. Until the app sends a
 //! list nothing is restricted (`None`); once it has, a feature with no entry for a computer is closed to it:
@@ -10,8 +10,14 @@ use std::sync::{Mutex, PoisonError};
 
 use super::{Core, Ctl, Phase};
 
-pub(in crate::transport) const FEATURES: [&str; 5] =
-    ["calls", "contacts", "calendar", "calendar_edit", "sms"];
+pub(in crate::transport) const FEATURES: [&str; 6] = [
+    "calls",
+    "contacts",
+    "calendar",
+    "calendar_edit",
+    "sms",
+    "battery",
+];
 
 /// feature -> device ids allowed to use it.
 pub(in crate::transport) type PermitMap = HashMap<String, HashSet<String>>;

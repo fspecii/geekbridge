@@ -726,6 +726,7 @@ mod tests {
             pings_received: 0,
             last_ping_unix_ms: None,
             rejected_packets: 0,
+            battery: None,
         });
         let state = ControlState {
             status: Some(snapshot),

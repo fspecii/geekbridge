@@ -21,7 +21,7 @@ Priority: P1 high value and feasible soon, P2 worthwhile, P3 later or optional.
 | Notification mirroring of other apps, dismiss both ways | Listener service in its own process mirrors every app, actions, dismiss syncs back | Not claimed. No listener, no packet kinds, consent exists but no adapter | Gap (P1 for value, large) |
 | Read state | Mark read syncs | Local to the computer only; stock protocol cannot mark read on the phone | By design (limit of the protocol) |
 | Photos and recent media on the PC | Content-change jobs and media permissions, gallery view | Files can be sent either way; no gallery or "recent photos" feed | Gap (P2) |
-| Battery level and charging state of the phone | Shown on the PC | The phone sends nothing; the interop capture pins that no battery packets exist | Gap (P1, small-to-medium) |
+| Battery level and charging state of the phone | Shown on the PC | The phone sends nothing; the interop capture pins that no battery packets exist | Done: see docs/reports/battery-status-feature.md |
 | Connection status vocabulary (asleep, battery-restricted, Wi-Fi changed, PC off) | Same words on both sides | Home shows connected/offline and a battery-restriction warning; no per-cause "why disconnected" on the desktop | Partial (P2) |
 | Hotspot, do-not-disturb, ring-mode toggles from the PC | Hotspot handoff and DND as feature-level permission requests | None | Gap (P3; DND needs a special Android access grant, hotspot needs privileged APIs on recent Android) |
 | Pairing | Scan a QR on the phone, then confirm | QR scan plus verification code with both fingerprints shown | Have |

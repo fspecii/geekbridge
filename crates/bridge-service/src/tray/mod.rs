@@ -166,6 +166,11 @@ pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
             .filter(|l| l.phase == LinkPhase::Connected)
             .map(|l| l.name.clone())
             .collect();
+        input.battery = s
+            .links
+            .iter()
+            .filter(|l| l.phase == LinkPhase::Connected)
+            .find_map(|l| l.battery);
     }
     if let Response::Calls(c) = daemon.handle(Request::Calls).await
         && let Some(row) = c.view.ringing()

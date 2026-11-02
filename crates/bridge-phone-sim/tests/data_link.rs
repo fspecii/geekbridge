@@ -133,7 +133,15 @@ impl Rig {
     }
 
     async fn pair(&self, creds: &Arc<kde::DeviceCredentials>) -> kde::TrustedLink {
-        let (incoming, outgoing) = data::capabilities();
+        self.pair_with(creds, data::capabilities()).await
+    }
+
+    async fn pair_with(
+        &self,
+        creds: &Arc<kde::DeviceCredentials>,
+        caps: (Vec<String>, Vec<String>),
+    ) -> kde::TrustedLink {
+        let (incoming, outgoing) = caps;
         let mut config = kde::TransportConfig::default();
         config.address_policy.loopback = true;
         config.limits.packet_line = 2 * 1024 * 1024;
@@ -720,4 +728,112 @@ impl Rig {
             other => panic!("expected ack, got {other:?}"),
         }
     }
+}
+
+fn battery_packet(
+    percent: i64,
+    charging: bool,
+    low: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut b = bridge_core::battery_link::body(0, charging, low);
+    b.insert("currentCharge".into(), percent.into());
+    b
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn battery_is_read_only_with_consent_asked_for_and_erased_when_withdrawn() {
+    let rig = Rig::start().await;
+    let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+    let id = creds.device_id().to_string();
+    let link = rig
+        .pair_with(&creds, data::capabilities_with_battery())
+        .await;
+    let (push, mut seen) = run_phone(link, PhoneScript::empty());
+    let battery = async |rig: &Rig| {
+        rig.status()
+            .await
+            .links
+            .iter()
+            .find(|l| l.device_id == id)
+            .and_then(|l| l.battery)
+    };
+    let kind = bridge_core::battery_link::BATTERY;
+
+    // No consent: a stock phone sends its level unasked; it is dropped unread and does not count against the link.
+    push.send((kind, battery_packet(80, false, false)))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(battery(&rig).await, None);
+    let st = rig.status().await;
+    let l = st.links.iter().find(|l| l.device_id == id).unwrap();
+    assert_eq!(l.rejected_packets, 0);
+    assert!(l.negotiated.iter().any(|k| k == kind));
+
+    // Consent on: the computer asks the phone for its state, and what it answers is kept.
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Battery,
+        enabled: true,
+    })
+    .await;
+    let mut asked = false;
+    for _ in 0..50 {
+        while let Ok(k) = seen.try_recv() {
+            asked |= k == bridge_core::battery_link::REQUEST;
+        }
+        if asked {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        asked,
+        "the computer should request the state when it is allowed"
+    );
+    push.send((kind, battery_packet(64, true, false)))
+        .await
+        .unwrap();
+    let got = rig.until("battery", async || battery(&rig).await).await;
+    assert_eq!((got.percent, got.charging, got.low), (64, true, false));
+
+    // An unknown level (-1) changes nothing; a malformed one counts against the link and changes nothing.
+    push.send((kind, battery_packet(-1, false, false)))
+        .await
+        .unwrap();
+    push.send((kind, battery_packet(500, false, false)))
+        .await
+        .unwrap();
+    rig.until("rejected", async || {
+        let st = rig.status().await;
+        (st.links
+            .iter()
+            .find(|l| l.device_id == id)?
+            .rejected_packets
+            == 1)
+            .then_some(())
+    })
+    .await;
+    assert_eq!(battery(&rig).await, Some(got));
+
+    // A low reading arrives; then withdrawing the consent erases it at once and later packets are dropped again.
+    push.send((kind, battery_packet(12, false, true)))
+        .await
+        .unwrap();
+    let low = rig
+        .until("low", async || battery(&rig).await.filter(|b| b.low))
+        .await;
+    assert_eq!(low.percent, 12);
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Battery,
+        enabled: false,
+    })
+    .await;
+    assert_eq!(battery(&rig).await, None);
+    push.send((kind, battery_packet(50, false, false)))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(battery(&rig).await, None);
 }

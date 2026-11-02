@@ -27,6 +27,7 @@ fn link(id: &str, phase: LinkPhase) -> ipc::LinkStatus {
         pings_received: 0,
         last_ping_unix_ms: None,
         rejected_packets: 0,
+        battery: None,
     }
 }
 

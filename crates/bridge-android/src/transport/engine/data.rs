@@ -48,15 +48,19 @@ pub(in crate::transport) enum Feature {
     /// computer. Only the debug build's Kotlin ever turns it on; it has its own size and rate limits and
     /// is not tied to the per-computer switches (the computer decides with its own `debug` consent).
     Debug,
+    /// Battery level and charging state (`kdeconnect.battery`, stock KDE Connect). Off until the user allows
+    /// at least one computer; the level is only ever sent to computers that were allowed.
+    Battery,
 }
 
 impl Feature {
-    const ALL: [Feature; 5] = [
+    const ALL: [Feature; 6] = [
         Feature::Contacts,
         Feature::Calendar,
         Feature::CalendarEdit,
         Feature::Sms,
         Feature::Debug,
+        Feature::Battery,
     ];
 
     fn key(self) -> &'static str {
@@ -66,6 +70,7 @@ impl Feature {
             Feature::CalendarEdit => "calendar_edit",
             Feature::Sms => "sms",
             Feature::Debug => "debug",
+            Feature::Battery => "battery",
         }
     }
 
@@ -83,6 +88,7 @@ impl Feature {
                 "kdeconnect.sms.request",
             ],
             Feature::Debug => &[bridge_core::debug_link::STATE_REQUEST],
+            Feature::Battery => &["kdeconnect.battery.request"],
         }
     }
 
@@ -96,6 +102,7 @@ impl Feature {
             Feature::CalendarEdit => &["geekbridge.calendar.write_result"],
             Feature::Sms => &["kdeconnect.sms.messages", "geekbridge.sms.status"],
             Feature::Debug => &[bridge_core::debug_link::LOG, bridge_core::debug_link::STATE],
+            Feature::Battery => &["kdeconnect.battery"],
         }
     }
 
@@ -116,6 +123,7 @@ pub(in crate::transport) struct Flags {
     pub calendar_edit: bool,
     pub sms: bool,
     pub debug: bool,
+    pub battery: bool,
 }
 
 impl Flags {
@@ -127,6 +135,7 @@ impl Flags {
             Feature::CalendarEdit => self.calendar_edit && self.calendar,
             Feature::Sms => self.sms,
             Feature::Debug => self.debug,
+            Feature::Battery => self.battery,
         }
     }
 }
@@ -288,6 +297,7 @@ impl Hub {
             "calendar_edit": g.flags.calendar_edit,
             "sms": g.flags.sms,
             "debug": g.flags.debug,
+            "battery": g.flags.battery,
         })
     }
 
@@ -427,6 +437,7 @@ mod tests {
             calendar_edit: true,
             sms: true,
             debug: false,
+            battery: false,
         }
     }
 
@@ -462,6 +473,40 @@ mod tests {
         assert!(is_data_kind("geekbridge.debug.log"));
         // A computer's debug *response* kinds are noise, never queued.
         assert!(Feature::of_incoming("geekbridge.debug.log").is_none());
+    }
+
+    #[test]
+    fn battery_is_declared_only_when_the_app_turns_it_on_and_in_stock_names() {
+        assert!(
+            incoming_types(on())
+                .iter()
+                .chain(outgoing_types(on()).iter())
+                .all(|k| !k.contains("battery"))
+        );
+        let b = Flags {
+            battery: true,
+            ..Flags::default()
+        };
+        assert_eq!(incoming_types(b), vec!["kdeconnect.battery.request"]);
+        assert_eq!(outgoing_types(b), vec!["kdeconnect.battery"]);
+        assert!(is_data_kind("kdeconnect.battery"));
+        // A computer's own battery packet is noise for the phone: only the request is queued.
+        assert!(Feature::of_incoming("kdeconnect.battery").is_none());
+        let hub = Hub::default();
+        hub.set_flags(b);
+        hub.push(
+            Feature::Battery,
+            1,
+            "kdeconnect.battery.request",
+            Map::new(),
+        );
+        assert_eq!(
+            hub.wait(0, Duration::ZERO)["events"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
