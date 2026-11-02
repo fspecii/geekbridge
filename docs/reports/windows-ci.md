@@ -79,3 +79,8 @@ lock or replace bug and the failing `Store(...)`/OS error text in that run is th
 Everything above that is not marked as "test assumption with an exact quote" is unverified on Windows: the datagram fix,
 the blackhole change, the lock polling and the diagnostic numbers, and whether the `state` subdirectory is accepted by the
 ACL check on the runner.
+
+## Outcome for 236a9abd4
+
+- Windows debug run 41517054444: success.
+- check.yml run 41517055060: success (all jobs, including macOS).
