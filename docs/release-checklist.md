@@ -27,7 +27,7 @@ Steps for the maintainer. Nothing here is automated beyond `scripts/release.sh`,
 > Pick one before tagging `v0.1.0`:
 
 - [ ] **A. Make `fspecii/geekbridge` public.** Simplest; nothing else to configure; source, issues and releases
-  are public. Irreversible in practice (forks/caches); run `scripts/public-preflight.sh` and follow [public-release-runbook.md](public-release-runbook.md) first.
+  are public. Irreversible in practice (forks/caches); run `scripts/public-preflight.sh` first.
 - [ ] **B. Keep the source private, publish releases to a separate PUBLIC releases-only repo** (the usual
   pattern for closed-source apps), e.g. `fspecii/geekbridge-releases`:
   1. Create it public with one commit (a README), so a tag can be created on its default branch.
