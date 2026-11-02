@@ -485,7 +485,17 @@ pub fn write_atomic_plain(path: &Path, data: &[u8]) -> io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad file name"))?;
     let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
     let result = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
+        // These files often sit next to owner-only secrets in the same private state directory
+        // (identity, control token, trust store); the process umask alone must not decide whether
+        // they end up world- or group-readable.
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
         failpoint("before_rename");
@@ -559,6 +569,25 @@ mod tests {
         let v: Value = serde_json::from_slice(&std::fs::read(s.path()).unwrap()).unwrap();
         assert_eq!(v, json!({"version":1,"a":5,"future":{"x":[1,2]}}));
         assert!(backup_path(s.path()).exists());
+    }
+
+    /// `PlainIo` is used for files that sit next to owner-only secrets in the same private state
+    /// directory (e.g. update-checker and "what's new" state next to the control token and trust
+    /// store). They should not be left group/other-readable by the process umask.
+    #[cfg(unix)]
+    #[test]
+    fn plain_io_writes_owner_only_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let d = tempfile::tempdir().unwrap();
+        let s = sf(d.path(), &V1);
+        s.update(|b| {
+            b.insert("a".into(), json!(1));
+            true
+        })
+        .unwrap();
+        let mode = std::fs::metadata(s.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "state file should be owner-only, got {mode:o}");
     }
 
     #[test]
