@@ -124,6 +124,9 @@ const SENDS_PER_MINUTE: usize = 10;
 const SEND_HISTORY: usize = 200;
 const NOTIFY_MAX_AGE_MS: u64 = 10 * 60 * 1000;
 const NOTIFY_MIN_GAP_MS: u64 = 2_000;
+/// Most distinct senders announced for one packet; the rest are still in the Messages window.
+const NOTIFY_MAX_SENDERS: usize = 3;
+const NOTIFY_TRACKED_SENDERS: usize = 64;
 const BUCKET_CAPACITY: f64 = 600.0;
 const BUCKET_REFILL_PER_SEC: f64 = 60.0;
 
@@ -249,7 +252,8 @@ struct Dev {
     requests: HashMap<String, SendId>,
     send_reasons: HashMap<SendId, String>,
     send_times: VecDeque<u64>,
-    last_notify_ms: u64,
+    /// When each sender last caused a desktop notification (bounded), so one chatty sender cannot hide another.
+    notified_at: HashMap<String, u64>,
 }
 
 const CONTACTS: usize = 0;
@@ -308,7 +312,7 @@ impl Dev {
             requests: HashMap::new(),
             send_reasons: HashMap::new(),
             send_times: VecDeque::new(),
-            last_notify_ms: 0,
+            notified_at: HashMap::new(),
         }
     }
 
@@ -661,14 +665,38 @@ impl Dev {
         }
         self.correlate(&fresh, now);
         self.sms_listed = true;
-        // One notification per burst per gap, so a flood of texts cannot flood the desktop.
-        if now.saturating_sub(self.last_notify_ms) < NOTIFY_MIN_GAP_MS {
-            notify.clear();
-        } else if !notify.is_empty() {
-            self.last_notify_ms = now;
-            notify.truncate(1);
-        }
+        let notify = self.pick_notifications(notify, now);
         (Disposition::Accepted, notify)
+    }
+
+    /// One notification per sender per gap, at most [`NOTIFY_MAX_SENDERS`] senders per packet, so a flood
+    /// of texts cannot flood the desktop but a second person's text is not swallowed by the first's.
+    fn pick_notifications(
+        &mut self,
+        candidates: Vec<(String, String)>,
+        now: u64,
+    ) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (sender, text) in candidates {
+            if out.len() >= NOTIFY_MAX_SENDERS || out.iter().any(|(s, _)| *s == sender) {
+                continue;
+            }
+            let last = self.notified_at.get(&sender).copied().unwrap_or(0);
+            if now.saturating_sub(last) < NOTIFY_MIN_GAP_MS {
+                continue;
+            }
+            out.push((sender, text));
+        }
+        if self.notified_at.len() + out.len() > NOTIFY_TRACKED_SENDERS {
+            self.notified_at
+                .retain(|_, t| now.saturating_sub(*t) < NOTIFY_MIN_GAP_MS);
+        }
+        for (sender, _) in &out {
+            if self.notified_at.len() < NOTIFY_TRACKED_SENDERS {
+                self.notified_at.insert(sender.clone(), now);
+            }
+        }
+        out
     }
 
     /// Frees room by dropping the oldest messages of the largest thread; returns how many slots opened.
@@ -935,7 +963,7 @@ impl PhoneData {
     /// An inbound packet of a phone-data kind. See [`Disposition`].
     pub fn on_packet(&self, id: &str, kind: &str, body: &Map<String, Value>) -> Disposition {
         let now = now_ms();
-        let mut notice = None;
+        let mut notices = Vec::new();
         let verdict = {
             let mut g = self.lock();
             let Some(d) = g.devices.get_mut(id) else {
@@ -951,8 +979,8 @@ impl PhoneData {
                 wire::CALENDAR_WRITE_RESULT => d.on_write_result(body, now),
                 sms::MESSAGES => {
                     let (v, notify) = d.on_messages(body, now);
-                    if let Some((number, text)) = notify.into_iter().next() {
-                        notice = Some(IncomingText {
+                    for (number, text) in notify {
+                        notices.push(IncomingText {
                             device_name: d.name.clone(),
                             sender: self.display_name(d, &number),
                             number,
@@ -965,14 +993,16 @@ impl PhoneData {
                 _ => Disposition::Invalid,
             }
         };
-        if let Some(text) = notice
+        if !notices.is_empty()
             && let Some(n) = self
                 .notifier
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
         {
-            n.incoming(&text);
+            for text in &notices {
+                n.incoming(text);
+            }
         }
         verdict
     }
@@ -1867,6 +1897,17 @@ impl NotifySendSms {
             "--expire-time=8000".into(),
         ];
         if !n.number.is_empty() {
+            // Same sender, same slot: a new text replaces the earlier banner instead of stacking a pile.
+            let tag: String = n
+                .number
+                .chars()
+                .filter(char::is_ascii_digit)
+                .take(20)
+                .collect();
+            args.push("--category=im.received".into());
+            args.push(format!(
+                "--hint=string:x-canonical-private-synchronous:geekbridge-sms-{tag}"
+            ));
             args.push("--wait".into());
             args.push("--action=reply=Reply".into());
             args.push("--action=default=Reply".into());
@@ -2827,6 +2868,67 @@ mod tests {
         });
         assert!(args.iter().any(|a| a == "--action=reply=Reply"));
         assert!(!args.join(" ").contains("pin"));
+    }
+
+    #[test]
+    fn a_second_sender_in_the_same_burst_is_still_announced() {
+        struct N(Mutex<Vec<String>>);
+        impl SmsNotifier for N {
+            fn received(&self, _: &str, _: &str) {}
+            fn incoming(&self, n: &IncomingText) {
+                self.0.lock().unwrap().push(n.number.clone());
+            }
+        }
+        let n = Arc::new(N(Mutex::new(Vec::new())));
+        let h = PhoneData::new();
+        h.set_notifier(n.clone());
+        let mut rx = up(&h, (false, false, true));
+        drain(&mut rx);
+        let now = now_ms();
+        feed(&h, vec![msg(4, 1, 1, "old", now - 3_600_000)]);
+        let from = |thread: i64, id: i64, addr: &str| {
+            let mut m = msg(thread, id, 1, "hi", now);
+            m["addresses"] = json!([{"address": addr}]);
+            m
+        };
+        feed(
+            &h,
+            vec![
+                from(4, 2, "+15551230000"),
+                from(4, 3, "+15551230000"),
+                from(5, 4, "+15559990000"),
+            ],
+        );
+        assert_eq!(
+            n.0.lock().unwrap().as_slice(),
+            &["+15551230000".to_string(), "+15559990000".to_string()],
+            "one banner per sender, none lost"
+        );
+        // Both are inside their gap now: a repeat is quiet.
+        feed(
+            &h,
+            vec![from(4, 5, "+15551230000"), from(5, 6, "+15559990000")],
+        );
+        assert_eq!(n.0.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn banner_replaces_the_previous_one_from_the_same_sender() {
+        let a = NotifySendSms::text_args(&IncomingText {
+            device_name: "Pixel".into(),
+            sender: "Ann".into(),
+            number: "+1 (555) 123-0000".into(),
+            body: None,
+        });
+        let hint = "--hint=string:x-canonical-private-synchronous:geekbridge-sms-15551230000";
+        assert!(a.iter().any(|x| x == hint), "{a:?}");
+        assert!(a.iter().any(|x| x == "--category=im.received"));
+        // Options stay before the `--` separator, so sender text can never be read as one.
+        let sep = a.iter().position(|x| x == "--").unwrap();
+        assert!(a.iter().position(|x| x == hint).unwrap() < sep);
+        // No number, no reply, no slot.
+        let b = NotifySendSms::args("Pixel", "Ann");
+        assert!(!b.iter().any(|x| x.contains("synchronous")));
     }
 
     #[test]
