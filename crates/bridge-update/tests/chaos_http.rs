@@ -150,8 +150,18 @@ fn serve(mut c: TcpStream, routes: &Mutex<HashMap<String, B>>, stop: &AtomicBool
         Some(B::Silent) => {
             while alive() {
                 std::thread::sleep(Duration::from_millis(100));
-                if matches!(c.read(&mut one), Ok(0)) {
-                    return;
+                match c.read(&mut one) {
+                    // Closed, or reset (Windows reports a peer's close as an error).
+                    Ok(0) => return,
+                    Err(e)
+                        if !matches!(
+                            e.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        return;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -273,6 +283,25 @@ impl Rig {
     }
 }
 
+/// Runs `body` on its own thread and fails the test, instead of wedging the CI job, if it has
+/// not finished in `limit`. A panic inside `body` is re-raised here.
+fn bounded(limit: Duration, body: impl FnOnce() + Send + 'static) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        body();
+        let _ = tx.send(());
+    });
+    match rx.recv_timeout(limit) {
+        Ok(()) => worker.join().unwrap(),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            std::panic::resume_unwind(worker.join().unwrap_err())
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("test body did not finish within {limit:?}")
+        }
+    }
+}
+
 fn threads() -> usize {
     std::fs::read_dir("/proc/self/task").map_or(0, |d| d.count())
 }
@@ -293,6 +322,10 @@ fn bad_behaviours() -> Vec<(&'static str, B)> {
 
 #[test]
 fn a_misbehaving_api_server_fails_within_the_deadline_and_the_next_check_works() {
+    bounded(Duration::from_secs(120), api_server_chaos);
+}
+
+fn api_server_chaos() {
     let rig = Rig::new();
     let up = rig.updater();
     let rounds = if std::env::var("GEEKBRIDGE_CHAOS").is_ok_and(|v| v == "soak") {
@@ -303,6 +336,7 @@ fn a_misbehaving_api_server_fails_within_the_deadline_and_the_next_check_works()
     let start_threads = threads();
     for round in 0..rounds {
         for (name, b) in bad_behaviours() {
+            eprintln!("api chaos: {name} (round {round})");
             rig.server.set(LATEST, b);
             let t = Instant::now();
             let r = up.check(true);
@@ -336,11 +370,16 @@ fn a_misbehaving_api_server_fails_within_the_deadline_and_the_next_check_works()
 
 #[test]
 fn a_misbehaving_download_server_fails_within_the_deadline_and_leaves_nothing() {
+    bounded(Duration::from_secs(120), download_server_chaos);
+}
+
+fn download_server_chaos() {
     let rig = Rig::new();
     let up = rig.updater();
     rig.good_release(&[9u8; 4096]);
     up.check(true).unwrap();
     for (name, b) in bad_behaviours() {
+        eprintln!("download chaos: {name}");
         rig.server.set(&format!("/dl/{ASSET}"), b);
         let t = Instant::now();
         let r = up.download();

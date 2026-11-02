@@ -211,17 +211,31 @@ impl Client {
         sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
     ) -> Result<Fetched, Error> {
         let deadline = Instant::now() + total;
+        // A watchdog closes the socket at the deadline, so the error that follows (a read
+        // cut short) is reported for what it is: the deadline passing.
+        self.get_until(url, headers, max_body, deadline, sink)
+            .map_err(|e| match e {
+                Error::Timeout | Error::TooLarge => e,
+                _ if Instant::now() >= deadline => Error::Timeout,
+                other => other,
+            })
+    }
+
+    fn get_until(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        max_body: u64,
+        deadline: Instant,
+        sink: &mut dyn FnMut(&[u8]) -> io::Result<()>,
+    ) -> Result<Fetched, Error> {
         let mut url = Url::parse(url)?;
         for _ in 0..=MAX_REDIRECTS {
             if !self.policy.allows(&url) {
                 return Err(Error::Url(format!("refusing to contact {}", url.origin())));
             }
             let (mut reader, ctl) = self.connect(&url, deadline)?;
-            let guard = Guard {
-                ctl,
-                deadline,
-                io_timeout: self.io_timeout,
-            };
+            let guard = Guard::new(ctl, deadline, self.io_timeout)?;
             let mut request = format!(
                 "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: {}\r\nAccept-Encoding: identity\r\nConnection: close\r\n",
                 url.path,
@@ -313,6 +327,10 @@ impl Client {
                 .ok_or(Error::Timeout)?;
             match TcpStream::connect_timeout(&addr, remaining.min(self.io_timeout)) {
                 Ok(sock) => {
+                    // Set on the original handle too: a clone's options are not relied upon.
+                    let t = remaining.min(self.io_timeout).max(Duration::from_millis(1));
+                    let _ = sock.set_read_timeout(Some(t));
+                    let _ = sock.set_write_timeout(Some(t));
                     let ctl = sock.try_clone().map_err(io_err)?;
                     let _ = sock.set_nodelay(true);
                     let stream: Box<dyn Stream> = if url.https {
@@ -378,9 +396,34 @@ struct Guard {
     ctl: TcpStream,
     deadline: Instant,
     io_timeout: Duration,
+    /// Dropping this wakes the watchdog thread, which then exits without touching the socket.
+    _cancel: std::sync::mpsc::Sender<()>,
 }
 
 impl Guard {
+    fn new(ctl: TcpStream, deadline: Instant, io_timeout: Duration) -> Result<Guard, Error> {
+        let victim = ctl.try_clone().map_err(io_err)?;
+        let (cancel, cancelled) = std::sync::mpsc::channel::<()>();
+        let wait = deadline.saturating_duration_since(Instant::now());
+        std::thread::Builder::new()
+            .name("update-deadline".into())
+            .spawn(move || {
+                // Only a timeout means the deadline passed; a send or a drop means "done".
+                if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    cancelled.recv_timeout(wait)
+                {
+                    let _ = victim.shutdown(std::net::Shutdown::Both);
+                }
+            })
+            .map_err(io_err)?;
+        Ok(Guard {
+            ctl,
+            deadline,
+            io_timeout,
+            _cancel: cancel,
+        })
+    }
+
     /// Called before each blocking read or write: the socket timeout never exceeds what is left of
     /// the overall deadline.
     fn arm(&self) -> Result<(), Error> {
@@ -389,7 +432,7 @@ impl Guard {
             .checked_duration_since(Instant::now())
             .filter(|d| !d.is_zero())
             .ok_or(Error::Timeout)?;
-        let t = remaining.min(self.io_timeout);
+        let t = remaining.min(self.io_timeout).max(Duration::from_millis(1));
         self.ctl.set_read_timeout(Some(t)).map_err(io_err)?;
         self.ctl.set_write_timeout(Some(t)).map_err(io_err)
     }

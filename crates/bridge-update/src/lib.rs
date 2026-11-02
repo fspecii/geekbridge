@@ -939,8 +939,27 @@ fn user_state_dir() -> Option<PathBuf> {
 
 /// Mark a download directory as in use (its modified time is what the sweep goes by).
 fn touch_dir(dir: &Path) {
-    if let Ok(f) = std::fs::File::open(dir) {
+    if let Ok(f) = open_dir_for_times(dir) {
         let _ = f.set_modified(SystemTime::now());
+    }
+}
+
+/// A handle on a directory through which its times can be set. Windows refuses to open a
+/// directory as a file without `FILE_FLAG_BACKUP_SEMANTICS`, and setting times needs
+/// `FILE_WRITE_ATTRIBUTES`; Unix opens directories read-only as usual.
+fn open_dir_for_times(dir: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100) // FILE_WRITE_ATTRIBUTES
+            .share_mode(0x7) // read | write | delete: never block another instance
+            .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+            .open(dir)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(dir)
     }
 }
 
@@ -1033,7 +1052,7 @@ mod tests {
         std::fs::create_dir_all(&old).unwrap();
         let ancient = SystemTime::now() - Duration::from_secs(7200);
         for d in [&used, &old] {
-            std::fs::File::open(d)
+            open_dir_for_times(d)
                 .unwrap()
                 .set_modified(ancient)
                 .unwrap();

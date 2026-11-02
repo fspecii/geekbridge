@@ -1,0 +1,25 @@
+name: Windows debug (bridge-update only)
+
+# Fast iteration on Windows-only failures: run with
+#   gh workflow run windows-debug.yml --ref <branch>
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci-windows-debug]
+
+permissions:
+  contents: read
+
+jobs:
+  update-tests:
+    name: bridge-update / windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: bridge-update tests, one at a time, output shown (the tests print progress lines)
+        timeout-minutes: 8
+        run: cargo test -p bridge-update --locked --no-fail-fast -- --nocapture --test-threads=1
