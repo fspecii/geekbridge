@@ -56,11 +56,7 @@ fn key_button(
     };
     ui.painter().circle_filled(rect.center(), d / 2.0, fill);
     if response.has_focus() {
-        ui.painter().circle_stroke(
-            rect.center(),
-            d / 2.0 + 2.0,
-            egui::Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.7)),
-        );
+        theme::focus_circle(ui, pal, rect.center(), d / 2.0);
     }
     let main_size = (d * 0.40).clamp(18.0, 28.0);
     let has_letters = !letters.is_empty();
@@ -79,7 +75,7 @@ fn key_button(
             egui::pos2(rect.center().x, rect.center().y + d * 0.24),
             Align2::CENTER_CENTER,
             letters,
-            FontId::new((d * 0.14).clamp(8.0, 10.0), theme::semibold_family()),
+            FontId::new((d * 0.14).clamp(12.0, 12.0), theme::semibold_family()),
             pal.text2,
         );
     }
@@ -112,11 +108,7 @@ fn small_round(
         );
     }
     if response.has_focus() {
-        ui.painter().circle_stroke(
-            rect.center(),
-            d / 2.0 + 1.0,
-            egui::Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.7)),
-        );
+        theme::focus_circle(ui, pal, rect.center(), d / 2.0);
     }
     icons::paint(
         ui.painter(),
@@ -185,7 +177,9 @@ impl Calls {
                         self.handle_zero(ui, &response);
                     } else if response.clicked() {
                         input::push_dial_char(&mut self.number, key);
-                        self.focus_display = true;
+                        // Only a mouse click returns to the display; keyboard activation keeps focus
+                        // on the key so Tab/Enter can keep typing digits.
+                        self.focus_display = response.hovered();
                     }
                 }
             });
@@ -227,7 +221,7 @@ impl Calls {
                     .clicked()
                     {
                         self.number.pop();
-                        self.focus_display = true;
+                        self.focus_display = ui.rect_contains_pointer(ui.max_rect());
                     }
                 },
             );
@@ -262,7 +256,7 @@ impl Calls {
         if response.clicked() {
             if !self.zero_long_press_done {
                 input::push_dial_char(&mut self.number, '0');
-                self.focus_display = true;
+                self.focus_display = response.hovered();
             }
             self.zero_long_press_done = false;
         } else if !response.is_pointer_button_down_on() {

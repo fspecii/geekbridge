@@ -24,6 +24,30 @@ use eframe::egui::{
 };
 use std::{collections::HashSet, time::Duration};
 
+/// Keyboard focus ring plus a screen-reader name for a hand-painted, clickable region.
+fn focusable(ui: &egui::Ui, pal: &Palette, resp: &egui::Response, label: String) {
+    if resp.has_focus() {
+        theme::focus_ring(ui, pal, resp.rect, CornerRadius::same(4));
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone()));
+}
+
+/// "Monday 3 November, 2 events" for a day cell.
+fn day_label(day: Date, today: bool, count: usize) -> String {
+    format!(
+        "{} {} {}{}{}",
+        day.weekday().short(),
+        day.day,
+        day.month_name(),
+        if today { ", today" } else { "" },
+        match count {
+            0 => String::new(),
+            1 => ", 1 event".to_owned(),
+            n => format!(", {n} events"),
+        }
+    )
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum Mode {
     Day,
@@ -458,6 +482,9 @@ impl Calendar {
                                     pal.control_hover.gamma_multiply(0.5),
                                 );
                             }
+                            if resp.has_focus() {
+                                theme::focus_ring(ui, pal, rect, CornerRadius::same(6));
+                            }
                             let box_r = Rect::from_center_size(
                                 pos2(rect.left() + 12.0, rect.center().y),
                                 vec2(14.0, 14.0),
@@ -885,7 +912,7 @@ impl Calendar {
                 })
                 .collect();
         let mut save = false;
-        let mut cancel = false;
+        let mut cancel = theme::escape_pressed(ctx);
         let creating = ed.existing.is_none();
         egui::Window::new(if creating { "New event" } else { "Edit event" })
             .collapsible(false)
@@ -1081,12 +1108,10 @@ impl Calendar {
             pos2(rect.left() + 7.0, rect.center().y),
             Align2::LEFT_CENTER,
             label,
-            FontId::new(11.5, FontFamily::Proportional),
+            FontId::new(12.0, FontFamily::Proportional),
             text_color,
         );
-        resp.widget_info(|| {
-            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, e.title.clone())
-        });
+        focusable(ui, pal, &resp, e.title.clone());
         if resp.clicked() {
             acts.select = Some((e.device_id.clone(), e.id.clone()));
         }
@@ -1165,6 +1190,7 @@ impl Calendar {
                     },
                 );
                 let list = model::on_day(events, *day, &off);
+                focusable(ui, pal, &resp, day_label(*day, is_today, list.len()));
                 let room = (((cell_h - 30.0) / 17.0).floor() as usize).max(1);
                 let shown_n = if list.len() > room {
                     room - 1
@@ -1186,7 +1212,7 @@ impl Calendar {
                         ),
                         Align2::LEFT_CENTER,
                         format!("+{} more", list.len() - shown_n),
-                        FontId::new(11.0, FontFamily::Proportional),
+                        FontId::new(12.0, FontFamily::Proportional),
                         pal.text2,
                     );
                 }
@@ -1227,11 +1253,12 @@ impl Calendar {
                 let resp =
                     ui.interact(r, egui::Id::new(("week-head", d.to_days())), Sense::click());
                 let today = *d == now.date;
+                focusable(ui, pal, &resp, day_label(*d, today, 0));
                 ui.painter().text(
                     pos2(r.center().x, r.top() + 10.0),
                     Align2::CENTER_CENTER,
                     d.weekday().short().to_uppercase(),
-                    FontId::new(10.5, theme::semibold_family()),
+                    FontId::new(12.0, theme::semibold_family()),
                     pal.text3,
                 );
                 let c = pos2(r.center().x, r.top() + 29.0);
@@ -1269,7 +1296,7 @@ impl Calendar {
                 pos2(band.left() + LABEL_WIDTH - 8.0, band.top() + 11.0),
                 Align2::RIGHT_CENTER,
                 "all-day",
-                FontId::new(10.5, FontFamily::Proportional),
+                FontId::new(12.0, FontFamily::Proportional),
                 pal.text3,
             );
             for (i, d) in days.iter().enumerate() {
@@ -1315,8 +1342,8 @@ impl Calendar {
                     painter.text(
                         pos2(rect.left() + LABEL_WIDTH - 8.0, y),
                         Align2::RIGHT_CENTER,
-                        format!("{h:02}:00"),
-                        FontId::new(11.0, FontFamily::Proportional),
+                        localtime::Locale::current().hour_label(h),
+                        FontId::new(12.0, FontFamily::Proportional),
                         pal.text3,
                     );
                 }
@@ -1403,12 +1430,10 @@ impl Calendar {
                         block.min + vec2(8.0, 18.0),
                         Align2::LEFT_TOP,
                         detail,
-                        FontId::new(10.5, FontFamily::Proportional),
+                        FontId::new(12.0, FontFamily::Proportional),
                         pal.text2,
                     );
-                    resp.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, e.title.clone())
-                    });
+                    focusable(ui, pal, &resp, e.title.clone());
                     if resp.clicked() {
                         acts.select = Some((e.device_id.clone(), e.id.clone()));
                     }
@@ -1527,13 +1552,7 @@ impl Calendar {
                             FontId::new(13.5, FontFamily::Proportional),
                             pal.text,
                         );
-                        resp.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                true,
-                                e.title.clone(),
-                            )
-                        });
+                        focusable(ui, pal, &resp, e.title.clone());
                         if resp.clicked() {
                             acts.select = Some((e.device_id.clone(), e.id.clone()));
                         }

@@ -139,12 +139,7 @@ pub fn tile(
         );
     }
     if response.has_focus() {
-        ui.painter().rect_stroke(
-            rect.expand(1.0),
-            radius,
-            Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.8)),
-            StrokeKind::Outside,
-        );
+        crate::theme::focus_ring(ui, pal, rect, radius);
     }
     let inner = rect.shrink(S4);
     let mut child = ui.new_child(

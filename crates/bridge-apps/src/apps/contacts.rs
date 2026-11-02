@@ -257,11 +257,14 @@ impl Contacts {
                     ((ui.available_height() - 30.0) / secs.len().max(1) as f32).clamp(11.0, 16.0);
                 for s in &secs {
                     let (rect, resp) = ui.allocate_exact_size(vec2(18.0, step), Sense::click());
+                    if resp.has_focus() {
+                        theme::focus_ring(ui, pal, rect, CornerRadius::same(4));
+                    }
                     ui.painter().text(
                         rect.center(),
                         Align2::CENTER_CENTER,
                         s.letter.to_string(),
-                        FontId::new((step - 2.0).min(11.0), FontFamily::Proportional),
+                        FontId::new(12.0, FontFamily::Proportional),
                         if resp.hovered() {
                             pal.accent
                         } else {
@@ -493,6 +496,9 @@ fn person_row(ui: &mut egui::Ui, pal: &Palette, p: &Person, selected: bool) -> e
     } else if resp.hovered() {
         ui.painter()
             .rect_filled(rect, radius, pal.control_hover.gamma_multiply(0.55));
+    }
+    if resp.has_focus() {
+        theme::focus_ring(ui, pal, rect, radius);
     }
     let fg = if selected { pal.selected_fg } else { pal.text };
     let clip = ui.painter().with_clip_rect(rect.shrink2(vec2(4.0, 0.0)));

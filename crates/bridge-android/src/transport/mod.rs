@@ -30,7 +30,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 28] = [
+pub(crate) const ACTIONS: [&str; 29] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -41,6 +41,7 @@ pub(crate) const ACTIONS: [&str; 28] = [
     "transport_pair_request",
     "transport_pair_decision",
     "transport_unpair",
+    "transport_set_name",
     "transport_ping",
     "share_send_file",
     "share_send_text",
@@ -743,6 +744,11 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             core.set_permits(map);
             Ok(json!({ "ok": true }))
         }
+        "transport_set_name" => {
+            let name = f.take_string("device_name")?;
+            f.finish()?;
+            host.running()?.0.set_device_name(&name)
+        }
         "transport_unpair" => {
             let device = f.take_string("device_id")?;
             f.finish()?;
@@ -944,9 +950,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         listen: listen_addr,
         discovery: status,
     };
-    let payload = announce
-        .as_ref()
-        .map(|(_, _, port)| discovery::encode_announcement(endpoint.local_identity(), *port));
+    let announce_port = announce.as_ref().map(|(_, _, port)| *port);
     let core = Arc::new(Core::new(endpoint, store, policy, info, requests));
     if let Some((enabled, max_image)) = args.clipboard {
         core.clip()
@@ -968,8 +972,12 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     if let Some(socket) = listen_socket {
         rt.spawn(discovery::listen_loop(core.clone(), socket));
     }
-    if let (Some((socket, target, _)), Some(payload)) = (announce, payload) {
-        rt.spawn(discovery::announce_loop(socket, target, payload));
+    if let (Some((socket, target, _)), Some(port)) = (announce, announce_port) {
+        // Re-encoded every round, so a rename shows up in the next announcement.
+        let announcing = core.clone();
+        rt.spawn(discovery::announce_loop(socket, target, move || {
+            discovery::encode_announcement(&announcing.endpoint.current_identity(), port)
+        }));
     }
 
     let result = json!({

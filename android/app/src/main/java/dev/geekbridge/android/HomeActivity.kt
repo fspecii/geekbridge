@@ -85,7 +85,7 @@ class HomeActivity : Activity() {
     private fun ensureLinkWhileVisible() {
         if (AppState.pairedCount > 0 && !LinkService.isRunning && controller.phase == LinkPhase.Stopped) {
             controller.start(
-                LinkRuntime.startOptions(filesDir.absolutePath, Build.MODEL ?: "Android", discoveryListen = false, announce = true),
+                LinkRuntime.startOptions(filesDir.absolutePath, DeviceName.current(this), discoveryListen = false, announce = true),
             )
         }
     }
@@ -129,7 +129,10 @@ class HomeActivity : Activity() {
         val sig = listOf(hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, PhoneDataRuntime.active().sms).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
+        // The whole screen is rebuilt on a state change; put TalkBack back where the user was.
+        val focus = A11yLabels.focusPath(screen.root)
         build(hero, connected, warnings, steps, glance)
+        A11yLabels.restoreFocus(screen.root, focus)
     }
 
     private fun build(hero: HeroState, connected: List<String>, warnings: List<SetupModel.Warning>, steps: List<StepInfo>, glance: TransferGlance?) {
@@ -181,6 +184,12 @@ class HomeActivity : Activity() {
             heroHolder,
             HeroView(wordText, word.level, hero.title, hero.subtitle, word == LinkWord.Online, tLabel, glance?.percent?.let { it / 100f }),
         )
+        // The link state changed while the screen is open: say so once (the rebuilt tile is not a live region).
+        if (lastWord != null && lastWord != word) {
+            @Suppress("DEPRECATION")
+            tile.announceForAccessibility(tile.contentDescription)
+        }
+        lastWord = word
         if (hero.action == HeroAction.Pair) {
             kit.button(tile, getString(R.string.home_pair_computer), BtnStyle.Plain) { startActivity(SetupActivity.intent(this, step = StepId.Pair)) }
                 .apply { setTextColor(getColor(R.color.gb_on_hero)); background = kit.shape(0, Tok.R_PILL, getColor(R.color.gb_on_hero)) }
@@ -243,6 +252,8 @@ class HomeActivity : Activity() {
                 render()
             },
         )
+        kit.divider(set)
+        kit.row(set, R.drawable.ic_person, getString(R.string.home_name_row), DeviceName.current(this), null) { chooseName() }
         ClipboardSettingsUi.addRows(this, kit, set) { lastSig = ""; render() }
         kit.divider(set)
         kit.row(set, R.drawable.ic_check, getString(R.string.home_setup_row), getString(R.string.home_setup_row_sub), null) { startActivity(SetupActivity.intent(this, review = true)) }
@@ -250,6 +261,43 @@ class HomeActivity : Activity() {
         kit.row(set, R.drawable.ic_settings, getString(R.string.home_diag_row), getString(R.string.home_diag_row_sub, BuildConfig.VERSION_NAME), null) {
             startActivity(Intent(this, MainActivity::class.java))
         }
+    }
+
+    /** "This phone's name": what computers show for this phone. Applied to the running link without re-pairing. */
+    private fun chooseName() {
+        val input = android.widget.EditText(this).apply {
+            setText(DeviceName.current(this@HomeActivity))
+            setSingleLine()
+            filters = arrayOf(android.text.InputFilter.LengthFilter(DeviceName.MAX_CHARS))
+            setSelectAllOnFocus(true)
+            contentDescription = getString(R.string.home_name_row)
+        }
+        val box = LinearLayout(this).apply {
+            setPadding(kit.dp(24), kit.dp(8), kit.dp(24), 0)
+            addView(input, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
+        }
+        val dialog = android.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.home_name_row))
+            .setMessage(getString(R.string.home_name_help))
+            .setView(box)
+            .setPositiveButton(getString(R.string.home_name_save), null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                when (val c = DeviceName.check(input.text.toString())) {
+                    is DeviceName.Check.Bad -> input.error = c.reason
+                    is DeviceName.Check.Ok -> {
+                        val saved = DeviceName.save(this, c.name) ?: return@setOnClickListener
+                        controller.rename(saved)
+                        dialog.dismiss()
+                        lastSig = ""
+                        render()
+                    }
+                }
+            }
+        }
+        dialog.show()
     }
 
     /** Opens a feature screen when it exists; otherwise (or while its permission is missing) the setup step for it. */
@@ -313,6 +361,8 @@ class HomeActivity : Activity() {
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
+    private var lastWord: LinkWord? = null
 
     private companion object {
         const val POLL_MS = 2000L

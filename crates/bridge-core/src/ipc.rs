@@ -343,6 +343,12 @@ pub enum Request {
         #[serde(default)]
         endpoint: Option<Endpoint>,
     },
+    /// Rename this computer. Peers see the new name from their next connection; the service saves
+    /// it. The name is validated (no control characters, at most 32 characters) and stored as
+    /// the peers will display it.
+    SetDeviceName {
+        name: String,
+    },
     /// Close the live link; the pairing is kept.
     Disconnect {
         device_id: String,

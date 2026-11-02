@@ -194,7 +194,7 @@ inject_phone_data() {
     cal="$(A shell "content query --uri content://com.android.calendar/calendars --projection _id" | sed -n 's/.*_id=\([0-9]*\).*/\1/p' | head -1)"
   fi
   CAL_ID="$cal"
-  local base; base=$(( $(msnow) / 3600000 * 3600000 )) i
+  local base i; base=$(( $(msnow) / 3600000 * 3600000 ))
   for i in 1 2 3; do
     A shell "content insert --uri content://com.android.calendar/events --bind calendar_id:i:$cal --bind title:s:'Soak event $i' --bind dtstart:l:$((base + i * 3600000)) --bind dtend:l:$((base + i * 3600000 + 1800000)) --bind eventTimezone:s:UTC --bind allDay:i:0" >/dev/null
   done
@@ -215,12 +215,15 @@ stage_setup_soak() {
     A shell pm grant "$PKG" "android.permission.$perm" >/dev/null 2>&1
   done
   wake; goto_home
-  local k
-  for k in $(seq 1 16); do
-    ui dump 2>/dev/null | cut -f1 | grep -q '^Step ' || break
-    tap Finish >/dev/null 2>&1 || tap Skip >/dev/null 2>&1 || tap Overview >/dev/null 2>&1 || tap Next >/dev/null 2>&1; sleep 2
+  local k d
+  for k in $(seq 1 30); do   # walk the wizard; an empty dump just means the app is still starting on a loaded host
+    wake; d="$(ui dump 2>/dev/null | cut -f1)"
+    if grep -q '^Step \|^Overview$' <<<"$d"; then
+      tap Finish >/dev/null 2>&1 || tap Skip >/dev/null 2>&1 || tap Overview >/dev/null 2>&1 || tap Next >/dev/null 2>&1
+    elif grep -q 'QUICK ACTIONS' <<<"$d"; then break
+    else sleep 3; fi
   done
-  for k in 1 2 3; do wake; stage_pair >>"$OUT/setup.log" 2>&1 && break; $ADB shell am force-stop "$PKG"; sleep 3; done; tail -n 3 "$OUT/e2e-results.tsv" | tee -a "$OUT/run.log" >&2
+  for k in 1 2 3; do wake; goto_home; stage_pair >>"$OUT/setup.log" 2>&1 && break; $ADB shell am force-stop "$PKG"; sleep 3; done; tail -n 3 "$OUT/e2e-results.tsv" | tee -a "$OUT/run.log" >&2
   phone_id_now; [[ -n "$PHONE_ID" ]] || { log "no phone id after setup"; return 1; }
   desk_id
   A shell am force-stop "$PKG"; wake
@@ -289,7 +292,7 @@ sample() {
   local derr dwarn perr
   derr="$(grep -ciE '(^|[ \[])ERROR([ \]:]|$)' "$OUT/desktop-service.log" 2>/dev/null)"
   dwarn="$(grep -ciE '(^|[ \[])WARN(ING)?([ \]:]|$)' "$OUT/desktop-service.log" 2>/dev/null)"
-  perr="$(grep -cE '( E |FATAL|AndroidRuntime)' "$OUT/phone-logcat.log" 2>/dev/null)"
+  perr="$(grep -cE '( E .*(geekbridge|GeekBridge)|FATAL EXCEPTION|AndroidRuntime|ANR in dev.geekbridge)' "$OUT/phone-logcat.log" 2>/dev/null)"
   printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' "$t" "$dpid" "$d_rss" "$d_thr" "$d_fd" "$d_cpu" \
     "$pid" "$p_pss" "$p_rss" "$p_java" "$p_nat" "$p_thr" "$p_fd" "$p_sock" "$p_wl" "$p_alarm" "$up" "${p_screen:-}" "${derr:-0}/${dwarn:-0}" "${perr:-0}" >>"$OUT/samples.csv"
 }
@@ -303,7 +306,8 @@ sampler_loop() {
 }
 
 # ---------------------------------------------------------------- loop tasks
-N_CLIP=0 N_FILE=0 N_FLAP=0 N_CALL=0 N_DATA=0 N_RESTART=0 N_IDLE=0
+TASK_N=0 TASK_MAX="${TASK_MAX:-420}"
+declare -A RUNS
 ensure_up() { # link connected, phone awake; redial otherwise. Prints nothing; returns 1 if the link cannot be restored
   link_up && return 0
   local t0; t0=$(msnow)
@@ -315,7 +319,7 @@ phone_clip_text() { # the phone clipboard through the app's own Paste button in 
   goto_diag >/dev/null 2>&1; ui scrollto Paste >/dev/null 2>&1; tap Paste >/dev/null 2>&1; sleep 2; ui dump 2>/dev/null
 }
 t_clip() {
-  local n=$((++N_CLIP)); ensure_up || { ev clip_d2p 0 0 "no link"; ev clip_p2d 0 0 "no link"; return; }
+  local n=$TASK_N; ensure_up || { ev clip_d2p 0 0 "no link"; ev clip_p2d 0 0 "no link"; return; }
   wake
   # desktop -> phone
   local tok="soak-d2p-$n-$RANDOM" t0; t0=$(msnow)
@@ -325,7 +329,9 @@ t_clip() {
     sleep 4
     if phone_clip_text | grep -qF "$tok"; then ok=1; break; fi
   done
-  ev clip_d2p $ok $(( $(msnow) - t0 - 2000 * (ok ? 1 : 0) )) "$tok"
+  ev clip_d2p $ok $(( $(msnow) - t0 )) "$tok"
+  # The Diagnostics screen (where the phone clipboard is read) restarts the phone link without clipboard: redial from Home.
+  ctl disconnect "$PHONE_ID" >/dev/null 2>&1; sleep 1; goto_home; sleep 2; desk_dial; wait_for 20 is_connected
   ((ok)) || fail clip_d2p "phone clipboard never showed $tok"
   # phone -> desktop
   tok="soak-p2d-$n-$RANDOM"; t0=$(msnow); ok=0
@@ -338,7 +344,7 @@ t_clip() {
 }
 rand_mb() { echo $(( FILE_MB_MIN + RANDOM % (FILE_MB_MAX - FILE_MB_MIN + 1) )); }
 t_file() {
-  local n=$((++N_FILE)) mb; mb="$(rand_mb)"; ensure_up || { ev file 0 0 "no link"; return; }
+  local n=$TASK_N mb; mb="$(rand_mb)"; ensure_up || { ev file 0 0 "no link"; return; }
   wake; mkdir -p "$P/xfer"
   local name="soak-$n-${mb}mb"
   if ((n % 2)); then   # desktop -> phone, accepted on the phone
@@ -373,7 +379,7 @@ t_file() {
     if [[ -z "$id" ]]; then ev file_p2d 0 0 "MediaStore did not index $name"; fail file_p2d "MediaStore did not index $name.png"; rm -f "$f"; return; fi
     goto_home; clear_dialogs
     local t0; t0=$(msnow)
-    A shell am start -a android.intent.action.SEND -t image/png --eu android.intent.extra.STREAM "content://media/external/images/media/$id" --grant-read-uri-permission >/dev/null 2>&1
+    A shell su 2000 am start -a android.intent.action.SEND -t image/png --eu android.intent.extra.STREAM "content://media/external/images/media/$id" --grant-read-uri-permission >/dev/null 2>&1   # as shell, not root: MediaProvider refuses a grant from uid 0
     sleep 3; tap "Send to computer" >/dev/null 2>&1; tap "Just once" >/dev/null 2>&1
     local got="" deadline=$((SECONDS + 240))
     while ((SECONDS < deadline)); do
@@ -388,7 +394,7 @@ t_file() {
   fi
 }
 t_flap() {
-  local n=$((++N_FLAP)); ensure_up || { ev flap 0 0 "no link"; return; }
+  local n=$TASK_N; ensure_up || { ev flap 0 0 "no link"; return; }
   local t0 t1 det
   if ((n % 2)); then   # clean: the desktop closes the link
     t0=$(msnow); ctl disconnect "$PHONE_ID" >/dev/null 2>&1
@@ -412,7 +418,7 @@ t_flap() {
 modem_state() { A shell dumpsys telephony.registry 2>/dev/null | grep -m1 -o "mCallState=[0-9]" | cut -d= -f2; }
 call_state_is() { ctl calls --reveal 2>/dev/null | tr -d '\n ' | grep -qi "$1"; }
 t_call() {
-  local n=$((++N_CALL)) num=5558801; ensure_up || { ev call 0 0 "no link"; return; }
+  local n=$TASK_N num=5558801; ensure_up || { ev call 0 0 "no link"; return; }
   wake; A emu gsm cancel $num >/dev/null 2>&1
   local t0; t0=$(msnow)
   A emu gsm call $num >/dev/null
@@ -428,7 +434,7 @@ t_call() {
   ((ok)) || { fail call_hangup "hangup left the modem in state $(modem_state)"; A emu gsm cancel $num >/dev/null 2>&1; }
 }
 t_data() {
-  local n=$((++N_DATA)); ensure_up || { ev data 0 0 "no link"; return; }
+  local n=$TASK_N; ensure_up || { ev data 0 0 "no link"; return; }
   wake; local t0; t0=$(msnow)
   ctl agenda-refresh "$PHONE_ID" >/dev/null 2>&1
   local people=0 events=0 i
@@ -449,7 +455,7 @@ t_data() {
   ((seen)) || fail sms_inject "SMS $tag never reached the desktop conversation list"
 }
 t_restart() {
-  local n=$((++N_RESTART)); local t0; t0=$(msnow)
+  local n=$TASK_N; local t0; t0=$(msnow)
   A shell am force-stop "$PKG"; sleep 3
   wake; A shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1; sleep 4
   desk_dial
@@ -459,7 +465,7 @@ t_restart() {
   phone_clip_sync_on >/dev/null 2>&1
 }
 t_idle() {
-  local n=$((++N_IDLE)); local t0; t0=$(msnow)
+  local n=$TASK_N; local t0; t0=$(msnow)
   A shell input keyevent KEYCODE_SLEEP; sleep 2
   local up0=0 total=0 end=$((SECONDS + IDLE_SECS))
   while ((SECONDS < end)); do total=$((total + 1)); link_up && up0=$((up0 + 1)); sleep 5; done
@@ -483,7 +489,17 @@ run_loop() {
       (($(elapsed) >= DURATION)) && break
       if (($(elapsed) >= NEXT[$name])); then
         log "task $name at t+$(elapsed)s"
-        "t_$name"
+        RUNS[$name]=$(( ${RUNS[$name]:-0} + 1 )); TASK_N=${RUNS[$name]}
+        ( "t_$name" ) & local tp=$! tstart=$SECONDS
+        while kill -0 "$tp" 2>/dev/null; do
+          if ((SECONDS - tstart > TASK_MAX)); then
+            pkill -KILL -P "$tp" 2>/dev/null; kill -KILL "$tp" 2>/dev/null
+            ev "$name" 0 $(( (SECONDS - tstart) * 1000 )) "task exceeded the ${TASK_MAX}s watchdog"; fail "$name" "stuck: killed by the ${TASK_MAX}s task watchdog"
+            A shell "iptables -D INPUT -j DROP; iptables -D OUTPUT -j DROP" >/dev/null 2>&1; wake; A shell input keyevent KEYCODE_HOME >/dev/null 2>&1; break
+          fi
+          sleep 1
+        done
+        wait "$tp" 2>/dev/null
         local now; now=$(elapsed)
         NEXT[$name]=$(( NEXT[$name] + EVERY[$name] ))
         ((NEXT[$name] <= now)) && NEXT[$name]=$((now + EVERY[$name] / 2))   # fell behind: skip the missed runs

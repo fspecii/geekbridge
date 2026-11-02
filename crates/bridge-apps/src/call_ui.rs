@@ -15,7 +15,13 @@ use bridge_core::{
     ipc::{CallAction, Request},
 };
 use eframe::egui::{self, Align2, Color32, Key, Margin, RichText, vec2};
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
+
+/// How long a first `H` waits for its confirmation before the shortcut disarms.
+const HANGUP_CONFIRM: Duration = Duration::from_secs(5);
 
 /// A keyboard or button decision, before it is matched against what the service offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +94,17 @@ pub fn via_label(path: ControlPath) -> &'static str {
 pub struct CallPanel {
     started: BTreeMap<String, Instant>,
     raised_for: Option<String>,
+    /// The `H` shortcut was pressed once; a second `H` or Enter hangs up, Esc cancels.
+    hangup_armed: Option<Instant>,
+    /// Focus ring of the popup, in Tab order: the sheet itself, then Decline and Answer when
+    /// offered. While a call rings, Tab and Shift+Tab cycle inside it (a modal sheet traps focus).
+    popup_ring: Vec<egui::Id>,
+    /// A new ring: move keyboard focus onto the popup sheet.
+    focus_sheet: bool,
+}
+
+fn sheet_id() -> egui::Id {
+    egui::Id::new("incoming-sheet")
 }
 
 impl CallPanel {
@@ -126,16 +143,39 @@ impl CallPanel {
             && self.raised_for.as_deref() != Some(row.key.as_str())
         {
             self.raised_for = Some(row.key.clone());
+            self.focus_sheet = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                 egui::UserAttentionType::Critical,
             ));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        for d in pressed(ctx, view) {
+        if view.live().is_none()
+            || self
+                .hangup_armed
+                .is_some_and(|t| t.elapsed() >= HANGUP_CONFIRM)
+        {
+            self.hangup_armed = None;
+        }
+        // Enter belongs to a focused Decline/Answer button; on the sheet itself it answers.
+        let button_focused = ctx
+            .memory(|m| m.focused())
+            .is_some_and(|f| self.popup_ring.iter().skip(1).any(|id| *id == f));
+        let keys = pressed(ctx, view, self.hangup_armed.is_some(), button_focused);
+        for d in keys.decisions {
+            if d == Decision::HangUp {
+                self.hangup_armed = None;
+            }
             if let Some(request) = request_for(view, d) {
                 feed.send(request);
             }
+        }
+        if keys.cancel_hangup {
+            self.hangup_armed = None;
+        }
+        if keys.arm_hangup && view.live().is_some_and(|r| r.hangup.is_some()) {
+            self.hangup_armed = Some(Instant::now());
+            ctx.request_repaint_after(HANGUP_CONFIRM);
         }
 
         if let Some(row) = view.live() {
@@ -155,7 +195,15 @@ impl CallPanel {
                         .inner_margin(Margin::symmetric(16, 12))
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            ongoing(ui, pal, feed, &state, row, secs)
+                            ongoing(
+                                ui,
+                                pal,
+                                feed,
+                                &state,
+                                row,
+                                secs,
+                                self.hangup_armed.is_some(),
+                            )
                         });
                 });
         }
@@ -209,38 +257,44 @@ impl CallPanel {
                     }
                     ui.label(theme::caption(pal, &row.phone));
                     ui.add_space(16.0);
+                    let mut ring = vec![sheet_id()];
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         let width = (ui.available_width() - 12.0) / 2.0;
-                        if row.reject.is_some()
-                            && theme::pill_button_sized(
+                        if row.reject.is_some() {
+                            let r = theme::pill_button_sized(
                                 ui,
                                 pal,
                                 "Decline  Esc",
                                 ButtonKind::Primary,
                                 true,
                                 width,
-                            )
-                            .clicked()
-                            && let Some(r) = request_for(&status.view, Decision::Decline)
-                        {
-                            feed.send(r);
+                            );
+                            ring.push(r.id);
+                            if r.clicked()
+                                && let Some(r) = request_for(&status.view, Decision::Decline)
+                            {
+                                feed.send(r);
+                            }
                         }
-                        if row.answer.is_some()
-                            && theme::pill_button_sized(
+                        if row.answer.is_some() {
+                            let r = theme::pill_button_sized(
                                 ui,
                                 pal,
                                 "Answer  Enter",
                                 ButtonKind::Inverse,
                                 true,
                                 width,
-                            )
-                            .clicked()
-                            && let Some(r) = request_for(&status.view, Decision::Answer)
-                        {
-                            feed.send(r);
+                            );
+                            ring.push(r.id);
+                            if r.clicked()
+                                && let Some(r) = request_for(&status.view, Decision::Answer)
+                            {
+                                feed.send(r);
+                            }
                         }
                     });
+                    self.popup_ring = ring;
                     if let Some(answer) = &row.answer {
                         ui.add_space(8.0);
                         let note = match answer.path {
@@ -257,7 +311,63 @@ impl CallPanel {
                     }
                     notice(ui, pal, &state);
                 });
+                // The sheet itself is focusable so a keyboard user lands on it, not on the window
+                // behind; it has no click action, so Enter there still answers.
+                let rect = ui.min_rect().expand(24.0);
+                let sheet = ui.interact(rect, sheet_id(), egui::Sense::focusable_noninteractive());
+                sheet.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Label,
+                        true,
+                        format!("Incoming call from {}", row.caller_label()),
+                    )
+                });
+                crate::a11y::live_region(ctx, sheet.id, crate::a11y::Live::Assertive);
+                #[cfg(feature = "accesskit")]
+                crate::a11y::set_role(ctx, sheet.id, eframe::egui::accesskit::Role::AlertDialog);
+                if sheet.has_focus() {
+                    ui.painter()
+                        .with_clip_rect(screen)
+                        .rect_stroke(
+                            rect.expand(1.0),
+                            egui::CornerRadius::same(nothing::R_TILE),
+                            egui::Stroke::new(2.0_f32, theme::focus_color(pal)),
+                            egui::StrokeKind::Outside,
+                        );
+                }
             });
+        self.trap_focus(ctx);
+    }
+
+    /// Focus lands on the popup when a call starts ringing, and Tab / Shift+Tab stay inside it.
+    fn trap_focus(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.focus_sheet) {
+            ctx.memory_mut(|m| m.request_focus(sheet_id()));
+        }
+        let Some(at) = ctx
+            .memory(|m| m.focused())
+            .and_then(|f| self.popup_ring.iter().position(|id| *id == f))
+        else {
+            return;
+        };
+        let focused = self.popup_ring[at];
+        // Hand Tab to us instead of letting it walk out to the window behind.
+        ctx.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                focused,
+                egui::EventFilter {
+                    tab: true,
+                    escape: false,
+                    ..Default::default()
+                },
+            )
+        });
+        let (tab, back) = ctx.input(|i| (i.key_pressed(Key::Tab), i.modifiers.shift));
+        if tab {
+            let n = self.popup_ring.len();
+            let next = if back { (at + n - 1) % n } else { (at + 1) % n };
+            ctx.memory_mut(|m| m.request_focus(self.popup_ring[next]));
+        }
     }
 }
 
@@ -279,6 +389,7 @@ fn ongoing(
     state: &FeedState,
     row: &CallRow,
     secs: u64,
+    armed: bool,
 ) {
     let view = &state.status.as_ref().expect("checked by caller").view;
     ui.horizontal(|ui| {
@@ -303,11 +414,23 @@ fn ongoing(
             };
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if row.hangup.is_some()
-                && theme::pill_button(ui, pal, "Hang up  H", ButtonKind::Primary, true).clicked()
-                && let Some(r) = request_for(view, Decision::HangUp)
-            {
-                feed.send(r);
+            if row.hangup.is_some() {
+                let label = if armed {
+                    "Hang up now  H"
+                } else {
+                    "Hang up  H"
+                };
+                if theme::pill_button(ui, pal, label, ButtonKind::Primary, true).clicked()
+                    && let Some(r) = request_for(view, Decision::HangUp)
+                {
+                    feed.send(r);
+                }
+                if armed {
+                    ui.label(theme::caption(
+                        pal,
+                        "Press H or Enter to end the call, Esc to keep it",
+                    ));
+                }
             }
             if let Some(m) = &view.mute {
                 let label = if m.muted == Some(true) {
@@ -339,30 +462,58 @@ fn ongoing(
     notice(ui, pal, state);
 }
 
+/// What the keyboard asked for this frame.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Keys {
+    decisions: Vec<Decision>,
+    /// First `H` during a call: ask for confirmation instead of hanging up.
+    arm_hangup: bool,
+    cancel_hangup: bool,
+}
+
 /// Keyboard decisions pressed this frame that the view could act on. Enter and Escape always count
-/// while a call rings; letters only when no text field has the keyboard, so typing a number is safe.
-fn pressed(ctx: &egui::Context, view: &CallsView) -> Vec<Decision> {
-    let mut out = Vec::new();
+/// while a call rings, unless one of the popup's own buttons has focus (then Enter activates that
+/// button, so Tab to Decline + Enter declines); letters only when no text field has the keyboard, so
+/// typing a number is safe. Hanging up is destructive, so `H` only arms; a second `H` or Enter
+/// confirms and Esc backs out.
+fn pressed(ctx: &egui::Context, view: &CallsView, armed: bool, popup_focused: bool) -> Keys {
     let typing = ctx.wants_keyboard_input();
     ctx.input_mut(|i| {
         let mut hit = |key: Key| i.consume_key(egui::Modifiers::NONE, key);
-        if view.ringing().is_some() {
-            if hit(Key::Enter) || (!typing && hit(Key::A)) {
-                out.push(Decision::Answer);
-            }
-            if hit(Key::Escape) || (!typing && hit(Key::D)) {
-                out.push(Decision::Decline);
-            }
+        keys_for(view, armed, popup_focused, typing, &mut hit)
+    })
+}
+
+fn keys_for(
+    view: &CallsView,
+    armed: bool,
+    popup_focused: bool,
+    typing: bool,
+    hit: &mut dyn FnMut(Key) -> bool,
+) -> Keys {
+    let mut out = Keys::default();
+    if view.ringing().is_some() {
+        if (!popup_focused && hit(Key::Enter)) || (!typing && hit(Key::A)) {
+            out.decisions.push(Decision::Answer);
         }
-        if !typing && view.live().is_some() {
-            if hit(Key::H) {
-                out.push(Decision::HangUp);
-            }
-            if hit(Key::M) {
-                out.push(Decision::ToggleMute);
-            }
+        if hit(Key::Escape) || (!typing && hit(Key::D)) {
+            out.decisions.push(Decision::Decline);
         }
-    });
+    }
+    if view.live().is_some() {
+        if armed {
+            if hit(Key::Enter) || (!typing && hit(Key::H)) {
+                out.decisions.push(Decision::HangUp);
+            } else if hit(Key::Escape) {
+                out.cancel_hangup = true;
+            }
+        } else if !typing && hit(Key::H) {
+            out.arm_hangup = true;
+        }
+        if !typing && hit(Key::M) {
+            out.decisions.push(Decision::ToggleMute);
+        }
+    }
     out
 }
 
@@ -431,6 +582,82 @@ mod tests {
         assert!(request_for(&live, Decision::UseComputerAudio).is_none());
 
         assert!(request_for(&CallsView::empty(), Decision::Answer).is_none());
+    }
+
+    /// Run `keys_for` with exactly the listed keys pressed.
+    fn keys(
+        view: &CallsView,
+        armed: bool,
+        popup_focused: bool,
+        typing: bool,
+        down: &[Key],
+    ) -> Keys {
+        keys_for(view, armed, popup_focused, typing, &mut |k| {
+            down.contains(&k)
+        })
+    }
+
+    #[test]
+    fn ringing_enter_answers_escape_declines_without_a_mouse() {
+        let ring = link_view(PhoneState::Ringing, true);
+        assert_eq!(
+            keys(&ring, false, false, false, &[Key::Enter]).decisions,
+            [Decision::Answer]
+        );
+        assert_eq!(
+            keys(&ring, false, false, false, &[Key::Escape]).decisions,
+            [Decision::Decline]
+        );
+        // Enter and Escape still work while a text field has focus; letters do not.
+        assert_eq!(
+            keys(&ring, false, false, true, &[Key::Enter]).decisions,
+            [Decision::Answer]
+        );
+        assert!(
+            keys(&ring, false, false, true, &[Key::A, Key::D])
+                .decisions
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn enter_belongs_to_a_focused_popup_button() {
+        let ring = link_view(PhoneState::Ringing, true);
+        // Tab to "Decline", press Enter: the button handles it, the shortcut must not answer.
+        assert!(
+            keys(&ring, false, true, false, &[Key::Enter])
+                .decisions
+                .is_empty()
+        );
+        // Escape always declines.
+        assert_eq!(
+            keys(&ring, false, true, false, &[Key::Escape]).decisions,
+            [Decision::Decline]
+        );
+    }
+
+    #[test]
+    fn hang_up_needs_a_second_deliberate_key() {
+        let live = link_view(PhoneState::OffHook, true);
+        let first = keys(&live, false, false, false, &[Key::H]);
+        assert!(first.arm_hangup && first.decisions.is_empty());
+        // Enter alone, before arming, does nothing during a call.
+        assert_eq!(
+            keys(&live, false, false, false, &[Key::Enter]),
+            Keys::default()
+        );
+        assert_eq!(
+            keys(&live, true, false, false, &[Key::H]).decisions,
+            [Decision::HangUp]
+        );
+        assert_eq!(
+            keys(&live, true, false, false, &[Key::Enter]).decisions,
+            [Decision::HangUp]
+        );
+        let back = keys(&live, true, false, false, &[Key::Escape]);
+        assert!(back.cancel_hangup && back.decisions.is_empty());
+        // Typing a number never hangs up.
+        assert_eq!(keys(&live, false, false, true, &[Key::H]), Keys::default());
     }
 
     #[test]

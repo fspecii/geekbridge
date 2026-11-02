@@ -72,7 +72,9 @@ fun UiKit.heroTile(parent: LinearLayout, h: HeroView): LinearLayout {
         background = shape(color(R.color.gb_hero), Tok.R_TILE + 4)
     }
     tile.addView(dotLabel(context.getString(R.string.hero_caption), muted, decorative = true).apply { })
-    val word = DotText(context, h.word, maxPitchDp = 7f, maxLines = 1, grid = true, accentDot = h.live)
+    // One TalkBack stop for the whole status ("Link: Online. Connected to X. ..."): the dots, title and subtitle
+    // are hidden individually so the state is not read three times, and only the tile text is a live region.
+    val word = DotText(context, h.word, maxPitchDp = 7f, maxLines = 1, grid = true, accentDot = h.live, decorative = true)
         .setInk(ink).setDim(dim)
     tile.addView(word, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(14) })
     val strip = DotProgress(context, 10f).apply {
@@ -86,13 +88,14 @@ fun UiKit.heroTile(parent: LinearLayout, h: HeroView): LinearLayout {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
         typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         setTextColor(ink)
-        if (android.os.Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = false
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(18) })
     tile.addView(TextView(context).apply {
         text = h.subtitle
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         setTextColor(muted)
         setLineSpacing(0f, 1.1f)
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
     }, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(4) })
     if (h.transferLabel != null && h.transferFraction != null) {
         tile.addView(TextView(context).apply {
@@ -105,6 +108,9 @@ fun UiKit.heroTile(parent: LinearLayout, h: HeroView): LinearLayout {
             LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = dp(8) },
         )
     }
+    tile.contentDescription = A11yLabels.hero(context.getString(R.string.hero_cd_caption), h.word, h.title, h.subtitle)
+    tile.isFocusable = true
+    if (android.os.Build.VERSION.SDK_INT >= 28) tile.isScreenReaderFocusable = true
     parent.addView(tile, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
     return tile
 }
@@ -124,7 +130,7 @@ fun UiKit.widgetTile(row: LinearLayout, icon: Int, title: String, word: String, 
         )
         isClickable = true
         isFocusable = true
-        contentDescription = "$title, $word"
+        contentDescription = A11yLabels.tile(title, word, !active, context.getString(R.string.home_cd_needs_attention))
         setOnClickListener { onClick() }
         asButton(this)
     }

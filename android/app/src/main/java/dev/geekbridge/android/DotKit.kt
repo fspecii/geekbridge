@@ -55,13 +55,13 @@ class DotText(
         set(v) {
             if (field.toString() == v.toString()) return
             field = v
-            if (!decorative) contentDescription = v
+            if (!decorative) contentDescription = A11yLabels.spoken(v)
             requestLayout()
             invalidate()
         }
 
     init {
-        if (decorative) importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO else contentDescription = text
+        if (decorative) importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO else contentDescription = A11yLabels.spoken(text)
         if (Build.VERSION.SDK_INT >= 28 && maxPitchDp >= Tok.DOT_NUMERAL) isAccessibilityHeading = true
     }
 

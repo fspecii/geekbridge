@@ -257,7 +257,7 @@ impl Connections {
         if !self.pair.qr_open {
             return;
         }
-        let mut close = false;
+        let mut close = theme::escape_pressed(ctx);
         if let Some(q) = self.state.pair_qr.clone() {
             self.pair.qr_shown_at.get_or_insert_with(Instant::now);
             if self.pair.qr_cache.as_ref().map(|c| c.0.as_str()) != Some(q.payload.as_str()) {

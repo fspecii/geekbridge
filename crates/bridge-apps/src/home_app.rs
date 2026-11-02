@@ -730,6 +730,8 @@ impl HomeApp {
     fn settings_view(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         let ctx = ui.ctx().clone();
         self.header(ui, pal, "SETTINGS");
+        nothing::section(ui, pal, "This computer");
+        nothing::card(ui, pal, |ui| self.connections.name_row(ui, pal));
         nothing::section(ui, pal, "Updates");
         nothing::card(ui, pal, |ui| self.updates.details(ui, pal));
         nothing::section(ui, pal, "Clipboard");
@@ -778,6 +780,13 @@ impl HomeApp {
 
 impl eframe::App for HomeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame(ctx);
+    }
+}
+
+impl HomeApp {
+    /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
+    pub fn frame(&mut self, ctx: &egui::Context) {
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }

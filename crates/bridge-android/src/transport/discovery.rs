@@ -167,9 +167,13 @@ pub(super) async fn listen_loop(core: Arc<Core>, socket: UdpSocket) {
 
 /// Announce now and then every [`ANNOUNCE_EVERY`] for as long as the transport runs. Only started
 /// after the TCP listener is bound, so the port in the datagram is already accepting connections.
-pub(super) async fn announce_loop(socket: UdpSocket, target: SocketAddr, payload: Vec<u8>) {
+pub(super) async fn announce_loop(
+    socket: UdpSocket,
+    target: SocketAddr,
+    payload: impl Fn() -> Vec<u8>,
+) {
     loop {
-        let _ = socket.send_to(&payload, target).await;
+        let _ = socket.send_to(&payload(), target).await;
         sleep(ANNOUNCE_EVERY).await;
     }
 }

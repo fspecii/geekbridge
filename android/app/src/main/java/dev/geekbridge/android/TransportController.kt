@@ -265,6 +265,11 @@ class TransportController(
         }
     }
 
+    /** Applies a saved phone name to the running link: new connections and announcements use it. */
+    fun rename(name: String) = command(TransportProtocol.setNameRequest(name), "Rename") {
+        Notice("Name changed. A computer that is connected now shows it the next time it connects.", Tone.Muted)
+    }
+
     fun unpair(deviceId: String) = command(TransportProtocol.unpairRequest(deviceId), "Unpair") {
         Notice("Unpaired. The stored certificate for that device was removed from this phone.", Tone.Muted)
     }

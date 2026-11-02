@@ -292,3 +292,42 @@ async fn announcement_names_the_computer_and_its_port() {
     assert_eq!(packet.body["tcpPort"], 1717);
     assert_eq!(packet.body["deviceType"], "desktop");
 }
+
+/// The phone unpaired while no link was up, so the computer still trusts it. Scanning a fresh code
+/// must pair on the first try instead of waiting out a request the trusted link used to ignore.
+#[tokio::test]
+async fn scanning_again_after_a_silent_phone_unpair_pairs_first_try() {
+    let rig = rig().await;
+    let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+    let endpoint = || {
+        let mut config = kde::TransportConfig::default();
+        config.address_policy.loopback = true;
+        kde::Endpoint::new(
+            creds.clone(),
+            "Scanning Phone",
+            kde::DeviceType::Phone,
+            vec!["kdeconnect.ping".into()],
+            vec!["kdeconnect.ping".into()],
+            Arc::new(kde::MemoryTrustStore::new()),
+            config,
+        )
+        .unwrap()
+    };
+    let payload = qr(&rig).await;
+    let first = scan(&endpoint(), &payload, &payload.token, rig.addr)
+        .await
+        .expect("pairs");
+    drop(first);
+    assert_eq!(paired_count(&rig).await, 1);
+
+    let payload = qr(&rig).await;
+    let again = tokio::time::timeout(
+        Duration::from_secs(20),
+        scan(&endpoint(), &payload, &payload.token, rig.addr),
+    )
+    .await
+    .unwrap();
+    assert!(again.is_ok(), "re-scan failed: {:?}", again.err());
+    assert_eq!(paired_count(&rig).await, 1);
+    assert!(rig.daemon.status().unwrap().challenges.is_empty());
+}

@@ -143,6 +143,8 @@ object TransportProtocol {
         return r.toString()
     }
 
+    fun setNameRequest(name: String): String = base("transport_set_name").put("device_name", name).toString()
+
     fun unpairRequest(deviceId: String): String = base("transport_unpair").put("device_id", deviceId).toString()
 
     /** Blocks in the core until an event newer than [since] exists or the transport stops. Off the main thread only. */
@@ -161,6 +163,8 @@ object TransportProtocol {
     // ------------------------------------------------------------------ parsing
 
     private fun JSONObject.text(key: String, max: Int): String = Bounds.clip(optString(key, ""), max)
+
+    private fun JSONObject.deviceText(key: String, max: Int): String = Bounds.name(optString(key, ""), max)
 
     /** Identifier-like value that is safe to send back verbatim; null if it is not. */
     private fun JSONObject.id(key: String): String? =
@@ -185,7 +189,7 @@ object TransportProtocol {
         val local = o.optJSONObject("local")?.let {
             val id = it.id("device_id") ?: return@let null
             val cert = it.id("cert_sha256") ?: return@let null
-            LocalInfo(id, it.text("device_name", 64), cert)
+            LocalInfo(id, it.deviceText("device_name", 64), cert)
         } ?: return null
 
         val listen = o.optJSONObject("listen")?.let {
@@ -203,7 +207,7 @@ object TransportProtocol {
         val discovered = o.optJSONArray("discovered").objects().mapNotNull {
             DiscoveredPeer(
                 deviceId = it.id("device_id") ?: return@mapNotNull null,
-                name = it.text("name", 48),
+                name = it.deviceText("name", 48),
                 deviceType = it.text("device_type", 16),
                 ip = it.text("ip", 64),
                 tcpPort = it.long("tcp_port")?.toInt() ?: return@mapNotNull null,
@@ -219,7 +223,7 @@ object TransportProtocol {
                 trusted = c.optBoolean("trusted", false),
                 peer = PeerInfo(
                     deviceId = peer.id("device_id") ?: return@mapNotNull null,
-                    name = peer.text("name", 48),
+                    name = peer.deviceText("name", 48),
                     deviceType = peer.text("device_type", 16),
                     certSha256 = peer.id("cert_sha256") ?: "",
                     ip = peer.text("ip", 64),
@@ -236,7 +240,7 @@ object TransportProtocol {
                     connectionId = p.long("connection_id") ?: return@run null,
                     direction = p.text("direction", 16),
                     peerDeviceId = p.id("peer_device_id") ?: return@run null,
-                    peerName = p.text("peer_name", 48),
+                    peerName = p.deviceText("peer_name", 48),
                     peerCertSha256 = p.id("peer_cert_sha256") ?: return@run null,
                     ownCertSha256 = p.id("own_cert_sha256") ?: "",
                     code = p.id("verification_code") ?: return@run null,
@@ -249,7 +253,7 @@ object TransportProtocol {
         val paired = o.optJSONArray("paired").objects().mapNotNull {
             PairedPeer(
                 deviceId = it.id("device_id") ?: return@mapNotNull null,
-                name = it.text("name", 48),
+                name = it.deviceText("name", 48),
                 deviceType = it.text("device_type", 16),
                 certSha256 = it.id("cert_sha256") ?: "",
             )
@@ -337,7 +341,7 @@ object TransportText {
         "link_closed" -> "A connection closed" + (e.code?.let { " ($it)" } ?: "") + "."
         "peer_unpaired" -> "The other device removed the pairing; it is gone from this phone too."
         "peer_requested_repair" ->
-            "SECURITY: the other device forgot this phone and asks to pair again. Unpair here first, then pair again only if you expect it."
+            "The other device forgot this phone and asks to pair again. Compare the code on both screens and accept only if you started this."
         "unpaired" -> "Unpaired on this phone."
         else -> "Event (${e.kind})."
     }

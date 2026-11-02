@@ -13,7 +13,31 @@
 All of these are on the GitHub release page. The installers start the background service
 (`geekbridge-service`) at every login: a systemd user unit plus an XDG autostart entry on Linux, a Run key on
 Windows, a LaunchAgent (written the first time the app opens) on macOS. Check with `geekbridge-ctl status`.
-There is no tray icon yet; open **GeekBridge** from the application menu.
+
+### The tray icon
+
+The service shows a small icon in the notification area (Linux and Windows) so GeekBridge is a quiet background
+presence. It is a dot-matrix **G** with a corner mark: a check (phone connected), a dash and a dimmed G (no phone), a
+ring (a call is ringing), an up arrow (update available) or a down arrow (a file is being transferred). Left click opens
+GeekBridge. The menu (right click) shows the phone name and a status line, then:
+
+| Item | Does |
+|---|---|
+| Answer / Decline | only while a call rings, and only the controls the call backend really offers |
+| Open GeekBridge | opens the app window |
+| Paste clipboard from phone | the same as the paste-from-phone hotkey (needs clipboard sync on for a connected phone) |
+| Send file... | opens the share window |
+| Pause sync / Resume sync | switches the clipboard feature off for the phones that have it on, and back on for exactly those |
+| Check for updates | asks GitHub for a newer release now |
+| Quit | stops the service until the next login (or `geekbridge-service`) |
+
+It shows no caller name, number, message or clipboard text. It is optional: with no tray host (no StatusNotifier
+watcher on Linux) it silently does nothing, and it appears as soon as a bar starts. On Linux it needs a bar that hosts
+StatusNotifier icons: waybar's `tray` module (see [Omarchy / Hyprland](omarchy.md)), KDE Plasma, or GNOME with the
+AppIndicator extension. To turn it off for good: `geekbridge-ctl tray disable` (back on with `enable`; it takes effect at
+the next start of the service), or start the service with `--no-tray` / `GEEKBRIDGE_NO_TRAY=1`. A service started with a
+private `--state-dir` (tests, demos) shows no icon unless `--tray` is given. On macOS the menu-bar item is not active yet,
+open **GeekBridge** from Applications.
 
 ## Pair a phone
 

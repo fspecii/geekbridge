@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Tray / menu-bar icon in the service (Linux StatusNotifierItem + dbusmenu, Windows notification area; the macOS menu-bar
+  item is type-checked only): dot-matrix icon with connected / disconnected / ringing / update / transfer states, a menu
+  with Open, Paste from phone, Send file, Answer / Decline, Pause sync, Check for updates and Quit. Optional: no tray
+  host means nothing is shown; `geekbridge-ctl tray disable` or `--no-tray` turns it off. Icons in `assets/tray/`
+  (`scripts/gen-tray-icons.sh`), headless check in `scripts/e2e/tray-headless.sh`.
 - Messages: unread badges, search, date separators, SIM choice (phones that list their SIMs), SMS segment counter
   (GSM/UCS-2), local-only read marks, per-conversation memory cap, MMS "Attachment" placeholders, notification Reply
   action (text hidden unless chosen), plain-language failure reasons and exact SMS-permission steps in the setup wizard.

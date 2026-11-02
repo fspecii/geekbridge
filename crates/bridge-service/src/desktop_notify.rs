@@ -159,6 +159,7 @@ pub fn spawn_update_watcher(updates: std::sync::Arc<bridge_update::Updater>) {
     tokio::spawn(async move {
         let mut told = String::new();
         loop {
+            crate::tray::poke();
             let status = updates.status();
             if status.enabled
                 && status.newer

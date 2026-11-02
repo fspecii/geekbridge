@@ -38,9 +38,9 @@ pub struct Shell {
     app: AppKind,
     api_port: u16,
     view: Box<dyn AppView>,
-    model: DiscoveryModel,
+    pub(crate) model: DiscoveryModel,
     poller: Poller,
-    details_open: bool,
+    pub(crate) details_open: bool,
     connections: Connections,
     updates: Updates,
 }
@@ -62,27 +62,47 @@ impl Shell {
         }
     }
 
-    fn connection_panel(&mut self, ctx: &egui::Context, pal: &Palette) {
+    /// Claims the bottom of the window without drawing any control into it. The controls follow
+    /// in `connection_strip`, after the app, so Tab reaches the app first and the strip last
+    /// (egui's focus order is the order widgets are created in, and the panel must be added first
+    /// to reserve its space). Returns the reserved rect.
+    fn reserve_strip(&self, ctx: &egui::Context, pal: &Palette) -> egui::Rect {
+        let height = ctx
+            .data(|d| d.get_temp::<f32>(strip_height_id()))
+            .unwrap_or(31.0);
         egui::TopBottomPanel::bottom("connection")
             .show_separator_line(false)
-            .frame(
-                Frame::new()
-                    .fill(pal.toolbar)
-                    .inner_margin(Margin::symmetric(12, 0)),
-            )
-            .show(ctx, |ui| {
-                let r = ui.max_rect();
-                ui.painter().hline(
-                    r.x_range().expand(12.0),
-                    r.top() - 0.5,
-                    Stroke::new(1.0_f32, pal.separator),
-                );
-                if self.details_open {
-                    self.details(ui, pal);
-                    theme::hairline(ui, pal);
-                }
-                self.strip(ui, pal);
-            });
+            .exact_height(height)
+            .frame(Frame::new().fill(pal.toolbar))
+            .show(ctx, |_| {})
+            .response
+            .rect
+    }
+
+    fn connection_strip(&mut self, ctx: &egui::Context, pal: &Palette, rect: egui::Rect) {
+        let inner = rect.shrink2(egui::vec2(12.0, 0.0));
+        let mut ui = egui::Ui::new(
+            ctx.clone(),
+            egui::Id::new("connection_strip"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(inner),
+        );
+        ui.painter().hline(
+            rect.x_range(),
+            rect.top() - 0.5,
+            Stroke::new(1.0_f32, pal.separator),
+        );
+        if self.details_open {
+            self.details(&mut ui, pal);
+            theme::hairline(&mut ui, pal);
+        }
+        self.strip(&mut ui, pal);
+        let used = ui.min_rect().height();
+        if (used - rect.height()).abs() > 0.5 {
+            ctx.data_mut(|d| d.insert_temp(strip_height_id(), used));
+            ctx.request_repaint();
+        }
     }
 
     fn strip(&mut self, ui: &mut egui::Ui, pal: &Palette) {
@@ -168,7 +188,7 @@ impl Shell {
                         for line in self.model.technical_lines(self.app, self.api_port) {
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(line).monospace().size(11.0).color(pal.text2),
+                                    RichText::new(line).monospace().size(12.0).color(pal.text2),
                                 )
                                 .wrap(),
                             );
@@ -179,15 +199,20 @@ impl Shell {
     }
 }
 
-impl eframe::App for Shell {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+fn strip_height_id() -> egui::Id {
+    egui::Id::new("connection_strip_height")
+}
+
+impl Shell {
+    /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
+    pub fn frame(&mut self, ctx: &egui::Context) {
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }
         crate::pace::observe(ctx, &self.model);
         self.connections.update();
         let pal = theme::current(ctx, self.app);
-        self.connection_panel(ctx, &pal);
+        let strip_rect = self.reserve_strip(ctx, &pal);
         self.updates.banner(ctx, &pal);
         let env = Env {
             app: self.app,
@@ -197,7 +222,14 @@ impl eframe::App for Shell {
             control: &self.connections.state,
         };
         self.view.show(ctx, &env);
+        self.connection_strip(ctx, &pal, strip_rect);
         self.connections.dialogs(ctx, &pal);
+    }
+}
+
+impl eframe::App for Shell {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame(ctx);
     }
 }
 

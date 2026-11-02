@@ -595,7 +595,11 @@ impl CallHub {
                 .filter(|r| r.ringing())
                 .map(|r| r.key.clone())
                 .collect();
+            let before = inner.announced.len();
             inner.announced.retain(|k| ringing.contains(k));
+            if inner.announced.len() != before {
+                crate::tray::poke(); // a call stopped ringing
+            }
             inner.unnamed_since.retain(|k, _| ringing.contains(k));
             let mut recheck = false;
             let mut fresh = Vec::new();
@@ -614,6 +618,7 @@ impl CallHub {
                     }
                 }
                 inner.announced.insert(r.key.clone());
+                crate::tray::poke(); // a call started ringing
                 fresh.push(r.clone());
             }
             if recheck {

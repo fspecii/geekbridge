@@ -24,6 +24,7 @@ Commands:
   deny CHALLENGE_ID
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
+  rename NAME                         set this computer's name (shown on phones from their next connection)
   consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony
   ping DEVICE_ID                      interoperability check on a paired link
   agenda [QUERY] [YYYY-MM-DD] [DAYS]         contacts matching QUERY and that day's events, from phones whose
@@ -70,6 +71,8 @@ Commands:
                                       errors); no names, addresses, keys or content
   autostart [status|enable|disable]   start the service at login (XDG autostart, LaunchAgent or the
                                       per-user Run key); default: status
+  tray [status|enable|disable]        the tray / menu-bar icon: show it or hide it for good (takes effect
+                                      the next time the service starts); default: status
   firewall                            the exact command to allow GeekBridge through this computer's firewall
   token-path                          where the control token lives (never its contents)";
 
@@ -129,6 +132,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     if command == "token-path" {
         println!("{}", ipc::token_path(&state_dir).display());
         return Ok(());
+    }
+    if command == "tray" {
+        return tray_command(&args[1..], &state_dir);
     }
     if command == "autostart" {
         return autostart_command(&args[1..]);
@@ -217,6 +223,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         },
         "disconnect" => Request::Disconnect {
             device_id: arg(1, "DEVICE_ID")?,
+        },
+        "rename" => Request::SetDeviceName {
+            name: arg(1, "NAME")?,
         },
         "unpair" => Request::Unpair {
             device_id: arg(1, "DEVICE_ID")?,
@@ -610,6 +619,27 @@ fn clipboard_command(
         }
         other => Err(format!("unknown clipboard command: {other}\n\n{USAGE}")),
     }
+}
+
+fn tray_command(args: &[OsString], state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_service::tray;
+    match args.first().and_then(|a| a.to_str()) {
+        None | Some("status") => {}
+        Some(on @ ("enable" | "disable")) => {
+            tray::set_enabled(state_dir, on == "enable")
+                .map_err(|e| format!("cannot change the tray setting: {e}"))?;
+        }
+        Some(other) => return Err(format!("unknown tray command: {other}\n\n{USAGE}")),
+    }
+    println!(
+        "tray icon: {} (a running service picks the change up at its next start)",
+        if tray::enabled(state_dir) {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    Ok(())
 }
 
 fn autostart_command(args: &[OsString]) -> Result<(), String> {

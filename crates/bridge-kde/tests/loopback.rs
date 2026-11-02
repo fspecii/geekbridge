@@ -682,6 +682,122 @@ async fn pairing_requires_local_approval_even_after_peer_accepts() {
     assert!(store.get(&id_of(&phone)).unwrap().is_some());
 }
 
+/// Approver that records every prompt and only answers the first one when released, so the
+/// test can see the user's view being replaced.
+struct Replaceable {
+    seen: Arc<Mutex<Vec<ApprovalRequest>>>,
+    cancelled: Arc<AtomicUsize>,
+    release: Option<oneshot::Receiver<bool>>,
+}
+
+impl Approver for Replaceable {
+    async fn approve(&mut self, request: ApprovalRequest) -> bool {
+        struct OnDrop(Arc<AtomicUsize>, bool);
+        impl Drop for OnDrop {
+            fn drop(&mut self) {
+                if !self.1 {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+        let mut guard = OnDrop(self.cancelled.clone(), false);
+        let n = {
+            let mut seen = self.seen.lock().unwrap();
+            seen.push(request);
+            seen.len()
+        };
+        // Only the latest prompt can be answered; earlier ones are dropped (cancelled).
+        if n < 2 {
+            std::future::pending::<()>().await;
+        }
+        let r = self.release.take().unwrap().await.unwrap_or(false);
+        guard.1 = true;
+        r
+    }
+}
+
+#[tokio::test]
+async fn repeated_peer_request_replaces_the_prompt_with_the_new_key() {
+    let store = Arc::new(MemoryTrustStore::new());
+    let ep = endpoint(store.clone());
+    let phone = raw_peer('r');
+    let (l, addr) = listener().await;
+    let (release, rx) = oneshot::channel();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let local = tokio::spawn({
+        let ep = ep.clone();
+        let mut ap = Replaceable {
+            seen: seen.clone(),
+            cancelled: cancelled.clone(),
+            release: Some(rx),
+        };
+        async move {
+            let (tcp, _) = l.accept().await.unwrap();
+            let link = pending(ep.accept(tcp).await.unwrap());
+            link.pair(PairMode::AwaitPeerRequest, &mut ap).await
+        }
+    });
+    let mut s = within(raw_as_initiator(
+        addr,
+        &phone,
+        ep.local_identity().device_id.as_str(),
+        V::Tls12,
+        &Opts::default(),
+    ))
+    .await;
+    let ts = bridge_kde::cert::unix_now();
+    raw_send(
+        &mut s.io,
+        "kdeconnect.pair",
+        json!({"pair": true, "timestamp": ts}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    // Stock Android taps again: new timestamp, new key.
+    raw_send(
+        &mut s.io,
+        "kdeconnect.pair",
+        json!({"pair": true, "timestamp": ts + 3}),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "the user is re-prompted");
+        assert_ne!(seen[0].verification_key, seen[1].verification_key);
+        let spki = CertInfo::parse(phone.cert.as_ref()).unwrap();
+        assert_eq!(
+            seen[1].verification_key,
+            verification_key(ep.credentials().cert().spki_der(), spki.spki_der(), ts + 3)
+        );
+    }
+    assert_eq!(
+        cancelled.load(Ordering::SeqCst),
+        1,
+        "the first prompt was cancelled"
+    );
+    assert!(
+        raw_try_read_line(&mut s.io, Duration::from_millis(200))
+            .await
+            .is_none(),
+        "nothing is accepted before the user approves"
+    );
+    assert!(store.get(&id_of(&phone)).unwrap().is_none());
+    release.send(true).unwrap();
+    let accept = raw_read_line(&mut s.io).await.expect("accept");
+    assert_eq!(accept["body"], json!({"pair": true}));
+    assert!(
+        raw_try_read_line(&mut s.io, Duration::from_millis(300))
+            .await
+            .is_none(),
+        "exactly one accept"
+    );
+    within(local).await.unwrap().unwrap();
+    assert!(store.get(&id_of(&phone)).unwrap().is_some());
+}
+
 #[tokio::test]
 async fn local_rejection_stores_nothing_and_notifies_peer() {
     let store = Arc::new(MemoryTrustStore::new());
@@ -1805,4 +1921,152 @@ async fn a_malformed_token_aborts_the_pairing() {
     .await;
     assert!(within(local).await.unwrap().is_err());
     assert!(store.list().unwrap().is_empty());
+}
+
+// ------------------------------------------------------------------ re-pairing and renaming
+
+/// Pair two real endpoints; returns both with their stores and the (still open) links.
+async fn paired_endpoints() -> (
+    Arc<Endpoint>,
+    Arc<dyn TrustStore>,
+    Arc<Endpoint>,
+    Arc<dyn TrustStore>,
+) {
+    let (store_a, store_b): (Arc<dyn TrustStore>, Arc<dyn TrustStore>) = (
+        Arc::new(MemoryTrustStore::new()),
+        Arc::new(MemoryTrustStore::new()),
+    );
+    let a = endpoint(store_a.clone());
+    let b = endpoint(store_b.clone());
+    let (l, addr) = listener().await;
+    let a_id = a.local_identity().device_id.clone();
+    let dial = tokio::spawn({
+        let b = b.clone();
+        async move {
+            pending(b.connect(addr, &a_id).await.unwrap())
+                .pair(PairMode::Request, &mut Auto::yes())
+                .await
+        }
+    });
+    let (stream, _) = l.accept().await.unwrap();
+    let accepted = pending(a.accept(stream).await.unwrap());
+    let ours = within(accepted.pair(PairMode::AwaitPeerRequest, &mut Auto::yes()))
+        .await
+        .unwrap();
+    let theirs = within(dial).await.unwrap().unwrap();
+    drop((ours, theirs));
+    (a, store_a, b, store_b)
+}
+
+#[tokio::test]
+async fn a_peer_that_forgot_us_can_re_pair_on_the_same_connection() {
+    let (a, store_a, b, store_b) = paired_endpoints().await;
+    // B unpairs without telling A (no link was up).
+    assert!(store_b.remove(&a.local_identity().device_id).unwrap());
+    assert!(
+        store_a
+            .get(&b.local_identity().device_id)
+            .unwrap()
+            .is_some()
+    );
+
+    let (l, addr) = listener().await;
+    let a_id = a.local_identity().device_id.clone();
+    let dial = tokio::spawn({
+        let b = b.clone();
+        async move {
+            pending(b.connect(addr, &a_id).await.unwrap())
+                .pair(PairMode::Request, &mut Auto::yes())
+                .await
+        }
+    });
+    let (stream, _) = l.accept().await.unwrap();
+    let mut link = trusted(a.accept(stream).await.unwrap());
+    assert!(matches!(
+        within(link.recv()).await.unwrap(),
+        LinkEvent::PeerRequestedRePair { .. }
+    ));
+    let pending_again = link.into_re_pairing().ok().expect("a request was seen");
+    let mut approver = Auto::yes();
+    let ours = within(pending_again.pair(PairMode::AwaitPeerRequest, &mut approver))
+        .await
+        .expect("A answers the request already received");
+    assert_eq!(
+        approver.calls.load(Ordering::SeqCst),
+        1,
+        "the user is asked once"
+    );
+    let theirs = within(dial).await.unwrap().expect("B pairs first try");
+    drop((ours, theirs));
+    assert!(
+        store_b
+            .get(&a.local_identity().device_id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_refused_re_pair_keeps_the_existing_record() {
+    let (a, store_a, b, store_b) = paired_endpoints().await;
+    assert!(store_b.remove(&a.local_identity().device_id).unwrap());
+    let (l, addr) = listener().await;
+    let a_id = a.local_identity().device_id.clone();
+    let dial = tokio::spawn({
+        let b = b.clone();
+        async move {
+            pending(b.connect(addr, &a_id).await.unwrap())
+                .pair(PairMode::Request, &mut Auto::yes())
+                .await
+        }
+    });
+    let (stream, _) = l.accept().await.unwrap();
+    let mut link = trusted(a.accept(stream).await.unwrap());
+    within(link.recv()).await.unwrap();
+    let pending_again = link.into_re_pairing().ok().unwrap();
+    assert!(
+        within(pending_again.pair(PairMode::AwaitPeerRequest, &mut Auto::no()))
+            .await
+            .is_err()
+    );
+    assert!(within(dial).await.unwrap().is_err());
+    assert!(
+        store_a
+            .get(&b.local_identity().device_id)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store_b
+            .get(&a.local_identity().device_id)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_renamed_endpoint_announces_the_new_name_from_the_next_connection() {
+    let (a, _sa, b, _sb) = paired_endpoints().await;
+    assert_eq!(
+        a.set_device_name("  Living room PC ").unwrap(),
+        "Living room PC"
+    );
+    assert!(a.set_device_name("bad\u{7}name").is_err());
+    assert!(a.set_device_name(&"x".repeat(33)).is_err());
+    assert_eq!(
+        a.device_name(),
+        "Living room PC",
+        "a refusal changes nothing"
+    );
+
+    let (l, addr) = listener().await;
+    let a_id = a.local_identity().device_id.clone();
+    let dial = tokio::spawn({
+        let b = b.clone();
+        async move { trusted(b.connect(addr, &a_id).await.unwrap()) }
+    });
+    let (stream, _) = l.accept().await.unwrap();
+    let _a_side = trusted(a.accept(stream).await.unwrap());
+    let b_side = within(dial).await.unwrap();
+    assert_eq!(b_side.info().peer.device_name, "Living room PC");
 }

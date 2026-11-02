@@ -39,6 +39,7 @@ Levels (a row can have several):
 | GUI apps start without a console | n/a | type-check | n/a | Release builds on Windows use the GUI subsystem; helper processes started by them use `CREATE_NO_WINDOW`. A debug build keeps its console. (Consequence: `--help` of a release GUI app prints nothing on Windows) |
 | Update check and download | CI (mock server) | CI | CI | Download + SHA-256 verified before anything is offered. Assets are `.zip` / `.tar.gz` archives, not installers: "open" reveals the verified file (`explorer`, `open -R`, `xdg-open`); nothing is run or installed by GeekBridge. A `.msi`/`.dmg` hand-off does not exist because those are not published |
 | Hyprland hotkey, waybar | CI (unit) | n/a | n/a | Linux only |
+| Tray / menu-bar icon | unit (menu model, state mapping, icon drawing) + private-bus tests (a fake `StatusNotifierWatcher` records `RegisterStatusNotifierItem`, properties, introspection, `GetLayout`, clicks, change signals) + `scripts/e2e/tray-headless.sh` (the real service); no screenshot: no tray host installed here | type-check (`Shell_NotifyIconW` on its own thread, `TrackPopupMenu`); never run | type-check (`NSStatusItem`); **inactive at run time** | In the service process, no polling (the rest of the service pokes a `Notify`); optional (no host = nothing); off with `geekbridge-ctl tray disable`, `--no-tray` or `GEEKBRIDGE_NO_TRAY`. Linux: StatusNotifierItem + `com.canonical.dbusmenu` hand-written on the `zbus` the call backend already links. macOS: AppKit wants the status item on the main thread inside a running `NSApplication` loop, `geekbridge-service` keeps its main thread in tokio, so the code is complete but `start` declines (needs a main-thread run loop or a small menu-bar helper). Pause sync = clipboard feature off for the phones that had it on, recorded in `tray-paused` so Resume (also after a restart) restores exactly those |
 | Packaging (MSIX/DMG/app bundle) | n/a | template only | scripts only | `packaging/windows`, `packaging/macos`: not built in CI |
 
 ## Known gaps (not fixed, by design or for lack of a machine)
@@ -49,6 +50,7 @@ Levels (a row can have several):
 * The macOS `osascript` banner is attributed to "Script Editor" in Notification Center and needs that app allowed.
 * Antivirus holding a freshly written file can make the final rename fail once; the transfer then reports an error
   instead of retrying.
+* The macOS menu-bar item is type-checked only and disabled at run time (see the Tray row); the Windows notification-area icon has never been seen on a real desktop. No tray host (waybar, xfce4-panel, stalonetray) is installed on the development machine, so there are no screenshots of a bar hosting the Linux icon; what a host receives is checked on a private bus, and `target/tray-headless/received-icon.png` is the 48 px icon a host got.
 * None of the above has been run by a person on a Windows PC or a Mac.
 
 ## Reading CI results

@@ -74,6 +74,15 @@ workspace), `--no-bind` writes only the rules, `--legacy-rules` uses the pre-0.5
 files (newer `.conf` syntax is the default). To change the sizes, edit the numbers inside the block; reinstalling
 resets them.
 
+### Tiling and forced sizes
+
+Messages, Contacts, Agenda and Clipboard are not floated: they tile like any window. Each declares a minimum inner size
+(`identity::min_size`, e.g. Calls 320x560, Agenda 760x520) and lays out as a scrolling column below it, so a tiled
+window forced to an arbitrary size neither panics nor clips controls out of reach (checked by resizing every app from
+200x260 to 2400x1400 under X11; Hyprland itself was not available to test). Hyprland may still tile a window smaller than
+its minimum; scroll or float it (`hyprctl dispatch togglefloating`) if a layout feels tight. See
+[accessibility.md](accessibility.md) for keyboard use of these windows.
+
 ## 3. Notifications
 
 Calls, file offers, received files, new SMS, calendar reminders and updates use `notify-send` (libnotify >= 0.8):
@@ -129,7 +138,22 @@ caller, number or message text. A battery level is not part of the phone link ye
 @keyframes blink { to { opacity: 0.3; } }
 ```
 
-Add `"custom/geekbridge"` to `modules-right`. Omarchy's own bar is the Quickshell shell (`~/.config/omarchy/shell.json`),
+Add `"custom/geekbridge"` to `modules-right`.
+
+### Tray icon (waybar `tray` module)
+
+The service also publishes a StatusNotifierItem with a menu (Open, Paste from phone, Send file, Answer/Decline, Pause
+sync, Check for updates, Quit). Waybar shows it when its `tray` module is in the bar:
+
+```jsonc
+"modules-right": ["tray", "custom/geekbridge", ...],
+"tray": { "icon-size": 18, "spacing": 8 }
+```
+
+Waybar is the StatusNotifier *watcher* here: the item registers when waybar owns `org.kde.StatusNotifierWatcher`, also
+when waybar starts or is restarted after the service. With no tray host (no waybar, or a bar without a StatusNotifier tray) nothing is shown and nothing fails. The icon is light dots for dark bars; the icon is kept `Active` even with
+no phone connected because waybar hides *passive* tray items by default. Use either the tray icon or the custom module
+(or both: the custom module adds the unread count); `geekbridge-ctl tray disable` removes the icon. Omarchy's own bar is the Quickshell shell (`~/.config/omarchy/shell.json`),
 not waybar; the JSON shape is the common `text`/`tooltip`/`class` one, so any widget that runs a command can use it.
 
 ## 5. Clipboard under Wayland

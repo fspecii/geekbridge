@@ -23,35 +23,301 @@ pub enum Weekday {
     Sunday,
 }
 
-pub const MONTH_NAMES: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
+pub const MONTH_NAMES: [&str; 12] = month_table::EN;
 
-impl Weekday {
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Monday => "Monday",
-            Self::Tuesday => "Tuesday",
-            Self::Wednesday => "Wednesday",
-            Self::Thursday => "Thursday",
-            Self::Friday => "Friday",
-            Self::Saturday => "Saturday",
-            Self::Sunday => "Sunday",
+/// Languages with built-in month and weekday names. Anything else shows English.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Lang {
+    #[default]
+    En,
+    De,
+    Fr,
+    Es,
+    Pt,
+    It,
+}
+
+/// How dates and clocks are shown on this computer, read once from `LC_ALL` / `LC_TIME` /
+/// `LANG` (Unix). Windows and macOS GUI apps carry no such variables, so they show English with a
+/// 24 h clock; `GEEKBRIDGE_CLOCK=12|24` overrides the clock everywhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Locale {
+    pub lang: Lang,
+    pub hour12: bool,
+}
+
+impl Locale {
+    /// Parses a POSIX locale name such as `de_DE.UTF-8@euro`; unknown or `C` gives English / 24 h.
+    pub fn parse(name: &str) -> Self {
+        let base = name.split(['.', '@']).next().unwrap_or("");
+        let (lang_code, territory) = base.split_once('_').unwrap_or((base, ""));
+        let lang = match lang_code.to_ascii_lowercase().as_str() {
+            "de" => Lang::De,
+            "fr" => Lang::Fr,
+            "es" => Lang::Es,
+            "pt" => Lang::Pt,
+            "it" => Lang::It,
+            _ => Lang::En,
+        };
+        let hour12 = matches!(lang_code.to_ascii_lowercase().as_str(), "hi" | "ar" | "ko")
+            || matches!(
+                territory.to_ascii_uppercase().as_str(),
+                "US" | "CA" | "AU" | "NZ" | "IN" | "PH" | "MX" | "CO" | "EG" | "SA" | "PK" | "BD"
+            );
+        Self { lang, hour12 }
+    }
+
+    /// From the environment values, in POSIX precedence; `clock` is `GEEKBRIDGE_CLOCK`.
+    pub fn from_env_values(
+        all: Option<&str>,
+        time: Option<&str>,
+        lang: Option<&str>,
+        clock: Option<&str>,
+    ) -> Self {
+        let name = [all, time, lang]
+            .into_iter()
+            .flatten()
+            .find(|v| !v.is_empty())
+            .unwrap_or("");
+        let mut locale = Self::parse(name);
+        match clock {
+            Some("12") => locale.hour12 = true,
+            Some("24") => locale.hour12 = false,
+            _ => {}
+        }
+        locale
+    }
+
+    /// The computer's locale. Tests always see English / 24 h so expectations stay fixed.
+    pub fn current() -> Self {
+        #[cfg(test)]
+        {
+            Self::default()
+        }
+        #[cfg(not(test))]
+        {
+            static CURRENT: std::sync::OnceLock<Locale> = std::sync::OnceLock::new();
+            *CURRENT.get_or_init(|| {
+                let var = |k: &str| std::env::var(k).ok();
+                Self::from_env_values(
+                    var("LC_ALL").as_deref(),
+                    var("LC_TIME").as_deref(),
+                    var("LANG").as_deref(),
+                    var("GEEKBRIDGE_CLOCK").as_deref(),
+                )
+            })
         }
     }
+
+    /// "14:05" or, with a 12 h clock, "2:05 PM".
+    pub fn clock(self, seconds_into_day: u32) -> String {
+        let (h, m) = (seconds_into_day / 3600 % 24, seconds_into_day / 60 % 60);
+        if self.hour12 {
+            let suffix = if h < 12 { "AM" } else { "PM" };
+            format!("{}:{m:02} {suffix}", if h % 12 == 0 { 12 } else { h % 12 })
+        } else {
+            format!("{h:02}:{m:02}")
+        }
+    }
+
+    pub fn month_name(self, month: u32) -> &'static str {
+        month_table::months(self.lang)[(month.clamp(1, 12) - 1) as usize]
+    }
+
+    /// Hour-grid label: "14:00" or "2 PM".
+    pub fn hour_label(self, hour: u32) -> String {
+        if self.hour12 {
+            let h = hour % 24;
+            format!(
+                "{} {}",
+                if h % 12 == 0 { 12 } else { h % 12 },
+                if h < 12 { "AM" } else { "PM" }
+            )
+        } else {
+            format!("{:02}:00", hour % 24)
+        }
+    }
+}
+
+mod month_table {
+    use super::Lang;
+    pub const EN: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    const DE: [&str; 12] = [
+        "Januar",
+        "Februar",
+        "März",
+        "April",
+        "Mai",
+        "Juni",
+        "Juli",
+        "August",
+        "September",
+        "Oktober",
+        "November",
+        "Dezember",
+    ];
+    const FR: [&str; 12] = [
+        "janvier",
+        "février",
+        "mars",
+        "avril",
+        "mai",
+        "juin",
+        "juillet",
+        "août",
+        "septembre",
+        "octobre",
+        "novembre",
+        "décembre",
+    ];
+    const ES: [&str; 12] = [
+        "enero",
+        "febrero",
+        "marzo",
+        "abril",
+        "mayo",
+        "junio",
+        "julio",
+        "agosto",
+        "septiembre",
+        "octubre",
+        "noviembre",
+        "diciembre",
+    ];
+    const PT: [&str; 12] = [
+        "janeiro",
+        "fevereiro",
+        "março",
+        "abril",
+        "maio",
+        "junho",
+        "julho",
+        "agosto",
+        "setembro",
+        "outubro",
+        "novembro",
+        "dezembro",
+    ];
+    const IT: [&str; 12] = [
+        "gennaio",
+        "febbraio",
+        "marzo",
+        "aprile",
+        "maggio",
+        "giugno",
+        "luglio",
+        "agosto",
+        "settembre",
+        "ottobre",
+        "novembre",
+        "dicembre",
+    ];
+    pub fn months(lang: Lang) -> &'static [&'static str; 12] {
+        match lang {
+            Lang::En => &EN,
+            Lang::De => &DE,
+            Lang::Fr => &FR,
+            Lang::Es => &ES,
+            Lang::Pt => &PT,
+            Lang::It => &IT,
+        }
+    }
+
+    // Monday first. (full, short)
+    type Days = [(&'static str, &'static str); 7];
+    const D_EN: Days = [
+        ("Monday", "Mon"),
+        ("Tuesday", "Tue"),
+        ("Wednesday", "Wed"),
+        ("Thursday", "Thu"),
+        ("Friday", "Fri"),
+        ("Saturday", "Sat"),
+        ("Sunday", "Sun"),
+    ];
+    const D_DE: Days = [
+        ("Montag", "Mo"),
+        ("Dienstag", "Di"),
+        ("Mittwoch", "Mi"),
+        ("Donnerstag", "Do"),
+        ("Freitag", "Fr"),
+        ("Samstag", "Sa"),
+        ("Sonntag", "So"),
+    ];
+    const D_FR: Days = [
+        ("lundi", "lun."),
+        ("mardi", "mar."),
+        ("mercredi", "mer."),
+        ("jeudi", "jeu."),
+        ("vendredi", "ven."),
+        ("samedi", "sam."),
+        ("dimanche", "dim."),
+    ];
+    const D_ES: Days = [
+        ("lunes", "lun"),
+        ("martes", "mar"),
+        ("miércoles", "mié"),
+        ("jueves", "jue"),
+        ("viernes", "vie"),
+        ("sábado", "sáb"),
+        ("domingo", "dom"),
+    ];
+    const D_PT: Days = [
+        ("segunda-feira", "seg"),
+        ("terça-feira", "ter"),
+        ("quarta-feira", "qua"),
+        ("quinta-feira", "qui"),
+        ("sexta-feira", "sex"),
+        ("sábado", "sáb"),
+        ("domingo", "dom"),
+    ];
+    const D_IT: Days = [
+        ("lunedì", "lun"),
+        ("martedì", "mar"),
+        ("mercoledì", "mer"),
+        ("giovedì", "gio"),
+        ("venerdì", "ven"),
+        ("sabato", "sab"),
+        ("domenica", "dom"),
+    ];
+    pub fn days(lang: Lang) -> &'static Days {
+        match lang {
+            Lang::En => &D_EN,
+            Lang::De => &D_DE,
+            Lang::Fr => &D_FR,
+            Lang::Es => &D_ES,
+            Lang::Pt => &D_PT,
+            Lang::It => &D_IT,
+        }
+    }
+}
+
+impl Weekday {
+    /// Full name in the computer's language.
+    pub fn name(self) -> &'static str {
+        self.name_in(Locale::current().lang)
+    }
+    /// Abbreviation in the computer's language.
     pub fn short(self) -> &'static str {
-        &self.name()[..3]
+        self.short_in(Locale::current().lang)
+    }
+    pub fn name_in(self, lang: Lang) -> &'static str {
+        month_table::days(lang)[self as usize].0
+    }
+    pub fn short_in(self, lang: Lang) -> &'static str {
+        month_table::days(lang)[self as usize].1
     }
 }
 
@@ -103,7 +369,7 @@ impl Date {
     }
 
     pub fn month_name(self) -> &'static str {
-        MONTH_NAMES[(self.month - 1) as usize]
+        Locale::current().month_name(self.month)
     }
 }
 
@@ -143,10 +409,15 @@ pub fn utc_offset_minutes(date: Date) -> i32 {
     utc_offset_seconds(date.to_days() * 86_400 + 43_200).map_or(0, |s| s / 60)
 }
 
-/// `"HH:MM"` of a UTC millisecond instant shown at `offset_minutes`.
+/// The time of day of a UTC millisecond instant shown at `offset_minutes`: `"HH:MM"`, or
+/// `"h:MM AM"` when the computer's locale uses a 12 h clock.
 pub fn clock_label(utc_ms: i64, offset_minutes: i32) -> String {
+    clock_label_in(Locale::current(), utc_ms, offset_minutes)
+}
+
+pub fn clock_label_in(locale: Locale, utc_ms: i64, offset_minutes: i32) -> String {
     let secs = (utc_ms / 1000 + i64::from(offset_minutes) * 60).rem_euclid(86_400);
-    format!("{:02}:{:02}", secs / 3600, secs / 60 % 60)
+    locale.clock(secs as u32)
 }
 
 #[cfg(all(unix, target_pointer_width = "64"))]
@@ -277,6 +548,103 @@ mod tests {
         assert_eq!(d(2026, 11, 1).week_start(), d(2026, 10, 26));
         assert_eq!(d(2026, 10, 26).week_start(), d(2026, 10, 26));
         assert_eq!(d(2026, 11, 1).month_name(), "November");
+    }
+
+    #[test]
+    fn locale_names_come_from_the_env_and_fall_back_to_english() {
+        let l = |v: &str| Locale::from_env_values(None, None, Some(v), None);
+        assert_eq!(l("de_DE.UTF-8").lang, Lang::De);
+        assert_eq!(
+            l("fr_CA.UTF-8"),
+            Locale {
+                lang: Lang::Fr,
+                hour12: true
+            }
+        );
+        assert_eq!(l("pt_BR").lang, Lang::Pt);
+        assert_eq!(l("it_IT@euro").lang, Lang::It);
+        assert_eq!(
+            l("es_MX.UTF-8"),
+            Locale {
+                lang: Lang::Es,
+                hour12: true
+            }
+        );
+        assert_eq!(
+            l("en_US.UTF-8"),
+            Locale {
+                lang: Lang::En,
+                hour12: true
+            }
+        );
+        assert_eq!(
+            l("en_GB.UTF-8"),
+            Locale {
+                lang: Lang::En,
+                hour12: false
+            }
+        );
+        for unknown in ["C", "POSIX", "", "ja_JP.UTF-8", "xx"] {
+            assert_eq!(l(unknown).lang, Lang::En, "{unknown}");
+        }
+        // POSIX precedence: LC_ALL > LC_TIME > LANG; empty values are skipped.
+        let p = Locale::from_env_values(Some(""), Some("de_DE"), Some("fr_FR"), None);
+        assert_eq!(p.lang, Lang::De);
+        let all = Locale::from_env_values(Some("it_IT"), Some("de_DE"), Some("fr_FR"), None);
+        assert_eq!(all.lang, Lang::It);
+        // The explicit clock switch wins over the locale.
+        assert!(Locale::from_env_values(None, None, Some("de_DE"), Some("12")).hour12);
+        assert!(!Locale::from_env_values(None, None, Some("en_US"), Some("24")).hour12);
+    }
+
+    #[test]
+    fn localised_months_and_weekdays() {
+        let nov1 = d(2026, 11, 1); // a Sunday
+        assert_eq!(Locale::parse("de_DE").month_name(3), "März");
+        assert_eq!(Locale::parse("fr_FR").month_name(2), "février");
+        assert_eq!(Locale::parse("es_ES").month_name(9), "septiembre");
+        assert_eq!(Locale::parse("pt_PT").month_name(12), "dezembro");
+        assert_eq!(Locale::parse("it_IT").month_name(1), "gennaio");
+        assert_eq!(nov1.weekday().name_in(Lang::De), "Sonntag");
+        assert_eq!(nov1.weekday().short_in(Lang::Fr), "dim.");
+        assert_eq!(nov1.weekday().name_in(Lang::Es), "domingo");
+        assert_eq!(nov1.weekday().short_in(Lang::Pt), "dom");
+        assert_eq!(nov1.weekday().name_in(Lang::It), "domenica");
+        assert_eq!(nov1.weekday().name_in(Lang::En), "Sunday");
+        // Every table entry is filled and distinct per language.
+        for lang in [Lang::En, Lang::De, Lang::Fr, Lang::Es, Lang::Pt, Lang::It] {
+            let months: Vec<_> = (1..=12).map(|m| month_table::months(lang)[m - 1]).collect();
+            let mut u = months.clone();
+            u.sort();
+            u.dedup();
+            assert_eq!(u.len(), 12, "{lang:?}");
+            for w in 0..7 {
+                let day = Date::from_days(4 + w).weekday();
+                assert!(!day.name_in(lang).is_empty() && !day.short_in(lang).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn clocks_in_24_and_12_hours() {
+        let h24 = Locale::default();
+        let h12 = Locale {
+            lang: Lang::En,
+            hour12: true,
+        };
+        assert_eq!(h24.clock(14 * 3600 + 5 * 60), "14:05");
+        assert_eq!(h12.clock(14 * 3600 + 5 * 60), "2:05 PM");
+        assert_eq!(h12.clock(0), "12:00 AM");
+        assert_eq!(h12.clock(12 * 3600), "12:00 PM");
+        assert_eq!(h12.clock(23 * 3600 + 59 * 60), "11:59 PM");
+        assert_eq!(h24.hour_label(7), "07:00");
+        assert_eq!(h12.hour_label(0), "12 AM");
+        assert_eq!(h12.hour_label(13), "1 PM");
+        // 2026-11-02 14:05 UTC shown at UTC+1.
+        let ms = (d(2026, 11, 2).to_days() * 86_400 + 14 * 3600 + 300) * 1000;
+        assert_eq!(clock_label_in(h24, ms, 60), "15:05");
+        assert_eq!(clock_label_in(h12, ms, 60), "3:05 PM");
+        assert_eq!(clock_label_in(h12, ms, -14 * 60 - 5), "12:00 AM");
     }
 
     #[test]

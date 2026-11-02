@@ -74,7 +74,7 @@ class LinkService : Service() {
 
     private fun serviceOptions() = LinkRuntime.startOptions(
         stateDir = filesDir.absolutePath,
-        deviceName = Build.MODEL ?: "Android",
+        deviceName = DeviceName.current(this),
         discoveryListen = false, // listening needs a multicast lock; computers find us from our announcement
         announce = true,
     )

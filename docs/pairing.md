@@ -78,12 +78,43 @@ share the same wording rules. **Test connection** measures: is this device on a 
 running there; no answer on the same subnet means a firewall or Wi-Fi client isolation; another subnet means a different
 network. Nothing is sent but one TCP connect.
 
+## Repeated pair requests (replacing a pending prompt)
+
+Stock KDE Connect Android derives the verification key from the timestamp of *every* pair request, so tapping
+**Request pairing** twice moves the phone to a new key. The state machine (`pairing.rs`, `Machine`) therefore
+**replaces** the pending prompt when the peer sends a second `{pair:true, timestamp}` while its prompt is open:
+
+1. The old prompt is cancelled (the daemon's challenge disappears, the Android prompt entry is removed), the key is
+   re-derived from the new timestamp, a new prompt with a new `challenge_id`/`request_id` is shown, and the response
+   window restarts.
+2. Every prompt has a generation number and every local decision is tagged with the generation it answers. A decision
+   for any other generation is dropped: the pairing stays pending and nothing is sent. Over IPC the `challenge_id` is
+   that tag (the old one answers `NotFound`/stale); on Android `Core::decide` needs the `request_id` and, to approve,
+   the certificate fingerprint **and** the code, so it fails on a mismatch.
+3. Nothing is auto-accepted and an acceptance is never carried over to a new key. The accept packet is sent only
+   from a decision on the *current* generation, after which the machine is finished, so it goes out exactly once per
+   pairing.
+4. Budget: at most 5 requests per 60 seconds per connection may open or replace a prompt (`MAX_REPLACEMENTS`,
+   `REPLACEMENT_WINDOW`). More are ignored and count toward the unexpected-packet budget, which drops the link. A
+   request with the same timestamp, or outside the clock-skew window, changes nothing. The connection is bound to one
+   certificate, so a replacement can only come from the certificate the user is already looking at; a new connection
+   starts over with a fresh prompt and still hits the daemon's challenge cap.
+
+Threat: an attacker (or a flaky peer) swaps the request between the moment the user compares the codes and the moment
+they click **Approve**, hoping the click lands on a key the user never compared. Mitigation: the click is bound to
+the prompt it was made on; when the prompt is replaced, the click is refused and the user must compare the new key.
+The attacker also cannot flood the user with prompts beyond the budget above. QR pairing is unchanged: the token is
+read from the first request only.
+
 ## Tests
 
 * `bridge-kde`: `qrpair` unit tests (single use, expiry boundary, wrong token, lock-out, bounded outstanding, payload
   round trip, hostile payloads); loopback tests for the token in the pair packet and the `qr_pinned` prompt.
 * `bridge-service/tests/qr_pairing.rs`: real TLS phone endpoint against the service for redeem-once, reuse, wrong token,
   cancel, "no token still needs approval", Test connection, announcement format.
+* `bridge-kde` `pairing.rs`: replacement shows the new key, stale approval and stale rejection are refused, the rate
+  limit, same timestamp / bad clock ignored, exactly-once accept, and a replay of the captured stock Android request
+  twice; loopback `repeated_peer_request_replaces_the_prompt_with_the_new_key`.
 * `bridge-android`: `pair_request` pins the certificate (mismatch drops the connection and nothing reaches the peer),
   field-pairing rules, `pairing_parse_qr`.
 * `bridge-apps`: the drawn QR code is decoded back with `rqrr` and parsed.

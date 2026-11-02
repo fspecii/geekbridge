@@ -74,7 +74,7 @@ class PairPanel(
         controller.start(
             LinkRuntime.startOptions(
                 stateDir = activity.filesDir.absolutePath,
-                deviceName = Build.MODEL ?: "Android",
+                deviceName = DeviceName.current(activity),
                 discoveryListen = true,
                 announce = true,
             ),

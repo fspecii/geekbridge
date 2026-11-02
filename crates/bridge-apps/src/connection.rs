@@ -276,6 +276,7 @@ fn request_notice(request: &Request) -> &'static str {
         Request::Deny { .. } => "Pairing declined.",
         Request::Disconnect { .. } => "Disconnect requested.",
         Request::Unpair { .. } => "Forget-phone request accepted.",
+        Request::SetDeviceName { .. } => "Name saved. Phones show it from their next connection.",
         Request::Ping { .. } => "Connection check sent.",
         _ => "Request accepted.",
     }
@@ -299,6 +300,16 @@ pub fn manual_endpoint(id: &str, address: &str) -> Result<Request, &'static str>
         }),
     })
 }
+/// Why a typed computer name cannot be saved, in words for the person typing it.
+fn name_problem(draft: &str) -> Option<&'static str> {
+    use bridge_kde::identity::validate_device_name;
+    match validate_device_name(draft) {
+        Ok(_) => None,
+        Err(_) if draft.chars().any(char::is_control) => Some("Use letters, numbers and spaces."),
+        Err(_) if draft.trim().is_empty() => Some("Enter a name."),
+        Err(_) => Some("Use letters, numbers and spaces, up to 32 characters."),
+    }
+}
 fn code_matches(entered: &str, expected: &str) -> bool {
     expected.len() == 8
         && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -315,6 +326,8 @@ pub struct Connections {
     entered_code: String,
     forget: Option<(String, String)>,
     pair: pair_ui::PairUi,
+    /// What the user is typing in "This computer's name"; `None` while it shows the saved name.
+    name_draft: Option<String>,
 }
 impl Connections {
     pub fn new(ctx: egui::Context) -> Self {
@@ -327,6 +340,7 @@ impl Connections {
             entered_code: String::new(),
             forget: None,
             pair: Default::default(),
+            name_draft: None,
         }
     }
     pub fn update(&mut self) {
@@ -342,6 +356,49 @@ impl Connections {
             self.state.busy = true;
         } else {
             self.state.notice = Some("Another request is in progress. Try again shortly.".into());
+        }
+    }
+    /// Settings row: rename this computer. Phones show the name from their next connection.
+    pub fn name_row(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        let Some(saved) = self.state.status.as_ref().map(|s| s.device_name.clone()) else {
+            ui.label(theme::caption(pal, "Waiting for the background service…"));
+            return;
+        };
+        let busy = self.state.busy;
+        let draft = self.name_draft.get_or_insert_with(|| saved.clone());
+        ui.label(theme::overline(pal, "This computer's name"));
+        let mut save = false;
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(draft)
+                    .char_limit(bridge_kde::identity::MAX_USER_NAME_CHARS)
+                    .desired_width(220.0),
+            );
+            let problem = name_problem(draft);
+            let changed = draft.trim() != saved;
+            save = theme::pill_button(
+                ui,
+                pal,
+                "Save name",
+                theme::ButtonKind::Plain,
+                changed && problem.is_none() && !busy,
+            )
+            .clicked();
+            if let Some(problem) = problem.filter(|_| changed) {
+                ui.label(theme::caption(pal, problem));
+            }
+        });
+        ui.add(
+            egui::Label::new(theme::caption(
+                pal,
+                "Shown on your phone. A phone that is already connected picks up the new name the next time it connects.",
+            ))
+            .wrap(),
+        );
+        if save {
+            let name = draft.clone();
+            self.name_draft = None;
+            self.submit(Request::SetDeviceName { name });
         }
     }
     pub fn details(&mut self, ui: &mut egui::Ui, pal: &Palette, discovery: &DiscoveryModel) {
@@ -544,6 +601,10 @@ impl Connections {
                 });
         }
         if let Some((id, name)) = self.forget.clone() {
+            // Escape is the safe answer: keep the pairing.
+            if theme::escape_pressed(ctx) {
+                self.forget = None;
+            }
             egui::Window::new("Forget phone?")
                 .id(egui::Id::new("forget-phone"))
                 .collapsible(false)
@@ -573,6 +634,15 @@ impl Connections {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn typed_computer_names_are_checked_before_they_are_sent() {
+        assert_eq!(name_problem("Study PC"), None);
+        assert!(name_problem("").is_some());
+        assert!(name_problem("   ").is_some());
+        assert!(name_problem("a\u{1b}b").is_some());
+        assert!(name_problem(&"x".repeat(33)).is_some());
+    }
+
     fn status() -> Status {
         Status {
             ipc_version: 1,

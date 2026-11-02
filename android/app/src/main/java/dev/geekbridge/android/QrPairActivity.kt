@@ -166,7 +166,7 @@ class QrPairActivity : Activity() {
             controller.start(
                 LinkRuntime.startOptions(
                     stateDir = filesDir.absolutePath,
-                    deviceName = Build.MODEL ?: "Android",
+                    deviceName = DeviceName.current(this),
                     discoveryListen = false,
                     announce = false,
                 ),

@@ -1160,6 +1160,9 @@ fn thread_row(
         ui.painter()
             .rect_filled(rect, radius, pal.control_hover.gamma_multiply(0.55));
     }
+    if response.has_focus() {
+        theme::focus_ring(ui, pal, rect, radius);
+    }
     let fg = if selected { pal.selected_fg } else { pal.text };
     let sub = if selected { pal.selected_fg } else { pal.text2 };
     let preview = match &c.matched {
@@ -1191,7 +1194,7 @@ fn thread_row(
         egui::pos2(rect.right() - 12.0, rect.top() + 18.0),
         egui::Align2::RIGHT_CENTER,
         when,
-        FontId::new(11.0, FontFamily::Proportional),
+        FontId::new(12.0, FontFamily::Proportional),
         sub,
     );
     if c.unread > 0 {
@@ -1211,7 +1214,7 @@ fn thread_row(
             badge.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            FontId::new(11.0, theme::semibold_family()),
+            FontId::new(12.0, theme::semibold_family()),
             pal.on_accent,
         );
     }
@@ -1281,7 +1284,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                         ui.label(
                             RichText::new("Picture message: open it on the phone")
                                 .color(fg.gamma_multiply(0.75))
-                                .size(11.0),
+                                .size(12.0),
                         );
                     }
                     ui.label(
@@ -1290,7 +1293,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                             offset,
                         ))
                         .color(fg.gamma_multiply(0.7))
-                        .size(10.5),
+                        .size(12.0),
                     );
                 });
             });

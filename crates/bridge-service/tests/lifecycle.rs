@@ -357,3 +357,110 @@ async fn junk_and_silent_inbound_connections_are_dropped_and_do_not_starve_real_
     let _ = timeout(Duration::from_secs(10), dial).await;
     assert_eq!(rig.trust_len(), 0);
 }
+
+/// The phone forgot the pairing while no link was up, so the computer was never told and still
+/// trusts it. The phone's next pairing request must not die on the computer's trusted link: it
+/// is raised as an ordinary incoming challenge, and approving it pairs on the first try.
+#[tokio::test]
+async fn a_phone_that_forgot_the_pairing_silently_can_re_pair_first_try() {
+    let mut rig = Rig::start().await;
+    let inbound = rig.listen_inbound().await;
+    let phone = Phone::new();
+    let link = pair_phone(&rig, &phone).await;
+    drop(link);
+    rig.wait("link lost", |s| s.links.is_empty()).await;
+    assert_eq!(rig.trust_len(), 1, "the computer still trusts the phone");
+
+    // Same identity, empty trust store: what the phone looks like after its local unpair.
+    let mut config = kde::TransportConfig::default();
+    config.address_policy.loopback = true;
+    let ping = vec!["kdeconnect.ping".to_string()];
+    let forgetful = kde::Endpoint::new(
+        phone.creds.clone(),
+        "Test Phone",
+        kde::DeviceType::Phone,
+        ping.clone(),
+        ping,
+        std::sync::Arc::new(kde::MemoryTrustStore::new()),
+        config,
+    )
+    .unwrap();
+    let service_id = kde::DeviceId::parse(&rig.status().await.device_id).unwrap();
+    let dial = tokio::spawn(async move {
+        match forgetful.connect(inbound, &service_id).await.unwrap() {
+            kde::Handshake::Pending(p) => p.pair(kde::PairMode::Request, &mut Yes).await,
+            kde::Handshake::Trusted(_) => panic!("the phone forgot the computer"),
+        }
+    });
+    let status = rig
+        .wait("re-pair challenge", |s| !s.challenges.is_empty())
+        .await;
+    rig.ok(Request::Approve {
+        challenge_id: status.challenges[0].challenge_id.clone(),
+    })
+    .await;
+    let result = timeout(Duration::from_secs(10), dial)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        result.is_ok(),
+        "first re-pair attempt failed: {:?}",
+        result.err()
+    );
+    wait_connected(&rig, &phone).await;
+    assert_eq!(rig.trust_len(), 1);
+}
+
+#[tokio::test]
+async fn renaming_the_computer_is_validated_saved_and_used_by_the_next_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let file = dir.path().join("device-name");
+    let path = file.clone();
+    let rig = Rig::start_with(move |o| o.device_name_file = Some(path)).await;
+    assert_eq!(rig.status().await.device_name, "Test Desktop");
+
+    for bad in ["", "   ", "tab\there", "esc\u{1b}[2J", &"n".repeat(33)] {
+        assert_eq!(
+            rig.refused(Request::SetDeviceName { name: bad.into() })
+                .await,
+            bridge_core::ipc::ErrorCode::BadRequest,
+            "{bad:?}"
+        );
+    }
+    assert_eq!(rig.status().await.device_name, "Test Desktop");
+    assert!(!file.exists());
+
+    rig.ok(Request::SetDeviceName {
+        name: " Study PC. ".into(),
+    })
+    .await;
+    assert_eq!(rig.status().await.device_name, "Study PC");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "Study PC");
+
+    // A phone that connects afterwards is told the new name.
+    let phone = Phone::new();
+    let link = pair_phone(&rig, &phone).await;
+    assert_eq!(link.info().peer.device_name, "Study PC");
+}
+
+#[tokio::test]
+async fn a_saved_computer_name_is_used_at_start_and_junk_in_the_file_is_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("device-name");
+    std::fs::write(&file, "Saved Name\n").unwrap();
+    let path = file.clone();
+    let rig = Rig::start_with(move |o| o.device_name_file = Some(path)).await;
+    assert_eq!(rig.status().await.device_name, "Saved Name");
+    drop(rig);
+
+    std::fs::write(&file, "bad\u{1b}[31m").unwrap();
+    let path = file.clone();
+    let rig = Rig::start_with(move |o| o.device_name_file = Some(path)).await;
+    assert_eq!(rig.status().await.device_name, "Test Desktop");
+}

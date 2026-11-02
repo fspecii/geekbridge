@@ -478,6 +478,13 @@ impl ShareApp {
 
 impl eframe::App for ShareApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame(ctx);
+    }
+}
+
+impl ShareApp {
+    /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
+    pub fn frame(&mut self, ctx: &egui::Context) {
         crate::pace::observe_focus(ctx);
         if let Some(v) = self.worker.latest() {
             self.view = v;
@@ -739,7 +746,16 @@ impl ShareApp {
                             format!("{arrow} {}  ·  {}", t.device_name, state_line(t)),
                         ));
                         if let Some(f) = progress_fraction(t).filter(|_| t.state.is_live()) {
-                            ui.add(egui::ProgressBar::new(f).desired_width(ui.available_width()));
+                            let bar = ui
+                                .add(egui::ProgressBar::new(f).desired_width(ui.available_width()));
+                            let name = format!("{} {}", t.name, state_line(t));
+                            crate::a11y::describe(
+                                ui.ctx(),
+                                bar.id,
+                                &name,
+                                Some(&format!("{:.0}%", f * 100.0)),
+                            );
+                            crate::a11y::live_region(ui.ctx(), bar.id, crate::a11y::Live::Polite);
                         }
                     }
                     TransferKind::Text | TransferKind::Url => {

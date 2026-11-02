@@ -19,6 +19,13 @@ object Limits {
 }
 
 object Bounds {
+    /** Zero-width, bidirectional-control and similar invisible characters that can reorder or hide text. */
+    fun isInvisibleFormat(c: Char): Boolean =
+        c in '\u200B'..'\u200F' || c in '\u202A'..'\u202E' || c in '\u2060'..'\u206F' || c == '\u061C' || c == '\uFEFF'
+
+    /** A device name for display: [clip] without invisible/bidirectional controls, so it cannot reorder the line around it. */
+    fun name(raw: String?, max: Int): String = clip(raw?.filterNot { isInvisibleFormat(it) }, max)
+
     /** UTF-8 length without allocating the encoded array. Lone surrogates count as 3 bytes (conservative). */
     fun utf8Size(s: String): Int {
         var n = 0

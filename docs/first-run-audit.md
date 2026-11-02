@@ -29,9 +29,9 @@ These stay on the real-phone list.
 | File phone to PC | No | - | Phone sat on "Sending 1 of 1 · 0%" forever: the PC silently rejects phones that are not allowed in Share files. Copy fixed on both sides and in the quickstart. |
 | Wrong network | Yes | 25 s to the error | Error was "The connection closed before pairing finished", only **Test connection** gave "The computer seems to be on a different network" with a checklist. Added a pointer to Test connection. |
 | Forget on the PC, re-pair | Yes | - | Phone still thought it was paired; a fresh QR re-paired directly. |
-| Unpair on the phone, re-pair | **No** | - | First re-pair attempt: "Pairing timed out before it was confirmed" (PC logs `peer_requested_re_pair`, `peer_unpaired`); second attempt works. Not fixed (core), documented. |
+| Unpair on the phone, re-pair | **No** | - | First re-pair attempt: "Pairing timed out before it was confirmed" (PC logs `peer_requested_re_pair`, `peer_unpaired`); second attempt works. **Fixed in code, not re-run on the emulator**: the phone's unpair never reached the PC (no live link), so the PC's trusted link ignored the new request. A trusted link that receives a pair request now becomes a normal incoming approval on the same connection (PC and phone). Covered by `lifecycle`, `qr_pairing`, `loopback` and `transport` tests. |
 | App restart (phone) | Yes | - | Reopen shows state; service restarts. PC restart + reconnect not testable here. |
-| Rename | - | - | No UI on either side. Documented. |
+| Rename | - | - | Added: Settings > "This phone's name" (phone), "This computer's name" (desktop), `geekbridge-ctl rename`. Applies to the next connection and discovery announcement (the protocol has no identity update); not yet checked on the emulator. |
 
 ## Ranked defect list
 
@@ -39,7 +39,7 @@ These stay on the real-phone list.
 | --- | --- | --- | --- |
 | 1 | High | A phone that was never allowed to send files makes the phone hang at "Sending 0%" forever, and the next-steps cards told the user to send a file without saying to allow it on the PC. | Fixed: cards (both sides) and phone transfer line explain it; quickstart step 6. The silent drop itself (no PC-side hint when an unallowed phone sends) is open. |
 | 2 | High | Next-steps cards gave instructions that do not work on a fresh setup (Ctrl+Shift+V global, Clipboard sync location, PC-side clipboard tick). | Fixed both sides. |
-| 3 | High | Re-pairing after unpairing on one side only fails the first time (timeout), the PC then drops the stale record. | Open (service/core). Quickstart documents the second scan and "forget on both". |
+| 3 | High | Re-pairing after unpairing on one side only fails the first time (timeout), the PC then drops the stale record. | Fixed in code (see the Unpair row); emulator re-check pending. |
 | 4 | Medium | Desktop Home shows no QR and the empty-state tile did not say it opens pairing. | Fixed: tile says "Click to pair a phone"; quickstart now names the click path. A QR on Home is a design call, not done. |
 | 5 | Medium | `run-desktop.sh` could time out on the first start while the identity key is created. | Fixed (30 s). |
 | 6 | Medium | Clipboard refusal showed `no_enabled_phone_connected`, and the Off label did not say how to turn it on. | Fixed (daemon message with the two fixes; "Off · tick the box..."). |
@@ -51,7 +51,7 @@ These stay on the real-phone list.
 | 12 | Low | The PC's "Pair only after comparing the code" line sat under QR pairing. | Fixed (says it is for pairing by name). |
 | 13 | Low | Generic connect failure did not point to Test connection. | Fixed. |
 | 14 | Low | Desktop "service not running" says "Start the GeekBridge service" without how. | Open. |
-| 15 | Low | No rename for either device; phone name is its model (the emulator showed `sdk_gphone64_x86_64`). | Open, documented. |
+| 15 | Low | No rename for either device; phone name is its model (the emulator showed `sdk_gphone64_x86_64`). | Fixed in code; emulator re-check pending. |
 | 16 | Info | "Scan with a scanner app" stays the primary button when none is installed. | Open. |
 
 ## Changes made
@@ -68,3 +68,7 @@ These stay on the real-phone list.
 Android `scripts/build-android.sh` (unit tests and lint) passes; `cargo fmt --check`, `cargo clippy --all-targets -D warnings`
 and `cargo test` on `bridge-apps` and `bridge-service` (see the end of this file for the final run).
 Nothing was committed.
+
+Final run: fmt clean, clippy clean, all `bridge-apps` and `bridge-service` tests pass; Android unit tests and lint pass.
+The new Android copy and the stale-note/hint fixes were checked on the emulator with the final APK; the toast fallback
+(`ShareNotifications.kt`) is compiled and linted but was not seen firing at runtime.

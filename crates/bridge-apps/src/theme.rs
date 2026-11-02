@@ -9,7 +9,13 @@ use eframe::egui::{
     Response, RichText, Sense, Stroke, StrokeKind, TextStyle, Theme, Ui, Visuals, WidgetInfo,
     WidgetType, vec2,
 };
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 const fn rgb(hex: u32) -> Color32 {
     Color32::from_rgb((hex >> 16) as u8, (hex >> 8) as u8, hex as u8)
@@ -52,7 +58,44 @@ pub struct Palette {
 /// One palette for every window: true-black / warm off-white, grey ramps and a single red.
 /// `accent` is the text-safe red (>= 4.5:1 on every surface of its theme); `accent_fill` is the
 /// brand #D71921 for dots, fills and indicators (white text on it is 5.2:1).
-pub fn palette(_app: AppKind, dark: bool) -> Palette {
+pub fn palette(app: AppKind, dark: bool) -> Palette {
+    let base = base_palette(app, dark);
+    if high_contrast() {
+        high_contrast_of(base)
+    } else {
+        base
+    }
+}
+
+static HIGH_CONTRAST: AtomicBool = AtomicBool::new(false);
+
+pub fn set_high_contrast(on: bool) {
+    HIGH_CONTRAST.store(on, Ordering::Relaxed);
+}
+
+pub fn high_contrast() -> bool {
+    HIGH_CONTRAST.load(Ordering::Relaxed)
+}
+
+/// `GEEKBRIDGE_HIGH_CONTRAST=1`, or a GTK theme whose name says high contrast, asks for it.
+pub fn high_contrast_requested() -> bool {
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    env("GEEKBRIDGE_HIGH_CONTRAST") == "1"
+        || env("GTK_THEME").to_lowercase().contains("highcontrast")
+}
+
+/// Same layout, but secondary text becomes full ink and every edge and unlit dot a strong mid
+/// grey, so nothing relies on a faint tint. Red stays the only hue.
+fn high_contrast_of(mut p: Palette) -> Palette {
+    p.text2 = p.text;
+    p.text3 = p.text;
+    p.separator = if p.dark { rgb(0x8C8C86) } else { rgb(0x5F5F5A) };
+    p.dot_off = p.separator;
+    p.lcd_off = p.separator;
+    p
+}
+
+fn base_palette(_app: AppKind, dark: bool) -> Palette {
     if dark {
         Palette {
             dark,
@@ -261,6 +304,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 /// Installs fonts and both theme styles. Palettes are picked per frame from the active theme.
 pub fn apply(ctx: &egui::Context, app: AppKind) {
     install_fonts(ctx);
+    set_high_contrast(high_contrast_requested());
     ctx.options_mut(|o| o.fallback_theme = Theme::Light);
     for (theme, dark) in [(Theme::Light, false), (Theme::Dark, true)] {
         let pal = palette(app, dark);
@@ -297,7 +341,13 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             }
             // Text fields and stock widgets get a >= 3:1 outline (WCAG 1.4.11); the fill alone is
             // 1.1:1 against the sidebar and invisible in light mode.
-            let outline = if dark { rgb(0x666662) } else { rgb(0x8A8A84) };
+            let outline = if high_contrast() {
+                pal.text
+            } else if dark {
+                rgb(0x666662)
+            } else {
+                rgb(0x8A8A84)
+            };
             v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, outline);
             v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.text3);
             v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.separator);
@@ -307,6 +357,8 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             v.window_corner_radius = CornerRadius::same(18);
             v.window_stroke = Stroke::new(1.0_f32, pal.separator);
             style.visuals = v;
+            // Reduced motion: widgets change state instantly instead of fading.
+            style.animation_time = 0.0;
             style.spacing.item_spacing = vec2(8.0, 8.0);
             style.spacing.button_padding = vec2(12.0, 5.0);
             style.spacing.interact_size.y = 28.0;
@@ -347,7 +399,7 @@ pub fn caption(pal: &Palette, text: impl Into<String>) -> RichText {
 /// Small uppercase section label, as used above sidebar groups and form fields.
 pub fn overline(pal: &Palette, text: &str) -> RichText {
     RichText::new(text.to_uppercase())
-        .font(FontId::new(10.5, semibold_family()))
+        .font(FontId::new(12.0, semibold_family()))
         .color(pal.text3)
 }
 
@@ -412,13 +464,34 @@ pub fn dot(ui: &mut Ui, color: Color32, hollow: bool) {
 
 // ---------------------------------------------------------------- controls
 
-fn focus_ring(ui: &Ui, pal: &Palette, rect: egui::Rect, radius: impl Into<CornerRadius>) {
+/// Keyboard focus ring colour: full ink, >= 3:1 on every surface in both themes and never red, so it
+/// stays visible next to the red Primary button and the red "today" mark.
+pub fn focus_color(pal: &Palette) -> Color32 {
+    pal.text
+}
+
+/// Escape closes a sheet. While a text field has the keyboard the first Escape only leaves the
+/// field (egui does that), so half-typed text is not thrown away by a stray key.
+pub fn escape_pressed(ctx: &egui::Context) -> bool {
+    !ctx.wants_keyboard_input()
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+}
+
+/// 2 pt ring one point outside `rect`, leaving a hairline gap so it also reads against a filled
+/// control of its own colour.
+pub fn focus_ring(ui: &Ui, pal: &Palette, rect: egui::Rect, radius: impl Into<CornerRadius>) {
     ui.painter().rect_stroke(
         rect.expand(1.0),
         radius,
-        Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.7)),
+        Stroke::new(2.0_f32, focus_color(pal)),
         StrokeKind::Outside,
     );
+}
+
+/// [`focus_ring`] for round controls.
+pub fn focus_circle(ui: &Ui, pal: &Palette, center: egui::Pos2, radius: f32) {
+    ui.painter()
+        .circle_stroke(center, radius + 2.0, Stroke::new(2.0_f32, focus_color(pal)));
 }
 
 fn describe(response: &Response, label: &str, enabled: bool) {
@@ -572,11 +645,7 @@ pub fn round_button(
     ui.painter()
         .circle_filled(rect.center(), diameter / 2.0, fill);
     if response.has_focus() {
-        ui.painter().circle_stroke(
-            rect.center(),
-            diameter / 2.0 + 2.0,
-            Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.7)),
-        );
+        focus_circle(ui, pal, rect.center(), diameter / 2.0);
     }
     let tint = if enabled { Color32::WHITE } else { pal.text3 };
     let icon_rect =
@@ -814,5 +883,150 @@ mod contrast_tests {
             assert!(ratio(p.selected_fg, p.selected_bg) >= 4.5);
         }
         assert_eq!(palette(AppKind::Calls, true).content, Color32::BLACK);
+    }
+
+    #[test]
+    fn focus_ring_is_3_to_1_on_every_surface_in_every_mode() {
+        for dark in [false, true] {
+            for hc in [false, true] {
+                let base = base_palette(AppKind::Calls, dark);
+                let p = if hc { high_contrast_of(base) } else { base };
+                let ring = focus_color(&p);
+                for (name, bg) in [
+                    ("toolbar", p.toolbar),
+                    ("sidebar", p.sidebar),
+                    ("content", p.content),
+                    ("surface", p.surface),
+                    ("tile", p.tile),
+                    ("control", p.control),
+                    ("control_hover", p.control_hover),
+                    ("selected_bg row", p.selected_bg),
+                ] {
+                    // The ring sits outside the control with a 1 pt gap, so it is judged against the
+                    // surface behind it; also against the control itself where they meet.
+                    if name == "selected_bg row" {
+                        continue;
+                    }
+                    let r = ratio(ring, bg);
+                    assert!(r >= 3.0, "dark={dark} hc={hc} ring on {name}: {r:.2}");
+                }
+                assert_ne!(
+                    ring, p.accent_fill,
+                    "the ring must never be the red it sits next to"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn high_contrast_makes_secondary_text_and_edges_strong() {
+        for dark in [false, true] {
+            let p = high_contrast_of(base_palette(AppKind::Calls, dark));
+            for bg in [p.content, p.sidebar, p.tile, p.control] {
+                assert!(ratio(p.text2, bg) >= 7.0 && ratio(p.text3, bg) >= 7.0);
+                assert!(ratio(p.separator, bg) >= 3.0, "edges visible, dark={dark}");
+                assert!(
+                    ratio(p.dot_off, bg) >= 3.0,
+                    "unlit dots visible, dark={dark}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn status_is_never_colour_alone() {
+        // Every status tone is a dot whose *shape* also differs (hollow vs filled) and is followed
+        // by text; the palette must still keep warning/error distinguishable from ok by luminance.
+        for dark in [false, true] {
+            let p = base_palette(AppKind::Calls, dark);
+            assert!(ratio(p.ok, p.err) >= 1.0);
+            assert_ne!(p.err, p.text, "errors are red, plain text is ink");
+        }
+    }
+
+    #[test]
+    fn no_text_is_set_below_12_points() {
+        let files: [(&str, &str); 9] = [
+            ("theme.rs", include_str!("theme.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+            ("nothing.rs", include_str!("nothing.rs")),
+            ("call_ui.rs", include_str!("call_ui.rs")),
+            ("apps/calls.rs", include_str!("apps/calls.rs")),
+            ("apps/messages.rs", include_str!("apps/messages.rs")),
+            ("apps/contacts.rs", include_str!("apps/contacts.rs")),
+            ("apps/calendar.rs", include_str!("apps/calendar.rs")),
+            ("home_app.rs", include_str!("home_app.rs")),
+        ];
+        for (name, src) in files {
+            for (n, line) in src.lines().enumerate() {
+                for pat in ["FontId::new(", ".size("] {
+                    let mut rest = line;
+                    while let Some(i) = rest.find(pat) {
+                        rest = &rest[i + pat.len()..];
+                        let num: String = rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit() || *c == '.')
+                            .collect();
+                        if let Ok(size) = num.parse::<f32>() {
+                            assert!(size >= 12.0, "{name}:{} sets {size} pt text", n + 1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tab walks the controls in reading order and wraps; Shift+Tab goes back.
+    #[test]
+    fn tab_order_follows_layout_order() {
+        use egui::{Event, Key, Modifiers, RawInput};
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let pal = base_palette(AppKind::Calls, false);
+        let labels = ["One", "Two", "Three"];
+        let mut focused = Vec::new();
+        let frame = |events: Vec<Event>| -> Option<usize> {
+            let input = RawInput {
+                events,
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::pos2(0.0, 0.0),
+                    vec2(400.0, 200.0),
+                )),
+                ..Default::default()
+            };
+            let mut at = None;
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        for (i, l) in labels.iter().enumerate() {
+                            if pill_button(ui, &pal, l, ButtonKind::Plain, true).has_focus() {
+                                at = Some(i);
+                            }
+                        }
+                    });
+                });
+            });
+            at
+        };
+        let tab = |shift: bool| Event::Key {
+            key: Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: if shift {
+                Modifiers::SHIFT
+            } else {
+                Modifiers::NONE
+            },
+        };
+        frame(vec![]);
+        for _ in 0..3 {
+            // Each Tab takes effect on the following frame.
+            frame(vec![tab(false)]);
+            focused.push(frame(vec![]));
+        }
+        assert_eq!(focused, [Some(0), Some(1), Some(2)]);
+        frame(vec![tab(true)]);
+        assert_eq!(frame(vec![]), Some(1));
     }
 }

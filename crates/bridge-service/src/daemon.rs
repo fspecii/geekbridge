@@ -52,6 +52,8 @@ mod pairing_flow;
 pub const MAX_LINKS: usize = 16;
 /// Unpaired links one source address may hold at once (S2-1 in docs/security-review-2.md).
 pub const MAX_UNPAIRED_PER_IP: usize = 3;
+/// File in the state directory holding the computer name the user chose.
+pub const DEVICE_NAME_FILE: &str = "device-name";
 pub const MAX_CHALLENGES: usize = 8;
 const EVENT_CAP: usize = 256;
 const EVENTS_PER_PAGE: usize = 128;
@@ -97,6 +99,8 @@ pub struct DaemonOptions {
     pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
     /// Show message text in new-message notifications. Default off ("hide message content").
     pub sms_show_content: bool,
+    /// Where the user-chosen computer name is saved. A saved name wins over `device_name`.
+    pub device_name_file: Option<std::path::PathBuf>,
 }
 
 impl DaemonOptions {
@@ -123,6 +127,7 @@ impl DaemonOptions {
             call_notifier: None,
             sms_notifier: None,
             sms_show_content: false,
+            device_name_file: None,
         }
     }
 }
@@ -172,6 +177,7 @@ impl Core {
             device_id: device.map(str::to_owned),
             kind,
         });
+        crate::tray::poke();
     }
 }
 
@@ -287,6 +293,14 @@ impl Daemon {
             store.clone(),
             options.transport.clone(),
         )?;
+        if let Some(saved) = options
+            .device_name_file
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+        {
+            // A damaged or hand-edited file just keeps the configured name.
+            let _ = endpoint.set_device_name(saved.trim());
+        }
         let endpoint = dev_wire_tap(endpoint, options.dev_loopback);
         let calls = CallHub::new();
         if let Some(n) = options.call_notifier.take() {
@@ -398,7 +412,7 @@ impl Daemon {
             ipc_version: bridge_core::ipc::IPC_VERSION,
             service_version: env!("CARGO_PKG_VERSION").to_owned(),
             device_id: creds.device_id().to_string(),
-            device_name: self.endpoint.local_identity().device_name.clone(),
+            device_name: self.endpoint.device_name(),
             own_cert_sha256: creds.cert().fingerprint_hex(),
             paired,
             links,
@@ -468,6 +482,7 @@ impl Daemon {
                 .test_connection(device_id.as_deref(), endpoint)
                 .await
                 .map(|t| Response::ConnectionTest(Box::new(t))),
+            Request::SetDeviceName { name } => self.set_device_name(&name).map(|()| Response::Ack),
             Request::Disconnect { device_id } => {
                 self.disconnect(&device_id).await.map(|()| Response::Ack)
             }
@@ -836,6 +851,20 @@ impl Daemon {
                 last_ping_event_ms: 0,
             },
         );
+    }
+
+    /// Rename this computer for the connections made from now on, and save the name.
+    pub fn set_device_name(&self, raw: &str) -> Result<(), ErrorBody> {
+        let name = kde::identity::validate_device_name(raw)
+            .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+        if let Some(path) = &self.options.device_name_file {
+            kde::fsutil::atomic_write_private(path, name.as_bytes())
+                .map_err(|_| err(ErrorCode::Failed, "the name could not be saved"))?;
+        }
+        self.endpoint
+            .set_device_name(&name)
+            .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
+        Ok(())
     }
 
     fn pair(&self, device_id: &str, mode: PairMode) -> Result<(), ErrorBody> {
@@ -1410,59 +1439,93 @@ async fn run_session(
     if !still_ours {
         return;
     }
-    match handshake {
-        kde::Handshake::Trusted(link) => trusted_loop(&d, &id, attempt, link, &mut rx).await,
-        kde::Handshake::Pending(pending) => {
-            let mode = if inbound {
-                // Waiting for the phone to ask sends nothing; the user still has to approve.
-                d.update(&id, attempt, |l, _| l.status.phase = LinkPhase::Pairing);
-                kde::PairMode::AwaitPeerRequest
-            } else {
-                let deadline = Instant::now() + d.options.unpaired_idle;
-                loop {
-                    match timeout_at(deadline, rx.recv()).await {
-                        Ok(Some(LinkCmd::Pair(PairMode::Request))) => break kde::PairMode::Request,
-                        Ok(Some(LinkCmd::Pair(PairMode::Await))) => {
-                            break kde::PairMode::AwaitPeerRequest;
-                        }
-                        Ok(Some(_)) => continue,
-                        Ok(None) => return,
-                        Err(_) => {
-                            return d.finish(
-                                &id,
-                                attempt,
-                                EventKind::LinkLost {
-                                    reason: "unpaired link idle".into(),
-                                },
-                            );
+    let mut handshake = handshake;
+    // A trusted link whose peer forgot us becomes a pending one in place (`re_pairing`).
+    let mut re_pairing = false;
+    loop {
+        match handshake {
+            kde::Handshake::Trusted(link) => {
+                let Some(pending) = trusted_loop(&d, &id, attempt, link, &mut rx).await else {
+                    return;
+                };
+                let fingerprint = pending.info().peer_cert.fingerprint_hex();
+                let ours = d.update(&id, attempt, |l, events| {
+                    l.status.phase = LinkPhase::Pairing;
+                    l.negotiated_out = vec![];
+                    events.push_back(event(
+                        &id,
+                        EventKind::NeedsPairing {
+                            peer_cert_sha256: fingerprint,
+                        },
+                    ));
+                });
+                if !ours {
+                    return;
+                }
+                re_pairing = true;
+                handshake = kde::Handshake::Pending(pending);
+            }
+            kde::Handshake::Pending(pending) => {
+                let mode = if inbound || re_pairing {
+                    // Waiting for the phone to ask sends nothing; the user still has to approve.
+                    d.update(&id, attempt, |l, _| l.status.phase = LinkPhase::Pairing);
+                    kde::PairMode::AwaitPeerRequest
+                } else {
+                    let deadline = Instant::now() + d.options.unpaired_idle;
+                    loop {
+                        match timeout_at(deadline, rx.recv()).await {
+                            Ok(Some(LinkCmd::Pair(PairMode::Request))) => {
+                                break kde::PairMode::Request;
+                            }
+                            Ok(Some(LinkCmd::Pair(PairMode::Await))) => {
+                                break kde::PairMode::AwaitPeerRequest;
+                            }
+                            Ok(Some(_)) => continue,
+                            Ok(None) => return,
+                            Err(_) => {
+                                return d.finish(
+                                    &id,
+                                    attempt,
+                                    EventKind::LinkLost {
+                                        reason: "unpaired link idle".into(),
+                                    },
+                                );
+                            }
                         }
                     }
-                }
-            };
-            let mut approver = ChallengeApprover {
-                daemon: d.clone(),
-                device_id: id.clone(),
-                attempt,
-                connection_id: info.connection_id.0,
-                peer_cert_sha256: info.peer_cert.fingerprint_hex(),
-            };
-            match pending.pair(mode, &mut approver).await {
-                Ok(link) => {
-                    let (described, out) = describe(link.info(), true);
-                    let ours = d.update(&id, attempt, |l, events| {
-                        l.status = LinkStatus {
-                            since_unix_ms: now_ms(),
-                            ..described
-                        };
-                        l.negotiated_out = out;
-                        events.push_back(event(&id, EventKind::Paired));
-                        events.push_back(event(&id, EventKind::Connected));
-                    });
-                    if ours {
-                        trusted_loop(&d, &id, attempt, link, &mut rx).await;
+                };
+                let mut approver = ChallengeApprover {
+                    daemon: d.clone(),
+                    device_id: id.clone(),
+                    attempt,
+                    connection_id: info.connection_id.0,
+                    peer_cert_sha256: info.peer_cert.fingerprint_hex(),
+                };
+                match pending.pair(mode, &mut approver).await {
+                    Ok(link) => {
+                        let (described, out) = describe(link.info(), true);
+                        let ours = d.update(&id, attempt, |l, events| {
+                            l.status = LinkStatus {
+                                since_unix_ms: now_ms(),
+                                ..described
+                            };
+                            l.negotiated_out = out;
+                            events.push_back(event(&id, EventKind::Paired));
+                            events.push_back(event(&id, EventKind::Connected));
+                        });
+                        if !ours {
+                            return;
+                        }
+                        handshake = kde::Handshake::Trusted(link);
+                    }
+                    Err(e) => {
+                        return d.finish(
+                            &id,
+                            attempt,
+                            EventKind::PairFailed { reason: reason(&e) },
+                        );
                     }
                 }
-                Err(e) => d.finish(&id, attempt, EventKind::PairFailed { reason: reason(&e) }),
             }
         }
     }
@@ -1474,7 +1537,7 @@ async fn trusted_loop(
     attempt: u64,
     mut link: kde::TrustedLink,
     rx: &mut mpsc::Receiver<LinkCmd>,
-) {
+) -> Option<kde::PendingLink> {
     let negotiated_in = gate::negotiated_incoming(&link.info().peer);
     let share_name = link.info().peer.device_name.clone();
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
@@ -1532,9 +1595,19 @@ async fn trusted_loop(
                 Ok(kde::LinkEvent::PeerUnpaired) => {
                     // bridge-kde already deleted the trust record.
                     let _ = d.forget_consent(id);
-                    return d.finish(id, attempt, EventKind::PeerUnpaired);
+                    d.finish(id, attempt, EventKind::PeerUnpaired);
+                    return None;
                 }
-                Ok(kde::LinkEvent::PeerRequestedRePair { .. }) => d.event(id, EventKind::PeerRequestedRePair),
+                Ok(kde::LinkEvent::PeerRequestedRePair { .. }) => {
+                    // The peer forgot us while our record outlived it. Its request is answered
+                    // like any incoming one: the user approves a challenge on this connection.
+                    d.event(id, EventKind::PeerRequestedRePair);
+                    d.share.link_lost(id);
+                    match link.into_re_pairing() {
+                        Ok(pending) => return Some(pending),
+                        Err(back) => link = back,
+                    }
+                }
                 Err(e) => break reason(&e),
             },
             Some(out) = clip_rx.recv() => {
@@ -1570,7 +1643,7 @@ async fn trusted_loop(
                     if ok {
                         d.finish(id, attempt, EventKind::Unpaired);
                     }
-                    return;
+                    return None;
                 }
                 Some(LinkCmd::Share(job)) => {
                     if !d.share.run_job(&mut link, job).await {
@@ -1578,7 +1651,7 @@ async fn trusted_loop(
                     }
                 }
                 Some(LinkCmd::Pair(_)) => {}
-                None => return,
+                None => return None,
             },
         }
     };
@@ -1591,6 +1664,7 @@ async fn trusted_loop(
     }
     d.share.link_lost(id);
     d.finish(id, attempt, EventKind::LinkLost { reason: loss });
+    None
 }
 
 enum ShareSend {

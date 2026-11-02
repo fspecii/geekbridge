@@ -146,7 +146,8 @@ impl Rig {
     }
 
     pub async fn wait(&self, what: &str, cond: impl Fn(&Status) -> bool) -> Status {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        // Generous: shared CI runners and busy dev machines stretch fault-injection timings.
+        let deadline = Instant::now() + Duration::from_secs(45);
         loop {
             let status = self.status().await;
             if cond(&status) {

@@ -6,6 +6,9 @@
 
     <!-- Dot-matrix home -->
     <string name="hero_caption">LINK</string>
+    <!-- Spoken instead of the dot-matrix caption, which is only drawn. -->
+    <string name="hero_cd_caption">Computer link</string>
+    <string name="home_cd_needs_attention">Needs attention</string>
     <string name="word_online">Online</string>
     <string name="word_waiting">Waiting</string>
     <string name="word_linking">Linking</string>

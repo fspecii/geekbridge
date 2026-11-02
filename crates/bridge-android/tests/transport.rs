@@ -1059,6 +1059,56 @@ fn paired_peer_reconnects_without_a_prompt_and_unpair_works_both_ways() {
     assert_eq!(Phone::events(&s, "unpaired").len(), 1);
 }
 
+/// The computer forgot the phone without telling it (it unpaired while no link was up), so the phone
+/// still trusts it. The computer's next pairing request is a normal prompt on the phone and pairs on
+/// the first try; it used to sit unanswered until the computer gave up.
+#[test]
+fn a_peer_that_forgot_the_phone_can_re_pair_first_try() {
+    let phone = Phone::start();
+    let creds =
+        DeviceCredentials::generate_with_id(&DeviceId::parse(&"q".repeat(32)).unwrap()).unwrap();
+    let first = peer_with('q', creds.clone(), Arc::new(MemoryTrustStore::new()));
+    let link = pair_by_peer(&phone, &first);
+    drop(link);
+    phone.wait("the link to end", |s| {
+        Phone::array(s, "connections").is_empty()
+    });
+    assert_eq!(Phone::array(&phone.status(), "paired").len(), 1);
+
+    // Same identity, empty trust store: the computer after its local "forget".
+    let again = peer_with('q', creds, Arc::new(MemoryTrustStore::new()));
+    let link = pending(again.dial(phone.addr, &phone.id).unwrap());
+    let (join, _seen) = again.spawn_pair(link, PairMode::Request, true);
+    let s = phone.wait("a pairing prompt", |s| {
+        !Phone::array(s, "prompts").is_empty()
+    });
+    ok(&phone.decision(&Phone::array(&s, "prompts")[0], true));
+    let _held = again.finish(join).expect("the first re-pair attempt works");
+    let s = phone.wait("trusted connection", Phone::first_trusted);
+    assert_eq!(Phone::array(&s, "paired").len(), 1);
+}
+
+#[test]
+fn renaming_the_phone_is_validated_and_the_next_connection_announces_it() {
+    let phone = Phone::start();
+    for bad in ["", "  ", "a\u{1b}b", &"n".repeat(33)] {
+        let v = phone.act("transport_set_name", json!({"device_name": bad}));
+        assert_eq!(code(&v), "invalid_device_name", "{bad:?}");
+    }
+    assert_eq!(phone.status()["local"]["device_name"], "Test Phone");
+
+    let v = phone.act(
+        "transport_set_name",
+        json!({"device_name": " Ana's Pixel "}),
+    );
+    assert_eq!(ok(&v)["device_name"], "Anas Pixel");
+    assert_eq!(phone.status()["local"]["device_name"], "Anas Pixel");
+
+    let peer = Peer::new('p');
+    let hs = peer.dial(phone.addr, &phone.id).unwrap();
+    assert_eq!(hs.info().peer.device_name, "Anas Pixel");
+}
+
 #[test]
 fn peer_unpairing_removes_trust_on_the_phone() {
     let phone = Phone::start();

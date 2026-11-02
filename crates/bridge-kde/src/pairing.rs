@@ -10,18 +10,22 @@
 //! * A peer's `{pair:true}` carrying a timestamp while we have an outstanding
 //!   request is treated as a crossed request, **not** as an accept. Stock apps
 //!   read it as an accept, which would pair with no local decision.
-//! * Duplicate or unsolicited pair packets never change state, never restart a
-//!   timer and never cause a second accept to be emitted. A small budget of
-//!   them is tolerated before the link is dropped.
+//! * Duplicate or unsolicited pair packets never cause a second accept to be emitted. A small
+//!   budget of them is tolerated before the link is dropped.
+//! * A repeated *request* from the peer while its prompt is pending (stock Android derives a new
+//!   key from every request's timestamp) **replaces** the prompt: the old one is cancelled, the
+//!   user is shown the new key, and every decision is tagged with the prompt generation it was
+//!   made for, so an approval of an older key is refused. At most [`MAX_REPLACEMENTS`] requests
+//!   per [`REPLACEMENT_WINDOW`] are honoured, the rest are ignored.
 //! * Non-pair packets are dropped, never delivered.
 //! * Pairing state dies with the connection.
 
 use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep_until};
 
 use crate::cert::{CertInfo, hex, unix_now};
@@ -31,6 +35,10 @@ use crate::packet::Packet;
 use crate::store::TrustedPeer;
 
 pub const PAIR_TYPE: &str = "kdeconnect.pair";
+
+/// Peer requests per window that may (re)start a prompt; further ones are ignored.
+pub const MAX_REPLACEMENTS: usize = 5;
+pub const REPLACEMENT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 pub struct PairingConfig {
@@ -182,7 +190,9 @@ pub(crate) enum Action {
         pair: bool,
         timestamp: Option<i64>,
     },
+    /// Show this prompt. Any earlier prompt is cancelled first; `generation` identifies it.
     Prompt {
+        generation: u64,
         direction: Direction,
         timestamp: i64,
         verification_key: String,
@@ -205,6 +215,7 @@ enum State {
     },
     RequestedByPeer {
         deadline: Instant,
+        timestamp: i64,
     },
     Finished,
 }
@@ -217,6 +228,9 @@ pub(crate) struct Machine {
     peer_spki: Vec<u8>,
     unexpected: u32,
     hint_sent: bool,
+    generation: u64,
+    /// Monotonic times of the peer requests that opened or replaced a prompt.
+    requests: Vec<Instant>,
 }
 
 impl Machine {
@@ -228,6 +242,8 @@ impl Machine {
             peer_spki,
             unexpected: 0,
             hint_sent: false,
+            generation: 0,
+            requests: Vec::new(),
         }
     }
 
@@ -258,12 +274,14 @@ impl Machine {
                     peer_accepted: false,
                     local_approved: false,
                 };
+                self.generation += 1;
                 vec![
                     Action::Send {
                         pair: true,
                         timestamp: Some(ts),
                     },
                     Action::Prompt {
+                        generation: self.generation,
                         direction: Direction::Outgoing,
                         timestamp: ts,
                         verification_key: self.key(ts),
@@ -341,16 +359,8 @@ impl Machine {
                 if (ts - now.unix).abs() > self.cfg.max_skew_secs {
                     return self.fail(PairingFailure::ClockSkew, true);
                 }
-                let expires_in = self.cfg.response_timeout;
-                self.state = State::RequestedByPeer {
-                    deadline: now.mono + expires_in,
-                };
-                vec![Action::Prompt {
-                    direction: Direction::Incoming,
-                    timestamp: ts,
-                    verification_key: self.key(ts),
-                    expires_in,
-                }]
+                self.requests.push(now.mono);
+                self.prompt_peer_request(ts, now)
             }
             // Peer cancels something we never saw, or an "accept" nobody asked for.
             (State::Waiting { .. }, _, _) => self.note_unexpected().unwrap_or_default(),
@@ -379,7 +389,23 @@ impl Machine {
             (State::Requested { .. }, true, Some(_)) => self.note_unexpected().unwrap_or_default(),
             (State::Requested { .. }, false, _) => self.fail(PairingFailure::RejectedByPeer, false),
 
-            (State::RequestedByPeer { .. }, true, _) => self.note_unexpected().unwrap_or_default(),
+            // A repeated request replaces the pending prompt (new timestamp, new key). Same
+            // timestamp, clock skew, or an exhausted budget: ignored, nothing changes.
+            (State::RequestedByPeer { timestamp, .. }, true, Some(ts)) => {
+                let same = ts == *timestamp;
+                let skewed = (ts - now.unix).abs() > self.cfg.max_skew_secs;
+                self.requests
+                    .retain(|t| now.mono.saturating_duration_since(*t) < REPLACEMENT_WINDOW);
+                if same || skewed || self.requests.len() >= MAX_REPLACEMENTS {
+                    return self.note_unexpected().unwrap_or_default();
+                }
+                self.requests.push(now.mono);
+                self.prompt_peer_request(ts, now)
+            }
+            // A bare accept while the peer's own request is pending is nothing.
+            (State::RequestedByPeer { .. }, true, None) => {
+                self.note_unexpected().unwrap_or_default()
+            }
             (State::RequestedByPeer { .. }, false, _) => {
                 self.fail(PairingFailure::RejectedByPeer, false)
             }
@@ -388,9 +414,37 @@ impl Machine {
         }
     }
 
-    pub(crate) fn on_local_decision(&mut self, approve: bool, now: Now) -> Vec<Action> {
+    /// (Re)open the prompt for a peer request: a fresh generation, a fresh response window.
+    fn prompt_peer_request(&mut self, ts: i64, now: Now) -> Vec<Action> {
+        let expires_in = self.cfg.response_timeout;
+        self.generation += 1;
+        self.state = State::RequestedByPeer {
+            deadline: now.mono + expires_in,
+            timestamp: ts,
+        };
+        vec![Action::Prompt {
+            generation: self.generation,
+            direction: Direction::Incoming,
+            timestamp: ts,
+            verification_key: self.key(ts),
+            expires_in,
+        }]
+    }
+
+    /// `generation` is the prompt the decision was made for. A decision for any other prompt
+    /// (an older key that has since been replaced) is dropped: it is not a decision on what
+    /// the user is looking at now.
+    pub(crate) fn on_local_decision(
+        &mut self,
+        generation: u64,
+        approve: bool,
+        now: Now,
+    ) -> Vec<Action> {
         if let Some(a) = self.expired(now) {
             return a;
+        }
+        if generation != self.generation {
+            return vec![];
         }
         match &mut self.state {
             State::Requested { .. } | State::RequestedByPeer { .. } if !approve => {
@@ -429,7 +483,26 @@ impl Machine {
 // Driver
 // ---------------------------------------------------------------------------
 
-type Approval<'a> = Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
+/// Serves prompts to the approver one at a time. A newer prompt drops the pending `approve`
+/// future (cancelling the old prompt in the UI) before the approver is asked again, and each
+/// decision is returned tagged with the generation it answers.
+async fn serve_approvals<A: Approver>(
+    approver: &mut A,
+    mut prompts: mpsc::UnboundedReceiver<(u64, ApprovalRequest)>,
+    decisions: mpsc::UnboundedSender<(u64, bool)>,
+) {
+    let mut next = prompts.recv().await;
+    while let Some((generation, request)) = next {
+        tokio::select! {
+            decision = approver.approve(request) => {
+                let _ = decisions.send((generation, decision));
+                next = prompts.recv().await;
+            }
+            newer = prompts.recv() => next = newer,
+        }
+    }
+    std::future::pending::<()>().await;
+}
 
 impl PendingLink {
     /// Run one pairing attempt on this link. Consumes the link: on failure the
@@ -454,9 +527,16 @@ impl PendingLink {
             unix: clock(),
         };
         let mut actions = machine.start(mode, now());
-        let mut approver = Some(approver);
         let mut peer_token: Option<String> = None;
-        let mut approval: Option<Approval<'_>> = None;
+        if let (PairMode::AwaitPeerRequest, Some(request)) = (mode, self.seed.take()) {
+            // The request was read by the trusted link this one came from.
+            peer_token = request.token.clone();
+            actions = machine.on_pair(request, now());
+        }
+        let (prompt_tx, prompt_rx) = mpsc::unbounded_channel();
+        let (decision_tx, mut decision_rx) = mpsc::unbounded_channel();
+        let approvals = serve_approvals(approver, prompt_rx, decision_tx);
+        tokio::pin!(approvals);
 
         loop {
             for action in std::mem::take(&mut actions) {
@@ -473,6 +553,7 @@ impl PendingLink {
                         self.conn.send(&packet).await?
                     }
                     Action::Prompt {
+                        generation,
                         direction,
                         timestamp,
                         verification_key,
@@ -491,11 +572,8 @@ impl PendingLink {
                             qr_pinned: self.pairing.token.is_some()
                                 && direction == Direction::Outgoing,
                         };
-                        // The machine prompts exactly once per attempt.
-                        let ap = approver
-                            .take()
-                            .ok_or(PairingFailure::Malformed("second approval prompt"))?;
-                        approval = Some(Box::pin(ap.approve(req)));
+                        // Supersedes any pending prompt; its approval can no longer be given.
+                        let _ = prompt_tx.send((generation, req));
                     }
                     Action::Fail(f) => return Err(f.into()),
                     Action::Complete => return self.complete(conn_id, bound_fp, clock).await,
@@ -508,14 +586,9 @@ impl PendingLink {
             tokio::select! {
                 biased;
                 _ = sleep_until(deadline) => actions = machine.on_tick(now()),
-                decision = async {
-                    match approval.as_mut() {
-                        Some(f) => f.as_mut().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
-                    approval = None;
-                    actions = machine.on_local_decision(decision, now());
+                _ = &mut approvals => {}
+                Some((generation, decision)) = decision_rx.recv() => {
+                    actions = machine.on_local_decision(generation, decision, now());
                 }
                 line = self.conn.reader.read_line(self.conn.limits.packet_line) => {
                     let line = line.map_err(|e| match e {
@@ -565,7 +638,12 @@ impl PendingLink {
             let _ = self.conn.send(&pair_packet(false, None)).await;
             return Err(e);
         }
-        Ok(TrustedLink::new(self.conn, self.store))
+        Ok(TrustedLink::new(
+            self.conn,
+            self.store,
+            self.own_cert,
+            self.pairing,
+        ))
     }
 }
 
@@ -635,17 +713,17 @@ mod tests {
                     m.on_pair(accept(), now).is_empty(),
                     "peer accept alone must not complete"
                 );
-                assert_eq!(m.on_local_decision(true, now), vec![Action::Complete]);
+                assert_eq!(m.on_local_decision(1, true, now), vec![Action::Complete]);
             } else {
                 assert!(
-                    m.on_local_decision(true, now).is_empty(),
+                    m.on_local_decision(1, true, now).is_empty(),
                     "local approval alone must not complete"
                 );
                 assert_eq!(m.on_pair(accept(), now), vec![Action::Complete]);
             }
             // Finished: nothing else does anything.
             assert!(m.on_pair(accept(), now).is_empty());
-            assert!(m.on_local_decision(true, now).is_empty());
+            assert!(m.on_local_decision(1, true, now).is_empty());
         }
     }
 
@@ -657,7 +735,7 @@ mod tests {
         let now = at(t0, 1000);
         assert!(m.on_pair(request(1000), now).is_empty());
         assert!(
-            m.on_local_decision(true, now).is_empty(),
+            m.on_local_decision(1, true, now).is_empty(),
             "still waiting for a genuine accept"
         );
         // Times out, notifying the peer.
@@ -683,12 +761,134 @@ mod tests {
             panic!("{a:?}")
         };
         assert_eq!(*key, verification_key(&[1, 2, 3], &[9, 9], 5000));
-        // Duplicate request with a different timestamp: ignored, key and timer untouched.
-        assert!(m.on_pair(request(5001), at(t0, 5000)).is_empty());
+        // Same timestamp again, and a bare accept: ignored.
+        assert!(m.on_pair(request(5000), at(t0, 5000)).is_empty());
         assert!(m.on_pair(accept(), at(t0, 5000)).is_empty());
-        let a = m.on_local_decision(true, at(t0, 5000));
+        let a = m.on_local_decision(1, true, at(t0, 5000));
         assert_eq!(a, vec![send(true, None), Action::Complete]);
-        assert!(m.on_local_decision(true, at(t0, 5000)).is_empty());
+        assert!(m.on_local_decision(1, true, at(t0, 5000)).is_empty());
+    }
+
+    fn prompt_of(a: &[Action]) -> (u64, String) {
+        match a {
+            [
+                Action::Prompt {
+                    generation,
+                    verification_key,
+                    ..
+                },
+            ] => (*generation, verification_key.clone()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_request_replaces_the_prompt_and_stale_approval_is_refused() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        let (g1, k1) = prompt_of(&m.on_pair(request(5000), at(t0, 5000)));
+        let later = at(t0 + Duration::from_secs(10), 5010);
+        let (g2, k2) = prompt_of(&m.on_pair(request(5010), later));
+        assert_ne!(g1, g2);
+        assert_ne!(k1, k2, "the new key is derived from the new timestamp");
+        assert_eq!(k2, verification_key(&[1, 2, 3], &[9, 9], 5010));
+        // The user approved the old key: refused, nothing sent, still pending.
+        assert!(m.on_local_decision(g1, true, later).is_empty());
+        assert!(m.deadline().is_some());
+        // The response window restarted for the new prompt.
+        assert_eq!(m.deadline(), Some(later.mono + cfg().response_timeout));
+        // Approving what is shown now completes, and the accept goes out exactly once.
+        assert_eq!(
+            m.on_local_decision(g2, true, later),
+            vec![send(true, None), Action::Complete]
+        );
+        assert!(m.on_local_decision(g2, true, later).is_empty());
+        assert!(m.on_pair(request(5011), later).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_rejection_does_not_cancel_the_new_prompt() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        let (g1, _) = prompt_of(&m.on_pair(request(5000), at(t0, 5000)));
+        let (g2, _) = prompt_of(&m.on_pair(request(5001), at(t0, 5001)));
+        assert!(m.on_local_decision(g1, false, at(t0, 5001)).is_empty());
+        assert_eq!(
+            m.on_local_decision(g2, false, at(t0, 5001)),
+            vec![
+                send(false, None),
+                Action::Fail(PairingFailure::RejectedLocally)
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacement_requests_are_rate_limited() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        let mut last = 0;
+        for i in 0..MAX_REPLACEMENTS as i64 {
+            let a = m.on_pair(request(5000 + i), at(t0, 5000 + i));
+            last = prompt_of(&a).0;
+        }
+        // Sixth request inside the minute: ignored, the fifth prompt stays.
+        assert!(m.on_pair(request(5100), at(t0, 5001)).is_empty());
+        assert!(m.on_local_decision(last, true, at(t0, 5001)).len() == 2);
+
+        // After the window the budget is back.
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        for i in 0..MAX_REPLACEMENTS as i64 {
+            m.on_pair(request(5000 + i), at(t0, 5000));
+        }
+        let late = at(t0 + REPLACEMENT_WINDOW, 5000);
+        // (prompt itself expired meanwhile: the request now fails with a timeout notice)
+        assert!(matches!(
+            m.on_pair(request(5200), late).last(),
+            Some(Action::Fail(PairingFailure::Timeout))
+        ));
+    }
+
+    /// The request captured from stock Android 1.37.0, replayed twice the way a double tap
+    /// produces it (second timestamp later), with the clock set to the capture time.
+    #[tokio::test(start_paused = true)]
+    async fn captured_android_request_replayed_twice_replaces_the_prompt() {
+        let raw =
+            include_str!("../tests/fixtures/kdeconnect-android-real/android-pair-request.json");
+        let first =
+            PairBody::parse(&Packet::from_line(raw.trim_end().as_bytes()).unwrap()).unwrap();
+        let ts = first.timestamp.unwrap();
+        let second = PairBody {
+            timestamp: Some(ts + 7),
+            ..first.clone()
+        };
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, ts));
+        let (g1, k1) = prompt_of(&m.on_pair(first.clone(), at(t0, ts)));
+        // A literal duplicate is ignored; the re-timestamped one replaces.
+        assert!(m.on_pair(first, at(t0, ts)).is_empty());
+        let (g2, k2) = prompt_of(&m.on_pair(second, at(t0, ts + 7)));
+        assert_ne!(k1, k2);
+        assert!(m.on_local_decision(g1, true, at(t0, ts + 7)).is_empty());
+        assert_eq!(
+            m.on_local_decision(g2, true, at(t0, ts + 7)),
+            vec![send(true, None), Action::Complete]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn replacement_with_bad_clock_or_same_timestamp_changes_nothing() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
+        let (g1, _) = prompt_of(&m.on_pair(request(5000), at(t0, 5000)));
+        assert!(m.on_pair(request(5000), at(t0, 5000)).is_empty());
+        assert!(m.on_pair(request(5000 + 1801), at(t0, 5000)).is_empty());
+        assert_eq!(m.on_local_decision(g1, true, at(t0, 5000)).len(), 2);
     }
 
     #[tokio::test(start_paused = true)]
@@ -698,13 +898,13 @@ mod tests {
         m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
         m.on_pair(request(5000), at(t0, 5000));
         let late = at(t0 + Duration::from_secs(26), 5026);
-        let a = m.on_local_decision(true, late);
+        let a = m.on_local_decision(1, true, late);
         assert_eq!(
             a,
             vec![send(false, None), Action::Fail(PairingFailure::Timeout)]
         );
         assert!(!a.contains(&Action::Complete));
-        assert!(m.on_local_decision(true, late).is_empty());
+        assert!(m.on_local_decision(1, true, late).is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -737,7 +937,7 @@ mod tests {
         let mut m = machine();
         m.start(PairMode::AwaitPeerRequest, at(t0, 5000));
         assert!(m.on_pair(accept(), at(t0, 5000)).is_empty());
-        assert!(m.on_local_decision(true, at(t0, 5000)).is_empty());
+        assert!(m.on_local_decision(1, true, at(t0, 5000)).is_empty());
     }
 
     #[tokio::test(start_paused = true)]
@@ -753,7 +953,7 @@ mod tests {
         let mut m = machine();
         m.start(PairMode::Request, at(t0, 1));
         assert_eq!(
-            m.on_local_decision(false, at(t0, 1)),
+            m.on_local_decision(1, false, at(t0, 1)),
             vec![
                 send(false, None),
                 Action::Fail(PairingFailure::RejectedLocally)

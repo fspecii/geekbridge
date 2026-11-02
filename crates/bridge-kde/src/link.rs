@@ -240,6 +240,10 @@ impl Handshake {
 pub struct TrustedLink {
     conn: Conn,
     store: Arc<dyn TrustStore>,
+    own_cert: CertInfo,
+    pairing: PairingConfig,
+    /// The peer's last `{pair:true, timestamp}` on this link: it forgot us (see `into_re_pairing`).
+    re_pair: Option<pairing::PairBody>,
 }
 
 #[derive(Debug)]
@@ -248,15 +252,48 @@ pub enum LinkEvent {
     /// The peer sent `{pair:false}`; the trust record has already been deleted.
     PeerUnpaired,
     /// The peer asks to pair again (it has forgotten us). Our record and pin
-    /// are untouched; unpair locally and pair again to accept.
+    /// are untouched until the user approves: call [`TrustedLink::into_re_pairing`] to run the
+    /// ordinary approval on this very connection, or unpair to refuse.
     PeerRequestedRePair {
         timestamp: i64,
     },
 }
 
 impl TrustedLink {
-    pub(crate) fn new(conn: Conn, store: Arc<dyn TrustStore>) -> Self {
-        Self { conn, store }
+    pub(crate) fn new(
+        conn: Conn,
+        store: Arc<dyn TrustStore>,
+        own_cert: CertInfo,
+        pairing: PairingConfig,
+    ) -> Self {
+        Self {
+            conn,
+            store,
+            own_cert,
+            pairing,
+            re_pair: None,
+        }
+    }
+
+    /// After [`LinkEvent::PeerRequestedRePair`]: the peer lost its record of us (it unpaired while
+    /// no link was up, so our record outlived it) and its request is waiting on this connection.
+    /// Turn the link into a pending one that already holds that request, so the normal approval
+    /// (`PendingLink::pair` with `AwaitPeerRequest`) answers it. The peer was authenticated by
+    /// the pinned certificate, our record is only replaced once the user approves, and a refusal
+    /// or timeout leaves it as it was. Returns the link unchanged when no request was seen.
+    #[allow(clippy::result_large_err)]
+    pub fn into_re_pairing(self) -> std::result::Result<PendingLink, TrustedLink> {
+        let Some(request) = self.re_pair.clone() else {
+            return Err(self);
+        };
+        Ok(PendingLink {
+            conn: self.conn,
+            store: self.store,
+            own_cert: self.own_cert,
+            pairing: self.pairing,
+            seed: Some(request),
+            _permit: None,
+        })
     }
 
     pub fn info(&self) -> &LinkInfo {
@@ -321,7 +358,10 @@ impl TrustedLink {
                 // Duplicate accept on an already paired link: ignore (stock Android would
                 // drop trust here, which is why we never send one).
                 (true, None) => continue,
-                (true, Some(ts)) => return Ok(LinkEvent::PeerRequestedRePair { timestamp: ts }),
+                (true, Some(ts)) => {
+                    self.re_pair = Some(body);
+                    return Ok(LinkEvent::PeerRequestedRePair { timestamp: ts });
+                }
             }
         }
     }
@@ -341,6 +381,8 @@ pub struct PendingLink {
     pub(crate) store: Arc<dyn TrustStore>,
     pub(crate) own_cert: CertInfo,
     pub(crate) pairing: PairingConfig,
+    /// A pair request that arrived before this link was pending (see `TrustedLink::into_re_pairing`).
+    pub(crate) seed: Option<pairing::PairBody>,
     pub(crate) _permit: Option<OwnedSemaphorePermit>,
 }
 
@@ -363,6 +405,8 @@ impl PendingLink {
 /// Our side of the transport: identity, credentials, trust store, limits.
 pub struct Endpoint {
     local: Identity,
+    /// What the next handshake announces: `local` with the name the user last chose.
+    live: std::sync::RwLock<Identity>,
     creds: Arc<DeviceCredentials>,
     store: Arc<dyn TrustStore>,
     config: TransportConfig,
@@ -415,6 +459,7 @@ impl Endpoint {
         )?;
         let slots = config.max_unpaired;
         Ok(Self {
+            live: std::sync::RwLock::new(local.clone()),
             local,
             creds,
             store,
@@ -437,8 +482,30 @@ impl Endpoint {
         }
     }
 
+    /// The identity this endpoint was created with (device id, capabilities). The name may have
+    /// been changed since: use [`Endpoint::device_name`] and [`Endpoint::current_identity`].
     pub fn local_identity(&self) -> &Identity {
         &self.local
+    }
+
+    /// The identity the next connection announces.
+    pub fn current_identity(&self) -> Identity {
+        self.live.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn device_name(&self) -> String {
+        self.current_identity().device_name
+    }
+
+    /// Change the name announced from the next connection on; connections already open keep what
+    /// the peer learned during their handshake (the protocol has no identity update).
+    pub fn set_device_name(&self, raw: &str) -> Result<String> {
+        let name = crate::identity::validate_device_name(raw)?;
+        self.live
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .device_name = name.clone();
+        Ok(name)
     }
 
     pub fn credentials(&self) -> &DeviceCredentials {
@@ -496,7 +563,7 @@ impl Endpoint {
             None => (PeerPolicy::Inspect, Some(self.take_unpaired_slot()?)),
         };
 
-        let first = self.local.addressed_to(target).to_packet();
+        let first = self.current_identity().addressed_to(target).to_packet();
         if self.wire_tap.is_some() {
             let l = first.to_line();
             self.tap(true, &l[..l.len() - 1]);
@@ -633,13 +700,14 @@ impl Endpoint {
     {
         let t = &self.config.timeouts;
         let l = &self.config.limits;
+        let announced = self.current_identity().to_packet();
         if self.wire_tap.is_some() {
-            let l = self.local.to_packet().to_line();
+            let l = announced.to_line();
             self.tap(true, &l[..l.len() - 1]);
         }
         write_packet(
             &mut tls,
-            &self.local.to_packet(),
+            &announced,
             l.outgoing_identity_line,
             Instant::now() + t.write,
         )
@@ -707,13 +775,19 @@ impl Endpoint {
             tap: self.wire_tap.clone(),
         };
         Ok(if pinned.is_some() {
-            Handshake::Trusted(TrustedLink::new(conn, self.store.clone()))
+            Handshake::Trusted(TrustedLink::new(
+                conn,
+                self.store.clone(),
+                self.creds.cert().clone(),
+                self.config.pairing.clone(),
+            ))
         } else {
             Handshake::Pending(PendingLink {
                 conn,
                 store: self.store.clone(),
                 own_cert: self.creds.cert().clone(),
                 pairing: self.config.pairing.clone(),
+                seed: None,
                 _permit: permit,
             })
         })

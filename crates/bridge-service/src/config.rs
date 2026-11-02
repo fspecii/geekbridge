@@ -22,6 +22,9 @@ Options:
   --no-listen-inbound      do not accept connections from phones (outbound dialling only)
   --no-announce            do not announce this computer on the LAN (phones then cannot find it)
   --no-calling-probe       never touch the system bus for the calling status request
+  --tray / --no-tray       show / hide the tray or menu-bar icon (default: shown, except with a private
+                           --state-dir or $GEEKBRIDGE_STATE_DIR; $GEEKBRIDGE_NO_TRAY=1 hides it;
+                           `geekbridge-ctl tray disable` hides it for good)
   --dev-loopback           developer only: allow loopback peers and any TCP port
   --print-token-path       print where the control token lives (never the token) and exit
   -h, --help               show this help
@@ -44,6 +47,10 @@ pub struct Config {
     pub announce: bool,
     pub calling_probe: bool,
     pub dev_loopback: bool,
+    /// Show a tray / menu-bar icon. On by default only for the default state directory, so test
+    /// and demo services with a private `--state-dir` never put an icon on the user's bar;
+    /// `--tray` forces it, `--no-tray` / `$GEEKBRIDGE_NO_TRAY` / `geekbridge-ctl tray disable` stop it.
+    pub tray: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -73,6 +80,7 @@ impl PartialEq for Config {
             && self.announce == other.announce
             && self.calling_probe == other.calling_probe
             && self.dev_loopback == other.dev_loopback
+            && self.tray == other.tray
     }
 }
 impl Eq for Config {}
@@ -88,6 +96,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     let mut announce = true;
     let mut calling_probe = true;
     let mut dev_loopback = false;
+    let mut tray = std::env::var_os("GEEKBRIDGE_NO_TRAY")
+        .is_some_and(|v| !v.is_empty() && v != "0")
+        .then_some(false);
     let mut print_token = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -126,6 +137,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
             }
             "--no-calling-probe" => calling_probe = false,
             "--dev-loopback" => dev_loopback = true,
+            "--no-tray" => tray = Some(false),
+            "--tray" => tray = Some(true),
             "--print-token-path" => print_token = true,
             other => return Err(format!("unknown argument: {other}")),
         }
@@ -133,6 +146,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
     if api_port == control_port {
         return Err("--api-port and --control-port must differ".into());
     }
+    let private_state = state_dir.is_some() || std::env::var_os(ipc::ENV_STATE_DIR).is_some();
     let state_dir = state_dir
         .or_else(ipc::default_state_dir)
         .ok_or("cannot determine a state directory; pass --state-dir")?;
@@ -150,6 +164,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Parsed, String>
         announce,
         calling_probe,
         dev_loopback,
+        tray: tray.unwrap_or(!private_state),
     }))
 }
 

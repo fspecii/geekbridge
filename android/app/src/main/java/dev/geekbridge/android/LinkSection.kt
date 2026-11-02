@@ -165,7 +165,7 @@ class LinkSection(
                 controller.start(
                     StartOptions(
                         stateDir = activity.filesDir.absolutePath,
-                        deviceName = Build.MODEL ?: "Android",
+                        deviceName = DeviceName.current(activity),
                         listen = optListen.isChecked,
                         listenPort = if (optListen.isChecked) port else null,
                         discoveryListen = optDiscover.isChecked,

@@ -528,6 +528,15 @@ impl Core {
         Ok(json!({ "disconnected": true }))
     }
 
+    /// Change the name announced from the next connection and discovery announcement on.
+    pub(super) fn set_device_name(&self, raw: &str) -> Result<Value, ApiError> {
+        let name = self
+            .endpoint
+            .set_device_name(raw)
+            .map_err(|_| err("invalid_device_name", "device name is not acceptable"))?;
+        Ok(json!({ "device_name": name }))
+    }
+
     /// Forget a device: delete its trust record first, then close any connection (a trusted
     /// link tells the peer on a best-effort basis).
     pub(super) fn unpair(&self, device: &DeviceId) -> Result<Value, ApiError> {
@@ -658,6 +667,9 @@ impl Core {
         if !st.open || st.prompts.len() >= MAX_PROMPTS {
             return None;
         }
+        // A newer prompt on the same connection replaces the older one (the peer repeated its
+        // request with a new key); the old request id can no longer be approved.
+        st.prompts.retain(|p| p.connection_id != connection_id);
         let request_id = self.requests.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         let device = DeviceId::parse(&r.peer_id).ok();
@@ -807,7 +819,7 @@ impl Core {
             "state": "running",
             "local": {
                 "device_id": self.local_id().as_str(),
-                "device_name": self.info.device_name,
+                "device_name": self.endpoint.device_name(),
                 "cert_sha256": self.info.cert_sha256,
             },
             "listen": self.info.listen.map(|a| json!({ "host": a.ip().to_string(), "port": a.port() })),
@@ -1095,9 +1107,22 @@ async fn run_trusted(
                     break Some(("peer_unpaired", None));
                 }
                 Ok(LinkEvent::PeerRequestedRePair { .. }) => {
-                    let mut st = core.lock();
-                    let device = st.conns.get(&id).map(|c| c.peer_id.clone());
-                    st.event("peer_requested_repair", Some(id), device.as_ref(), None);
+                    {
+                        let mut st = core.lock();
+                        let device = st.conns.get(&id).map(|c| c.peer_id.clone());
+                        st.event("peer_requested_repair", Some(id), device.as_ref(), None);
+                    }
+                    // The computer forgot this phone while the record here outlived it. Its
+                    // request is shown as the usual prompt on this connection; nothing changes
+                    // until the user accepts.
+                    if let Ok(pending) = link.into_re_pairing() {
+                        core.with_conn(id, |c| c.phase = Phase::PairingAwait);
+                        return Box::pin(run_pending(
+                            core, id, pending, Origin::Inbound, ctl_rx, close,
+                        ))
+                        .await;
+                    }
+                    break Some(("link_closed", Some("protocol")));
                 }
                 Err(e) => break Some(("link_closed", Some(kde_code(&e)))),
             },

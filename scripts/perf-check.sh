@@ -12,6 +12,7 @@
 # ticks. No perf/strace/valgrind needed. Budgets can be overridden through the environment, e.g.
 # BUDGET_RSS_KIB=9000. The service runs on private ports in a temp state dir and never touches the
 # user's real state, the network beyond loopback/UDP discovery on a private port, or the system bus.
+# The tray runs too, on a private session bus with a stand-in StatusNotifierWatcher (see below).
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -28,7 +29,7 @@ UI=0
 : "${BUDGET_WAKEUPS_PER_S:=3}"        # context switches per second, whole process
 : "${BUDGET_CPU_TICKS:=2}"            # CPU ticks (10 ms each) burned over the whole window
 : "${BUDGET_STARTUP_MS:=300}"         # exec to "discovery API" line, warm cache
-: "${BUDGET_SERVICE_BYTES:=5300000}"  # stripped binary size (raised from 5.0 MB on 2026-11-02, docs/performance.md)
+: "${BUDGET_SERVICE_BYTES:=5600000}"  # stripped binary size (5.0 -> 5.3 -> 5.6 MB on 2026-11-02: the tray, docs/performance.md)
 : "${BUDGET_CTL_BYTES:=1200000}"
 : "${BUDGET_UI_RSS_KIB:=90000}"       # geekbridge-messages, idle
 : "${BUDGET_UI_WAKEUPS_PER_S:=12}"
@@ -48,7 +49,7 @@ done
 if ((BUILD)); then
     pkgs=(-p bridge-service)
     ((UI)) && pkgs+=(-p bridge-apps)
-    (cd "$ROOT" && cargo build --release --locked "${pkgs[@]}")
+    (cd "$ROOT" && cargo build --release --locked "${pkgs[@]}" --bins --example tray-fake-watcher)
 fi
 BIN_DIR="$(cd "$BIN_DIR" 2>/dev/null && pwd -P || echo "$BIN_DIR")"
 [[ -x "$BIN_DIR/geekbridge-service" ]] || { echo "no release binary in $BIN_DIR (use --build or --bin-dir)" >&2; exit 2; }
@@ -76,11 +77,32 @@ status() { awk -v k="$2:" '$1 == k {print $2}' "/proc/$1/status"; }
 port() { echo $((20000 + RANDOM % 20000)); }
 
 export GEEKBRIDGE_NO_UPDATE_CHECK=1
+# The tray is part of the measured service: run it on a private session bus (never the user's) with
+# a stand-in StatusNotifierWatcher when the example is built, so the item is registered and idle,
+# which is what a desktop with a bar looks like. Without dbus-daemon the tray simply has no bus.
+# PERF_NO_TRAY=1 measures the service without it (A/B).
+TRAY_FLAG=()
+if [[ -z "${PERF_NO_TRAY:-}" ]] && command -v dbus-daemon >/dev/null; then
+    cat > "$TMP/bus.conf" <<CONF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig><listen>unix:path=$TMP/bus</listen><auth>EXTERNAL</auth><policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>
+CONF
+    dbus-daemon --config-file="$TMP/bus.conf" --nofork --print-address=1 > "$TMP/bus.addr" 2>/dev/null &
+    PIDS+=("$!")
+    until [[ -s "$TMP/bus.addr" ]]; do sleep 0.02; done
+    export DBUS_SESSION_BUS_ADDRESS="$(head -n1 "$TMP/bus.addr")"
+    TRAY_FLAG=(--tray)
+    if [[ -x "$BIN_DIR/examples/tray-fake-watcher" ]]; then
+        "$BIN_DIR/examples/tray-fake-watcher" >"$TMP/watcher.log" 2>&1 &
+        PIDS+=("$!")
+        until grep -q 'WATCHER READY' "$TMP/watcher.log" 2>/dev/null; do sleep 0.02; done
+    fi
+fi
 API_PORT=$(port) CONTROL_PORT=$((API_PORT + 1)) DISC_PORT=$((API_PORT + 2))
 
 start_ns=$(date +%s%N)
 "$BIN_DIR/geekbridge-service" --state-dir "$TMP/state" --api-port "$API_PORT" \
-    --control-port "$CONTROL_PORT" --discovery-port "$DISC_PORT" --no-calling-probe >"$TMP/service.log" 2>&1 &
+    --control-port "$CONTROL_PORT" --discovery-port "$DISC_PORT" --no-calling-probe "${TRAY_FLAG[@]}" >"$TMP/service.log" 2>&1 &
 SVC=$!
 PIDS+=("$SVC")
 until grep -q 'discovery API' "$TMP/service.log" 2>/dev/null; do

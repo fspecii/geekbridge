@@ -27,6 +27,7 @@ pub mod phone_data;
 pub mod private;
 pub mod session_env;
 pub mod share;
+pub mod tray;
 pub mod waybar;
 pub mod windows_host;
 use bridge_core::{MAX_API_BYTES, MAX_DEVICES, Snapshot, api_address};
@@ -433,6 +434,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     };
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
     options.dev_loopback = config.dev_loopback;
+    options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));
     options.clipboard = clipboard::detect_backend();
     options.clipboard_settings = Some(config.state_dir.join(clipboard::SETTINGS_FILE));
     options.hotkey_binder = hotkey_bind::detect();
@@ -534,11 +536,26 @@ pub async fn run(config: config::Config) -> io::Result<()> {
             control::Control::Unavailable(_) => "UNAVAILABLE: no private state",
         }
     );
+    let tray = match &*control {
+        control::Control::Ready { daemon, .. }
+            if config.tray && tray::enabled(&config.state_dir) =>
+        {
+            Some(tokio::spawn(tray::run(
+                daemon.clone(),
+                config.state_dir.clone(),
+            )))
+        }
+        _ => None,
+    };
     let result = tokio::select! {
         result = serve_api(api, state) => result,
         result = control::serve_control(control_listener, control) => result,
         result = shutdown => result,
+        () = tray::quit_requested() => Ok(()),
     };
+    if let Some(tray) = tray {
+        tray.abort();
+    }
     discovery.abort();
     expiry.abort();
     if let Some(alerts) = alerts {

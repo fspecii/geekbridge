@@ -149,7 +149,7 @@ class ShareActivity : Activity() {
     private fun startLinkIfNeeded() {
         val c = coordinator.controller
         if (c.phase == LinkPhase.Stopped) {
-            c.start(StartOptions(filesDir.absolutePath, Build.MODEL ?: "Android", true, null, true, false, false))
+            c.start(StartOptions(filesDir.absolutePath, DeviceName.current(this), true, null, true, false, false))
         }
     }
 

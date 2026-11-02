@@ -32,6 +32,9 @@
     <string name="home_chip_allow">Allow</string>
     <string name="home_stay_connected">Stay connected</string>
     <string name="home_stay_connected_sub">Keep reachable while the app is closed</string>
+    <string name="home_name_row">This phone\'s name</string>
+    <string name="home_name_help">Computers show this name for your phone. A computer that is connected now shows the new name the next time it connects.</string>
+    <string name="home_name_save">Save</string>
     <string name="home_setup_row">Setup &amp; permissions</string>
     <string name="home_setup_row_sub">Review every step</string>
     <string name="home_diag_row">Diagnostics &amp; about</string>

@@ -74,6 +74,27 @@ pub fn sanitize_device_name(raw: &str) -> Option<String> {
     }
 }
 
+/// Longest name a user may choose (what stock KDE Connect keeps).
+pub const MAX_USER_NAME_CHARS: usize = MAX_NAME_CHARS;
+
+/// A name typed by the user: refuse control characters and anything longer than
+/// [`MAX_USER_NAME_CHARS`] instead of silently cutting it, then apply the same filtering peers
+/// apply (so what is saved is exactly what the other device will show).
+pub fn validate_device_name(raw: &str) -> Result<String> {
+    if raw.chars().any(char::is_control) {
+        return Err(KdeError::InvalidIdentity(
+            "the name contains control characters".into(),
+        ));
+    }
+    if raw.trim().chars().count() > MAX_USER_NAME_CHARS {
+        return Err(KdeError::InvalidIdentity(format!(
+            "the name is longer than {MAX_USER_NAME_CHARS} characters"
+        )));
+    }
+    sanitize_device_name(raw)
+        .ok_or_else(|| KdeError::InvalidIdentity("the name is empty after filtering".into()))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceType {
     Desktop,
@@ -303,6 +324,20 @@ mod tests {
 
     fn id(c: char) -> String {
         std::iter::repeat_n(c, 32).collect()
+    }
+
+    #[test]
+    fn user_names_are_validated_not_silently_cut() {
+        assert_eq!(
+            validate_device_name("  Work laptop ").unwrap(),
+            "Work laptop"
+        );
+        assert_eq!(validate_device_name("Ana's PC").unwrap(), "Anas PC");
+        for bad in ["", "   ", "...", "a\u{1b}[31mred", "tab\there", "x\ny"] {
+            assert!(validate_device_name(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_device_name(&"a".repeat(MAX_USER_NAME_CHARS)).is_ok());
+        assert!(validate_device_name(&"a".repeat(MAX_USER_NAME_CHARS + 1)).is_err());
     }
 
     fn packet(body: Value) -> Packet {

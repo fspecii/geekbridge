@@ -101,7 +101,7 @@ object ShareProtocol {
             val kindText = kind != TransferKind.File
             out += Transfer(
                 id = id, connectionId = conn, deviceId = device,
-                peerName = Bounds.clip(o.optString("peer_name", ""), 48),
+                peerName = Bounds.name(o.optString("peer_name", ""), 48),
                 direction = direction, kind = kind,
                 name = if (kindText) "" else Bounds.clip(o.optString("name", ""), ShareLimits.MAX_NAME_CHARS),
                 size = nonNegative(o, "size"),

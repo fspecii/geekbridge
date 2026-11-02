@@ -774,6 +774,7 @@ impl ShareManager {
                 .take()
                 .ok_or_else(|| err(ErrorCode::Busy, "the offer is no longer available"))?;
             t.info.state = TransferState::Active;
+            crate::tray::poke();
             (
                 offer,
                 ctx,
@@ -964,6 +965,7 @@ impl ShareManager {
             created: now,
             finished: None,
         });
+        crate::tray::poke();
         Ok(id)
     }
 

@@ -74,7 +74,7 @@ pub fn dot_month(
                 painter.circle_stroke(c, 8.0, Stroke::new(1.0_f32, pal.separator));
             }
             if resp.has_focus() {
-                painter.circle_stroke(c, 9.5, Stroke::new(2.0_f32, pal.accent.gamma_multiply(0.8)));
+                crate::theme::focus_circle(ui, pal, c, 8.0);
             }
             resp.widget_info(|| {
                 WidgetInfo::labeled(

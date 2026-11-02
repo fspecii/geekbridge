@@ -15,7 +15,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | Wakeups (voluntary context switches, all threads) | ~1/s | ~0.3-2/s | 3/s |
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
-| `geekbridge-service` size | 10 722 896 B | 5 091 480 B (2026-11-02) | 5 300 000 B |
+| `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without) | 5 600 000 B |
 | `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 200 000 B |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
 | UI idle RSS (`--ui`) | 67-68 MB | 65.7 MB | 90 MB |
@@ -30,6 +30,24 @@ std's backtrace/symbolizer (gimli, miniz_oxide), the rest std/core. Feature-gati
 the old 800 kB, and `geekbridge-ctl` must keep `hotkey` and `status --waybar`. Under fat LTO the service already drops
 lib code it does not reference, so its growth is feature growth, not those modules. Real fixes would need a smaller
 wire protocol (e.g. a ctl-only slim response type) or nightly `build-std`; neither is justified for ~0.3 MB.
+
+**The tray (2026-11-02).** The tray icon runs inside the service (`bridge-service/src/tray/`), so `perf-check.sh` now
+starts the service with `--tray` on a private session bus with a stand-in watcher (`PERF_NO_TRAY=1` measures it
+without, for A/B). Measured, idle, watcher present, same machine:
+
+| | without tray | with tray |
+| --- | --- | --- |
+| Idle RSS | 6.6 MB | 8.0 MB |
+| Threads | 3 | 5 (zbus executor + async-io reactor) |
+| Open fds | 14 | 18 (bus socket, epoll, eventfds) |
+| Wakeups | 1/s | 1/s |
+| `geekbridge-service` size | 5 172 248 B | 5 502 392 B (+330 KB: zbus' object server, the two interfaces, the drawing code) |
+
+The size budget went 5.3 -> 5.6 MB for this; everything else stays inside its budget. The tray never polls (the rest of
+the service pokes a `Notify`; the task sleeps in between), and it connects the bus socket itself: letting zbus connect
+sends the connect to the `blocking` crate's pool, whose first thread then wakes every 500 ms for the life of the
+process (measured: +2 wakeups/s, which put the service exactly on its 3/s budget). With no bus or no watcher the cost is
+the same connection and nothing visible.
 
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.

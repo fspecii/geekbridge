@@ -1,4 +1,7 @@
 //! Shared implementation for the four separate GeekBridge app executables.
+pub mod a11y;
+#[cfg(all(test, feature = "accesskit"))]
+mod a11y_tests;
 pub mod apps;
 pub mod calendar_model;
 pub mod call_feed;
