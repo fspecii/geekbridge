@@ -35,7 +35,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 
 ## Maintainers: releasing
 
-- [Release checklist](release-checklist.md), [public release runbook](public-release-runbook.md), [licence decision](licence-decision.md)
+- [Release checklist](release-checklist.md), [licence decision](licence-decision.md)
 - [Real-device test plan](real-device-test-plan.md): the full manual checklist for a physical phone
 
 ## Reports (snapshots)

@@ -3,49 +3,11 @@
 Steps for the maintainer. Nothing here is automated beyond `scripts/release.sh`, which never commits, tags or pushes, and
 `scripts/release-local.sh`, which builds and verifies locally and publishes only when given `--publish` ([release-local.md](release-local.md)).
 
-## GitHub Actions is optional (account billing)
+## GitHub Actions
 
-> Every CI run so far (check.yml on each push) was refused by GitHub before starting a job: "recent account
-> payments have failed or your spending limit needs to be increased". So the Windows, macOS and Android CI jobs,
-> the perf budget job and the supply-chain job have **never executed**. Releases do not depend on Actions any more:
-> build, verify and upload them from the maintainer's Linux machine with
-> [`scripts/release-local.sh`](release-local.md) (`gh release create` works without Actions). That path produces the
-> Linux and Android assets only; **Windows and macOS binaries still need Actions or a contributor with those
-> machines** (there is an experimental zig cross-build of the Windows zip, see release-local.md).
->
-> Note: **public repositories get free GitHub Actions minutes**. Making the repo public (see the next section) lets
-> `release.yml` and `check.yml` run at no cost, which is also the way to get Windows and macOS builds. Until then,
-> fix Billing & plans or use the local script. When Actions does run, re-run the latest workflow
-> (`gh run rerun <id> --repo fspecii/geekbridge`) and update `docs/platform-status.md` with what actually fails.
-
-## Decide repo visibility before the first release
-
-> **Blocker.** `fspecii/geekbridge` is currently **private**. The update checkers (desktop `bridge-update`,
-> Android `UpdateChecker`) call `https://api.github.com/repos/<repo>/releases/latest` **without credentials**,
-> which GitHub answers with **404 for a private repository**. Nobody would ever be offered an update, and
-> the apps would say "No public release found: the project repository may be private or has no releases yet."
-> Pick one before tagging `v0.1.0`:
-
-- [ ] **A. Make `fspecii/geekbridge` public.** Simplest; nothing else to configure; source, issues and releases
-  are public. Irreversible in practice (forks/caches); run `scripts/public-preflight.sh` and follow [public-release-runbook.md](public-release-runbook.md) first.
-- [ ] **B. Keep the source private, publish releases to a separate PUBLIC releases-only repo** (the usual
-  pattern for closed-source apps), e.g. `fspecii/geekbridge-releases`:
-  1. Create it public with one commit (a README), so a tag can be created on its default branch.
-  2. In the private repo add the variable `RELEASE_REPO=fspecii/geekbridge-releases` and the secret
-     `RELEASES_TOKEN` (fine-grained token limited to that repo, *Contents: read and write*).
-  3. Build the shipped apps with the same repo, or they keep looking at the private one:
-     `GEEKBRIDGE_RELEASE_REPO=fspecii/geekbridge-releases cargo build --release …` (desktop) and
-     `-Pgb.releaseRepo=fspecii/geekbridge-releases` (Android). `release.yml` does not set these for you.
-  Consequences: binaries and `SHA256SUMS` are public even though the source is not; release notes are not
-  generated from commits; the tag exists in both repos; `RELEASES_TOKEN` expires and must be rotated.
-- [ ] **C. Stay private (testers only).** Desktop testers may set `GEEKBRIDGE_UPDATE_TOKEN` (read-only
-  fine-grained token, *Contents: read*) so the updater can see private releases; the token is memory-only,
-  sent to `api.github.com` only, never logged. **Android has no token support on purpose**: a token inside an
-  APK, or stored by the app, can be extracted by anyone holding the file. Android testers install APKs by hand.
-  Real users get no updates under this option.
-
-Testing a repo other than the built-in one: `GEEKBRIDGE_UPDATE_REPO=owner/name` (desktop service) or the
-debug-build preference `debug_repo` on Android ([updates.md](updates.md#choosing-the-release-source)).
+The CI workflows in `.github/workflows` run on GitHub-hosted runners. Releases do not depend on them:
+build, verify and upload from a Linux machine with [`scripts/release-local.sh`](release-local.md) (`gh release create` works
+without Actions). Windows and macOS binaries need Actions or a contributor with those machines.
 
 ## Before the first public release: decisions the owner must make
 

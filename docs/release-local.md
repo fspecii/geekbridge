@@ -1,6 +1,6 @@
 # Building and publishing a release on this machine
 
-GitHub Actions needs billing the project does not have, so releases are built **locally on the Linux (Arch/Omarchy)
+Releases are built **locally on the Linux (Arch/Omarchy)
 maintainer machine** and uploaded with `gh release create`, which works without Actions. One command does it:
 
     scripts/release-local.sh vX.Y.Z [--prerelease] [--dry-run] [--publish] [--skip-tests] [--tag] [--push-tag]
