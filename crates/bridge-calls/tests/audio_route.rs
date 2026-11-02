@@ -38,11 +38,15 @@ fn sid(n: u64) -> SessionId {
 }
 
 fn manager(m: &Mock) -> AudioRouteManager<Mock> {
+    manager_with_echo_timeout(m, Duration::from_millis(80))
+}
+
+fn manager_with_echo_timeout(m: &Mock, echo_ready_timeout: Duration) -> AudioRouteManager<Mock> {
     let mut n = 0u64;
     AudioRouteManager::with_options(
         m.clone(),
         StartOptions {
-            echo_ready_timeout: Duration::from_millis(80),
+            echo_ready_timeout,
             poll_interval: Duration::from_millis(5),
         },
     )
@@ -509,7 +513,9 @@ fn start_with_echo_loads_canceller_first_and_unloads_it_last() {
 fn echo_nodes_that_appear_late_are_awaited_within_the_bound() {
     let m = voice_mock();
     m.st().echo = EchoBehavior::AfterPolls(3);
-    let mut mgr = manager(&m);
+    // Success returns as soon as the nodes appear; the generous bound only absorbs scheduler
+    // stalls on loaded CI machines (macOS overran the 80 ms used by the timeout tests).
+    let mut mgr = manager_with_echo_timeout(&m, Duration::from_secs(5));
     let mut req = request();
     req.echo = EchoPolicy::Required(EchoMethod::ServerDefault);
     let plan = plan_for(&mut mgr, &req);
