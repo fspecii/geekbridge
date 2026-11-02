@@ -131,6 +131,9 @@ android() {
   local A1="${E2E_UPD_APK_OLD:-$W/gb-0.1.0.apk}" A2="${E2E_UPD_APK_NEW:-$W/gb-0.2.0.apk}"
   if [[ "${E2E_UPD_REBUILD:-}" == 1 ]]; then
     for v in 0.1.0 0.2.0; do
+      mkdir -p "$W/v$v/android"
+      # build.gradle.kts reads the version (and so versionName/versionCode) from ../Cargo.toml.
+      printf '[workspace.package]\nversion = "%s"\n' "$v" >"$W/v$v/Cargo.toml"
       rsync -a --delete --exclude build --exclude .gradle --exclude .kotlin android/ "$W/v$v/android/"
       # The bundled "What's new" text is generated for the repository's version; label this scratch build's copy.
       sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$v\"/" "$W/v$v/android/app/src/main/assets/whats_new.json"
