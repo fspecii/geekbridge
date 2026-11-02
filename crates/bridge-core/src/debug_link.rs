@@ -46,13 +46,21 @@ impl std::fmt::Display for DebugError {
     }
 }
 
-/// One line made safe to store and print: control characters (including ESC) become `?`, tabs a space,
-/// and it is cut to [`MAX_LINE_CHARS`].
+/// Invisible format characters that can reorder or hide text on screen (bidi overrides and isolates, zero-width
+/// marks, BOM, Arabic letter mark): not "control" to Rust, but a hostile phone could use them to make a log line
+/// read differently from what it holds.
+fn is_spoofing_format(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}'
+        | '\u{2066}'..='\u{2069}' | '\u{061C}' | '\u{FEFF}')
+}
+
+/// One line made safe to store and print: control characters (including ESC) and invisible bidi/format
+/// characters become `?`, tabs a space, and it is cut to [`MAX_LINE_CHARS`].
 pub fn sanitize_line(line: &str) -> String {
     line.chars()
         .map(|c| match c {
             '\t' => ' ',
-            c if c.is_control() => '?',
+            c if c.is_control() || is_spoofing_format(c) => '?',
             c => c,
         })
         .take(MAX_LINE_CHARS)
@@ -136,7 +144,7 @@ pub fn parse_state(body: &Map<String, Value>) -> Result<StateReply, DebugError> 
         .map(|c| match c {
             '\n' => '\n',
             '\t' => ' ',
-            c if c.is_control() => '?',
+            c if c.is_control() || is_spoofing_format(c) => '?',
             c => c,
         })
         .collect();
@@ -161,6 +169,15 @@ mod tests {
         assert_eq!(b.seq, 7);
         assert_eq!(b.lines, ["ok line", "esc ?[31mred", "tab here"]);
         assert_eq!(parse_log(&log_body(3, &b.lines)).unwrap().seq, 3);
+    }
+
+    #[test]
+    fn bidi_overrides_and_zero_width_marks_cannot_disguise_a_line() {
+        let body =
+            obj(json!({"seq": 1, "lines": ["ok \u{202E}gnirts\u{202C} a\u{200B}b\u{FEFF}"]}));
+        assert_eq!(parse_log(&body).unwrap().lines, ["ok ?gnirts? a?b?"]);
+        let st = obj(json!({"requestId": "r", "text": "x\u{2066}y\n"}));
+        assert_eq!(parse_state(&st).unwrap().text, "x?y\n");
     }
 
     #[test]

@@ -461,6 +461,43 @@ mod tests {
     }
 
     #[test]
+    fn packets_from_a_phone_without_a_registered_trusted_link_store_nothing_even_with_consent() {
+        // An unpaired or never-negotiated peer has no link in the hub (only `trusted_loop` registers one).
+        let dir = tempfile::tempdir().unwrap();
+        let h = hub(dir.path());
+        let body = obj(serde_json::json!({"seq": 1, "lines": ["intruder"]}));
+        assert_eq!(h.on_log("stranger", true, &body), Disposition::Dropped);
+        let state = obj(serde_json::json!({"requestId": "r-1", "text": "x"}));
+        assert_eq!(h.on_state("stranger", true, &state), Disposition::Dropped);
+        assert!(!h.offers("stranger"));
+        assert!(!log_dir(dir.path()).join("stranger.log").exists());
+        // A link that went down is as good as none.
+        let (_rx, generation) = h.link_up("p1", true);
+        h.link_down("p1", generation);
+        assert_eq!(h.on_log("p1", true, &body), Disposition::Dropped);
+        assert!(!log_dir(dir.path()).join("p1.log").exists());
+    }
+
+    #[test]
+    fn a_state_request_needs_consent_and_a_phone_that_declared_the_packets() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = hub(dir.path());
+        let (_rx, _g) = h.link_up("rel", false); // a release phone: linked, declared nothing
+        assert_eq!(
+            h.request_state("rel", true, true).err(),
+            Some(AskError::NotDebugBuild)
+        );
+        assert_eq!(
+            h.request_state("rel", false, true).err(),
+            Some(AskError::ConsentOff)
+        );
+        assert_eq!(
+            h.request_state("gone", true, false).err(),
+            Some(AskError::NotConnected)
+        );
+    }
+
+    #[test]
     fn consent_off_and_replays_store_nothing() {
         let t = tempfile::tempdir().unwrap();
         let h = hub(t.path());

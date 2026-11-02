@@ -31,6 +31,16 @@ object DebugRedactor {
             """title|snippet|subject|clip|clipboard|text|message|msg|vcard|description|location|email|attendees?|""" +
             """organizer|query|label|note|notes|cmd|payload)\b(\s*[=:]\s*|"\s*:\s*)""",
     )
+    /** Credentials and pairing secrets: the key may carry a prefix/suffix (`qr_token`, `authToken`); the value goes. */
+    private val secretKey = Regex(
+        """(?i)[\w.-]*(?:token|secret|passw(?:or)?d|pwd|passphrase|authoriz\w*|cookie|api_?key|private_?key|""" +
+            """verification_?code|pairing_?code)[\w.-]*(?:\s*[=:]\s*|"\s*:\s*)""",
+    )
+    private val shortSecretKey = Regex("""(?i)\b(?:pin|otp|auth)\b(?:\s*[=:]\s*|"\s*:\s*)""")
+    private val bearer = Regex("""(?i)\b(bearer|basic)\s+\S+""")
+    private val jwt = Regex("""eyJ[\w-]+\.[\w-]+\.[\w-]*""")
+    /** A long mixed letter+digit run with no dots: base64 or similar credential material, whatever it was called. */
+    private val blob = Regex("""(?<![\w/.+=-])(?=[A-Za-z0-9+/_=-]*\d)(?=[A-Za-z0-9+/_=-]*[A-Za-z])[A-Za-z0-9+/_=-]{24,}""")
     private val email = Regex("""[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}""")
     private val ipv4 = Regex("""(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])""")
     private val colonHex = Regex("""(?<![0-9A-Za-z:])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![0-9A-Za-z:])""")
@@ -43,7 +53,12 @@ object DebugRedactor {
         val m = header.matchEntire(raw)
         val prefix = m?.groupValues?.get(1).orEmpty()
         var s = m?.groupValues?.get(2) ?: raw
-        sensitiveKey.find(s)?.let { s = s.substring(0, it.range.last + 1) + "<redacted>" }
+        s = jwt.replace(s, "<token>")
+        s = bearer.replace(s) { "${it.groupValues[1]} <redacted>" }
+        for (key in listOf(secretKey, shortSecretKey, sensitiveKey)) {
+            key.find(s)?.let { s = s.substring(0, it.range.last + 1) + "<redacted>" }
+        }
+        s = blob.replace(s, "<secret>")
         s = email.replace(s, "<email>")
         s = uuid.replace(s, "<id>")
         // A paired computer's own address is allowed; park it while the generic number rule runs.

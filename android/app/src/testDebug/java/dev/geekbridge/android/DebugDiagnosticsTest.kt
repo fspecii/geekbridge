@@ -39,6 +39,34 @@ class DebugDiagnosticsTest {
         }
     }
 
+    /** Credentials and pairing secrets: none may reach the ring, the wire or the state dump. */
+    @Test fun tokensAndSecretsNeverSurviveRedaction() {
+        val secrets = listOf(
+            "s3cr3tT0kenValue", "hunter2hunter2", "QWxhZGRpbjpvcGVuIHNlc2FtZQ", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl",
+            "482913", "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MDEy",
+        )
+        val raws = listOf(
+            "11-02 10:00:00.000  1  1 D Auth: token=s3cr3tT0kenValue",
+            "11-02 10:00:00.001  1  1 D Auth: {\"token\":\"s3cr3tT0kenValue\"}",
+            "11-02 10:00:00.002  1  1 D Net: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl",
+            "11-02 10:00:00.003  1  1 D Net: Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ",
+            "11-02 10:00:00.004  1  1 D Pair: password=hunter2hunter2 secret=hunter2hunter2",
+            "11-02 10:00:00.005  1  1 D Pair: verification_code=482913",
+            "11-02 10:00:00.006  1  1 D Pair: qr_token Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MDEy",
+            "11-02 10:00:00.007  1  1 D Pair: pin: 482913",
+            "11-02 10:00:00.008  1  1 D Net: api_key=hunter2hunter2",
+        )
+        for (raw in raws) {
+            val out = DebugRedactor.line(raw)
+            assertEquals("$raw -> $out", emptyList<String>(), secrets.filter { it in out })
+        }
+    }
+
+    @Test fun diagnosticCodesStayReadable() {
+        val raw = "11-02 10:00:00.000  1  1 I GB: link: event link_closed code=peer_closed"
+        assertEquals(raw, DebugRedactor.line(raw))
+    }
+
     @Test fun theHeaderAndHarmlessLinesStayReadable() {
         val raw = "11-02 10:00:00.123  4321  4321 I GB: link: phase Stopped -> Starting (pid 4321)"
         assertEquals(raw, DebugRedactor.line(raw))
