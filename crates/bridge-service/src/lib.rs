@@ -35,6 +35,7 @@ pub mod session_env;
 pub mod share;
 pub mod tray;
 pub mod waybar;
+pub mod why;
 pub mod windows_host;
 use bridge_core::{MAX_API_BYTES, MAX_DEVICES, Snapshot, api_address};
 use std::{

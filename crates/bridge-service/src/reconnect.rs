@@ -80,6 +80,13 @@ impl Book {
             .retain(|id, _| announcing.contains(&id.as_str()));
     }
 
+    /// Redial attempts made for this phone since its link dropped, and whether the user paused it.
+    pub fn progress(&self, id: &str) -> (u32, bool) {
+        self.entries
+            .get(id)
+            .map_or((0, false), |e| (e.tries, e.paused))
+    }
+
     /// Phones we are still trying to reach, for the "Reconnecting" state.
     pub fn trying(&self) -> Vec<String> {
         let mut v: Vec<String> = self
@@ -98,6 +105,17 @@ mod tests {
     use super::*;
     fn addr(last: u8) -> (std::net::IpAddr, u16) {
         (std::net::IpAddr::from([192, 168, 1, last]), 1716)
+    }
+
+    #[test]
+    fn progress_reports_tries_and_pause() {
+        let mut b = Book::default();
+        let t0 = Instant::now();
+        assert_eq!(b.progress("p"), (0, false));
+        assert!(b.due("p", addr(5), t0));
+        assert_eq!(b.progress("p"), (1, false));
+        b.pause("p", t0);
+        assert_eq!(b.progress("p"), (0, true));
     }
 
     #[test]

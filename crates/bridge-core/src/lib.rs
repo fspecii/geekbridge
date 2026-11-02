@@ -20,6 +20,7 @@ pub mod report;
 pub mod share;
 pub mod statefile;
 pub mod whats_new;
+pub mod why_disconnected;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},

@@ -212,7 +212,31 @@ fn service_down(err: &str, systemd_unit: bool) -> Check {
     )
 }
 
-fn phones_checks(status: &Status) -> Vec<Check> {
+/// Is a readable firewall known to block the GeekBridge ports? (Unreadable rules are not a "yes".)
+pub fn firewall_blocks(fw: &Firewall) -> bool {
+    fw.ufw_enabled == Some(true)
+        && fw
+            .ufw_rules
+            .as_ref()
+            .is_some_and(|r| !(ufw_allows(r, "tcp") && ufw_allows(r, "udp")))
+}
+
+/// The service's reason for a phone without a link, with the firewall fact only the ctl can add.
+pub fn why_for(
+    status: &Status,
+    device_id: &str,
+    fw_blocks: bool,
+) -> Option<bridge_core::why_disconnected::WhyDisconnected> {
+    let mut w = status
+        .disconnected
+        .iter()
+        .find(|w| w.device_id == device_id)?
+        .clone();
+    bridge_core::why_disconnected::with_firewall_blocking(&mut w, fw_blocks);
+    Some(w)
+}
+
+fn phones_checks(status: &Status, fw_blocks: bool) -> Vec<Check> {
     let title = "Phones";
     if status.paired.is_empty() {
         return vec![check(
@@ -229,8 +253,20 @@ fn phones_checks(status: &Status) -> Vec<Check> {
         let link = status.links.iter().find(|l| l.device_id == p.device_id);
         let connected = link.is_some_and(|l| l.phase == LinkPhase::Connected);
         let reconnecting = status.reconnecting.contains(&p.device_id);
+        let why = why_for(status, &p.device_id, fw_blocks);
         out.push(if connected {
             check(Level::Ok, title, format!("{} is connected.", p.name), None)
+        } else if let Some(w) = why {
+            check(
+                Level::Warn,
+                title,
+                format!(
+                    "{} is not connected: {}",
+                    p.name,
+                    bridge_core::why_disconnected::one_line(&w)
+                ),
+                Some(&w.fix),
+            )
         } else if reconnecting {
             check(
                 Level::Warn,
@@ -381,7 +417,7 @@ pub fn run(i: &Inputs) -> Vec<Check> {
     out.push(firewall_check(&i.firewall));
     out.push(session_check(&i.session));
     if let Ok(s) = &i.status {
-        out.extend(phones_checks(s));
+        out.extend(phones_checks(s, firewall_blocks(&i.firewall)));
         out.extend(capability_checks(i, s));
     }
     out
@@ -584,17 +620,59 @@ mod tests {
 
     #[test]
     fn phone_states() {
-        let c = phones_checks(&status());
+        let c = phones_checks(&status(), false);
         assert_eq!(c[0].level, Level::Warn);
         assert!(c[0].detail.contains("No phone is paired"));
         let mut s = status();
         phone(&mut s, false);
-        let c = phones_checks(&s);
+        let c = phones_checks(&s, false);
         assert!(c[0].detail.contains("Pixel is paired but not connected"));
         assert!(c[0].fix.as_ref().unwrap().contains("UDP 1716"));
         let mut s = status();
         phone(&mut s, true);
-        assert_eq!(phones_checks(&s)[0].level, Level::Ok);
+        assert_eq!(phones_checks(&s, false)[0].level, Level::Ok);
+    }
+
+    #[test]
+    fn a_disconnected_phone_gets_the_services_reason_and_the_firewall_can_refine_it() {
+        use bridge_core::why_disconnected::{ReasonCode, WhyDisconnected};
+        let mut s = status();
+        phone(&mut s, false);
+        s.disconnected.push(WhyDisconnected {
+            device_id: "p1".into(),
+            code: ReasonCode::GaveUp,
+            sentence: ReasonCode::GaveUp.sentence().into(),
+            fix: ReasonCode::GaveUp.fix().into(),
+            last_seen_ago_s: Some(3),
+            tries: 12,
+        });
+        let c = phones_checks(&s, false);
+        assert!(
+            c[0].detail
+                .contains("Pixel is not connected: The phone is nearby")
+        );
+        assert!(c[0].fix.as_ref().unwrap().contains("firewall"));
+        let c = phones_checks(&s, true);
+        assert!(c[0].detail.contains("firewall is blocking"));
+        assert!(
+            c[0].fix
+                .as_ref()
+                .unwrap()
+                .contains("geekbridge-ctl firewall")
+        );
+    }
+
+    #[test]
+    fn only_readable_rules_without_the_ports_count_as_blocking() {
+        let on = |rules: Option<&str>| Firewall {
+            ufw_enabled: Some(true),
+            ufw_rules: rules.map(str::to_owned),
+            firewalld_active: false,
+        };
+        assert!(firewall_blocks(&on(Some(""))));
+        assert!(!firewall_blocks(&on(Some(BOTH))));
+        assert!(!firewall_blocks(&on(None)));
+        assert!(!firewall_blocks(&Firewall::default()));
     }
 
     #[test]

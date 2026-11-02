@@ -57,6 +57,8 @@ pub struct TrayInput {
     pub paused: bool,
     /// A connected phone has the clipboard feature on, so "paste from phone" can work.
     pub can_paste: bool,
+    /// Why the first paired phone without a link is not connected.
+    pub why: Option<bridge_core::why_disconnected::WhyDisconnected>,
     /// Battery of the first connected phone that reports one (its `battery` consent is on).
     pub battery: Option<bridge_core::ipc::BatteryStatus>,
 }
@@ -108,6 +110,8 @@ impl TrayInput {
             line
         } else if self.paired == 0 {
             "No phone paired yet".to_owned()
+        } else if let Some(w) = &self.why {
+            bridge_core::why_disconnected::one_line(w)
         } else {
             "No phone connected".to_owned()
         }
@@ -122,7 +126,13 @@ impl TrayInput {
 
     /// Tooltip title and body.
     pub fn tooltip(&self) -> (String, String) {
-        (self.headline(), self.status_line())
+        let mut body = self.status_line();
+        if self.connected.is_empty()
+            && let Some(w) = &self.why
+        {
+            body.push_str(&format!("\nTry: {}", w.fix));
+        }
+        (self.headline(), body)
     }
 
     /// The StatusNotifierItem `Status`: only a ringing call asks for attention. A disconnected
@@ -327,6 +337,31 @@ mod tests {
         };
         assert_eq!(lone.icon_state(), IconState::UpdateAvailable);
         assert_eq!(lone.status_line(), "No phone paired yet");
+    }
+
+    #[test]
+    fn a_disconnected_phone_shows_why_in_the_line_and_how_to_fix_it_in_the_tooltip() {
+        use bridge_core::why_disconnected::{Facts, explain};
+        let i = TrayInput {
+            paired: 1,
+            why: Some(explain(
+                "p",
+                &Facts {
+                    computer_online: false,
+                    ..Facts::default()
+                },
+            )),
+            ..TrayInput::default()
+        };
+        assert_eq!(i.status_line(), "This computer has no network connection.");
+        let (_, body) = i.tooltip();
+        assert!(body.contains("\nTry: Connect this computer"), "{body}");
+        // Without a reason the old calm line stays.
+        let plain = TrayInput {
+            paired: 1,
+            ..TrayInput::default()
+        };
+        assert_eq!(plain.status_line(), "No phone connected");
     }
 
     #[test]

@@ -671,6 +671,7 @@ mod tests {
             event_seq: 0,
             inbound_listener: None,
             reconnecting: vec![],
+            disconnected: vec![],
         }
     }
     #[test]

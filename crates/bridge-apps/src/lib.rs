@@ -35,6 +35,7 @@ pub mod state;
 mod test_support;
 pub mod theme;
 pub mod update_ui;
+pub mod why_ui;
 
 use bridge_core::{AppKind, fetch_snapshot};
 use std::process::ExitCode;

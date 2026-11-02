@@ -28,6 +28,8 @@ pub struct BarState {
     pub unread_sms: Option<u32>,
     /// A newer release exists and was not skipped.
     pub update: Option<String>,
+    /// Why the first paired phone without a link is not connected (shown in the disconnected state only).
+    pub why: Option<bridge_core::why_disconnected::WhyDisconnected>,
     /// Battery of the first connected phone that reports one.
     pub battery: Option<bridge_core::ipc::BatteryStatus>,
 }
@@ -65,6 +67,10 @@ pub fn render(s: &BarState) -> String {
         "disconnected" => {
             text.push_str(PHONE);
             tip.push("Phone not connected".into());
+            if let Some(w) = &s.why {
+                tip.push(bridge_core::why_disconnected::one_line(w));
+                tip.push(format!("Try: {}", w.fix));
+            }
         }
         _ => {
             let first = s.connected.first().map_or(String::new(), |n| plain(n, 24));
@@ -85,7 +91,12 @@ pub fn render(s: &BarState) -> String {
             );
         }
     }
-    let mut classes = vec![state];
+    let mut classes = vec![state.to_owned()];
+    if state == "disconnected"
+        && let Some(w) = &s.why
+    {
+        classes.push(format!("why-{}", w.code.as_str()));
+    }
     let shown = s
         .battery
         .filter(|_| state == "connected" || state == "ringing");
@@ -104,12 +115,12 @@ pub fn render(s: &BarState) -> String {
             "{n} unread message{}",
             if n == 1 { "" } else { "s" }
         ));
-        classes.push("unread");
+        classes.push("unread".to_owned());
     }
     if let Some(v) = &s.update {
         text.push_str(&format!(" {UPDATE}"));
         tip.push(format!("Update available: {}", plain(v, 24)));
-        classes.push("update");
+        classes.push("update".to_owned());
     }
     json!({
         "text": text.trim(),
@@ -210,6 +221,40 @@ mod tests {
             ..Default::default()
         }));
         assert_eq!(v["alt"], "disconnected");
+    }
+
+    #[test]
+    fn disconnected_tooltip_and_class_carry_the_reason() {
+        use bridge_core::why_disconnected::{Facts, explain};
+        let why = explain(
+            "p1",
+            &Facts {
+                computer_online: true,
+                listening: true,
+                last_seen_ago_s: Some(600),
+                ..Facts::default()
+            },
+        );
+        let v = parse(&render(&BarState {
+            service_up: true,
+            paired: 1,
+            why: Some(why.clone()),
+            ..Default::default()
+        }));
+        assert_eq!(v["alt"], "disconnected");
+        assert_eq!(v["class"][1], "why-phone_silent");
+        let tip = v["tooltip"].as_str().unwrap();
+        assert!(tip.contains("Last heard 10 min ago."), "{tip}");
+        assert!(tip.contains("Try: "), "{tip}");
+        // A connected phone never shows a reason.
+        let v = parse(&render(&BarState {
+            service_up: true,
+            paired: 1,
+            connected: vec!["Pixel".into()],
+            why: Some(why),
+            ..Default::default()
+        }));
+        assert_eq!(v["class"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -846,6 +846,9 @@ pub struct Status {
     /// Paired phones this computer is dialing again after the link dropped (shown as "Reconnecting").
     #[serde(default)]
     pub reconnecting: Vec<String>,
+    /// For each paired phone without a link: the plain-words reason and a suggested fix.
+    #[serde(default)]
+    pub disconnected: Vec<crate::why_disconnected::WhyDisconnected>,
 }
 
 impl Status {

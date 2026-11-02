@@ -395,6 +395,17 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             if let Some(note) = status.port_note() {
                 eprintln!("{note}");
             }
+            let fw_blocks = bridge_service::doctor::firewall_blocks(&read_firewall());
+            for p in &status.paired {
+                if let Some(w) = bridge_service::doctor::why_for(&status, &p.device_id, fw_blocks) {
+                    eprintln!(
+                        "{} is not connected: {}\n  Try: {}",
+                        bridge_service::notify_text::plain(&p.name, 40),
+                        bridge_core::why_disconnected::one_line(&w),
+                        w.fix
+                    );
+                }
+            }
         }
         other => println!(
             "{}",
@@ -823,6 +834,15 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
             .iter()
             .filter(|l| l.phase == ipc::LinkPhase::Connected)
             .find_map(|l| l.battery);
+        if bar.connected.is_empty() {
+            bar.why = status.disconnected.first().cloned().map(|mut w| {
+                bridge_core::why_disconnected::with_firewall_blocking(
+                    &mut w,
+                    bridge_service::doctor::firewall_blocks(&read_firewall()),
+                );
+                w
+            });
+        }
         if let Ok(Response::Calls(c)) = ipc::call(port, &token, &Request::Calls) {
             bar.ringing = c.view.rows.iter().filter(|r| r.ringing()).count();
         }
@@ -861,20 +881,25 @@ fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
     Token::parse(&bytes).map_err(|e| e.to_string())
 }
 
-/// `doctor`: run every check, print what to do about each problem, fail if one check failed.
-fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
-    use bridge_core::phone_view::MessagesView;
-    use bridge_service::doctor::{self, Firewall, Inputs, SessionEnv};
-    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+/// What can be read about the firewall without root.
+fn read_firewall() -> bridge_service::doctor::Firewall {
     let read_or_none = |p: &str| std::fs::read_to_string(p).ok();
-    let firewall = Firewall {
+    bridge_service::doctor::Firewall {
         ufw_enabled: read_or_none("/etc/ufw/ufw.conf").map(|c| {
             c.lines()
                 .any(|l| l.trim().eq_ignore_ascii_case("ENABLED=yes"))
         }),
         ufw_rules: read_or_none("/etc/ufw/user.rules"),
         firewalld_active: std::path::Path::new("/run/firewalld").exists(),
-    };
+    }
+}
+
+/// `doctor`: run every check, print what to do about each problem, fail if one check failed.
+fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_core::phone_view::MessagesView;
+    use bridge_service::doctor::{self, Inputs, SessionEnv};
+    let set = |k: &str| std::env::var_os(k).is_some_and(|v| !v.is_empty());
+    let firewall = read_firewall();
     let connected = load_token(state_dir)
         .map_err(|e| e.to_string())
         .and_then(|token| {

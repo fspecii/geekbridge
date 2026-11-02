@@ -129,6 +129,15 @@ struct PhoneLine {
     alert: bool,
 }
 
+/// The service's reason for the first paired phone when it has no link.
+fn phone_why(
+    state: &crate::connection::ControlState,
+) -> Option<&bridge_core::why_disconnected::WhyDisconnected> {
+    let status = state.status.as_ref()?;
+    let id = &status.paired.first()?.device_id;
+    status.disconnected.iter().find(|w| &w.device_id == id)
+}
+
 fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
     let Some(status) = &state.status else {
         // A failed check is not "still looking": the sidebar already says the service is off.
@@ -169,7 +178,6 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
                 Some(b) => crate::i18n::tr_args("home.battery.detail", &[("battery", &b.text())]),
                 None => "Connected over your network".into(),
             },
-
             linked,
             alert: false,
         }
@@ -185,7 +193,10 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
         PhoneLine {
             dots: "RETRYING",
             name: crate::state::display_text(&name),
-            detail: "Reconnecting to your phone…".into(),
+            detail: phone_why(state).map_or_else(
+                || "Reconnecting to your phone…".into(),
+                crate::why_ui::sentence,
+            ),
             linked,
             alert: false,
         }
@@ -193,7 +204,10 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
         PhoneLine {
             dots: "OFFLINE",
             name: crate::state::display_text(&name),
-            detail: "Paired, not reachable right now".into(),
+            detail: phone_why(state).map_or_else(
+                || "Paired, not reachable right now".into(),
+                crate::why_ui::sentence,
+            ),
             linked,
             alert: false,
         }
@@ -564,6 +578,15 @@ impl HomeApp {
                         feature: bridge_core::ipc::Feature::Battery,
                         enabled: true,
                     });
+                }
+            }
+            if !line.linked
+                && let Some(w) = phone_why(&self.connections.state)
+            {
+                ui.add_space(S2);
+                ui.add(egui::Label::new(theme::caption(pal, crate::why_ui::try_line(w))).wrap());
+                if let Some(heard) = crate::why_ui::last_heard(w) {
+                    ui.add(egui::Label::new(theme::caption(pal, heard)).wrap());
                 }
             }
             // Only when the listener moved off 1716 (another program, usually KDE Connect, has it).
@@ -1155,6 +1178,7 @@ mod tests {
             event_seq: 0,
             inbound_listener: None,
             reconnecting: vec![],
+            disconnected: vec![],
         };
         crate::connection::ControlState {
             status: Some(status),

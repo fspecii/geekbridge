@@ -208,6 +208,8 @@ pub struct Daemon {
     debug: Arc<crate::phone_debug::PhoneDebug>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
     reconnect: Mutex<crate::reconnect::Book>,
+    /// When and where each paired phone last announced itself (see `why`).
+    sightings: Mutex<crate::why::Sightings>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -346,6 +348,7 @@ impl Daemon {
             data,
             debug,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
+            sightings: Mutex::new(crate::why::Sightings::default()),
         });
         let weak = Arc::downgrade(&daemon);
         daemon.share.set_event_sink(Arc::new(move |device, kind| {
@@ -381,7 +384,7 @@ impl Daemon {
             .list()
             .map_err(|e| err(ErrorCode::Failed, reason(&e)))?;
         let consents = self.consents();
-        let paired = peers
+        let paired: Vec<PairedDevice> = peers
             .into_iter()
             .map(|p| PairedDevice {
                 consents: Feature::ALL
@@ -415,6 +418,7 @@ impl Daemon {
             })
             .collect();
         challenges.sort_by(|a, b| a.challenge_id.cmp(&b.challenge_id));
+        let disconnected = self.why_disconnected(&paired, &core);
         let creds = self.endpoint.credentials();
         Ok(Status {
             ipc_version: bridge_core::ipc::IPC_VERSION,
@@ -432,7 +436,64 @@ impl Daemon {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .trying(),
+            disconnected,
         })
+    }
+
+    /// The plain-words reason for every paired phone that has no connected link.
+    fn why_disconnected(
+        &self,
+        paired: &[PairedDevice],
+        core: &Core,
+    ) -> Vec<bridge_core::why_disconnected::WhyDisconnected> {
+        use bridge_core::why_disconnected::{Facts, explain};
+        const FRESH_MS: u64 = 20_000;
+        let waiting: Vec<&PairedDevice> = paired
+            .iter()
+            .filter(|p| {
+                !core
+                    .links
+                    .get(&p.device_id)
+                    .is_some_and(|l| l.status.phase == LinkPhase::Connected)
+            })
+            .collect();
+        if waiting.is_empty() {
+            return vec![];
+        }
+        let now = now_ms();
+        let ifaces = crate::lan_select::system_interfaces();
+        let online = crate::why::computer_online(&ifaces);
+        let listening = self
+            .inbound
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some();
+        let book = self.reconnect.lock().unwrap_or_else(|e| e.into_inner());
+        let sightings = self.sightings.lock().unwrap_or_else(|e| e.into_inner());
+        waiting
+            .into_iter()
+            .map(|p| {
+                let id = p.device_id.as_str();
+                let (tries, paused) = book.progress(id);
+                let seen = sightings.get(id);
+                let age_ms = seen.map(|(_, at)| now.saturating_sub(at));
+                explain(
+                    id,
+                    &Facts {
+                        computer_online: online,
+                        listening,
+                        paused,
+                        announcing: age_ms.is_some_and(|a| a < FRESH_MS),
+                        tries,
+                        max_tries: crate::reconnect::MAX_TRIES,
+                        last_seen_ago_s: age_ms.map(|a| a / 1000),
+                        on_our_network: seen
+                            .and_then(|(ip, _)| crate::why::on_our_network(&ifaces, ip)),
+                        last_end: crate::why::last_end(&core.events, id),
+                    },
+                )
+            })
+            .collect()
     }
 
     pub fn events(&self, after: u64) -> EventPage {
@@ -973,6 +1034,20 @@ impl Daemon {
     pub async fn reconnect_tick(self: &Arc<Self>) {
         const FRESH_MS: u64 = 20_000;
         let now_unix = now_ms();
+        let heard: Vec<(String, IpAddr, u64)> = self
+            .discovery
+            .read()
+            .await
+            .devices
+            .iter()
+            .map(|d| (d.id.clone(), d.address, d.last_seen_unix_ms))
+            .collect();
+        {
+            let mut s = self.sightings.lock().unwrap_or_else(|e| e.into_inner());
+            for (id, ip, at) in heard {
+                s.record(&id, ip, at);
+            }
+        }
         let seen: Vec<(String, IpAddr, u16)> = self
             .discovery
             .read()

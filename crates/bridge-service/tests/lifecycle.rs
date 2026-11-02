@@ -526,6 +526,8 @@ async fn a_paired_phone_that_announces_again_is_redialed_but_an_unpaired_or_disc
     assert!(rig.status().await.challenges.is_empty());
     rig.daemon.reconnect_tick().await;
     assert!(rig.status().await.reconnecting.is_empty());
+    // Connected: no reason is reported.
+    assert!(rig.status().await.disconnected.is_empty());
 
     // A manual disconnect is respected even though the phone keeps announcing.
     rig.ok(Request::Disconnect {
@@ -536,6 +538,23 @@ async fn a_paired_phone_that_announces_again_is_redialed_but_an_unpaired_or_disc
     rig.wait("disconnected", |s| s.links.is_empty()).await;
     rig.daemon.reconnect_tick().await;
     assert!(rig.status().await.links.is_empty());
+    // The status says why, in words: a hand-made disconnect, unless this machine has no network or listener.
+    {
+        use bridge_core::why_disconnected::ReasonCode::{
+            ComputerOffline, NotListening, PausedByUser,
+        };
+        let st = rig.status().await;
+        let why = st
+            .disconnected
+            .iter()
+            .find(|w| w.device_id == phone.id())
+            .expect("a reason for the disconnected phone");
+        assert!(matches!(
+            why.code,
+            PausedByUser | ComputerOffline | NotListening
+        ));
+        assert!(!why.sentence.is_empty() && !why.fix.is_empty());
+    }
 
     // A phone that is not paired is never dialed.
     let stranger = Phone::new();

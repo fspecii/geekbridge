@@ -1147,6 +1147,7 @@ mod tests {
             event_seq: 0,
             inbound_listener: None,
             reconnecting: vec![],
+            disconnected: vec![],
         };
         let t = targets(&status);
         assert_eq!(t[0].device_id, "b");
