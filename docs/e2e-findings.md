@@ -88,6 +88,91 @@ The call and phone-data scenarios use the emulator's modem and providers; they s
 permission screens. The call rows exercise the link path (`geekbridge.calls.*`), not Bluetooth HFP (`scripts/emulate-call.sh` covers
 that on the call emulator).
 
+### Re-run after the Nothing OS reskin, 2026-11-02 (new tiles, dot-matrix status words, wizard, Home, QR, share sheet, Diagnostics)
+
+Private set: AVD `gb36t` (copy of `gb36`, wiped; console 5624, adb server 16070), desktop state `target/perf-nothing/desk` (control 17701,
+API 17700, discovery 17746, listen 1736, redirect 17661), Xvfb `:95`. APK built fresh from a scratch copy of `android/`
+(`target/e2e-nothing-android`, native libs rebuilt from the same tree). Results: `dist/android/logs/e2e-nothing-results.tsv`,
+`e2e-new-results.tsv`, `e2e-qr-results.tsv`; UX sweep screenshots `dist/screenshots/android/e2e-ux-*.png`
+(plus the re-taken `e2e-14-paired.png`, `e2e-ux-diag-*`). Gradle unit tests and lint: green (`scripts/build-android.sh --skip-host-tests`).
+
+| Scenario | 2026-11-02 | Notes |
+| --- | --- | --- |
+| Build APK (debug + R8 release), install | PASS | release 6.21 MB (budget 6.5 MB) |
+| Setup wizard (9 steps), notification permission, battery Deny/Allow | PASS | selectors unchanged: step titles are still the headings |
+| Pairing, reconnect, reconnect after restart, trust listed | PASS | |
+| Clipboard desktop -> phone, phone -> desktop, locked-phone rule | PASS | |
+| Clipboard 30 s window | **FAIL** (see E2E-17) | passed twice earlier the same day on the previous build, fails reproducibly on the last one |
+| File desktop -> phone, text share, Share sheet -> desktop | PASS | needed harness fixes (below): stale `name (1).bin`, and `adb root` breaks the Share chooser's URI grant |
+| Update check (mock server), Download and verify, Install handoff | PASS | harness now scrolls to the buttons (Diagnostics is taller) |
+| `scripts/e2e/update-install.sh` desktop + Android (v0.1.0 -> v0.2.0, tamper/corrupt/no-sums, throttle) | PASS | 33 of 33 checks, one SKIP by design |
+| `scripts/e2e-qr-pairing.sh` (expired, pair, reuse) | PASS | |
+| `scripts/e2e-new.sh` (hints, call ring/reject/answer/hangup/consent, SMS, agenda, Copy report) | PASS | after E2E-18 (real bug, fixed) and the grants harness change |
+| `scripts/android-perf.sh` smoke (size, setup, startup, reconnect x10, transfer 20 MB) | PASS | cold start median 830 ms of 9 (budget 1000; 765 ms before the reskin; 1.1-1.5 s while the host was at load 9-20), PSS growth 1.2 MB over 10 reconnects, fds/threads flat |
+| UX sweep: Home / Diagnostics / QR pair / Setup wizard / Share sheet x light, dark, font 2.0, landscape, RTL | PASS after fixes | `scripts/e2e/ux-sweep.sh` + `a11y-audit.py`: no controls under 48dp, no unlabelled controls, nothing off-screen |
+
+**Real regressions found and fixed**
+
+* Light theme, right-edge scrollbar painted over the full-width Home tiles: the vertical scrollbar of the scrolling screens is off
+  (`UiKit.Screen`, `MainActivity`).
+* Red *text* below 4.5:1: the calendar month label used `gb_red` (#D71921: 4.76 on off-white but 4.05 on pure black, 4.27 on `gb_fill`).
+  It now uses `gb_warn` (#C4141C light, #FF5A60 dark: 4.99 to 6.9 on every surface). `gb_red` stays for dots and rings only.
+  Measured: text on surface 18.05 / 21.0, muted 5.27 / 7.56, `gb_warn` 5.56 / 6.88 (light / dark).
+* Diagnostics still had the pre-reskin look and stale copy ("can only exchange a ping ... not yet tested", "no background service and
+  nothing listens", "Send from computer (unavailable)", "not implemented"). Restyled with the same ink pill switches and hairline cards as
+  Home, copy rewritten, and the ports / discovery / loopback / connect-by-address controls moved behind a collapsed **Developer options**
+  expander (48dp header, announces expanded/collapsed). The harness opens it before the manual Connect.
+* **E2E-18: any phone-data feature (contacts, calendar or SMS) stopped the background link from starting.** `MAX_FIELDS` in
+  `crates/bridge-android/src/dispatch.rs` was 8, but a full `transport_start` (now with `permits`) has up to 11 keys, so the native core
+  answered `invalid_request`; Home then sat at "Connecting..." and nothing listened on 1716 (Diagnostics' Start link worked only because
+  it sends fewer keys). Limit raised to 16, regression test `widest_transport_start_request_is_not_refused_as_too_many_fields`.
+
+**Open**
+
+* **E2E-17 FAIL: clipboard 30 s window** (`scripts/e2e-android.sh --only clip_p2d`, stage `clip_p2d_window`). Repro: pair, Clipboard sync on,
+  copy text in a system field, wait 40 s, `geekbridge-ctl clipboard paste-from-phone`, open the shade. Expected: "Nothing recent on the
+  phone: copy again, then paste within the time window." within a few seconds. Seen: `paste-from-phone` prints nothing for at least
+  7 s and there is no "Your computer wants your clipboard" notification (`e2e-21-clip-stale.png`); the "locked phone" refusal that follows
+  works. Passed twice earlier the same day (before the last APK/native rebuild and before `e2e-new.sh` left call/SMS/calendar
+  grants and notifications on the phone), so it is state- or timing-dependent; not root-caused, not obviously related to the reskin.
+
+Harness changes: `scripts/e2e-android.sh` (scroll to Download/Install update, open Developer options before Connect, delete the old
+`e2e-d2p-file*` on the phone), `scripts/e2e-new.sh` (`write_grants`: a newly paired computer holds no calls/contacts/calendar/SMS rights),
+`scripts/e2e/update-install.sh` and `scripts/android-perf.sh` (the emulator, adb port, ports and directories are overridable, so they
+can run beside other agents), new `scripts/e2e/a11y-audit.py` and `scripts/e2e/ux-sweep.sh`. Do not leave `adb root` on for the Share
+stage: the chooser's URI grant then fails with a `SecurityException` ("Could not open this file").
+
+### Incoming-call answering through the real desktop UI, 2026-11-02 (`scripts/e2e/call-ui.sh`)
+
+Everything runs on a private `dbus-run-session` bus, a headless `sway` + real `mako`, a private Xvfb (`:97`; override with `E2E_XDISP`),
+a private XDG tree, the emulator `gb36k` (console 5634, adb server 16080) and a desktop `geekbridge-service` paired with it (e2e topology,
+telephony consent on, "Answer from computer" on). The emulator is rung with `adb emu gsm call`, the modem state is read from
+`dumpsys telephony.registry` (`mCallState`: 2 = off-hook, 0 = idle). Results: `dist/android/logs/e2e-callui-results.tsv`.
+
+| Check | Result |
+| --- | --- |
+| Notification arrives in mako with actions `answer`/Answer and `decline`/Decline (`dbus-monitor` on the Notify call) | PASS |
+| `makoctl invoke answer` -> modem off-hook; `makoctl invoke decline` -> modem idle | PASS |
+| Calls window: popup shown while ringing, red Decline and off-white Answer buttons | PASS |
+| Click Answer (xdotool) -> modem off-hook; in-call panel with timer and Hang up | PASS |
+| No HFP route: window says "Audio on the phone", service says "Answered on the phone. Call audio stays there until this computer is paired ... Bluetooth hands-free device" | PASS |
+| Click Hang up in the panel -> modem idle | PASS |
+| Second call, click Decline -> modem idle, popup gone | PASS |
+
+13 of 13 PASS. Pictures: `dist/screenshots/desktop/call-popup-{idle,ringing,answered,declined}.png`, `call-notification-ringing.png`.
+
+Notes and harness defects found (no product defect in the call UI or the action wiring):
+
+* The Nothing reskin changed the popup (dot-matrix "INCOMING" headline OCR cannot read, off-white Answer pill, buttons at y 377, Hang up at
+  (301,102)); the script's OCR/colour/coordinate probes were updated, and the popup is now recognised by its explanatory line.
+* `scripts/screenshots-desktop-nothing.sh` hardcodes Xvfb `:94`, the old default of this script; two runs at once shared one display and
+  clicked each other's windows. This script now defaults to `:97` (`E2E_XDISP`); the other script should pick its own.
+* The in-call panel has no mute control: the link protocol has no mute message and audio is not routed here without HFP, so there
+  is nothing to test. Not a defect.
+* `/tmp` (tmpfs, 16 GB) was at 79 % with other projects' artifacts, and a Claude Code temp write once failed with EDQUOT; this script keeps its
+  state in `target/` and only a tiny XDG runtime dir in `/tmp`.
+* Checks: `cargo fmt --check`, `cargo clippy -p bridge-apps -p bridge-service --all-targets -D warnings`, `cargo test` on both: green.
+
 ## Not testable on an emulator
 
 * UDP discovery / announce, mDNS-style "find each other automatically" (NAT drops broadcasts).

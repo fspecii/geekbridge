@@ -68,22 +68,24 @@ pub fn default_state_dir() -> Option<PathBuf> {
     platform_data_dir().map(|base| base.join("geekbridge").join("service"))
 }
 
+/// Per-user data directory of the platform: `%LOCALAPPDATA%` (Windows), `~/Library/Application
+/// Support` (macOS), `$XDG_DATA_HOME` or `~/.local/share` elsewhere. Always absolute.
 #[cfg(target_os = "windows")]
-fn platform_data_dir() -> Option<PathBuf> {
+pub fn platform_data_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
 }
 
 #[cfg(target_os = "macos")]
-fn platform_data_dir() -> Option<PathBuf> {
+pub fn platform_data_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
         .filter(|p| p.is_absolute())
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn platform_data_dir() -> Option<PathBuf> {
+pub fn platform_data_dir() -> Option<PathBuf> {
     std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
@@ -495,6 +497,9 @@ pub enum Request {
         device_id: Option<String>,
         #[serde(default)]
         thread_id: Option<i64>,
+        /// Filter the list to conversations whose name, number or any held message contains this.
+        #[serde(default)]
+        query: Option<String>,
     },
     /// Ask for the conversation list, or for older history of one thread.
     MessagesRefresh {
@@ -508,6 +513,14 @@ pub enum Request {
         recipient: String,
         text: String,
         submission_id: String,
+        /// SIM subscription id from the phone's list; absent = the phone's default.
+        #[serde(default)]
+        sub_id: Option<i32>,
+    },
+    /// Mark a conversation read on this computer only (the phone is not told).
+    MessagesMarkRead {
+        device_id: String,
+        thread_id: i64,
     },
     /// Send an uncertain or failed message again, accepting that the recipient may get it twice.
     MessagesResend {

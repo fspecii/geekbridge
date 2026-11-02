@@ -522,6 +522,9 @@ impl PendingLink {
                         KdeError::UnexpectedEof => KdeError::Pairing(PairingFailure::LinkClosed),
                         other => other,
                     })?;
+                    if let Some(tap) = &self.conn.tap {
+                        tap(false, &line);
+                    }
                     let packet = Packet::from_line(&line)?;
                     actions = if packet.kind == PAIR_TYPE {
                         let body = PairBody::parse(&packet)?;

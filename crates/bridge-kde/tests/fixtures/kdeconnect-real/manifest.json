@@ -1,0 +1,170 @@
+{
+  "vectors": {
+    "s1_geekbridge_requested": {
+      "key_shown_by_daemon": "B169F7B1",
+      "request": "geekbridge-pair-request.json"
+    },
+    "s2_daemon_requested": {
+      "key_shown_by_daemon": "362B6E10",
+      "request": "daemon-pair-request.json"
+    }
+  },
+  "files": [
+    {
+      "file": "daemon-identity-secure.json",
+      "origin": "daemon",
+      "type": "kdeconnect.identity",
+      "note": "identity sent inside TLS by the stock desktop (protocol 8)"
+    },
+    {
+      "file": "daemon-pair-accept.json",
+      "origin": "daemon",
+      "type": "kdeconnect.pair",
+      "note": "answer to our pair request: no timestamp"
+    },
+    {
+      "file": "daemon-pair-unpair.json",
+      "origin": "daemon",
+      "type": "kdeconnect.pair",
+      "note": "unpair notification"
+    },
+    {
+      "file": "daemon-clipboard-connect-empty.json",
+      "origin": "daemon",
+      "type": "kdeconnect.clipboard.connect",
+      "note": "empty clipboard: content is JSON null, timestamp 0"
+    },
+    {
+      "file": "daemon-ping-message.json",
+      "origin": "daemon",
+      "type": "kdeconnect.ping",
+      "note": "kdeconnect-cli --ping-msg"
+    },
+    {
+      "file": "daemon-ping-empty.json",
+      "origin": "daemon",
+      "type": "kdeconnect.ping",
+      "note": "kdeconnect-cli --ping"
+    },
+    {
+      "file": "daemon-clipboard.json",
+      "origin": "daemon",
+      "type": "kdeconnect.clipboard",
+      "note": "clipboard update"
+    },
+    {
+      "file": "daemon-share-file.json",
+      "origin": "daemon",
+      "type": "kdeconnect.share.request",
+      "note": "file offer with payloadSize and payloadTransferInfo"
+    },
+    {
+      "file": "daemon-share-text.json",
+      "origin": "daemon",
+      "type": "kdeconnect.share.request",
+      "note": "shared text"
+    },
+    {
+      "file": "daemon-share-url.json",
+      "origin": "daemon",
+      "type": "kdeconnect.share.request",
+      "note": "shared URL"
+    },
+    {
+      "file": "daemon-identity-plaintext.json",
+      "origin": "daemon",
+      "type": "kdeconnect.identity",
+      "note": "first plaintext line of a daemon-initiated connection (has targetDeviceId/targetProtocolVersion)"
+    },
+    {
+      "file": "daemon-pair-request.json",
+      "origin": "daemon",
+      "type": "kdeconnect.pair",
+      "note": "pair request from the stock desktop"
+    },
+    {
+      "file": "daemon-clipboard-connect.json",
+      "origin": "daemon",
+      "type": "kdeconnect.clipboard.connect",
+      "note": "clipboard state announced when the link came up"
+    },
+    {
+      "file": "geekbridge-identity-plaintext.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.identity",
+      "note": "plaintext first line when GeekBridge dials"
+    },
+    {
+      "file": "geekbridge-identity-secure.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.identity",
+      "note": "identity inside TLS"
+    },
+    {
+      "file": "geekbridge-pair-request.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.pair",
+      "note": "pair request"
+    },
+    {
+      "file": "geekbridge-ping.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.ping",
+      "note": "ping"
+    },
+    {
+      "file": "geekbridge-clipboard.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.clipboard",
+      "note": "clipboard update (daemon adopted it)"
+    },
+    {
+      "file": "geekbridge-clipboard-connect.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.clipboard.connect",
+      "note": "clipboard.connect with timestamp"
+    },
+    {
+      "file": "geekbridge-share-text.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.share.request",
+      "note": "text share"
+    },
+    {
+      "file": "geekbridge-share-url.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.share.request",
+      "note": "URL share"
+    },
+    {
+      "file": "geekbridge-share-file.json",
+      "origin": "geekbridge",
+      "type": "kdeconnect.share.request",
+      "note": "file offer (daemon downloaded it byte-identically)"
+    },
+    {
+      "file": "geekbridge-ext-calendar-request.json",
+      "origin": "geekbridge",
+      "type": "geekbridge.calendar.request",
+      "note": "GeekBridge extension; daemon logged 'discarding unsupported packet' and kept the link"
+    },
+    {
+      "file": "geekbridge-ext-calendar-write.json",
+      "origin": "geekbridge",
+      "type": "geekbridge.calendar.write",
+      "note": "GeekBridge extension; daemon logged 'discarding unsupported packet' and kept the link"
+    },
+    {
+      "file": "geekbridge-ext-calls-request.json",
+      "origin": "geekbridge",
+      "type": "geekbridge.calls.request",
+      "note": "GeekBridge extension; daemon logged 'discarding unsupported packet' and kept the link"
+    },
+    {
+      "file": "geekbridge-ext-clipboard-pull.json",
+      "origin": "geekbridge",
+      "type": "geekbridge.clipboard.pull",
+      "note": "GeekBridge extension; daemon logged 'discarding unsupported packet' and kept the link"
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+# cargo-deny policy for GeekBridge. See docs/supply-chain.md.
+#   cargo deny check            (all four sections)
+#   cargo deny check licenses   (just one)
+# CI runs this as a non-blocking job (.github/workflows/check.yml, job "supply-chain").
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Reviewed 2026-11-02 against advisory-db commit of 2026-10-30. All are "unmaintained" notices on
+# transitive crates that we cannot replace without changing upstreams; none is a vulnerability.
+ignore = [
+    # zbus 5.x (desktop call/D-Bus integration, Linux only) pulls these in; upstream is the zbus project.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained notice; transitive via zbus, no vulnerability" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained notice; transitive via zbus, no vulnerability" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained notice; transitive via zbus, no vulnerability" },
+    # egui 0.31 -> epaint -> ab_glyph -> owned_ttf_parser. Revisit when egui is upgraded.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained notice; transitive via egui/ab_glyph, fonts are our own bundled ones" },
+]
+
+[licenses]
+version = 2
+# Every licence found in Cargo.lock on 2026-11-02 that is acceptable for a distributed binary.
+# Deliberately absent: GPL, AGPL, LGPL, SSPL, EUPL, CC-BY-SA and anything proprietary. Crates that offer
+# "... OR LGPL-2.1-or-later" (r-efi) are accepted through their permissive alternative.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "0BSD",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",          # Noto Emoji inside epaint_default_fonts
+    "Ubuntu-font-1.0",  # Ubuntu Light inside epaint_default_fonts (see docs/licence-decision.md)
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"   # about 30 duplicated crates, mostly winit/egui vs newer stacks; informational
+# Our unpublished workspace crates depend on each other by path without a version, which counts as a
+# wildcard while `publish` is unset. Set `publish = false` on them (or version the path deps) and switch to "deny".
+wildcards = "warn"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

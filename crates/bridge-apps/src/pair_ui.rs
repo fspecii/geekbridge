@@ -171,13 +171,13 @@ impl Connections {
                 ui.label(theme::caption(pal, "What to do next"));
                 ui.add(
                     egui::Label::new(
-                        "1. Try the clipboard: copy some text on your phone, then press Ctrl+Shift+V here.",
+                        "1. Try the clipboard: turn on Clipboard sync in the phone app (Home > Settings), copy some text on the phone, then open Clipboard and click Paste from phone.",
                     )
                     .wrap(),
                 );
                 ui.add(
                     egui::Label::new(
-                        "2. Send a file: drop it on this window, or share it from your phone to \"Send to computer\".",
+                        "2. Send a file: drop it on this window. To receive from the phone, open Share files and tick \"Allow this phone to send me files\", then share to \"Send to computer\".",
                     )
                     .wrap(),
                 );

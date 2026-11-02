@@ -44,7 +44,7 @@ object PairingHelp {
         code == "address_rejected" || code == "network_unreachable" ->
             Explained("The computer is on a different network.", "Put both devices on the same Wi-Fi and switch off VPNs.")
         code == "link_closed" || code == "peer_closed" || code == "park_timeout" || code == "io_error" ->
-            Explained("The connection closed before pairing finished.", "Keep both apps open and the screens on, then try again.")
+            Explained("The connection closed before pairing finished.", "Keep both apps open and the screens on, then try again. Still failing? Tap Test connection to check the Wi-Fi.")
         code == "tls_failed" ->
             Explained("A secure connection could not be set up.", "Try again. If it keeps failing, restart GeekBridge on the computer.")
         else -> Explained("Pairing did not work.", "Tap \"Test connection\" for a step-by-step check.")

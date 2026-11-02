@@ -77,7 +77,11 @@ object ClipboardRuntime {
     fun captureOnFocus(ctx: Context) {
         init(ctx)
         if (!settings.enabled) return
-        engine?.capture(AndroidClipboardHost.read(ctx))
+        val clip = AndroidClipboardHost.grab(ctx)
+        val e = engine
+        val appCtx = ctx.applicationContext
+        // Provider access (getType) happens on the worker, never on the focus callback.
+        async { e?.capture(clip?.let { AndroidClipboardHost.snapshot(appCtx, it) }) }
     }
 
     /** Called (main thread) whenever the transport state changes. */

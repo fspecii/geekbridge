@@ -308,23 +308,37 @@ struct Captured {
 
 /// Run `program`, optionally feeding `stdin`, keeping at most `limit` bytes of stdout. Output is
 /// bounded and the child is killed after [`TOOL_TIMEOUT`].
+/// `pbcopy`/`pbpaste` decode text by the locale, and a LaunchAgent starts with none, which turns
+/// every non-ASCII character into mojibake. Pin them to UTF-8.
+fn tool_lang(program: &str) -> Option<&'static str> {
+    matches!(program, "pbcopy" | "pbpaste").then_some("UTF-8")
+}
+
 fn run_tool(
     program: &str,
     args: &[&str],
     stdin: Option<&[u8]>,
     limit: usize,
 ) -> Result<Captured, BackendError> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(if stdin.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| BackendError::Unavailable)?;
+        .stderr(Stdio::null());
+    if let Some(lang) = tool_lang(program) {
+        cmd.env("LC_CTYPE", lang);
+    }
+    #[cfg(windows)]
+    {
+        // A helper started by a service without a console must not flash a window per poll.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().map_err(|_| BackendError::Unavailable)?;
     if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
         // Tools read stdin to EOF before they daemonize; a broken pipe means the tool died.
         if pipe.write_all(data).is_err() {
@@ -1781,6 +1795,17 @@ pub fn unavailable_status(devices: Vec<ClipboardDeviceStatus>) -> ClipboardStatu
         hotkey_binding: "unsupported".to_owned(),
         last_pull: None,
         devices,
+    }
+}
+
+#[cfg(test)]
+mod platform_tool_tests {
+    #[test]
+    fn macos_pasteboard_tools_are_pinned_to_utf8_and_others_are_left_alone() {
+        assert_eq!(super::tool_lang("pbpaste"), Some("UTF-8"));
+        assert_eq!(super::tool_lang("pbcopy"), Some("UTF-8"));
+        assert_eq!(super::tool_lang("wl-copy"), None);
+        assert_eq!(super::tool_lang("powershell"), None);
     }
 }
 

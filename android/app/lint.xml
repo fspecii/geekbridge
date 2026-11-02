@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Deliberate lint suppressions. Everything else is fixed in code; each entry here says why it stays. -->
+<lint>
+    <!-- POST_NOTIFICATIONS exists only on API 33+, but both uses are guarded by SDK_INT >= 33 (HomeActivity)
+         or only read the permission name for a diagnostics row, which checkSelfPermission handles on old APIs. -->
+    <issue id="InlinedApi">
+        <ignore path="**/DiagnosticsReport.kt" />
+        <ignore path="**/HomeActivity.kt" />
+    </issue>
+    <!-- Sideloaded app (GitHub releases, not Play): the battery exemption is requested on the user's tap only,
+         so phone calls and file transfers survive Doze. Play policy does not apply to this distribution. -->
+    <issue id="BatteryLife" severity="ignore" />
+    <!-- Dependencies are pinned and verified offline; bumps go through dependabot PRs. -->
+    <issue id="NewerVersionAvailable" severity="ignore" />
+    <!-- x86_64 is packaged by default (packagedAbis); only the release-slimming override drops it. The emulator
+         and ChromeOS-on-x86 are supported through that default, so the warning is about a non-default build. -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+    <!-- English-only app: no language needs a plural form beyond the "%d x" strings that exist. -->
+    <issue id="PluralsCandidate" severity="ignore" />
+    <!-- DotKit draws a handful of points per frame into two short lists; the allocation is dwarfed by the canvas
+         work and the view only redraws on state changes, never in a continuous animation. -->
+    <issue id="DrawAllocation">
+        <ignore path="**/DotKit.kt" />
+    </issue>
+    <!-- ShareCoordinator holds only context.applicationContext, which cannot leak an Activity. -->
+    <issue id="StaticFieldLeak">
+        <ignore path="**/ShareCoordinator.kt" />
+    </issue>
+    <!-- DotCalendar and TimelineDot are created in code, never inflated from XML, so no AttributeSet constructor. -->
+    <issue id="ViewConstructor">
+        <ignore path="**/DotCalendar.kt" />
+    </issue>
+</lint>

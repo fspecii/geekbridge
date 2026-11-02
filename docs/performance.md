@@ -15,11 +15,21 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | Wakeups (voluntary context switches, all threads) | ~1/s | ~0.3-2/s | 3/s |
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
-| `geekbridge-service` size | 10 722 896 B | 4 321 752 B | 5 000 000 B |
-| `geekbridge-ctl` size | 1 555 944 B | 719 192 B | 800 000 B |
+| `geekbridge-service` size | 10 722 896 B | 5 091 480 B (2026-11-02) | 5 300 000 B |
+| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 200 000 B |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
 | UI idle RSS (`--ui`) | 67-68 MB | 65.7 MB | 90 MB |
 | UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
+
+Size budgets were raised on 2026-11-02 (service 5.0 -> 5.3 MB, ctl 0.8 -> 1.2 MB) after trimming was
+investigated and judged not worthwhile. An unstripped `geekbridge-ctl` (`cargo rustc --release -p bridge-service
+--bin geekbridge-ctl -- -C strip=none`, `nm --size-sort`) shows the Hyprland/Omarchy modules (`hypr_config`,
+`hotkey_cli`, `waybar`, ...) are only ~46 kB of the 1.1 MB: ~416 kB is serde_json instantiations for the grown IPC
+protocol (`bridge_core::ipc::Response`/`Request`/`EventKind` now carry calls, contacts, calendar, SMS), ~147 kB is
+std's backtrace/symbolizer (gimli, miniz_oxide), the rest std/core. Feature-gating the Hyprland code could not reach
+the old 800 kB, and `geekbridge-ctl` must keep `hotkey` and `status --waybar`. Under fat LTO the service already drops
+lib code it does not reference, so its growth is feature growth, not those modules. Real fixes would need a smaller
+wire protocol (e.g. a ctl-only slim response type) or nightly `build-std`; neither is justified for ~0.3 MB.
 
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.

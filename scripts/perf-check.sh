@@ -28,8 +28,8 @@ UI=0
 : "${BUDGET_WAKEUPS_PER_S:=3}"        # context switches per second, whole process
 : "${BUDGET_CPU_TICKS:=2}"            # CPU ticks (10 ms each) burned over the whole window
 : "${BUDGET_STARTUP_MS:=300}"         # exec to "discovery API" line, warm cache
-: "${BUDGET_SERVICE_BYTES:=5000000}"  # stripped binary size
-: "${BUDGET_CTL_BYTES:=800000}"
+: "${BUDGET_SERVICE_BYTES:=5300000}"  # stripped binary size (raised from 5.0 MB on 2026-11-02, docs/performance.md)
+: "${BUDGET_CTL_BYTES:=1200000}"
 : "${BUDGET_UI_RSS_KIB:=90000}"       # geekbridge-messages, idle
 : "${BUDGET_UI_WAKEUPS_PER_S:=12}"
 

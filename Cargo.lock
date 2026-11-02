@@ -466,7 +466,6 @@ dependencies = [
  "eframe",
  "qrcode",
  "rqrr",
- "serde_json",
  "tempfile",
  "windows-sys 0.61.2",
  "zeroize",
@@ -567,7 +566,6 @@ dependencies = [
  "bridge-kde",
  "bridge-service",
  "libc",
- "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
@@ -771,9 +769,9 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "39ed3668f121a65e4ce95efeba22ad1f8ad6c6628397a5dd773118514a5e1804"
 dependencies = [
  "error-code",
 ]

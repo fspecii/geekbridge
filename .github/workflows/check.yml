@@ -18,9 +18,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - name: Linux graphics and private D-Bus test dependencies
         if: runner.os == 'Linux'
@@ -31,42 +32,87 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build the whole workspace
+        run: cargo build --workspace --locked
       - name: Tests on Linux (mock bus is required)
         if: runner.os == 'Linux'
         env:
           GEEKBRIDGE_REQUIRE_DBUS: '1'
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Tests on Windows and macOS (Unix-only, D-Bus and Linux-tool tests are cfg-gated or skip with a reason)
+        if: runner.os != 'Linux'
+        run: cargo test --workspace --locked --no-fail-fast
+      - name: Smoke test the built binaries (--version, --help, diagnose on a fresh HOME)
+        shell: bash
+        run: scripts/smoke-binaries.sh
+      - name: Smoke test a live service (private ports, fresh state dir; first real run on Windows and macOS)
+        shell: bash
+        # Strict on Linux. The Windows and macOS legs report as a failed step but do not fail the job,
+        # so one platform-specific surprise does not hide the results of the other checks.
+        continue-on-error: ${{ runner.os != 'Linux' }}
+        run: scripts/smoke-binaries.sh --live
       - name: Emulated call end-to-end (fake modem, private D-Bus; signalling only)
         if: runner.os == 'Linux'
         env:
           GEEKBRIDGE_REQUIRE_DBUS: '1'
         run: scripts/emulate-call.sh fake
-      - name: Tests on Windows and macOS
-        if: runner.os != 'Linux'
-        run: cargo test --workspace --locked
-      - name: Build desktop executables
+      - name: Build desktop executables (release)
         run: cargo build --release --locked -p bridge-apps -p bridge-service -p bridge-kde -p bridge-calls -p bridge-update
       - name: Windows and macOS call backends compile (their own crates, host OS only)
         if: runner.os != 'Linux'
         run: cargo build --release --locked -p ${{ runner.os == 'Windows' && 'bridge-calls-windows' || 'bridge-calls-macos' }}
-      - name: Performance budget (idle service)
-        if: runner.os == 'Linux'
-        run: scripts/perf-check.sh --window 10
+
+  perf:
+    name: Performance budget (Linux, no emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Linux graphics dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev
+      - name: Idle service budget (startup, RSS, threads, fds, wakeups, binary size)
+        run: scripts/perf-check.sh --build --window 10
 
   cross-targets:
     name: Type-check Windows and macOS targets (from Linux)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-apple-darwin
           components: clippy
       - name: cargo check --workspace --all-targets for Windows, macOS arm64 and x86_64 (warnings denied)
         env:
           XCHECK_CLIPPY: '1'
         run: scripts/xcheck.sh
+
+  supply-chain:
+    name: Supply chain (cargo-deny, notices) - report only
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Report only: new advisories appear independently of our changes, and licences fail until the owner
+    # picks one for the workspace crates (docs/licence-decision.md). See docs/supply-chain.md.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        if: ${{ !cancelled() }}
+        with:
+          toolchain: stable
+      - name: THIRD_PARTY_NOTICES.md is current
+        if: ${{ !cancelled() }}
+        run: scripts/gen-notices.sh --check
 
   android:
     name: Android / unit tests, lint, debug APK
@@ -79,8 +125,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: aarch64-linux-android,x86_64-linux-android
       - name: Install Gradle 8.13
         run: |
@@ -108,8 +155,27 @@ jobs:
           cp target/aarch64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
           cp target/x86_64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
           "$bin/llvm-strip" android/app/src/main/jniLibs/*/libgeekbridge_android.so
+      - name: Toolchain versions (JDK 17, Gradle 8.13 are pinned)
+        run: |
+          java -version 2>&1 | head -1 | grep -q '"17\.' || { java -version; exit 1; }
+          gradle --version | grep -q '^Gradle 8\.13' || { gradle --version; exit 1; }
       - name: Unit tests, lint, debug APK
         run: |
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cd android
           gradle --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      - name: Upload the debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: geekbridge-android-debug
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+      - name: Upload Android test and lint reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-reports
+          path: |
+            android/app/build/reports/lint-results-debug.*
+            android/app/build/test-results/testDebugUnitTest/*.xml
+          if-no-files-found: ignore

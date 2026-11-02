@@ -9,6 +9,13 @@ object ServicePolicy {
     fun shouldRestartOnNetwork(previousNetworkId: Long?, newNetworkId: Long): Boolean =
         previousNetworkId != null && previousNetworkId != newNetworkId
 
+    /**
+     * The same network can change address without a new Network object (DHCP renewal, Wi-Fi roam to an AP on another
+     * subnet, VPN toggle). Compared on IPv4 only: IPv6 privacy addresses rotate on their own and must not restart the link.
+     * [previous] null means this is the first report for the network, which is never a change.
+     */
+    fun addressesChanged(previous: Set<String>?, current: Set<String>): Boolean = previous != null && previous != current
+
     const val RESTART_DEBOUNCE_MS = 3_000L
 
     /**

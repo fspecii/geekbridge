@@ -98,6 +98,68 @@ pub fn parse_messages(body: &Map<String, Value>) -> Result<ParsedMessages, SmsWi
     Ok(out)
 }
 
+/// Per-thread unread counts a GeekBridge phone adds to the conversation-list answer
+/// (`"unread": {"<thread id>": n}`), because the stock list carries only the newest message of each
+/// thread and the real unread count is otherwise unknowable. Bounded: <= 300 threads, counts
+/// capped at 10_000, anything else is skipped.
+pub fn parse_unread(body: &Map<String, Value>) -> Vec<(ThreadId, u32)> {
+    let Some(map) = body.get("unread").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    map.iter()
+        .take(300)
+        .filter_map(|(k, v)| {
+            let t = k.parse::<i64>().ok().filter(|t| *t >= 0)?;
+            let n = u32::try_from(v.as_u64()?.min(10_000)).ok()?;
+            Some((ThreadId(t), n))
+        })
+        .collect()
+}
+
+/// SIM subscriptions a GeekBridge phone adds to its `kdeconnect.sms.messages` packets
+/// (`"sims": [{"id", "slot", "label"}]`; stock phones send none). Untrusted: at most
+/// [`bridge_core::phone_view::MAX_SIMS`], ids must be selectable subscription ids, labels are
+/// stripped of control characters and cut to 24 characters. `None` = the field is absent, so the
+/// caller keeps what it had; `Some(vec![])` = the phone says it has no usable SIM list.
+pub fn parse_sims(body: &Map<String, Value>) -> Option<Vec<bridge_core::phone_view::SimItem>> {
+    use bridge_core::{messages::SubscriptionId, phone_view::SimItem};
+    let list = body.get("sims")?.as_array()?;
+    let mut out: Vec<SimItem> = Vec::new();
+    for v in list.iter().take(bridge_core::phone_view::MAX_SIMS) {
+        let Some(id) = v
+            .get("id")
+            .and_then(Value::as_i64)
+            .and_then(|i| i32::try_from(i).ok())
+            .and_then(|i| SubscriptionId::new(i).ok())
+        else {
+            continue;
+        };
+        if out.iter().any(|s| s.id == id.get()) {
+            continue;
+        }
+        let slot = v
+            .get("slot")
+            .and_then(Value::as_u64)
+            .and_then(|s| u8::try_from(s).ok())
+            .filter(|s| *s <= 8)
+            .unwrap_or(0);
+        let label: String = v
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(24)
+            .collect();
+        out.push(SimItem {
+            id: id.get(),
+            slot,
+            label: label.trim().to_owned(),
+        });
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +223,35 @@ mod tests {
             parse_messages(&obj(json!({"version": 2, "messages": many}))).unwrap_err(),
             SmsWireError::TooManyMessages
         );
+    }
+
+    #[test]
+    fn sims_are_optional_bounded_and_cleaned() {
+        assert!(parse_sims(&obj(json!({"version": 2, "messages": []}))).is_none());
+        let b = obj(json!({"sims": [
+            {"id": 3, "slot": 1, "label": "Carrier\u{7}A"},
+            {"id": 3, "slot": 2, "label": "dup"},
+            {"id": 0, "slot": 1, "label": "unknown"},
+            {"id": 9, "slot": 99, "label": "x".repeat(80)},
+            {"id": 11}, {"id": 12}, {"id": 13},
+        ]}));
+        let sims = parse_sims(&b).unwrap();
+        assert_eq!(sims.len(), 2); // only the first 4 entries are inspected: 3, dup, 0, 9
+        assert_eq!(
+            (sims[0].id, sims[0].slot, sims[0].label.as_str()),
+            (3, 1, "CarrierA")
+        );
+        assert_eq!((sims[1].id, sims[1].slot, sims[1].label.len()), (9, 0, 24));
+        assert_eq!(parse_sims(&obj(json!({"sims": []}))).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn unread_counts_are_optional_and_bounded() {
+        assert!(parse_unread(&obj(json!({"version": 2}))).is_empty());
+        let mut got = parse_unread(&obj(
+            json!({"unread": {"4": 3, "x": 1, "-2": 1, "9": 99999, "7": "no"}}),
+        ));
+        got.sort_by_key(|(t, _)| t.0);
+        assert_eq!(got, vec![(ThreadId(4), 3), (ThreadId(9), 10_000)]);
     }
 }

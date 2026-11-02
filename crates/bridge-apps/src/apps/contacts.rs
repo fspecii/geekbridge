@@ -164,6 +164,7 @@ impl Contacts {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .hint_text("Search name, number or email")
+                        .margin(Margin::symmetric(8, 4))
                         .desired_width(f32::INFINITY),
                 );
                 crate::input::limit_chars(&mut self.query, 64);

@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="pd_title">Contacts, calendar and messages</string>
     <string name="pd_intro">Optional, off by default. Each switch lets a computer you paired and allowed on its side ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
     <string name="pd_contacts">Share contacts</string>
     <string name="pd_contacts_sub">Read-only: names, numbers, emails for the Contacts app on your computer. Photos are never sent.</string>
@@ -15,13 +14,8 @@
     <string name="pd_calendar_loading">No calendars found on this phone.</string>
     <string name="pd_sms">Share text messages (SMS)</string>
     <string name="pd_sms_sub">Lets the computer list your SMS conversations, show new ones, and send a text through this phone.</string>
-    <string name="pd_state_on">On</string>
-    <string name="pd_state_waiting">Waiting for permission</string>
-    <string name="pd_state_off">Off</string>
     <string name="pd_grant">Allow access</string>
-    <string name="pd_blocked">Android will not ask again. Open app settings › Permissions.</string>
     <string name="pd_sms_special">Short codes and premium numbers</string>
     <string name="pd_sms_special_sub">Off: the computer cannot text numbers shorter than 7 digits or premium-rate ranges. They can cost money.</string>
     <string name="pd_sms_honest">Android restricts SMS: reading and sending needs the SMS permissions (read, send, receive), and Google Play only allows them for the default messaging app. This build asks for them only when you switch this on. On Android 13+, an app installed outside a store may first need “Allow restricted settings” in its App info (⋮ menu). GeekBridge does not become your default messaging app. Not supported: MMS pictures, group texts, RCS chats. Message text goes only to your paired computer and is never logged.</string>
-    <string name="pd_home_row_sub">Contacts, calendar, SMS · off until you choose</string>
 </resources>

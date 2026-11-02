@@ -103,10 +103,7 @@ fn state_dir(cli: &Cli) -> Result<PathBuf, String> {
     if let Some(d) = &cli.state_dir {
         return Ok(d.clone());
     }
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+    let base = bridge_core::ipc::platform_data_dir()
         .ok_or("cannot determine a state directory; pass --state-dir")?;
     Ok(base.join("geekbridge").join("kde"))
 }

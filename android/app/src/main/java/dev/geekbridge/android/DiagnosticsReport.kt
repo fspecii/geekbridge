@@ -35,6 +35,7 @@ object DiagnosticsReport {
             appendLine("battery: $battery")
             appendLine("permissions: " + PERMISSIONS.joinToString(", ") { (label, p) -> "$label=" + if (granted(p)) "granted" else "no" })
             appendLine("last issue: ${lastIssue?.let(::scrub) ?: "none"}")
+            appendLine("last crash: " + (CrashNote.read(ctx)?.let { "\n" + it.trimEnd() } ?: "none"))
         }
     }
 

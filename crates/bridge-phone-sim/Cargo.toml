@@ -15,7 +15,6 @@ path = "src/bin/geekbridge-call-e2e.rs"
 
 [dependencies]
 thiserror = "2"
-serde.workspace = true
 serde_json.workspace = true
 bridge-core.workspace = true
 bridge-calls = { path = "../bridge-calls" }

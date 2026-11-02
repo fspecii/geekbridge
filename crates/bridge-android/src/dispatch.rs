@@ -29,8 +29,9 @@ pub const MAX_REQUEST_BYTES: usize = 6 * DEFAULT_MAX_TEXT_BYTES + 1024;
 /// `transport_data_send` carries up to 1 MiB of phone data (contact cards, calendar, messages) plus
 /// the envelope; every other request keeps [`MAX_REQUEST_BYTES`].
 pub const MAX_DATA_REQUEST_BYTES: usize = 1024 * 1024 + 2048;
-/// Requests carry a handful of keys; more is never legitimate.
-const MAX_FIELDS: usize = 8;
+/// Requests carry a handful of keys; more is never legitimate. `transport_start` is the widest: version, action,
+/// state_dir, device_name, listen, discovery, allow_loopback, clipboard, calls, data and permits (11 keys).
+const MAX_FIELDS: usize = 16;
 
 /// The stateless actions. `transport::ACTIONS` lists the stateful ones.
 const ACTIONS: [&str; 3] = ["version", "validate_sms", "validate_clipboard"];

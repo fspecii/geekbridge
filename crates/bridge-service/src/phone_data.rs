@@ -15,21 +15,26 @@ use bridge_core::{
     ipc::{ErrorBody, ErrorCode, Feature},
     messages::{
         Address, Conversation, Direction, MergeOutcome, OutgoingTextIntent, ResendConsent,
-        SendEvent, SendId, SendLedger, SendState, SimSelection, SubmissionId, Submit, ThreadId,
+        SendEvent, SendId, SendLedger, SendState, SimSelection, SubmissionId, Submit,
+        SubscriptionId, ThreadId,
     },
     phone_link::{self as wire, SmsPhase},
     phone_view::{
         AgendaView, CalendarEditAction, CalendarItem, ConversationItem, DataDevice, DataState,
-        EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_SHOWN,
-        MAX_PEOPLE_LIMIT, MAX_PEOPLE_SHOWN, MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem,
-        MessagesView, Person, SelectedThread, SendItem, SendPhase,
+        EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_PER_PHONE,
+        MAX_MESSAGES_PER_THREAD, MAX_MESSAGES_SHOWN, MAX_PEOPLE_LIMIT, MAX_PEOPLE_SHOWN,
+        MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem, MessagesView, Person, SelectedThread,
+        SendItem, SendPhase, SimItem,
     },
 };
 use bridge_kde::sms;
 use serde_json::{Map, Value};
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::mpsc;
@@ -40,10 +45,26 @@ pub struct Out {
     pub body: Map<String, Value>,
 }
 
-/// Desktop notification for a newly arrived text. Only the sender is passed on: message bodies
-/// never reach a notifier.
+/// A newly arrived text, as far as a notifier may know it. `body` is `Some` only when the user
+/// chose to show message content in notifications (`PhoneData::set_notify_content`); by default
+/// message bodies never reach a notifier.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingText {
+    pub device_name: String,
+    /// Contact name, else the number.
+    pub sender: String,
+    /// The phone number or address, for the reply action.
+    pub number: String,
+    pub body: Option<String>,
+}
+
+/// Desktop notification for a newly arrived text.
 pub trait SmsNotifier: Send + Sync {
     fn received(&self, device_name: &str, sender: &str);
+    /// Richer form with the number (reply action) and, if allowed, the text. Default: [`Self::received`].
+    fn incoming(&self, n: &IncomingText) {
+        self.received(&n.device_name, &n.sender);
+    }
     /// An event from the shared calendar starts in `minutes` (0 = now). Default: no notification.
     fn event_soon(&self, _device_name: &str, _title: &str, _minutes: u32) {}
 }
@@ -90,7 +111,8 @@ pub enum Disposition {
 }
 
 const MAX_THREADS: usize = 300;
-const MAX_MESSAGES_TOTAL: usize = 20_000;
+const MAX_MESSAGES_TOTAL: usize = MAX_MESSAGES_PER_PHONE;
+const MAX_SEARCH_CHARS: usize = 64;
 const MAX_PENDING_VCARDS: usize = 5000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
@@ -135,6 +157,45 @@ struct Thread {
     conv: Conversation,
     exhausted: bool,
     asked_older: bool,
+    /// Marked read on this computer only: incoming messages up to this phone timestamp count as read.
+    read_through_ms: u64,
+    /// The per-thread cap dropped older messages, so more history cannot be held.
+    capped: bool,
+    /// Unread count the phone reported with the conversation list (GeekBridge phones only).
+    phone_unread: Option<u32>,
+    /// What `phone_unread` was when the user marked the conversation read here.
+    unread_at_mark: u32,
+}
+impl Thread {
+    fn new(tid: ThreadId) -> Self {
+        Self {
+            conv: Conversation::new(tid),
+            exhausted: false,
+            asked_older: false,
+            read_through_ms: 0,
+            capped: false,
+            phone_unread: None,
+            unread_at_mark: 0,
+        }
+    }
+    /// Unread here: what is loaded and unread after the local mark, or what the phone counted
+    /// beyond what it counted when the user marked it read (the phone cannot be told).
+    fn unread(&self) -> u32 {
+        let loaded: u32 = self
+            .conv
+            .iter()
+            .filter(|m| {
+                !m.read && m.direction() == Direction::Incoming && m.date_ms > self.read_through_ms
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        let phone = self
+            .phone_unread
+            .unwrap_or(0)
+            .saturating_sub(self.unread_at_mark);
+        loaded.max(phone)
+    }
 }
 
 struct Dev {
@@ -168,6 +229,8 @@ struct Dev {
     alerted: HashSet<String>,
 
     threads: BTreeMap<ThreadId, Thread>,
+    /// SIMs the phone reported with its messages (GeekBridge phones only).
+    sims: Vec<SimItem>,
     sms_requested: bool,
     sms_listed: bool,
     sms_asked_ms: u64,
@@ -223,6 +286,7 @@ impl Dev {
             edits: EditLedger::default(),
             alerted: HashSet::new(),
             threads: BTreeMap::new(),
+            sims: Vec::new(),
             sms_requested: false,
             sms_listed: false,
             sms_asked_ms: 0,
@@ -294,6 +358,7 @@ impl Dev {
             }
             _ => {
                 self.threads.clear();
+                self.sims.clear();
                 self.sms_requested = false;
                 self.sms_listed = false;
                 self.ledger = SendLedger::new();
@@ -471,13 +536,21 @@ impl Dev {
         Disposition::Accepted
     }
 
-    fn on_messages(&mut self, body: &Map<String, Value>, now: u64) -> (Disposition, Vec<String>) {
+    fn on_messages(
+        &mut self,
+        body: &Map<String, Value>,
+        now: u64,
+    ) -> (Disposition, Vec<(String, String)>) {
         if !self.consent[SMS] || !self.sms_requested {
             return (Disposition::Ignored, Vec::new());
         }
         let Ok(parsed) = sms::parse_messages(body) else {
             return (Disposition::Invalid, Vec::new());
         };
+        if let Some(sims) = sms::parse_sims(body) {
+            self.sims = sims;
+        }
+        let phone_unread = sms::parse_unread(body);
         let total: usize = self.threads.values().map(|t| t.conv.len()).sum();
         let mut room = MAX_MESSAGES_TOTAL.saturating_sub(total);
         let mut notify = Vec::new();
@@ -489,23 +562,23 @@ impl Dev {
                 if self.threads.len() >= MAX_THREADS {
                     continue;
                 }
-                self.threads.insert(
-                    tid,
-                    Thread {
-                        conv: Conversation::new(tid),
-                        exhausted: false,
-                        asked_older: false,
-                    },
-                );
+                self.threads.insert(tid, Thread::new(tid));
             }
             if room == 0 {
-                break;
+                // Memory for this phone is full: make room by dropping the oldest history of the
+                // biggest thread instead of refusing what just arrived.
+                let freed = self.evict_for_room();
+                if freed == 0 {
+                    break;
+                }
+                room = freed;
             }
             let t = self.threads.get_mut(&tid).expect("inserted above");
             let incoming = m.direction() == Direction::Incoming;
             let unread = !m.read;
             let recent = now.saturating_sub(m.date_ms) <= NOTIFY_MAX_AGE_MS;
             let sender = m.addresses.first().map(|a| a.as_str().to_owned());
+            let text = m.body.clone();
             match t.conv.merge(m.clone()) {
                 Ok(MergeOutcome::Inserted) => {
                     room -= 1;
@@ -517,7 +590,7 @@ impl Dev {
                         && self.sms_listed
                         && let Some(s) = sender
                     {
-                        notify.push(s);
+                        notify.push((s, text));
                     }
                 }
                 Ok(MergeOutcome::Updated) => {
@@ -531,12 +604,20 @@ impl Dev {
         for tid in touched {
             if let Some(t) = self.threads.get_mut(&tid) {
                 t.asked_older = false;
+                if t.conv.trim_oldest(MAX_MESSAGES_PER_THREAD) > 0 {
+                    t.capped = true;
+                }
             }
         }
         for t in self.threads.values_mut() {
             if t.asked_older {
                 t.exhausted = true;
                 t.asked_older = false;
+            }
+        }
+        for (tid, n) in phone_unread {
+            if let Some(t) = self.threads.get_mut(&tid) {
+                t.phone_unread = Some(n);
             }
         }
         self.correlate(&fresh, now);
@@ -549,6 +630,19 @@ impl Dev {
             notify.truncate(1);
         }
         (Disposition::Accepted, notify)
+    }
+
+    /// Frees room by dropping the oldest messages of the largest thread; returns how many slots opened.
+    fn evict_for_room(&mut self) -> usize {
+        let Some(t) = self.threads.values_mut().max_by_key(|t| t.conv.len()) else {
+            return 0;
+        };
+        let keep = t.conv.len().saturating_sub(100).max(1);
+        let n = t.conv.trim_oldest(keep);
+        if n > 0 {
+            t.capped = true;
+        }
+        n
     }
 
     /// Stock phones send no status packets; a newly seen outgoing message that matches exactly one
@@ -676,6 +770,8 @@ struct Inner {
 pub struct PhoneData {
     inner: Mutex<Inner>,
     notifier: Mutex<Option<Arc<dyn SmsNotifier>>>,
+    /// Show message text in new-message notifications. Off unless the user chose it.
+    notify_content: AtomicBool,
 }
 
 impl Default for PhoneData {
@@ -683,6 +779,7 @@ impl Default for PhoneData {
         Self {
             inner: Mutex::new(Inner::default()),
             notifier: Mutex::new(None),
+            notify_content: AtomicBool::new(false),
         }
     }
 }
@@ -694,6 +791,11 @@ impl PhoneData {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `true` lets a notification carry the message text; the default hides it.
+    pub fn set_notify_content(&self, show: bool) {
+        self.notify_content.store(show, Ordering::Relaxed);
     }
 
     pub fn set_notifier(&self, n: Arc<dyn SmsNotifier>) {
@@ -810,9 +912,13 @@ impl PhoneData {
                 wire::CALENDAR_WRITE_RESULT => d.on_write_result(body, now),
                 sms::MESSAGES => {
                     let (v, notify) = d.on_messages(body, now);
-                    if let Some(sender) = notify.into_iter().next() {
-                        let who = self.display_name(d, &sender);
-                        notice = Some((d.name.clone(), who));
+                    if let Some((number, text)) = notify.into_iter().next() {
+                        notice = Some(IncomingText {
+                            device_name: d.name.clone(),
+                            sender: self.display_name(d, &number),
+                            number,
+                            body: self.notify_content.load(Ordering::Relaxed).then_some(text),
+                        });
                     }
                     v
                 }
@@ -820,14 +926,14 @@ impl PhoneData {
                 _ => Disposition::Invalid,
             }
         };
-        if let Some((device, sender)) = notice
+        if let Some(text) = notice
             && let Some(n) = self
                 .notifier
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone()
         {
-            n.received(&device, &sender);
+            n.incoming(&text);
         }
         verdict
     }
@@ -909,20 +1015,48 @@ impl PhoneData {
         Ok(())
     }
 
+    /// Marks a conversation read on this computer only. The KDE protocol has no way to tell the
+    /// phone, so the phone's own unread state is untouched and the mark is forgotten with the data.
+    pub fn mark_read(&self, device: &str, thread: i64) -> Result<(), ErrorBody> {
+        let mut g = self.lock();
+        let d = Self::target(&mut g, device)?;
+        let th = d
+            .threads
+            .get_mut(&ThreadId(thread))
+            .ok_or_else(|| err(ErrorCode::NotFound, "unknown conversation"))?;
+        th.read_through_ms = th.conv.newest_date_ms().unwrap_or(0);
+        th.unread_at_mark = th.phone_unread.unwrap_or(0);
+        Ok(())
+    }
+
     pub fn send_text(
         &self,
         device: &str,
         recipient: &str,
         text: &str,
         submission: &str,
+        sub_id: Option<i32>,
     ) -> Result<u64, ErrorBody> {
-        let intent = OutgoingTextIntent::new(&[recipient], text, SimSelection::PhoneDefault)
-            .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
         let submission =
             SubmissionId::new(submission).map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
         let now = now_ms();
         let mut g = self.lock();
         let d = Self::target(&mut g, device)?;
+        // Only a SIM the phone itself listed can be chosen; anything else would fall back silently.
+        let sim = match sub_id {
+            None => SimSelection::PhoneDefault,
+            Some(id) if d.sims.iter().any(|s| s.id == id) => SimSelection::Subscription(
+                SubscriptionId::new(id).map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?,
+            ),
+            Some(_) => {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    "that SIM is not one the phone reported",
+                ));
+            }
+        };
+        let intent = OutgoingTextIntent::new(&[recipient], text, sim)
+            .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
         d.check_can_send(now)?;
         let id = match d
             .ledger
@@ -1162,6 +1296,8 @@ impl PhoneData {
                 contacts_synced_unix_ms: d.contacts_synced,
                 calendar_synced_unix_ms: d.cal_synced,
                 sms_status_reports: d.caps.sms_status,
+                sms_send: d.caps.sms_send,
+                sims: d.sims.clone(),
             })
             .collect();
         v.sort_by(|a, b| a.device_id.cmp(&b.device_id));
@@ -1270,7 +1406,12 @@ impl PhoneData {
         &self,
         device: Option<&str>,
         thread: Option<i64>,
+        query: Option<&str>,
     ) -> Result<MessagesView, ErrorBody> {
+        let needle: Option<String> = query
+            .map(|q| q.trim().chars().take(MAX_SEARCH_CHARS).collect::<String>())
+            .filter(|q| !q.is_empty())
+            .map(|q| q.to_lowercase());
         let now = now_ms();
         let mut g = self.lock();
         for d in g.devices.values_mut() {
@@ -1306,7 +1447,24 @@ impl PhoneData {
                     .map(|a| names.get(&suffix(a)).cloned().unwrap_or_else(|| a.clone()))
                     .collect::<Vec<_>>()
                     .join(", ");
+                let mut matched = None;
+                if let Some(q) = &needle {
+                    let in_title = title.to_lowercase().contains(q.as_str())
+                        || addrs.iter().any(|a| a.to_lowercase().contains(q.as_str()));
+                    if !in_title {
+                        // Newest matching message gives the snippet.
+                        let hit = ordered
+                            .iter()
+                            .rev()
+                            .find(|m| m.body.to_lowercase().contains(q.as_str()));
+                        match hit {
+                            Some(m) => matched = Some(snippet(&m.body, q, 60)),
+                            None => continue,
+                        }
+                    }
+                }
                 conversations.push(ConversationItem {
+                    matched,
                     device_id: id.clone(),
                     thread_id: t.conv.thread_id().0,
                     title: if title.is_empty() {
@@ -1318,12 +1476,7 @@ impl PhoneData {
                     last_body: truncate(&last.body, 160),
                     last_date_ms: last.date_ms,
                     last_outgoing: last.direction() == Direction::Outgoing,
-                    unread: ordered
-                        .iter()
-                        .filter(|m| !m.read && m.direction() == Direction::Incoming)
-                        .count()
-                        .try_into()
-                        .unwrap_or(u32::MAX),
+                    unread: t.unread(),
                     message_count: ordered.len(),
                 });
             }
@@ -1366,9 +1519,12 @@ impl PhoneData {
                             body: truncate(&m.body, 4000),
                             date_ms: m.date_ms,
                             attachments: m.attachment_count,
+                            sub_id: m.subscription.map(SubscriptionId::get),
                         })
                         .collect(),
-                    may_have_older: !th.exhausted,
+                    held: all.len(),
+                    capped: th.capped,
+                    may_have_older: !th.exhausted && !th.capped,
                 })
             }),
             _ => None,
@@ -1462,6 +1618,23 @@ fn parse_day(day: &str) -> Result<Date, ErrorBody> {
         d.and_then(|v| v.parse().ok()).ok_or_else(bad)?,
     )
     .map_err(|_| bad())
+}
+
+/// About `max` characters of `body` around the first case-insensitive occurrence of `needle`
+/// (already lower case). Falls back to the start of the text.
+fn snippet(body: &str, needle: &str, max: usize) -> String {
+    let flat: String = body
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let lower = flat.to_lowercase();
+    let at = lower
+        .find(needle)
+        .map(|b| lower[..b].chars().count())
+        .unwrap_or(0);
+    let start = at.saturating_sub(max / 4);
+    let text: String = flat.chars().skip(start).take(max).collect();
+    format!("{}{text}", if start > 0 { "…" } else { "" })
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
@@ -1590,20 +1763,40 @@ fn event_item(
     }
 }
 
-/// Best-effort freedesktop notification through `notify-send`: "New message from <sender>". The
-/// message text is never part of it.
+/// Best-effort freedesktop notification through `notify-send`: "New message from <sender>" with a
+/// Reply action (libnotify >= 0.8; a click on the body does the same). The text is part of it only
+/// when the notification carries a body, which `PhoneData` allows only if the user chose to show
+/// message content.
 pub struct NotifySendSms;
 
 impl NotifySendSms {
     pub fn args(device: &str, sender: &str) -> Vec<String> {
-        let clean = |s: &str| crate::notify_text::plain(s, 48);
-        vec![
-            "--app-name=GeekBridge".into(),
+        Self::text_args(&IncomingText {
+            device_name: device.to_owned(),
+            sender: sender.to_owned(),
+            number: String::new(),
+            body: None,
+        })
+    }
+
+    pub fn text_args(n: &IncomingText) -> Vec<String> {
+        let clean = |s: &str, max: usize| crate::notify_text::plain(s, max);
+        let mut args = vec![
+            "--app-name=GeekBridge".to_owned(),
             "--expire-time=8000".into(),
-            "--".into(),
-            format!("New message from {}", clean(sender)),
-            format!("On {}", clean(device)),
-        ]
+        ];
+        if !n.number.is_empty() {
+            args.push("--wait".into());
+            args.push("--action=reply=Reply".into());
+            args.push("--action=default=Reply".into());
+        }
+        args.push("--".into());
+        args.push(format!("New message from {}", clean(&n.sender, 48)));
+        args.push(match &n.body {
+            Some(b) => clean(&b.replace('\n', " "), 160),
+            None => format!("On {}", clean(&n.device_name, 48)),
+        });
+        args
     }
 }
 
@@ -1638,14 +1831,38 @@ impl SmsNotifier for NotifySendSms {
     }
 
     fn received(&self, device_name: &str, sender: &str) {
-        let args = Self::args(device_name, sender);
+        self.incoming(&IncomingText {
+            device_name: device_name.to_owned(),
+            sender: sender.to_owned(),
+            number: String::new(),
+            body: None,
+        });
+    }
+
+    fn incoming(&self, n: &IncomingText) {
+        let args = Self::text_args(n);
+        let number = n.number.clone();
         std::thread::spawn(move || {
-            let _ = std::process::Command::new("notify-send")
+            let out = std::process::Command::new("notify-send")
                 .args(&args)
                 .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
-                .status();
+                .output();
+            // "Reply" opens the Messages window on that conversation; the number travels in the
+            // environment of the new process, never on a command line.
+            if let Ok(out) = out
+                && !number.is_empty()
+                && matches!(
+                    String::from_utf8_lossy(&out.stdout).trim(),
+                    "reply" | "default"
+                )
+            {
+                crate::desktop_notify::open_app_with_env(
+                    "geekbridge-messages",
+                    "GEEKBRIDGE_MESSAGE_TO",
+                    &number,
+                );
+            }
         });
     }
 }
@@ -1840,20 +2057,20 @@ mod tests {
             n.0.lock().unwrap().as_slice(),
             &[("Pixel".to_string(), "+15551230000".to_string())]
         );
-        let v = h.messages_view(Some(ID), Some(4)).unwrap();
+        let v = h.messages_view(Some(ID), Some(4), None).unwrap();
         assert_eq!(v.conversations.len(), 1);
         assert_eq!(v.conversations[0].unread, 2);
         assert_eq!(v.selected.as_ref().unwrap().messages.len(), 2);
 
         // Sending: handed to phone, then the phone's own reports move it forward.
         let id = h
-            .send_text(ID, "+15551230000", "on my way", "sub-1")
+            .send_text(ID, "+15551230000", "on my way", "sub-1", None)
             .unwrap();
         let out = rx.try_recv().unwrap();
         assert_eq!(out.kind, sms::REQUEST);
         let rid = out.body["requestId"].as_str().unwrap().to_owned();
         assert_eq!(
-            h.send_text(ID, "+15551230000", "on my way", "sub-1")
+            h.send_text(ID, "+15551230000", "on my way", "sub-1", None)
                 .unwrap(),
             id
         );
@@ -1861,7 +2078,7 @@ mod tests {
             rx.try_recv().is_err(),
             "same submission must not send twice"
         );
-        let phase = |h: &PhoneData| h.messages_view(None, None).unwrap().sends[0].phase;
+        let phase = |h: &PhoneData| h.messages_view(None, None, None).unwrap().sends[0].phase;
         assert_eq!(phase(&h), SendPhase::HandedToPhone);
         for (st, want) in [
             ("accepted", SendPhase::AcceptedByPhone),
@@ -1882,9 +2099,9 @@ mod tests {
         let h = PhoneData::new();
         let (mut rx, generation) = h.link_up(ID, "Pixel", caps_all(), (false, false, true));
         drain(&mut rx);
-        h.send_text(ID, "5551230000", "hi", "s1").unwrap();
+        h.send_text(ID, "5551230000", "hi", "s1", None).unwrap();
         h.link_down(ID, generation);
-        let v = h.messages_view(None, None).unwrap();
+        let v = h.messages_view(None, None, None).unwrap();
         assert_eq!(v.sends[0].phase, SendPhase::Uncertain);
         // Reconnecting sends nothing by itself, and sending while offline is refused.
         let (mut rx2, _) = h.link_up(ID, "Pixel", caps_all(), (false, false, true));
@@ -1901,34 +2118,38 @@ mod tests {
         let (mut rx, g) = h.link_up(ID, "Pixel", caps_all(), (false, false, false));
         drain(&mut rx);
         assert_eq!(
-            h.send_text(ID, "1", "x", "a").unwrap_err().code,
+            h.send_text(ID, "1", "x", "a", None).unwrap_err().code,
             ErrorCode::Unsupported
         );
         h.set_enabled(ID, Feature::Sms, true);
         drain(&mut rx);
         assert_eq!(
-            h.send_text(ID, "", "x", "a").unwrap_err().code,
+            h.send_text(ID, "", "x", "a", None).unwrap_err().code,
             ErrorCode::BadRequest
         );
         assert_eq!(
-            h.send_text(ID, "1", "  ", "a").unwrap_err().code,
+            h.send_text(ID, "1", "  ", "a", None).unwrap_err().code,
             ErrorCode::BadRequest
         );
         assert_eq!(
-            h.send_text(ID, "1", "x", "bad id").unwrap_err().code,
+            h.send_text(ID, "1", "x", "bad id", None).unwrap_err().code,
             ErrorCode::BadRequest
         );
         for i in 0..SENDS_PER_MINUTE {
-            h.send_text(ID, "5551230000", "x", &format!("s{i}"))
+            h.send_text(ID, "5551230000", "x", &format!("s{i}"), None)
                 .unwrap();
         }
         assert_eq!(
-            h.send_text(ID, "5551230000", "x", "late").unwrap_err().code,
+            h.send_text(ID, "5551230000", "x", "late", None)
+                .unwrap_err()
+                .code,
             ErrorCode::TooMany
         );
         h.link_down(ID, g);
         assert_eq!(
-            h.send_text(ID, "5551230000", "x", "off").unwrap_err().code,
+            h.send_text(ID, "5551230000", "x", "off", None)
+                .unwrap_err()
+                .code,
             ErrorCode::NotConnected
         );
     }
@@ -2301,5 +2522,202 @@ mod tests {
         assert!(a.iter().all(|s| !s.contains('\n') && !s.contains('\t')));
         assert!(a[3].starts_with("In 5 min"));
         assert!(NotifySendSms::event_args("p", "t", 0)[3].starts_with("Now"));
+    }
+
+    // ------------------------------------------------------------ Messages experience
+
+    fn sms_hub() -> (Arc<PhoneData>, mpsc::Receiver<Out>) {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (false, false, true));
+        drain(&mut rx);
+        (h, rx)
+    }
+
+    fn feed(h: &PhoneData, list: Vec<Value>) {
+        let b = obj(json!({"version": 2, "messages": list}));
+        assert_eq!(h.on_packet(ID, sms::MESSAGES, &b), Disposition::Accepted);
+    }
+
+    #[test]
+    fn marking_read_is_local_and_new_messages_stay_unread() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        feed(
+            &h,
+            vec![msg(4, 1, 1, "a", now - 5000), msg(4, 2, 1, "b", now - 4000)],
+        );
+        let unread =
+            |h: &PhoneData| h.messages_view(None, None, None).unwrap().conversations[0].unread;
+        assert_eq!(unread(&h), 2);
+        h.mark_read(ID, 4).unwrap();
+        assert_eq!(unread(&h), 0);
+        feed(&h, vec![msg(4, 3, 1, "c", now)]);
+        assert_eq!(unread(&h), 1, "only what arrived after the mark");
+        assert_eq!(h.mark_read(ID, 99).unwrap_err().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn search_filters_by_number_and_body_and_gives_a_snippet() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        let other = json!({"addresses": [{"address": "+4915112345678"}], "body": "Lunch at noon?",
+            "date": now - 1000, "type": 1, "read": 1, "thread_id": 5, "_id": 1});
+        feed(
+            &h,
+            vec![
+                msg(4, 1, 1, "your parcel arrives TOMORROW", now - 2000),
+                other,
+            ],
+        );
+        let find = |q: &str| h.messages_view(None, None, Some(q)).unwrap().conversations;
+        assert_eq!(find("").len(), 2);
+        let by_body = find("tomorrow");
+        assert_eq!(by_body.len(), 1);
+        assert_eq!(by_body[0].thread_id, 4);
+        assert!(by_body[0].matched.as_deref().unwrap().contains("TOMORROW"));
+        let by_number = find("4915");
+        assert_eq!((by_number.len(), by_number[0].thread_id), (1, 5));
+        assert!(
+            by_number[0].matched.is_none(),
+            "title match needs no snippet"
+        );
+        assert!(find("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_long_thread_is_capped_and_keeps_the_newest_messages() {
+        let (h, _rx) = sms_hub();
+        let base = 1_700_000_000_000_u64;
+        let total = MAX_MESSAGES_PER_THREAD as u64 + 150;
+        for chunk in (0..total).collect::<Vec<_>>().chunks(400) {
+            feed(
+                &h,
+                chunk
+                    .iter()
+                    .map(|i| msg(4, *i as i64 + 1, 1, "x", base + i))
+                    .collect(),
+            );
+        }
+        let v = h.messages_view(Some(ID), Some(4), None).unwrap();
+        let sel = v.selected.unwrap();
+        assert_eq!(sel.held, MAX_MESSAGES_PER_THREAD);
+        assert!(sel.capped);
+        assert!(
+            !sel.may_have_older,
+            "no point asking for what cannot be kept"
+        );
+        assert_eq!(sel.messages.len(), MAX_MESSAGES_SHOWN);
+        assert_eq!(sel.messages.last().unwrap().uid, total as i64);
+        assert_eq!(v.conversations[0].message_count, MAX_MESSAGES_PER_THREAD);
+    }
+
+    #[test]
+    fn out_of_order_pages_and_repeats_leave_one_ordered_copy() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        feed(
+            &h,
+            vec![
+                msg(4, 3, 1, "third", now - 1000),
+                msg(4, 1, 1, "first", now - 3000),
+            ],
+        );
+        feed(
+            &h,
+            vec![
+                msg(4, 2, 1, "second", now - 2000),
+                msg(4, 3, 1, "third", now - 1000),
+            ],
+        );
+        let sel = h
+            .messages_view(Some(ID), Some(4), None)
+            .unwrap()
+            .selected
+            .unwrap();
+        let bodies: Vec<_> = sel.messages.iter().map(|m| m.body.as_str()).collect();
+        assert_eq!(bodies, ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn only_a_sim_the_phone_reported_can_be_chosen() {
+        let (h, mut rx) = sms_hub();
+        let now = now_ms();
+        let b = obj(json!({"version": 2, "messages": [msg(4, 1, 1, "hi", now)],
+            "sims": [{"id": 3, "slot": 1, "label": "Home"}, {"id": 5, "slot": 2, "label": "Work"}]}));
+        h.on_packet(ID, sms::MESSAGES, &b);
+        let v = h.messages_view(None, None, None).unwrap();
+        assert_eq!(v.devices[0].sims.len(), 2);
+        assert!(v.devices[0].sms_send);
+        assert_eq!(
+            h.send_text(ID, "5551230000", "x", "a", Some(9))
+                .unwrap_err()
+                .code,
+            ErrorCode::BadRequest
+        );
+        assert!(rx.try_recv().is_err(), "nothing leaves for an unknown SIM");
+        h.send_text(ID, "5551230000", "x", "b", Some(5)).unwrap();
+        assert_eq!(rx.try_recv().unwrap().body["subID"], 5);
+        h.send_text(ID, "5551230000", "y", "c", None).unwrap();
+        assert!(!rx.try_recv().unwrap().body.contains_key("subID"));
+    }
+
+    #[test]
+    fn notification_hides_the_text_unless_the_user_chose_to_show_it() {
+        struct N(Mutex<Vec<IncomingText>>);
+        impl SmsNotifier for N {
+            fn received(&self, _: &str, _: &str) {}
+            fn incoming(&self, n: &IncomingText) {
+                self.0.lock().unwrap().push(n.clone());
+            }
+        }
+        for show in [false, true] {
+            let n = Arc::new(N(Mutex::new(Vec::new())));
+            let h = PhoneData::new();
+            h.set_notifier(n.clone());
+            h.set_notify_content(show);
+            let mut rx = up(&h, (false, false, true));
+            drain(&mut rx);
+            let now = now_ms();
+            feed(&h, vec![msg(4, 1, 1, "old", now - 3_600_000)]);
+            feed(&h, vec![msg(4, 2, 1, "my pin is 1234", now)]);
+            let got = n.0.lock().unwrap().clone();
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0].number, "+15551230000");
+            assert_eq!(got[0].body.as_deref(), show.then_some("my pin is 1234"));
+        }
+        let args = NotifySendSms::text_args(&IncomingText {
+            device_name: "Pixel".into(),
+            sender: "Ann".into(),
+            number: "+1555".into(),
+            body: None,
+        });
+        assert!(args.iter().any(|a| a == "--action=reply=Reply"));
+        assert!(!args.join(" ").contains("pin"));
+    }
+
+    #[test]
+    fn the_phones_unread_count_beats_what_is_loaded_and_a_local_mark_sticks() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        // The list carries one message per thread, but the phone says 5 are unread.
+        let b = obj(
+            json!({"version": 2, "messages": [msg(4, 9, 1, "newest", now - 1000)],
+            "unread": {"4": 5}}),
+        );
+        h.on_packet(ID, sms::MESSAGES, &b);
+        let unread =
+            |h: &PhoneData| h.messages_view(None, None, None).unwrap().conversations[0].unread;
+        assert_eq!(unread(&h), 5);
+        h.mark_read(ID, 4).unwrap();
+        assert_eq!(unread(&h), 0);
+        // The next refresh repeats the phone's (unchanged) count: still read here.
+        h.on_packet(ID, sms::MESSAGES, &b);
+        assert_eq!(unread(&h), 0);
+        // Two more arrive on the phone: only those two show.
+        let b2 = obj(
+            json!({"version": 2, "messages": [msg(4, 11, 1, "again", now)], "unread": {"4": 7}}),
+        );
+        h.on_packet(ID, sms::MESSAGES, &b2);
+        assert_eq!(unread(&h), 2);
     }
 }

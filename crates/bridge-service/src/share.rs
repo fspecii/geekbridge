@@ -68,17 +68,40 @@ impl Default for ShareOptions {
     }
 }
 
-/// `~/Downloads/GeekBridge` (the XDG download directory on Linux when configured).
+/// `~/Downloads/GeekBridge` (`%USERPROFILE%\\Downloads\\GeekBridge` on Windows; the XDG download
+/// directory on Linux when configured).
 pub fn default_save_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let home = home_dir(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        cfg!(windows),
+    );
     #[cfg(target_os = "linux")]
     if let Some(dir) = xdg_download_dir(&home) {
         return dir.join("GeekBridge");
     }
     home.join("Downloads").join("GeekBridge")
+}
+
+/// The user's home. On Windows `USERPROFILE` wins: `HOME` is often set by Git Bash or MSYS to a
+/// POSIX-style path (`/c/Users/x`) that Win32 file APIs resolve to the wrong place. Only absolute
+/// values count; with none, the current directory.
+fn home_dir(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+    windows: bool,
+) -> PathBuf {
+    let order = if windows {
+        [userprofile, home]
+    } else {
+        [home, userprofile]
+    };
+    order
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        .find(|p| p.is_absolute())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(target_os = "linux")]
@@ -1075,6 +1098,44 @@ impl ShareManager {
             }
         });
         true
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    fn abs(p: &str) -> std::ffi::OsString {
+        let root = if cfg!(windows) { "C:\\" } else { "/" };
+        format!("{root}{p}").into()
+    }
+
+    #[test]
+    fn windows_prefers_userprofile_over_home() {
+        let (win, other) = if cfg!(windows) {
+            ("C:\\Users\\ada", "C:\\msys\\home\\ada")
+        } else {
+            ("/users/ada", "/msys/home/ada")
+        };
+        assert_eq!(
+            home_dir(Some(other.into()), Some(win.into()), true),
+            PathBuf::from(win)
+        );
+        // A POSIX-style HOME that is not absolute for Win32 is skipped even without USERPROFILE.
+        assert_eq!(home_dir(Some("rel".into()), None, true), PathBuf::from("."));
+    }
+
+    #[test]
+    fn unix_prefers_home_and_ignores_relative_values() {
+        assert_eq!(
+            home_dir(Some(abs("home/a")), Some(abs("other")), false),
+            PathBuf::from(abs("home/a"))
+        );
+        assert_eq!(
+            home_dir(Some("rel".into()), Some("also/rel".into()), false),
+            PathBuf::from(".")
+        );
+        assert_eq!(home_dir(None, None, true), PathBuf::from("."));
     }
 }
 

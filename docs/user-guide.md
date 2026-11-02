@@ -17,11 +17,22 @@ There is no tray icon yet; open **GeekBridge** from the application menu.
 
 ## Pair a phone
 
-1. Phone and computer on the same network. Open GeekBridge on the phone.
-2. Open **GeekBridge** on the computer. Under *Pair a phone* the phone appears as "Found, not paired" (or enter
-   its address by hand).
-3. Choose Connect, then Pair. Both screens show an 8-character code. Type the phone's code on the computer and
-   confirm only if they match. There is no QR code: pairing is by comparing codes.
+Requirements: Android 8 or newer, phone and computer on the same network, the background service running, and the
+computer's firewall open for TCP and UDP **1716-1764** from your LAN (see Troubleshooting).
+
+**With a QR code (quickest, no code to compare).**
+
+1. Open **GeekBridge** on the computer and choose **Pair with QR code**. The code lives two minutes and works once.
+2. On the phone: GeekBridge > setup wizard (or Home) > **Scan QR code**, then point the phone's camera app at the code
+   and tap the GeekBridge link it shows (or paste the link; the computer's QR window has **Copy link**).
+3. The phone shows "Pair with <computer>?". Tap **Pair**.
+
+**By name (nearby list).** The phone appears on the computer as "Found, not paired" and the computer in the phone's
+setup step. Tap **Pair** on either side; both screens show an 8-character code. Confirm only if they match.
+
+If either side cannot find the other, use **Test connection** (both apps have it) or enter the address by hand under
+*Connect by address*. Then finish the setup wizard (notifications, contacts, calendar, phone state and the **battery**
+step so Android keeps the link alive). Details: [pairing.md](pairing.md).
 
 ## Contacts and Calendar
 
@@ -78,11 +89,93 @@ then install it yourself. Nothing installs automatically. Turn checks off under 
 
 ## Troubleshooting
 
+Start with the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
+`geekbridge-ctl diagnose` and, on the phone, **Diagnostics & about > Copy report** (both are redacted and safe to attach
+to a bug report).
+
+### Cannot pair
+* **QR code "expired" or "already used".** The code lasts 2 minutes and works once. Press **Pair with QR code** again.
+* **"Different network".** Phone and computer must be on the same subnet. Turn the phone's mobile data off or its VPN
+  off, and check that the computer is not on a VPN or a second Wi-Fi.
+* **Code mismatch or "wrong computer".** Cancel on both sides and start again; never confirm a code that differs.
+* Use **Test connection** on the computer and the phone: it names the likely cause (service not running, firewall or
+  Wi-Fi isolation, another network). Nothing is paired until you confirm on the phone.
+* **"Security warning: certificate changed".** The computer or phone was reinstalled. Forget the pairing on both sides
+  (computer: unpair; phone: Forget) and pair again.
+
+### Phone not found
+* The computer announces itself every 15 s and listens on UDP 1716. Routers that filter broadcast traffic (guest Wi-Fi,
+  "AP/client isolation", some mesh systems) hide devices from each other; use **Pair with QR code** or
+  **Connect by address** instead, which need no broadcast. There is no mDNS.
+* Another program may own UDP 1716 (KDE Connect or GSConnect running on the same computer). GeekBridge reports the
+  conflict rather than taking over: quit the other app or use the QR code.
+* The Android service stops when no computer is paired or **Stay connected** is off: open the app once, switch
+  **Stay connected** on.
+
+### Firewall, VPN, guest Wi-Fi
+* Allow TCP **and** UDP **1716-1764** from your LAN. ufw: `sudo ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp`
+  and the same for `udp` (use your own subnet). firewalld: `sudo firewall-cmd --add-port=1716-1764/tcp --add-port=1716-1764/udp --permanent`.
+  Windows prompts once for "Private network"; accept it.
+* VPNs that route all traffic (full tunnel) usually block LAN access; use split tunnelling or disconnect.
+* Guest Wi-Fi and hotel/office networks isolate clients: pairing and transfers will not work across them.
+
+### Clipboard not syncing (Wayland and X11)
+* Sync is **off until you switch it on** for the phone, on both sides.
+* Install the clipboard tool: `wl-clipboard` on Wayland (needs a compositor with the data-control protocol: Hyprland,
+  Sway, KDE 5.27+; stock GNOME does not have it) or `xclip` on X11. The service needs your session's
+  `WAYLAND_DISPLAY`/`DISPLAY`; if it started before login completed, run `systemctl --user restart geekbridge-service`.
+* **Phone to computer is on demand**: Android 10+ lets an app read the clipboard only while it has focus, so copy on
+  the phone, then press the hotkey (or **Paste from phone**) on the computer; the phone briefly flashes a window.
+* Items from password managers are marked sensitive and skipped by design; text over 64 KiB is not sent.
+
+### Hotkey does nothing
+* Wayland has no global-hotkey API for apps; the compositor must bind it. On Omarchy/Hyprland run
+  `geekbridge-ctl hotkey install` (dry run), then `geekbridge-ctl hotkey install --apply`. Elsewhere bind
+  `geekbridge-ctl clipboard paste-from-phone --notify` in your keyboard settings ([omarchy.md](omarchy.md) has GNOME, KDE
+  and sway steps).
+* Plain **Ctrl+Shift+V** is the terminal paste key: pick another combination (`geekbridge-ctl clipboard hotkey "Ctrl+Alt+P"`)
+  if a global bind would swallow it. `geekbridge-ctl hotkey status` shows what is bound.
+
+### Transfers stall or fail
+* Receiving on the computer is **off per phone until you allow it** (Share window); the phone shows "Waiting" until then.
+  Offers expire after 2 minutes.
+* A transfer needs a direct TCP connection to a payload port in 1716-1764: a firewall that allows only the first port
+  makes small items work and files stall at "Waiting". Open the whole range.
+* Switching Wi-Fi/VPN or the phone sleeping interrupts a transfer; resend it. At most 3 transfers run at once (the rest
+  queue); the limit is 8 GiB per file. Received files go to `~/Downloads/GeekBridge` (phone: `Download/GeekBridge`).
+
+### No call audio / no Bluetooth
+* Answering, declining and hanging up work **over the GeekBridge link without Bluetooth**: switch **Answer from
+  computer** on in the phone's Home and allow *Calls* for the phone on the computer. The voice then stays on the phone.
+* Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
+  controller (`bluetoothctl show` must list one; many desktops have none; a USB adapter works), the phone paired over
+  Bluetooth with "Phone calls" enabled, and an HFP-capable PipeWire/WirePlumber stack. `geekbridge-ctl calling` shows
+  the verdict; try `geekbridge-ctl call audio` to move audio. Call audio has not been verified on real hardware.
+* No incoming-call popup on Hyprland/mako: see [omarchy.md](omarchy.md) (notification buttons, floating window rule).
+
+### Battery optimisation kills the Android service
+Android (and especially vendor skins) stops background apps. In the setup wizard's **battery** step choose *Allow
+unrestricted battery*, then the vendor step:
+* **Samsung:** Settings > Apps > GeekBridge > Battery: *Unrestricted*; Settings > Battery > Background usage limits: remove GeekBridge from *Sleeping apps* and *Deep sleeping apps*; turn off *Put unused apps to sleep* for it.
+* **Xiaomi/Redmi/POCO:** Autostart: on; Settings > Apps > GeekBridge > Battery saver: *No restrictions*; lock the card in Recents.
+* **Huawei/Honor:** Settings > Battery > App launch > GeekBridge > *Manage manually*; switch on Auto-launch, Secondary launch and Run in background.
+* **OnePlus:** Settings > Battery > Battery optimisation: *Don't optimise*; allow background activity and auto-launch under the app's battery usage; lock in Recents.
+* **OPPO/realme:** Auto-launch / Startup manager: on; Settings > Battery > GeekBridge: allow background activity; lock in Recents.
+* **vivo:** Autostart / Background start-up manager: allow; Settings > Battery > Background power consumption: *Allow high background power consumption*.
+* **Nothing OS and stock Android/Pixel:** *Unrestricted* app battery usage is enough.
+Menu names vary by version; the wizard opens the closest screen it can find. Real vendor devices have not been tested.
+
+### Update not offered
+* Checks run about 15 s after the service starts and then daily; press **Check for updates** to force one (desktop
+  Details panel, Android *Diagnostics & about*). Automatic checks may be switched off (`geekbridge-ctl update status`).
+* Only published, non-prerelease GitHub releases are offered, and only if the release has an installer for your OS and
+  a matching `SHA256SUMS` line. A version you chose to **Skip** stays hidden until a newer one appears.
+* The check needs outbound HTTPS to `api.github.com`; a rate limit (403/429) pauses it for a while. The Android update
+  installs only over an app signed with the same key and needs *Install unknown apps* allowed for GeekBridge.
+
+### Other
 * *"Service not running"*: `systemctl --user status geekbridge-service` (Linux), start it with
   `systemctl --user start geekbridge-service` or run `geekbridge-service` in a terminal to see errors.
 * *Pairing unavailable / read-only*: the service cannot protect its state directory (wrong owner or mode); on
   Windows the control API is unavailable until the private-file support there is verified.
-* *Phone not found*: same Wi-Fi, no client isolation on the router; enter the phone's address manually.
-* *Clipboard "No clipboard access"*: install `wl-clipboard` (Wayland) or `xclip` (X11).
-* *Shortcut does nothing*: see Clipboard above; Wayland blocks global keys.
 * *Port in use*: the service uses 17380/17381 on 127.0.0.1; see [service-integration.md](service-integration.md).

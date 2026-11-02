@@ -100,9 +100,9 @@ pub fn palette(_app: AppKind, dark: bool) -> Palette {
             on_accent: Color32::WHITE,
             selected_bg: rgb(0x0C0C0C),
             selected_fg: rgb(0xFAFAF8),
-            ok: rgb(0x1F7A45),
+            ok: rgb(0x1A6E3E),
             warn: rgb(0x8F5500),
-            err: rgb(0xD71921),
+            err: rgb(0xB8121A),
             lcd_bg: rgb(0xE8E7E1),
             lcd_off: rgb(0xD6D5CE),
             tile: rgb(0xFFFFFF),
@@ -223,6 +223,26 @@ pub fn install_fonts(ctx: &egui::Context) {
         let proportional = fonts.families.entry(FontFamily::Proportional).or_default();
         proportional.insert(0, name.clone());
     }
+    // Monochrome emoji outlines (egui cannot draw colour bitmap emoji); only used for glyphs the
+    // text face lacks, so a message with an emoji shows a symbol instead of an empty box.
+    for path in [
+        "/usr/share/fonts/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/google-noto-emoji/NotoEmoji-Regular.ttf",
+        "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+    ] {
+        if let Some(bytes) = read_font(&paths(&[path])) {
+            fonts
+                .font_data
+                .insert("mono-emoji".into(), Arc::new(FontData::from_owned(bytes)));
+            fonts
+                .families
+                .entry(FontFamily::Proportional)
+                .or_default()
+                .push("mono-emoji".into());
+            break;
+        }
+    }
     // Semibold falls back to the regular face (then the built-in one) when no bold exists.
     let mut semibold: Vec<String> = bold_name.into_iter().collect();
     semibold.extend(
@@ -256,7 +276,9 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             v.faint_bg_color = pal.control;
             v.override_text_color = Some(pal.text);
             v.hyperlink_color = pal.accent;
-            v.selection.bg_fill = pal.accent_fill.gamma_multiply(if dark { 0.5 } else { 0.28 });
+            v.selection.bg_fill = pal
+                .accent_fill
+                .gamma_multiply(if dark { 0.5 } else { 0.28 });
             v.selection.stroke = Stroke::new(1.0_f32, pal.accent);
             v.text_cursor.stroke = Stroke::new(1.5_f32, pal.accent);
             let radius = CornerRadius::same(12);
@@ -268,9 +290,16 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
                 w.bg_fill = fill;
                 w.weak_bg_fill = fill;
                 w.bg_stroke = Stroke::NONE;
-                w.corner_radius = radius;
+                // Stock widgets (text fields, small buttons) are 22-28 pt tall: a 12 pt radius turns
+                // them into pills that clip the text.
+                w.corner_radius = CornerRadius::same(8);
                 w.fg_stroke = Stroke::new(1.0_f32, pal.text);
             }
+            // Text fields and stock widgets get a >= 3:1 outline (WCAG 1.4.11); the fill alone is
+            // 1.1:1 against the sidebar and invisible in light mode.
+            let outline = if dark { rgb(0x666662) } else { rgb(0x8A8A84) };
+            v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, outline);
+            v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.text3);
             v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.separator);
             v.widgets.noninteractive.corner_radius = radius;
             v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text2);
@@ -364,8 +393,8 @@ pub fn status_color(pal: &Palette, tone: crate::state::Tone) -> Color32 {
     use crate::state::Tone;
     match tone {
         Tone::Neutral => pal.text3,
-        Tone::Info => pal.warn,
-        Tone::Warning => pal.warn,
+        Tone::Info => pal.text,
+        Tone::Warning => pal.accent_fill,
         Tone::Error => pal.err,
     }
 }
@@ -445,6 +474,8 @@ pub enum ButtonKind {
     Primary,
     /// Quiet grey pill.
     Plain,
+    /// High-contrast ink pill (white on black in dark, black on white in light).
+    Inverse,
 }
 
 /// Rounded pill button. Disabled buttons stay visible but muted.
@@ -455,16 +486,29 @@ pub fn pill_button(
     kind: ButtonKind,
     enabled: bool,
 ) -> Response {
+    pill_button_sized(ui, pal, text, kind, enabled, 0.0)
+}
+
+/// [`pill_button`] at least `min_width` wide (for side-by-side decisions).
+pub fn pill_button_sized(
+    ui: &mut Ui,
+    pal: &Palette,
+    text: &str,
+    kind: ButtonKind,
+    enabled: bool,
+    min_width: f32,
+) -> Response {
     let (fill, fg) = match (kind, enabled) {
         (ButtonKind::Primary, true) => (pal.accent_fill, pal.on_accent),
-        (ButtonKind::Primary, false) => (pal.control, pal.text3),
+        (ButtonKind::Inverse, true) => (pal.selected_bg, pal.selected_fg),
+        (ButtonKind::Primary | ButtonKind::Inverse, false) => (pal.control, pal.text3),
         (ButtonKind::Plain, true) => (pal.control, pal.text),
         (ButtonKind::Plain, false) => (pal.control.gamma_multiply(0.6), pal.text3),
     };
     let galley =
         ui.painter()
             .layout_no_wrap(text.to_owned(), FontId::new(13.5, semibold_family()), fg);
-    let size = vec2(galley.size().x + 28.0, 30.0);
+    let size = vec2((galley.size().x + 28.0).max(min_width), 32.0);
     let sense = if enabled {
         Sense::click()
     } else {
@@ -477,13 +521,13 @@ pub fn pill_button(
         fill.gamma_multiply(0.82)
     } else if response.hovered() {
         match kind {
-            ButtonKind::Primary => fill.gamma_multiply(0.92),
+            ButtonKind::Primary | ButtonKind::Inverse => fill.gamma_multiply(0.92),
             ButtonKind::Plain => pal.control_hover,
         }
     } else {
         fill
     };
-    let radius = CornerRadius::same(15);
+    let radius = CornerRadius::same(16);
     ui.painter().rect_filled(rect, radius, fill);
     if response.has_focus() {
         focus_ring(ui, pal, rect, radius);
@@ -699,7 +743,11 @@ pub fn blocked_note(ui: &mut Ui, pal: &Palette, reason: &str) {
 pub fn group<R>(ui: &mut Ui, pal: &Palette, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .fill(pal.tile)
-        .stroke(if pal.dark { Stroke::NONE } else { Stroke::new(1.0_f32, pal.separator) })
+        .stroke(if pal.dark {
+            Stroke::NONE
+        } else {
+            Stroke::new(1.0_f32, pal.separator)
+        })
         .corner_radius(CornerRadius::same(crate::nothing::R_CARD))
         .inner_margin(Margin::same(14))
         .show(ui, |ui| {
@@ -715,7 +763,11 @@ mod contrast_tests {
 
     fn lin(c: u8) -> f64 {
         let v = f64::from(c) / 255.0;
-        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
     }
     fn lum(c: Color32) -> f64 {
         0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
@@ -743,6 +795,16 @@ mod contrast_tests {
                     ("text3", p.text3),
                     ("accent", p.accent),
                 ] {
+                    let r = ratio(fg, bg);
+                    assert!(r >= 4.5, "dark={dark} {fg_name} on {bg_name}: {r:.2}");
+                }
+            }
+            for (bg_name, bg) in [
+                ("content", p.content),
+                ("tile", p.tile),
+                ("control", p.control),
+            ] {
+                for (fg_name, fg) in [("ok", p.ok), ("warn", p.warn), ("err", p.err)] {
                     let r = ratio(fg, bg);
                     assert!(r >= 4.5, "dark={dark} {fg_name} on {bg_name}: {r:.2}");
                 }

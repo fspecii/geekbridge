@@ -7,46 +7,119 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
-- **Contacts** and **Calendar** desktop apps replace "Agenda". Contacts: searchable phonebook with letter sections, details,
-  Call / Message / Copy. Calendar: month / week / day / agenda-list, Today, per-calendar colours and visibility, account
-  names, reminders, attendees, recurring instances expanded by the phone, optional desktop notifications before events
-  (`calendar_alerts` consent). Google Calendar is shared through the phone's own sync (no Google API keys or OAuth).
-- Two-way calendar: create, edit and delete one-off events from the desktop (`geekbridge.calendar.write`, own per-phone
-  consent `calendar_edit`, off by default; Android `WRITE_CALENDAR` is requested only when the user turns editing on).
-  Operation ids make retries idempotent, uncertain results are reported as uncertain, repeating events stay read-only.
-  `geekbridge-ctl calendar-add|calendar-delete|calendar-retry`. `geekbridge-agenda` remains the Calendar executable;
-  `geekbridge-contacts` is new.
-- Effortless first-time pairing: QR code / pairing-link pairing with a pinned certificate and a single-use two-minute token
-  (no camera permission on Android), one-tap **Pair** from the lists of nearby phones and computers, the computer now
-  announces itself on the LAN and listens for phones by default, plain-language errors, **Test connection** on both sides
-  and a "what to do next" card. See `docs/pairing.md`. mDNS is not implemented.
-- Pairing over the local network with certificate pinning and a verification code compared on both screens.
-- Android app: setup wizard, Home, Diagnostics, battery-optimisation guidance for Samsung, Xiaomi, Huawei/Honor,
-  OnePlus, OPPO/realme and vivo.
-- Native desktop apps for Calls, Messages, Agenda and Clipboard on one shared background service
-  (Linux, Windows, macOS builds; Windows and macOS have not been run on real hardware yet).
-- Clipboard sync: text, links, HTML and images, per-phone opt-in, freshness window, paste-from-phone hotkey.
-- File, link and text sharing in both directions, including the Android Share sheet.
-- Incoming-call popup with answer, decline, hang up and mute where a Bluetooth calling backend exists.
-- Update check against GitHub Releases with SHA-256-verified download (never installs by itself).
-- `geekbridge-ctl diagnose` and Android Diagnostics **Copy report**: redacted support bundles.
-- Real-device test plan (`docs/real-device-test-plan.md`), release checklist, `SECURITY.md`.
-- Agenda: contacts (stock `kdeconnect.contacts.*`) and a read-only calendar (`geekbridge.calendar.*`, incremental with
-  tombstones) from the phone, per-phone opt-in on both sides, memory only on the computer.
+- Messages: unread badges, search, date separators, SIM choice (phones that list their SIMs), SMS segment counter
+  (GSM/UCS-2), local-only read marks, per-conversation memory cap, MMS "Attachment" placeholders, notification Reply
+  action (text hidden unless chosen), plain-language failure reasons and exact SMS-permission steps in the setup wizard.
+
+## [0.1.0] - 2026-11-02
+
+First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Everything below is verified on
+Linux and an Android emulator with scripted peers; **no real phone has been paired yet** and Windows and macOS builds
+have not been run on real hardware (see "Known limitations").
+
+### Added
+
+**Desktop apps and service**
+- Separate native apps, each with its own executable, window and desktop identity, on one shared background service:
+  Home (`geekbridge`), Calls, Messages, Contacts, Calendar (`geekbridge-agenda`), Clipboard and Share, plus the
+  `geekbridge-ctl` command-line helper.
+- `geekbridge-service`: authenticated loopback control API (per-user token, HMAC challenge), passive and announced LAN
+  discovery, expiring device records, one TLS link per paired phone, per-phone opt-ins for every feature.
+- Nothing OS-inspired design on desktop and Android: true black or warm off-white, a single red accent, code-drawn
+  dot-matrix text, dot-calendar months, light and dark themes, keyboard navigation and contrast tests.
+
+**Pairing and security**
+- KDE Connect-compatible transport (TLS, certificate pinning) with an explicit code compared on both screens.
+- QR code / pairing-link pairing: pinned certificate, single-use two-minute token, no camera permission on Android.
+  One-tap **Pair** from the lists of nearby phones and computers, **Test connection** on both sides, plain-language
+  errors and a "what to do next" card ([docs/pairing.md](docs/pairing.md)). mDNS is not implemented.
+- Unpairing on the computer reaches the phone even with the app closed (the phone forgets the computer and stops its
+  service); KDE-style unpair on both sides.
+- Two security reviews with the findings fixed and covered by regression tests (replay, reconnect, leaks, per-computer
+  opt-ins, QR token lock-out, SMS and notification handling): [docs/security-review.md](docs/security-review.md),
+  [docs/security-review-2.md](docs/security-review-2.md), [SECURITY.md](SECURITY.md).
+
+**Clipboard**
+- Text, links, HTML and images; per-phone opt-in, freshness window, loop and echo suppression, sensitive items
+  skipped. Computer to phone is automatic, phone to computer is on demand with the **Paste from phone** hotkey
+  (default Ctrl+Shift+V) because Android 10+ only lets the focused app read the clipboard. Event-driven watching on
+  the desktop ([docs/clipboard-sync.md](docs/clipboard-sync.md)).
+
+**File, link and text sharing**
+- Both directions, AirDrop-style: **Send to computer** in Android's Share sheet, drop files on the Home window,
+  `geekbridge-share` and `geekbridge-ctl send-file`. Pinned-TLS payload sockets, SHA-256 verified transfers up to 8 GiB,
+  receiving is off per phone until allowed, files land in `~/Downloads/GeekBridge` and the phone's `Download/GeekBridge`.
+  500 MB transfers verified both ways on the emulator ([docs/sharing.md](docs/sharing.md)).
+
+**Calls**
+- Incoming-call popup with Answer, Decline, Hang up and Mute (where a backend can mute) on the desktop, with desktop
+  notification actions on Linux.
+- Two merged control paths: the GeekBridge link (Android `ANSWER_PHONE_CALLS`, opt-in, never carries audio) and
+  Bluetooth hands-free backends (Linux PipeWire telephony, Windows WinRT, macOS helper) for call audio, which needs a
+  Bluetooth controller on the computer ([docs/call-control.md](docs/call-control.md)).
+- Emulated-call test rig (`geekbridge-phone-sim`, `geekbridge-call-e2e`, scenarios S1-S8) that runs without a phone
+  or Bluetooth ([docs/emulated-calls.md](docs/emulated-calls.md)).
+
+**Messages, Contacts and Calendar**
 - Messages: SMS conversations, history paging, sending and new-message notifications over the stock
-  `kdeconnect.sms.*` packets, with honest send status (handed to phone / accepted / sent / delivered / unknown).
-  Android side needs the SMS permissions; no MMS, group or RCS. See `docs/phone-data-link.md`.
+  `kdeconnect.sms.*` packets, with honest send status (handed to phone / accepted / sent / delivered / unknown). No MMS,
+  group or RCS; Google Play restricts SMS permissions to the default messaging app and GeekBridge does not become one.
+- Contacts: searchable phonebook with letter sections and details, with Call, Message and Copy actions. Read-only.
+- Calendar: month, week, day and agenda-list views, per-calendar colours and visibility, reminders, attendees, recurring
+  instances expanded by the phone, optional desktop notifications before events. Google Calendar is shared through the
+  phone's own sync (no Google API key or OAuth).
+- Two-way calendar: create, edit and delete one-off events from the desktop (`geekbridge.calendar.write`, separate
+  per-phone consent, off by default, `WRITE_CALENDAR` requested only when switched on). Operation ids make retries
+  idempotent; repeating events stay read-only. `geekbridge-ctl calendar-add|calendar-delete|calendar-retry`.
+- Contacts, calendar and SMS are shared only after a per-phone opt-in on both sides; nothing is stored on the computer
+  ([docs/phone-data-link.md](docs/phone-data-link.md)).
+
+**Android app**
+- Kotlin app on a shared Rust core over JNI (arm64-v8a and x86_64, 16 KiB aligned), Android 8+ (min SDK 26), no AndroidX
+  or Compose. Setup wizard, Home with status tiles, Diagnostics with a redacted **Copy report**, Share sheet target,
+  Quick Settings clipboard tile.
+- Foreground link service (`connectedDevice`) restarted at boot, **Stay connected** switch, battery-optimisation step
+  with guidance for Samsung, Xiaomi, Huawei/Honor, OnePlus, OPPO/realme, vivo and Nothing
+  ([docs/android-power.md](docs/android-power.md)).
+- R8 and resource shrinking on release builds; release APK about 6.2 MB with size budgets enforced by
+  `scripts/android-perf.sh` ([docs/android-perf.md](docs/android-perf.md)).
+
+**Updates**
+- Update check against GitHub Releases on desktop and Android, SHA-256 verified download, never installs by itself;
+  the Android self-update was verified end to end on the emulator ([docs/updates.md](docs/updates.md)).
+
+**Linux and Hyprland / Omarchy integration**
+- Installer (`install.sh`, `.deb`) with a systemd user unit and XDG autostart; application entries for every app and a
+  **Paste from Phone** launcher entry.
+- `geekbridge-ctl hotkey install|status|uninstall` binds the paste key in Hyprland (Lua and conf configs, backup and
+  dry run), floating window rules for the call and share windows, mako/Quickshell notification actions and a waybar
+  status module ([docs/omarchy.md](docs/omarchy.md)).
+
+**Tooling and documentation**
+- `scripts/bootstrap-android.sh`, `build-android.sh`, `build-desktop.sh`, `package-linux.sh`, `release.sh`,
+  `perf-check.sh` and release workflows for Linux, Windows (Inno Setup) and macOS (`.dmg`).
+- `geekbridge-ctl diagnose` redacted support bundle, e2e scripts for the emulator (QR pairing, call answer/reject, SMS,
+  calendar, share, update), chaos and soak scripts, real-device test plan and quickstart, release checklist.
+- User guide with symptom-keyed troubleshooting, architecture, protocol and per-feature docs under `docs/`.
+
+### Fixed
+- Desktop to phone file transfers no longer stall at "Waiting" with a secure-channel or timeout error when the link
+  arrived on a network other than the phone's default: the phone dials the normal route first, and a route counts only
+  after its TLS handshake finished.
+- Sharing a second time from the Share sheet no longer shows the previous result instead of sending.
+- Reconnect, replay and leak bugs found in code review and chaos testing, each with a regression test.
+- Idle footprint: event-driven clipboard watching and UI poll back-off on the desktop; no wake locks or timers in the
+  Android link service ([docs/performance.md](docs/performance.md)).
 
 ### Known limitations
-- Call answering and audio have only been tested with simulated signalling, not a real call.
-- Windows and macOS binaries are unsigned and untested on real systems.
-- Messages and Agenda need an Android build with the SMS/contacts/calendar permissions; Google Play restricts SMS to the
-  default messaging app, GeekBridge does not become one. Only tested against the emulator, not a real phone.
-### Fixed
-- Desktop -> phone file transfers no longer fail at "Waiting" with a secure-channel or timeout error when the link arrived on
-  a network other than the phone's default: the phone now dials the normal route first, and a route counts only after its TLS
-  handshake finished. Tested with 500 MB both ways on the emulator.
-- Unpairing on the computer now reaches the phone with the app closed: it forgets the computer, ends that computer's transfers,
-  stops its background service and Home shows "No computer paired".
-- Sharing a second time from the phone's Share sheet no longer shows the previous result instead of sending.
-
+- No real phone has been paired. Everything is verified against an Android 16 emulator and scripted peers; real-device
+  steps are in [docs/real-device-quickstart.md](docs/real-device-quickstart.md). Emulator NAT drops UDP broadcast, so
+  LAN discovery itself is covered by unit and integration tests only.
+- Call answering has only been tested with simulated signalling. Bluetooth hands-free audio (SCO, codecs) is unverified
+  on any hardware, and needs a Bluetooth controller on the computer.
+- Windows and macOS binaries are unsigned and have never been run; they are type-checked and built in CI definitions
+  only. The release workflow has not been run (no tag pushed).
+- Vendor battery screens (Samsung, Xiaomi, Huawei, OnePlus, OPPO, vivo) are unit-tested for intent order only, not run on
+  those devices.
+- Android 10+ restricts clipboard reads to the focused app, so phone to computer paste is on demand.
+- The debug APK is debug-signed; an Android update installs only over an app signed with the same key.

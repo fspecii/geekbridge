@@ -6,6 +6,7 @@ pub mod call_ui;
 pub mod cli;
 pub mod clipboard_link;
 pub mod connection;
+pub mod dot_calendar;
 pub mod dotmatrix;
 pub mod home_app;
 pub mod icons;

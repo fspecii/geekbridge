@@ -1,3 +1,6 @@
+// Release builds on Windows are GUI-subsystem programs: no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! `geekbridge [--theme light|dark|system] [--api-port P]`: the single entry window. Shows phone
 //! pairing, clipboard sync and its shortcut, a drop target for sending files, the update banner,
 //! and launchers for the individual apps.

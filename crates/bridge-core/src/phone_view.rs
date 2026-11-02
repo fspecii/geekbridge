@@ -13,6 +13,10 @@ pub const MAX_EDITS_SHOWN: usize = 20;
 pub const MAX_CONVERSATIONS_SHOWN: usize = 100;
 pub const MAX_MESSAGES_SHOWN: usize = 100;
 pub const MAX_SENDS_SHOWN: usize = 20;
+/// In-memory cap per conversation and over all conversations of one phone (service side).
+pub const MAX_MESSAGES_PER_THREAD: usize = 2000;
+pub const MAX_MESSAGES_PER_PHONE: usize = 20_000;
+pub const MAX_SIMS: usize = 4;
 
 /// Where one phone feature stands for one paired device.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,6 +57,23 @@ pub struct DataDevice {
     /// The phone sends `geekbridge.sms.status`, so sent/delivered are real signals. Stock KDE
     /// Connect phones never do.
     pub sms_status_reports: bool,
+    /// The phone accepts texts to send (capability negotiated); false = read-only or not offered.
+    #[serde(default)]
+    pub sms_send: bool,
+    /// SIM subscriptions the phone reported (GeekBridge phones only). More than one = offer a choice.
+    #[serde(default)]
+    pub sims: Vec<SimItem>,
+}
+
+/// One SIM subscription of the phone, as reported by it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SimItem {
+    /// Android subscription id (the value of the KDE `subID` request field).
+    pub id: i32,
+    /// 1-based physical slot, 0 when unknown.
+    pub slot: u8,
+    /// Carrier or display name chosen by the phone; short, printable.
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +225,9 @@ pub struct ConversationItem {
     pub last_outgoing: bool,
     pub unread: u32,
     pub message_count: usize,
+    /// For a search: a short piece of the oldest matching message when the title did not match.
+    #[serde(default)]
+    pub matched: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +238,9 @@ pub struct MessageItem {
     pub body: String,
     pub date_ms: u64,
     pub attachments: u32,
+    /// SIM subscription the message used, when the phone said.
+    #[serde(default)]
+    pub sub_id: Option<i32>,
 }
 
 /// Send progress. The phone's own signal is the only thing that can raise it above `HandedToPhone`.
@@ -233,6 +260,23 @@ pub enum SendPhase {
     Failed,
     /// The link dropped after the request left; it may or may not have been sent.
     Uncertain,
+}
+
+/// Plain-language text for a phone-reported SMS failure code (`geekbridge.sms.status`).
+pub fn send_reason_text(code: &str) -> &'static str {
+    match code {
+        "no_permission" => {
+            "Android has not allowed GeekBridge to send texts (SMS permission missing or revoked)."
+        }
+        "no_service" => "The phone has no mobile signal.",
+        "radio_off" => "The phone's radio is off (airplane mode?).",
+        "limit" => "The phone refused: too many texts in a short time.",
+        "blocked_number" => "GeekBridge does not send to premium or short numbers.",
+        "group_unsupported" => "Group messages are not supported; send to one number.",
+        "mms_unsupported" => "Picture messages cannot be sent from the computer.",
+        "invalid" => "The phone rejected the number or the text.",
+        _ => "The phone could not send it.",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -264,4 +308,10 @@ pub struct SelectedThread {
     pub messages: Vec<MessageItem>,
     /// Older history may exist on the phone.
     pub may_have_older: bool,
+    /// Messages held in memory for this thread (the reply shows at most `MAX_MESSAGES_SHOWN`).
+    #[serde(default)]
+    pub held: usize,
+    /// The per-thread memory cap was reached: older messages were dropped here (they stay on the phone).
+    #[serde(default)]
+    pub capped: bool,
 }

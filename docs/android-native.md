@@ -6,17 +6,19 @@ handler over shared `bridge-core` rules, plus the JNI export Kotlin calls.
 
 ## What this is, and is not
 
-**Implemented and tested:** stateless request validation with strict envelope rules.
+**Stateless validation (this page):** strict envelope rules and three actions. The crate also hosts the stateful KDE
+Connect-compatible transport (pairing, pinned TLS, discovery, sharing, clipboard, phone-data relay) described in
+[android-transport.md](android-transport.md) and [android-contract.md](android-contract.md); those actions do nothing
+until `transport_start` and are listed in `version`'s `transport_actions`.
 
 - `version` — schema/limits discovery.
 - `validate_sms` — runs `bridge-core::messages::OutgoingTextIntent`.
 - `validate_clipboard` — runs the shared clipboard text rules (see below).
 
-**Not implemented here:** pairing, TLS, any network or phone transport, SMS sending, clipboard
-reads/writes, call handling, persistence, logging, key or contact storage. A `valid: true` response
-means only "this input satisfies the shared rules". It never means paired, trusted, connected, sent
-or call-ready, and no response field says otherwise. Add pairing/transport actions only when that
-work exists and is reviewed; unknown actions are rejected until then.
+**Not done by the three validation actions:** no pairing, networking, SMS sending, clipboard
+reads/writes or call handling. A `valid: true` response means only "this input satisfies the shared
+rules". It never means paired, trusted, connected, sent or call-ready, and no response field says
+otherwise. Unknown actions are rejected.
 
 ## Crate API
 

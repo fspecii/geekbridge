@@ -323,6 +323,18 @@ fn too_many_fields_rejected() {
     assert_eq!(code(&call(&Value::Object(obj))), "invalid_request");
 }
 
+/// The widest real request (`transport_start` with every option, as the Android service sends it) must reach the
+/// field-by-field validation instead of being refused as "too many fields" (it was, at a limit of 8).
+#[test]
+fn widest_transport_start_request_is_not_refused_as_too_many_fields() {
+    let req = json!({
+        "version": 1, "action": "transport_start", "state_dir": "/nonexistent-gb-test", "device_name": "p",
+        "listen": {"port": 0}, "discovery": {"listen": false, "announce": true}, "allow_loopback": false,
+        "clipboard": {}, "calls": {}, "data": {"contacts": true}, "permits": {},
+    });
+    assert_ne!(code(&call(&req)), "invalid_request");
+}
+
 #[test]
 fn non_object_documents_are_invalid_requests() {
     for doc in ["[]", "[1]", "1", "\"version\"", "null", "true"] {

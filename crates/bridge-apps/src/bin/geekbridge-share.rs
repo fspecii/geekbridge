@@ -1,3 +1,6 @@
+// Release builds on Windows are GUI-subsystem programs: no console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 //! `geekbridge-share [--theme light|dark|system] [FILE...]`: send files, links and text to a paired
 //! phone and answer what it sends back. Files named on the command line go to the first
 //! connected phone (handy for a file manager's "Open with").

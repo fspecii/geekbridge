@@ -262,7 +262,7 @@ object ProgressText {
         val what = if (t.kind == TransferKind.File) t.name.ifEmpty { "file" } else if (t.kind == TransferKind.Url) "link" else "text"
         val state = when (t.state) {
             TransferState.Offered -> "waiting for your answer"
-            TransferState.Waiting -> "waiting for the computer"
+            TransferState.Waiting -> "waiting for the computer (it may need Share files > Allow this phone to send me files)"
             TransferState.Active -> percent(t)?.let { "$it% (${bytes(t.bytes)})" } ?: bytes(t.bytes)
             TransferState.Done -> "done"
             TransferState.Cancelled -> "cancelled"

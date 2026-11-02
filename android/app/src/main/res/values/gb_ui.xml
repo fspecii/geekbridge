@@ -23,17 +23,11 @@
     <string name="home_opens_clipboard_tools">Opens clipboard tools</string>
     <string name="home_pair_first_toast">Pair a computer first, then you can send things to it.</string>
     <string name="home_feature_calls">Calls</string>
-    <string name="home_calls_ok">Phone state allowed</string>
-    <string name="home_calls_todo">Allow phone state to show ringing and in-call</string>
     <string name="home_answer">Answer from computer</string>
     <string name="home_answer_ok">Computer can answer, decline and end calls</string>
     <string name="home_answer_todo">Let a paired computer answer, decline or end calls</string>
     <string name="home_messages">Messages</string>
-    <string name="home_messages_sub">Android restricts SMS access</string>
-    <string name="home_chip_unavailable">Not available</string>
     <string name="home_agenda">Calendar</string>
-    <string name="home_agenda_ok">Calendar access allowed</string>
-    <string name="home_agenda_todo">Allow calendar access to show your events</string>
     <string name="home_chip_ready">Ready</string>
     <string name="home_chip_allow">Allow</string>
     <string name="home_stay_connected">Stay connected</string>
@@ -51,12 +45,14 @@
     <string name="setup_step_pane">Step %1$d of %2$d: %3$s</string>
     <string name="setup_overview_pane">Setup overview</string>
     <string name="setup_open_app_settings">Open app settings</string>
-    <string name="setup_sms_restricted">On Android 13 and newer, apps installed outside a store may need “Allow restricted settings” in the ⋮ menu of that page before any special access can be switched on.</string>
+    <string name="setup_sms_restricted">If Android will not let you allow SMS (Android 13 and newer, app installed outside a store):\n1. Open Settings › Apps › GeekBridge (the button above).\n2. Tap the ⋮ menu at the top right › Allow restricted settings, and confirm with your screen lock.\n3. Come back, switch on Messages and tap Allow for SMS (or Settings › Apps › GeekBridge › Permissions › SMS › Allow).</string>
+    <string name="setup_sms_default_app">GeekBridge does not need to be your default SMS app and never asks to be. It reads the SMS store and sends plain texts. Picture messages (MMS) and RCS chats stay in your messaging app, and marking a message read on the computer does not mark it read on the phone.</string>
     <string name="setup_all_set">All set. You can change this later in app settings.</string>
     <string name="setup_blocked">Android will not show the question again. Switch it on in app settings: Permissions › %1$s.</string>
     <string name="setup_ask_again">Ask again</string>
     <string name="setup_allow">Allow</string>
     <string name="setup_optional_note">Optional: GeekBridge works without it; the related feature stays off.</string>
+    <string name="setup_required_note">Recommended. You can pair without it, but alerts and the background connection notice will not show.</string>
     <string name="setup_calls_toggle">Share call status with my computer</string>
     <string name="setup_calls_toggle_sub">Paired computers you allow “Calls” for see ringing and in-call, and can answer, decline or end. Off by default.</string>
     <string name="setup_calls_audio_note">Call audio does not travel through GeekBridge. It stays on the phone unless your computer is also paired with this phone over Bluetooth as a hands-free device. Needs the Phone state step; declining and ending a call needs Android 9 or newer.</string>
@@ -101,6 +97,7 @@
     <string name="pair_paired_and_trusted">Paired and trusted</string>
     <string name="pair_chip_paired">Paired</string>
     <string name="pair_intro_first">Open GeekBridge or KDE Connect on your computer, on the same Wi-Fi network as this phone, then look for it.</string>
+    <string name="pair_manage_hint">To unpair a computer, go to Home &gt; Diagnostics &amp; about &gt; Unpair.</string>
     <string name="pair_intro_more">To add another computer, open GeekBridge on it, on the same Wi-Fi network, then look for it.</string>
     <string name="pair_look">Look for computers</string>
     <string name="pair_working">Working…</string>
@@ -174,4 +171,5 @@
     <string name="offer_close">Close</string>
     <string name="offer_open">Open</string>
     <string name="offer_copy">Copy</string>
+    <string name="core_info">Core info: %1$s</string>
 </resources>

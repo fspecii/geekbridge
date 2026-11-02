@@ -211,7 +211,7 @@ pub(crate) fn sync_body(
                     });
                 }
                 let line = if !d.enabled {
-                    "Off".to_owned()
+                    "Off · tick the box to turn Clipboard on for this phone".to_owned()
                 } else if !d.connected {
                     "Waiting for the phone to connect".to_owned()
                 } else if !d.negotiated {

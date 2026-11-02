@@ -1,6 +1,6 @@
 # Android companion integration contract
 
-The product includes an Android companion APK and separate desktop Rust apps. The Android app uses Kotlin for framework APIs and a Rust native library for shared domain rules. Real pairing/phone interoperability is still being implemented independently.
+The product includes an Android companion APK and separate desktop Rust apps. The Android app uses Kotlin for framework APIs and a Rust native library for shared domain rules. Pairing, the pinned-TLS link, sharing, clipboard, call control and the phone-data relay are implemented and verified against an emulator and scripted peers; interoperability with a real phone is not yet verified (see `docs/real-device-test-plan.md`).
 
 ## Build pins for the initial Android project
 
@@ -26,7 +26,7 @@ JNI symbol: `Java_dev_geekbridge_android_NativeBridge_nativeRequest`; receiver i
 
 Requests carry `version: 1`, a string `action`, and action arguments. Responses use `{ "version": 1, "ok": true, "result": ... }` or `{ "version": 1, "ok": false, "error": { "code": "...", "message": "..." } }`.
 
-Initial actions:
+Stateless actions (the stateful transport actions are in `docs/android-transport.md`; `version` lists both):
 
 - `version`: no arguments; result includes Rust core version and supported request schema.
 - `validate_sms`: `recipient` and `text` strings plus optional numeric `subscription_id`; validate with `bridge-core::messages::OutgoingTextIntent`. This validates only; never sends.
@@ -34,12 +34,11 @@ Initial actions:
 
 Never expose keys, cached phone content, or full untrusted input in errors or diagnostics. Unknown action/fields/version and malformed/oversized input must fail predictably. Parsing or validation success never implies paired/trusted/call-ready.
 
-## Ownership while agents work
+## Ownership
 
-- Android app agent: all `android/**`, plus `docs/android-app.md`.
-- Rust/JNI agent: all `crates/bridge-android/**`, plus `docs/android-native.md`.
-- Toolchain agent: ignored `.tools/**`, `scripts/bootstrap-android.sh`, `scripts/android-env.sh`, `scripts/build-android.sh`, `scripts/build-desktop.sh`, `docs/builds.md`. May write generated `.so`/APKs under ignored app build/jniLibs directories only; no source edits in Android/Rust crates.
-- Parent: workspace root, this contract, integration and final validation.
+- Kotlin app: `android/**`, documented in `docs/android-app.md`.
+- Rust/JNI library: `crates/bridge-android/**`, documented in `docs/android-native.md` and `docs/android-transport.md`.
+- Toolchain: ignored `.tools/**`, `scripts/bootstrap-android.sh`, `scripts/android-env.sh`, `scripts/build-android.sh`, `scripts/build-desktop.sh`, `docs/builds.md`. Generated `.so`/APKs go under ignored build/jniLibs directories.
 
 ## Share actions (file / link / text sharing)
 

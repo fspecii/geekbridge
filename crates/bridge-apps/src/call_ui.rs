@@ -6,7 +6,8 @@
 //! and tested without a window.
 use crate::{
     call_feed::{CallFeed, FeedState},
-    theme::{self, Palette},
+    nothing,
+    theme::{self, ButtonKind, Palette},
 };
 use bridge_core::{
     calls::CallPhase,
@@ -140,12 +141,23 @@ impl CallPanel {
         if let Some(row) = view.live() {
             let secs = self.seconds(&row.key);
             egui::TopBottomPanel::top("ongoing-call")
+                .show_separator_line(false)
                 .frame(
                     egui::Frame::new()
-                        .fill(pal.surface)
-                        .inner_margin(Margin::symmetric(14, 10)),
+                        .fill(pal.content)
+                        .inner_margin(Margin::symmetric(12, 8)),
                 )
-                .show(ctx, |ui| ongoing(ui, pal, feed, &state, row, secs));
+                .show(ctx, |ui| {
+                    egui::Frame::new()
+                        .fill(pal.tile)
+                        .stroke(egui::Stroke::new(1.0_f32, pal.separator))
+                        .corner_radius(egui::CornerRadius::same(nothing::R_CARD))
+                        .inner_margin(Margin::symmetric(16, 12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ongoing(ui, pal, feed, &state, row, secs)
+                        });
+                });
         }
     }
 
@@ -158,21 +170,37 @@ impl CallPanel {
         let Some(row) = status.view.ringing() else {
             return;
         };
+        // A sheet, not a system dialog: rounded, dim backdrop, decisions as pills.
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("incoming-backdrop"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen,
+                    0.0,
+                    Color32::from_black_alpha(if pal.dark { 150 } else { 70 }),
+                );
+            });
         egui::Window::new("Incoming call")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
             .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .frame(
-                egui::Frame::window(&ctx.style())
-                    .fill(pal.surface)
-                    .inner_margin(Margin::same(20)),
+                egui::Frame::new()
+                    .fill(pal.tile)
+                    .stroke(egui::Stroke::new(1.0_f32, pal.separator))
+                    .corner_radius(egui::CornerRadius::same(nothing::R_TILE))
+                    .inner_margin(Margin::same(24)),
             )
             .show(ctx, |ui| {
-                ui.set_min_width(260.0);
+                // Never wider than the window minus a gutter, so the sheet keeps its rounded edges.
+                let width = (screen.width() - 2.0 * nothing::S5 - 48.0).clamp(220.0, 340.0);
+                ui.set_width(width);
                 ui.vertical_centered(|ui| {
-                    ui.label(theme::overline(pal, "INCOMING CALL"));
-                    ui.add_space(6.0);
+                    nothing::dot_text(ui, pal, "INCOMING", nothing::PITCH_TITLE, pal.accent, false);
+                    ui.add_space(8.0);
                     ui.label(theme::semibold(row.caller_label(), 24.0));
                     if let (Some(name), Some(number)) = (&row.name, &row.number)
                         && name != number
@@ -180,37 +208,37 @@ impl CallPanel {
                         ui.label(theme::secondary(pal, number.expose()));
                     }
                     ui.label(theme::caption(pal, &row.phone));
-                    ui.add_space(14.0);
+                    ui.add_space(16.0);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
                         let width = (ui.available_width() - 12.0) / 2.0;
-                        if row.reject.is_some() {
-                            let b = ui.add_sized(
-                                [width, 40.0],
-                                egui::Button::new(
-                                    RichText::new("Decline   Esc").color(Color32::WHITE),
-                                )
-                                .fill(pal.err),
-                            );
-                            if b.clicked()
-                                && let Some(r) = request_for(&status.view, Decision::Decline)
-                            {
-                                feed.send(r);
-                            }
+                        if row.reject.is_some()
+                            && theme::pill_button_sized(
+                                ui,
+                                pal,
+                                "Decline  Esc",
+                                ButtonKind::Primary,
+                                true,
+                                width,
+                            )
+                            .clicked()
+                            && let Some(r) = request_for(&status.view, Decision::Decline)
+                        {
+                            feed.send(r);
                         }
-                        if row.answer.is_some() {
-                            let b = ui.add_sized(
-                                [width, 40.0],
-                                egui::Button::new(
-                                    RichText::new("Answer   Enter").color(Color32::WHITE),
-                                )
-                                .fill(pal.ok),
-                            );
-                            if b.clicked()
-                                && let Some(r) = request_for(&status.view, Decision::Answer)
-                            {
-                                feed.send(r);
-                            }
+                        if row.answer.is_some()
+                            && theme::pill_button_sized(
+                                ui,
+                                pal,
+                                "Answer  Enter",
+                                ButtonKind::Inverse,
+                                true,
+                                width,
+                            )
+                            .clicked()
+                            && let Some(r) = request_for(&status.view, Decision::Answer)
+                        {
+                            feed.send(r);
                         }
                     });
                     if let Some(answer) = &row.answer {
@@ -256,22 +284,27 @@ fn ongoing(
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(theme::semibold(row.caller_label(), 16.0));
-            let phase = match row.phase {
-                CallPhase::Held => "On hold".to_owned(),
-                CallPhase::Dialing | CallPhase::Alerting => "Calling…".to_owned(),
-                _ => format!("In call · {}", clock(secs)),
+            match row.phase {
+                CallPhase::Held => ui.label(theme::secondary(pal, "On hold")),
+                CallPhase::Dialing | CallPhase::Alerting => {
+                    ui.label(theme::secondary(pal, "Calling…"))
+                }
+                _ => {
+                    nothing::dot_text(
+                        ui,
+                        pal,
+                        &clock(secs),
+                        nothing::PITCH_LABEL,
+                        pal.accent,
+                        false,
+                    );
+                    ui.label(theme::caption(pal, "In call"))
+                }
             };
-            ui.label(theme::secondary(pal, phase));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if row.hangup.is_some()
-                && ui
-                    .add(
-                        egui::Button::new(RichText::new("Hang up  H").color(Color32::WHITE))
-                            .fill(pal.err)
-                            .min_size(vec2(96.0, 30.0)),
-                    )
-                    .clicked()
+                && theme::pill_button(ui, pal, "Hang up  H", ButtonKind::Primary, true).clicked()
                 && let Some(r) = request_for(view, Decision::HangUp)
             {
                 feed.send(r);
@@ -282,9 +315,7 @@ fn ongoing(
                 } else {
                     "Mute  M"
                 };
-                if ui
-                    .add(egui::Button::new(label).min_size(vec2(84.0, 30.0)))
-                    .clicked()
+                if theme::pill_button(ui, pal, label, ButtonKind::Plain, true).clicked()
                     && let Some(r) = request_for(view, Decision::ToggleMute)
                 {
                     feed.send(r);

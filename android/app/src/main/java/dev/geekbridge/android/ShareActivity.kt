@@ -110,16 +110,40 @@ class ShareActivity : Activity() {
         return resources.getQuantityString(R.plurals.share_files_header, count, count) + "\n" + names.joinToString("\n") + more
     }
 
+    /** Names the provider reported, filled in off the main thread: a provider (Photos, Drive) can block for seconds. */
+    private val names = HashMap<Uri, String>()
+    private var resolving = false
+
     private fun displayName(uri: Uri): String {
-        val raw = try {
-            contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                if (c.moveToFirst() && !c.isNull(0)) c.getString(0) else null
-            }
-        } catch (_: Exception) {
-            null
-        }
+        val cached = names[uri]
+        if (cached == null) resolveNamesSoon()
+        val raw = cached?.takeIf { it.isNotEmpty() }
         val name = (raw ?: uri.lastPathSegment ?: getString(R.string.share_unnamed_file)).filter { !Character.isISOControl(it) }
         return Bounds.clip(name, 80)
+    }
+
+    private fun resolveNamesSoon() {
+        if (resolving) return
+        resolving = true
+        val todo = uris.take(5).filter { it !in names }
+        Thread({
+            val found = todo.mapNotNull { uri ->
+                try {
+                    contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst() && !c.isNull(0)) uri to c.getString(0) else null
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            main.post {
+                if (isDestroyed) return@post
+                names.putAll(found)
+                for (u in todo) names.putIfAbsent(u, u.lastPathSegment ?: "") // never ask twice
+                resolving = false
+                render()
+            }
+        }, "geekbridge-share-names").apply { isDaemon = true; start() }
     }
 
     private fun startLinkIfNeeded() {

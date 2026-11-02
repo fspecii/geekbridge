@@ -31,7 +31,7 @@ pub const T_NOTE: f32 = 12.5;
 
 /// Dot pitch (distance between dot centres) for the three dot-matrix sizes at 100% text.
 pub const PITCH_NUMERAL: f32 = 5.0;
-pub const PITCH_TITLE: f32 = 3.2;
+pub const PITCH_TITLE: f32 = 3.6;
 pub const PITCH_LABEL: f32 = 2.2;
 
 /// Dot-matrix pitch follows the user's text scale (body text size relative to the default).
@@ -53,7 +53,7 @@ pub fn dot_text(ui: &mut Ui, pal: &Palette, text: &str, pitch: f32, color: Color
     let size = dotmatrix::measure(text, pitch) + vec2(pitch * 0.8, pitch * 0.8);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let origin = pos2(rect.left() + pitch * 0.4, rect.top() + pitch * 0.4);
-    let off = grid.then(|| pal.dot_off);
+    let off = grid.then_some(pal.dot_off);
     dotmatrix::paint(ui.painter(), origin, text, pitch, color, off);
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
 }
@@ -78,7 +78,11 @@ pub fn dot_progress(ui: &mut Ui, pal: &Palette, total: usize, lit: usize, on: Co
     let (rect, response) = ui.allocate_exact_size(vec2(width, 10.0), Sense::hover());
     dotmatrix::meter(ui.painter(), rect, total, lit, on, pal.dot_off);
     response.widget_info(|| {
-        WidgetInfo::labeled(WidgetType::ProgressIndicator, true, format!("{lit} of {total}"))
+        WidgetInfo::labeled(
+            WidgetType::ProgressIndicator,
+            true,
+            format!("{lit} of {total}"),
+        )
     });
 }
 

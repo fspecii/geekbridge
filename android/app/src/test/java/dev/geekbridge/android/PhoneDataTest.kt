@@ -37,7 +37,9 @@ class PhoneDataTest {
             items.filter { it.calendarId in calendarIds }.take(max)
     }
 
-    private class FakeSms(val rows: List<SmsRow> = emptyList()) : SmsPort {
+    private class FakeSms(val rows: List<SmsRow> = emptyList(), val sims: List<SimInfo> = emptyList(), val unread: Map<Long, Int> = emptyMap()) : SmsPort {
+        override fun subscriptions() = sims
+        override fun unreadCounts() = unread
         override fun latestPerThread(max: Int) = rows.groupBy { it.threadId }.map { (_, v) -> v.maxBy { it.date } }.take(max)
         override fun thread(threadId: Long, rangeStartMs: Long?, limit: Int) =
             rows.filter { it.threadId == threadId && (rangeStartMs == null || it.date <= rangeStartMs) }
@@ -336,6 +338,41 @@ class PhoneDataTest {
         // A stock request without requestId still sends, but nothing can be reported.
         val s2 = FakeSender(); engine(core, sender = s2).onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = null))))
         assertEquals(1, s2.calls.size); assertTrue(core.sent.isEmpty())
+    }
+
+    @Test fun theConversationListCarriesPerThreadUnreadCountsOnce() {
+        val core = FakeCore()
+        val rows = listOf(row(1, 1, 1), row(2, 2, 2))
+        val e = engine(core, sms = FakeSms(rows, unread = mapOf(1L to 3, 2L to 0, 9L to 2)))
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQ_CONVERSATIONS)))
+        val u = core.of(PhoneDataKinds.SMS_MESSAGES).first().getJSONObject("unread")
+        assertEquals(3, u.getInt("1")); assertFalse(u.has("2")); assertEquals(2, u.getInt("9"))
+        // A single-thread page or a live push never repeats it.
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQ_CONVERSATION, JSONObject().put("threadID", 1))))
+        assertFalse(core.of(PhoneDataKinds.SMS_MESSAGES).last().has("unread"))
+    }
+
+    @Test fun messagePacketsCarryTheSimListAndOnlyListedSimsCanBeChosen() {
+        val sims = listOf(SimInfo(3, 1, "Personal"), SimInfo(5, 2, "Work\u0007"))
+        val core = FakeCore(); val sender = FakeSender()
+        val e = engine(core, sms = FakeSms(listOf(row(1, 1, 1)), sims), sender = sender)
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQ_CONVERSATIONS)))
+        val arr = core.of(PhoneDataKinds.SMS_MESSAGES).first().getJSONArray("sims")
+        assertEquals(2, arr.length())
+        assertEquals(5, arr.getJSONObject(1).getInt("id")); assertEquals(2, arr.getJSONObject(1).getInt("slot"))
+        assertFalse(arr.getJSONObject(1).getString("label").any { it.isISOControl() })
+        // A listed SIM is used; an unlisted one is refused instead of silently using another SIM.
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "ok1") { put("subID", 5) })))
+        assertEquals(5, sender.calls.single().third)
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "bad1") { put("subID", 9) })))
+        assertEquals(1, sender.calls.size)
+        assertEquals("unknown_sim", core.of(PhoneDataKinds.SMS_STATUS).last().getString("reason"))
+        // No SIM list at all: the default SIM is still used, a named SIM is refused.
+        val s2 = FakeSender(); val core2 = FakeCore()
+        val e2 = engine(core2, sender = s2)
+        e2.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "d1"))))
+        e2.onEvents(listOf(ev(PhoneDataKinds.SMS_REQUEST, req("hi", "+4915551234567", id = "d2") { put("subID", 3) })))
+        assertEquals(1, s2.calls.size)
     }
 
     @Test fun smsSendsAreRateLimitedPerMinute() {

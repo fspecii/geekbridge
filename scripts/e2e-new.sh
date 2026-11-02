@@ -76,8 +76,21 @@ stage_pairdone() {
 }
 
 fresh_link() { load_ids; desk_dial >/dev/null 2>&1; wait_for 20 is_connected; }
+# A newly paired computer holds no phone-side grants (android ComputerGrants): write the per-computer opt-ins the
+# stage needs for the desktop's device id (app must be stopped). Usage: write_grants calls [contacts calendar sms ...]
+write_grants() {
+  desk_id; local json="" f
+  for f in "$@"; do json+="&quot;$f&quot;,"; done; json="${json%,}"
+  $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_grants.xml'" <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="grants">{&quot;migrated&quot;:true,&quot;grants&quot;:{&quot;$DESK_ID&quot;:[${json}]}}</string>
+</map>
+XML
+}
 write_calls_prefs() {
   $ADB shell am force-stop $PKG; sleep 1
+  write_grants calls
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_calls.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -118,6 +131,7 @@ stage_calls() {
 # ---------------------------------------------------------------- phone data prefs shared by sms + agenda
 pd_prefs() { # calendar id
   $ADB shell am force-stop $PKG; sleep 1
+  write_grants contacts calendar sms
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>

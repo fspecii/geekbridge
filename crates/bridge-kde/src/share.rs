@@ -193,7 +193,13 @@ pub fn sanitize_filename(raw: &str) -> String {
         name = "file".into();
     }
     // Windows device names are reserved with or without an extension.
-    let stem = name.split('.').next().unwrap_or("").to_ascii_uppercase();
+    // Trailing spaces and dots before the extension do not stop `CON .txt` from being the device.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4
             && (stem.starts_with("COM") || stem.starts_with("LPT"))
@@ -453,6 +459,11 @@ mod tests {
             ("CON", "_CON"),
             ("nul.txt", "_nul.txt"),
             ("com1", "_com1"),
+            ("CON .txt", "_CON .txt"),
+            ("aux.", "_aux"),
+            ("Lpt9.log", "_Lpt9.log"),
+            ("CON:stream", "CON_stream"),
+            ("report.txt:Zone.Identifier", "report.txt_Zone.Identifier"),
             ("a:b*c?.txt", "a_b_c_.txt"),
             ("tab\there\n.txt", "tab_here_.txt"),
             ("ok name (1).tar.gz", "ok name (1).tar.gz"),
@@ -462,6 +473,18 @@ mod tests {
         let long = format!("{}.jpeg", "é".repeat(300));
         let out = sanitize_filename(&long);
         assert!(out.len() <= MAX_FILENAME_BYTES && out.ends_with(".jpeg"));
+    }
+
+    #[test]
+    fn names_differing_only_by_case_never_overwrite_each_other() {
+        // Case-insensitive on Windows and default macOS volumes, case-sensitive on most Linux ones.
+        // Either way the second reservation must be a different path, and the file must survive.
+        let dir = tempfile::tempdir().unwrap();
+        let first = reserve_unique(dir.path(), "Photo.JPG").unwrap();
+        std::fs::write(&first.path, b"one").unwrap();
+        let second = reserve_unique(dir.path(), "photo.jpg").unwrap();
+        assert_ne!(first.path, second.path);
+        assert_eq!(std::fs::read(&first.path).unwrap(), b"one");
     }
 
     #[test]

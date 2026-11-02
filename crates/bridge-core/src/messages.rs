@@ -479,6 +479,122 @@ impl Conversation {
     pub fn oldest_date_ms(&self) -> Option<u64> {
         self.messages.values().map(|m| m.date_ms).min()
     }
+    /// Newest phone timestamp held.
+    pub fn newest_date_ms(&self) -> Option<u64> {
+        self.messages.values().map(|m| m.date_ms).max()
+    }
+    /// Drops the oldest messages until at most `keep` remain; returns how many went. This bounds
+    /// memory for a long thread: the newest history is what the window shows.
+    pub fn trim_oldest(&mut self, keep: usize) -> usize {
+        let excess = self.messages.len().saturating_sub(keep);
+        if excess == 0 {
+            return 0;
+        }
+        let mut order: Vec<(u64, MessageKey)> =
+            self.messages.values().map(|m| (m.date_ms, m.key)).collect();
+        order.sort_unstable();
+        for (_, key) in order.into_iter().take(excess) {
+            self.messages.remove(&key);
+        }
+        excess
+    }
+    /// Iterates in key order (not time order); for searches that do not care about order.
+    pub fn iter(&self) -> impl Iterator<Item = &Message> {
+        self.messages.values()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Segment counting
+// ---------------------------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmsEncoding {
+    /// GSM 03.38 default alphabet (7 bit); a few characters cost two septets.
+    Gsm7,
+    /// UTF-16 code units (any character outside GSM, including every emoji).
+    Ucs2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SegmentInfo {
+    pub encoding: SmsEncoding,
+    /// Septets (GSM) or UTF-16 code units (UCS-2) the text costs.
+    pub units: usize,
+    /// Number of SMS the phone will most likely send; 0 for empty text.
+    pub segments: usize,
+    /// Capacity of one segment at the current length (single or concatenated).
+    pub per_segment: usize,
+    /// Units left in the last segment.
+    pub remaining: usize,
+}
+
+const GSM_BASIC: &str = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà";
+const GSM_EXTENDED: &str = "^{}\\[~]|€\u{c}";
+
+fn gsm_cost(c: char) -> Option<usize> {
+    if GSM_BASIC.contains(c) {
+        Some(1)
+    } else if GSM_EXTENDED.contains(c) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// Estimates how many SMS segments `text` needs: 160/153 septets for GSM text, 70/67 UTF-16 units
+/// as soon as one character is outside the GSM alphabet (an emoji turns the whole message into
+/// UCS-2). An escape pair or a surrogate pair is never split across segments. This is the standard
+/// rule, not a promise: the phone and carrier have the last word (`SmsManager.divideMessage`).
+pub fn sms_segments(text: &str) -> SegmentInfo {
+    let gsm = text.chars().all(|c| gsm_cost(c).is_some());
+    let (encoding, single, multi) = if gsm {
+        (SmsEncoding::Gsm7, 160, 153)
+    } else {
+        (SmsEncoding::Ucs2, 70, 67)
+    };
+    let cost = |c: char| {
+        if gsm {
+            gsm_cost(c).unwrap_or(1)
+        } else {
+            c.len_utf16()
+        }
+    };
+    let units: usize = text.chars().map(cost).sum();
+    if units == 0 {
+        return SegmentInfo {
+            encoding,
+            units,
+            segments: 0,
+            per_segment: single,
+            remaining: single,
+        };
+    }
+    if units <= single {
+        return SegmentInfo {
+            encoding,
+            units,
+            segments: 1,
+            per_segment: single,
+            remaining: single - units,
+        };
+    }
+    let (mut segments, mut used) = (1, 0);
+    for c in text.chars() {
+        let n = cost(c);
+        if used + n > multi {
+            segments += 1;
+            used = 0;
+        }
+        used += n;
+    }
+    SegmentInfo {
+        encoding,
+        units,
+        segments,
+        per_segment: multi,
+        remaining: multi - used,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1831,5 +1947,101 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    // --- segment counting, bounded threads, out-of-order arrival ---------------------------------
+
+    #[test]
+    fn gsm_text_counts_160_then_153_per_segment() {
+        let one = sms_segments(&"a".repeat(160));
+        assert_eq!(
+            (one.encoding, one.segments, one.remaining),
+            (SmsEncoding::Gsm7, 1, 0)
+        );
+        let two = sms_segments(&"a".repeat(161));
+        assert_eq!(
+            (two.segments, two.per_segment, two.remaining),
+            (2, 153, 145)
+        );
+        assert_eq!(sms_segments(&"a".repeat(306)).segments, 2);
+        assert_eq!(sms_segments(&"a".repeat(307)).segments, 3);
+        assert_eq!(sms_segments("").segments, 0);
+    }
+
+    #[test]
+    fn gsm_extension_characters_cost_two_and_never_split() {
+        // 159 plain + one euro sign = 161 septets: two segments.
+        let t = format!("{}€", "a".repeat(159));
+        assert_eq!(sms_segments(&t).units, 161);
+        assert_eq!(sms_segments(&t).segments, 2);
+        // 152 plain + euro at the 153 boundary moves whole into the next segment.
+        let t = format!("{}€{}", "a".repeat(152), "a".repeat(10));
+        let i = sms_segments(&t);
+        assert_eq!((i.encoding, i.segments), (SmsEncoding::Gsm7, 2));
+        assert_eq!(i.remaining, 153 - 12);
+    }
+
+    #[test]
+    fn one_emoji_makes_the_whole_message_ucs2_with_70_and_67() {
+        let i = sms_segments("hi 😀");
+        assert_eq!(
+            (i.encoding, i.units, i.segments, i.per_segment),
+            (SmsEncoding::Ucs2, 5, 1, 70)
+        );
+        assert_eq!(sms_segments(&"ж".repeat(70)).segments, 1);
+        assert_eq!(sms_segments(&"ж".repeat(71)).segments, 2);
+        assert_eq!(sms_segments(&"ж".repeat(134)).segments, 2);
+        assert_eq!(sms_segments(&"ж".repeat(135)).segments, 3);
+        // A surrogate pair is not split: 66 units + an emoji (2) overflows a 67 segment.
+        let t = format!("{}😀", "ж".repeat(66 + 5));
+        assert_eq!(sms_segments(&t).units, 71 + 2);
+        let t = format!("{}😀xxx", "ж".repeat(66));
+        let i = sms_segments(&t);
+        assert_eq!(i.segments, 2);
+        assert_eq!(i.remaining, 67 - 5);
+    }
+
+    #[test]
+    fn accented_latin_in_the_gsm_set_stays_gsm_but_others_do_not() {
+        assert_eq!(sms_segments("café ñandu àèé").encoding, SmsEncoding::Gsm7);
+        assert_eq!(sms_segments("çà").encoding, SmsEncoding::Ucs2); // lowercase c-cedilla is not in GSM
+        assert_eq!(sms_segments("naïve").encoding, SmsEncoding::Ucs2);
+    }
+
+    #[test]
+    fn trim_oldest_keeps_the_newest_and_bounds_memory() {
+        let mut c = Conversation::new(ThreadId(7));
+        for i in 0..10 {
+            c.merge(sms(i, 1000 + i as u64)).unwrap();
+        }
+        assert_eq!(c.trim_oldest(4), 6);
+        assert_eq!(c.len(), 4);
+        assert_eq!(c.oldest_date_ms(), Some(1006));
+        assert_eq!(c.newest_date_ms(), Some(1009));
+        assert_eq!(c.trim_oldest(100), 0);
+    }
+
+    #[test]
+    fn out_of_order_and_duplicate_delivery_converge_to_the_same_thread() {
+        let batch: Vec<Message> = vec![
+            sms(3, 300),
+            sms(1, 100),
+            sms(2, 200),
+            sms(2, 200),
+            sms(3, 300),
+        ];
+        let mut a = Conversation::new(ThreadId(7));
+        let s = a.merge_all(batch.clone());
+        assert_eq!((s.inserted, s.duplicates), (3, 2));
+        let mut b = Conversation::new(ThreadId(7));
+        b.merge_all(batch.into_iter().rev());
+        let dates = |c: &Conversation| c.ordered().iter().map(|m| m.date_ms).collect::<Vec<_>>();
+        assert_eq!(dates(&a), [100, 200, 300]);
+        assert_eq!(dates(&a), dates(&b));
+        // A late status update replaces the message instead of adding a second one.
+        let mut late = sms(2, 200);
+        late.read = false;
+        assert_eq!(a.merge(late).unwrap(), MergeOutcome::Updated);
+        assert_eq!(a.len(), 3);
     }
 }

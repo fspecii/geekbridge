@@ -104,6 +104,7 @@ impl Rig {
             .call(Request::MessagesView {
                 device_id: device,
                 thread_id: thread,
+                query: None,
             })
             .await
         {
@@ -301,12 +302,27 @@ async fn consent_gates_every_feature_and_data_flows_end_to_end() {
     let m = rig
         .until("conversations", async || {
             let m = rig.messages(None, None).await;
-            (m.conversations.len() == 3).then_some(m)
+            (m.conversations.len() == 5).then_some(m)
         })
         .await;
-    assert_eq!(m.conversations[0].title, "Ada Lovelace");
-    assert_eq!(m.conversations[0].unread, 1);
-    let thread = m.conversations[0].thread_id;
+    assert_eq!(m.conversations[0].title, "Alan Turing", "newest first");
+    assert_eq!(m.conversations[0].unread, 2);
+    let ada = m
+        .conversations
+        .iter()
+        .find(|c| c.title == "Ada Lovelace")
+        .expect("name resolved from the synced phonebook");
+    assert_eq!(ada.unread, 1);
+    assert!(
+        m.conversations
+            .iter()
+            .any(|c| c.title == "+49 151 1234 5678"),
+        "an unknown number falls back to the number"
+    );
+    // The phone listed two SIMs and sends a picture message.
+    assert_eq!(m.devices[0].sims.len(), 2);
+    assert!(m.devices[0].sms_send);
+    let thread = ada.thread_id;
     rig.ok(Request::MessagesRefresh {
         device_id: id.clone(),
         thread_id: Some(thread),
@@ -317,6 +333,50 @@ async fn consent_gates_every_feature_and_data_flows_end_to_end() {
         (m.selected.as_ref()?.messages.len() == 3).then_some(())
     })
     .await;
+    let grace = m
+        .conversations
+        .iter()
+        .find(|c| c.title == "Grace Hopper")
+        .unwrap();
+    let g = rig.messages(Some(id.clone()), Some(grace.thread_id)).await;
+    assert!(
+        g.selected
+            .unwrap()
+            .messages
+            .iter()
+            .any(|x| x.mms && x.attachments == 1),
+        "MMS arrives as an attachment count, never as content"
+    );
+
+    // Search by body, then mark read (local only: the phone is not asked to change anything).
+    let found = match rig
+        .call(Request::MessagesView {
+            device_id: None,
+            thread_id: None,
+            query: Some("verification".into()),
+        })
+        .await
+    {
+        Ok(Response::Messages(v)) => v.conversations,
+        other => panic!("expected messages, got {other:?}"),
+    };
+    assert_eq!(found.len(), 1);
+    assert!(found[0].matched.as_deref().unwrap().contains("482913"));
+    rig.ok(Request::MessagesMarkRead {
+        device_id: id.clone(),
+        thread_id: thread,
+    })
+    .await;
+    let after = rig.messages(None, None).await;
+    assert_eq!(
+        after
+            .conversations
+            .iter()
+            .find(|c| c.thread_id == thread)
+            .unwrap()
+            .unread,
+        0
+    );
 
     // Send: the phone's own reports raise the status step by step; same submission is idempotent.
     let send = || Request::MessagesSend {
@@ -324,7 +384,17 @@ async fn consent_gates_every_feature_and_data_flows_end_to_end() {
         recipient: "+44 20 7946 0001".into(),
         text: "See you there".into(),
         submission_id: "click-1".into(),
+        sub_id: None,
     };
+    // A SIM the phone did not list is refused before anything leaves the computer.
+    let bad_sim = Request::MessagesSend {
+        device_id: id.clone(),
+        recipient: "+44 20 7946 0001".into(),
+        text: "wrong sim".into(),
+        submission_id: "click-sim".into(),
+        sub_id: Some(99),
+    };
+    assert!(rig.call(bad_sim).await.is_err());
     let Ok(Response::MessageQueued { send_id }) = rig.call(send()).await else {
         panic!("send refused")
     };

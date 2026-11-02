@@ -165,6 +165,16 @@ pub fn render(i: &Inputs, host: &str) -> String {
                 c.phones,
                 c.calls
             );
+            let facts = bridge_calls::readiness::Facts {
+                adapters: c.bluetooth_controllers.unwrap_or(1),
+                paired_hfp_phones: None,
+                registered_phones: c.phones,
+            };
+            let _ = writeln!(
+                o,
+                "call audio: {}",
+                bridge_calls::readiness::classify(&facts).line()
+            );
         }
         None => {
             let _ = writeln!(o, "calling: unavailable");

@@ -35,7 +35,7 @@ Commands:
   agenda-refresh [DEVICE_ID]          ask the phone(s) for fresh contacts and calendar data
   messages [DEVICE_ID THREAD_ID]      SMS conversations from phones whose Sms consent is on, and one thread
   messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
-  messages-send DEVICE_ID NUMBER TEXT send one SMS through the phone; the printed send id is not a receipt
+  messages-send DEVICE_ID NUMBER TEXT [SUB_ID] send one SMS (SUB_ID: a SIM the phone listed); the send id is not a receipt
   calling                             read-only host calling backend summary
   calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
@@ -68,6 +68,9 @@ Commands:
   share auto-accept DEVICE_ID on|off  accept files from the device without asking (default off)
   diagnose                            redacted support bundle (versions, capabilities, counters, last
                                       errors); no names, addresses, keys or content
+  autostart [status|enable|disable]   start the service at login (XDG autostart, LaunchAgent or the
+                                      per-user Run key); default: status
+  firewall                            the exact command to allow GeekBridge through this computer's firewall
   token-path                          where the control token lives (never its contents)";
 
 fn main() -> ExitCode {
@@ -108,6 +111,10 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 println!("{USAGE}");
                 return Ok(());
             }
+            "-V" | "--version" => {
+                println!("geekbridge-ctl {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             _ => break,
         }
     }
@@ -115,9 +122,16 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     let state_dir = state_dir
         .or_else(ipc::default_state_dir)
         .ok_or("cannot determine the state directory; pass --state-dir")?;
+    if command == "firewall" {
+        println!("{}", bridge_service::autostart::firewall_help());
+        return Ok(());
+    }
     if command == "token-path" {
         println!("{}", ipc::token_path(&state_dir).display());
         return Ok(());
+    }
+    if command == "autostart" {
+        return autostart_command(&args[1..]);
     }
     if command == "hotkey" {
         return hotkey_command(&args[1..], port, &state_dir);
@@ -294,6 +308,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 Ok(t) => Some(t.parse().map_err(|_| "THREAD_ID must be a number")?),
                 Err(_) => None,
             },
+            query: None,
         },
         "messages-refresh" => Request::MessagesRefresh {
             device_id: arg(1, "DEVICE_ID")?,
@@ -306,6 +321,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             device_id: arg(1, "DEVICE_ID")?,
             recipient: arg(2, "NUMBER")?,
             text: arg(3, "TEXT")?,
+            sub_id: arg(4, "SUB_ID").ok().and_then(|v| v.parse().ok()),
             submission_id: format!(
                 "ctl{}-{}",
                 std::process::id(),
@@ -596,6 +612,20 @@ fn clipboard_command(
     }
 }
 
+fn autostart_command(args: &[OsString]) -> Result<(), String> {
+    use bridge_service::autostart::{self, Action};
+    let action = match args.first().and_then(|a| a.to_str()) {
+        None | Some("status") => Action::Status,
+        Some("enable") => Action::Enable,
+        Some("disable") => Action::Disable,
+        Some(other) => return Err(format!("unknown autostart command: {other}\n\n{USAGE}")),
+    };
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let service = exe.with_file_name(autostart::service_file_name());
+    println!("{}", autostart::run(action, &service)?);
+    Ok(())
+}
+
 fn hotkey_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> Result<(), String> {
     use bridge_service::hotkey_cli::{Env, run};
     let words: Vec<String> = args
@@ -697,6 +727,7 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
                 &Request::MessagesView {
                     device_id: None,
                     thread_id: None,
+                    query: None,
                 },
             )
             && m.devices

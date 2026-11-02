@@ -185,7 +185,14 @@ struct Inner {
     notice: Option<String>,
     next_request: u64,
     announced: BTreeSet<String>,
+    /// When a ringing call was first seen without a name or number (see [`UNNAMED_GRACE`]).
+    unnamed_since: BTreeMap<String, Instant>,
 }
+
+/// The phone often reports "ringing" a moment before the caller's number follows. A notification
+/// cannot be updated afterwards, so a call without a caller is held back this long before it is
+/// announced as "Unknown caller" (a private number never gets one).
+const UNNAMED_GRACE: Duration = Duration::from_millis(1500);
 
 pub struct CallHub {
     inner: Mutex<Inner>,
@@ -436,6 +443,11 @@ impl CallHub {
         } else {
             lines.push("Bluetooth hands-free calling is not available on this computer.".into());
         }
+        // Why the voice cannot come here (no adapter / not paired / ready) and the next step.
+        #[cfg(all(target_os = "linux", not(test)))]
+        if !snaps.iter().any(|s| s.key.starts_with("hfp:")) {
+            lines.push(bridge_calls::readiness::detect().line());
+        }
         (snaps, lines)
     }
 
@@ -584,11 +596,34 @@ impl CallHub {
                 .map(|r| r.key.clone())
                 .collect();
             inner.announced.retain(|k| ringing.contains(k));
-            view.rows
-                .iter()
-                .filter(|r| r.ringing() && inner.announced.insert(r.key.clone()))
-                .cloned()
-                .collect()
+            inner.unnamed_since.retain(|k, _| ringing.contains(k));
+            let mut recheck = false;
+            let mut fresh = Vec::new();
+            for r in view.rows.iter().filter(|r| r.ringing()) {
+                if inner.announced.contains(&r.key) {
+                    continue;
+                }
+                if r.name.is_none() && r.number.is_none() {
+                    let since = *inner
+                        .unnamed_since
+                        .entry(r.key.clone())
+                        .or_insert_with(Instant::now);
+                    if since.elapsed() < UNNAMED_GRACE {
+                        recheck = true;
+                        continue;
+                    }
+                }
+                inner.announced.insert(r.key.clone());
+                fresh.push(r.clone());
+            }
+            if recheck {
+                let hub = self.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(UNNAMED_GRACE + Duration::from_millis(100));
+                    hub.announce_new_calls();
+                });
+            }
+            fresh
         };
         let Some(notifier) = self
             .notifier

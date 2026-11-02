@@ -53,8 +53,8 @@ object PowerChecks {
             activity.startActivity(
                 Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", activity.packageName, null)),
             )
-        } catch (_: ActivityNotFoundException) {
-            // A device without a settings app is not something to recover from.
+        } catch (_: RuntimeException) {
+            // No settings app, or a ROM that refuses the intent: nothing more to fall back to.
         }
     }
 
@@ -75,19 +75,22 @@ object PowerChecks {
             true
         } catch (_: ActivityNotFoundException) {
             false
-        } catch (_: SecurityException) {
-            false // exported=false or permission-protected on this ROM version
+        } catch (_: RuntimeException) {
+            false // SecurityException (not exported / permission-protected on this ROM version) or a ROM-specific crash
         }
     }
 }
 
-enum class Oem(val label: String) {
+enum class Oem(val label: String, val hasExtraSwitch: Boolean = true) {
     Xiaomi("Xiaomi / Redmi / POCO"),
     Samsung("Samsung"),
     Huawei("Huawei / Honor"),
     OnePlus("OnePlus"),
     Oppo("OPPO / Realme"),
     Vivo("vivo / iQOO"),
+
+    /** Near-stock Android: the system battery exemption is the only switch, so there is no vendor screen to open. */
+    Nothing("Nothing / CMF", hasExtraSwitch = false),
     Other("your phone"),
 }
 
@@ -101,6 +104,7 @@ object OemDetector {
             "oneplus" in m -> Oem.OnePlus
             "oppo" in m || "realme" in m -> Oem.Oppo
             "vivo" in m || "iqoo" in m -> Oem.Vivo
+            "nothing" in m || "cmf" in m -> Oem.Nothing
             else -> Oem.Other
         }
     }
@@ -151,7 +155,7 @@ object OemIntents {
             IntentSpec(pkg = "com.vivo.permissionmanager", cls = "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
             IntentSpec(pkg = "com.iqoo.secure", cls = "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
         )
-        Oem.Other -> emptyList()
+        Oem.Nothing, Oem.Other -> emptyList()
     }
 }
 
@@ -165,7 +169,7 @@ object OemGuides {
         )
         Oem.Samsung -> listOf(
             "Open Settings › Apps › GeekBridge › Battery and choose “Unrestricted”.",
-            "In Device care › Battery › Background usage limits, remove GeekBridge from “Sleeping apps” and “Deep sleeping apps”.",
+            "In Settings › Battery (“Battery and device care” on older One UI) › Background usage limits, remove GeekBridge from “Sleeping apps” and “Deep sleeping apps”.",
             "Turn off “Put unused apps to sleep” for GeekBridge if it is listed.",
         )
         Oem.Huawei -> listOf(
@@ -185,6 +189,10 @@ object OemGuides {
         Oem.Vivo -> listOf(
             "Open Autostart / Background start-up manager and allow GeekBridge.",
             "In Settings › Battery › Background power consumption, set GeekBridge to “Allow high background power consumption”.",
+        )
+        Oem.Nothing -> listOf(
+            "Open Settings › Apps › GeekBridge › App battery usage and choose “Unrestricted”.",
+            "Nothing OS has no separate autostart list. If it still disconnects, check that Settings › Battery › Battery optimisation does not list GeekBridge as “Optimised”.",
         )
         Oem.Other -> emptyList()
     }

@@ -1,9 +1,9 @@
 # Service integration: daemon, control API, client wiring
 
-Status as of 2026-11-01. `geekbridge-service` now owns the TLS identity, the trust store and the one live
+Status as of 2026-11-02 (the request table below is the original core; later ops are listed after it). `geekbridge-service` now owns the TLS identity, the trust store and the one live
 link per phone, and exposes them through an **authenticated loopback control API**. The old public
-discovery API is unchanged. Verified only with generated `bridge_kde` peers over loopback; **no real
-KDE Connect phone has been paired** (see "Gaps").
+discovery API is unchanged. Verified with generated `bridge_kde` peers, scripted phones and the Android emulator;
+**no real phone has been paired** (see "Gaps").
 
 ## Two listeners, two trust levels
 
@@ -97,6 +97,12 @@ S -> C  ERR unauthorized                     (wrong/missing mac; request never p
 | `ping {device_id}` | one `kdeconnect.ping` on a connected paired link (no body, no consent needed) | `not_connected`, `unsupported`, `busy` |
 | `calling_status` | read-only calling backend summary (counts + verdict, no numbers/addresses) | `busy`, `failed` |
 
+Later ops (see `bridge_core::ipc::Request` for the exact shapes): `pair_qr` / `pair_qr_cancel` and `test_connection`
+([pairing.md](pairing.md)); `calls`, `call_action`, `call_mute`, `call_audio` ([call-control.md](call-control.md));
+`update_status`, `update_check`, `update_download`, `update_skip`, `update_set_enabled` ([updates.md](updates.md));
+`clipboard_status|pull|push|settings` ([clipboard-sync.md](clipboard-sync.md)); `share_status|send_file|send_text|decide|
+cancel|dismiss|settings` ([sharing.md](sharing.md)); `agenda_view` and `calendar_edit` ([phone-data-link.md](phone-data-link.md)).
+
 ### Link and challenge model
 
 * **One live link per device id.** `connect` while any link (connecting, unpaired, pairing, connected)
@@ -123,9 +129,10 @@ S -> C  ERR unauthorized                     (wrong/missing mac; request never p
 
 ### Feature negotiation and consent
 
-The service declares **only `kdeconnect.ping`** in its identity (incoming and outgoing). A packet is
+The service declares the packet types in `gate::LOCAL_INCOMING` / `LOCAL_OUTGOING` (14 each at the time of writing:
+ping, clipboard, `share.request`, the `geekbridge.calls`, contacts, calendar and SMS packets). A packet is
 accepted from a paired phone only if its type is in (phone's outgoing ∩ our incoming); everything else
-(SMS, contacts, clipboard, notifications, telephony, payload transfers, unknown types) is counted in
+(notifications, other telephony, unknown types) is counted in
 `rejected_packets`, dropped unread, never routed, and a link that sends 64 of them is dropped. Packet
 lines are capped at 64 KiB (raise it together with an adapter). Discovery capability lists never take
 part in negotiation and never touch the trust store; the pin only ever comes from a locally approved
@@ -217,19 +224,18 @@ no phone/BT/LAN):
 * **No hardware interoperability.** Pairing/linking is exercised against `bridge_kde` peers (and
   `bridge_kde`'s own raw-rustls tests), not a stock Android KDE Connect or the GeekBridge Android app.
   Real-phone discovery -> connect -> pair has not been run.
-* Only the clipboard adapter is integrated (see [Clipboard bridge](#clipboard-bridge)); SMS, contacts, notifications and Bluetooth call control
-  are **not** reachable through this service. Consent is stored but inert (`adapter_integrated:false`).
-  The identity declares ping, the clipboard types and the other integrated adapters only, so stock phones will not send SMS or contacts packets.
-* The service does not broadcast its identity or answer phone broadcasts; phones will not discover it
-  yet. Outbound `connect` (and opt-in `--listen-inbound`) are the only entry points. No mDNS.
+* Clipboard, sharing, call control, contacts, calendar and SMS are integrated (each opt-in per phone); notifications
+  mirroring is not. Bluetooth call *audio* is not carried by this service.
+* The service announces itself on the LAN and listens for phones by default (`--no-listen-inbound` disables this; see
+  [pairing.md](pairing.md)). No mDNS.
 * Link liveness depends on TCP keepalive/user-timeout from `bridge_kde` (~1 minute to notice a dead
   Wi-Fi phone); there is no application-level heartbeat.
 * The control token is a bearer secret for the whole user session: any process running as the same user
   can read it (as with the identity key). Other users are stopped by the owner-only directory, and by the
   MAC scheme if they race for the port. Loopback ports are not user-scoped, so another local user can
   occupy the control port first (the service then fails to start; a client still never sends the token).
-* Windows: `bridge_kde::fsutil` is Unix-only at the time of writing, so on Windows the control API
-  reports `platform_unsupported` until the separate implementation lands. The core ipc code and CLI
+* Windows: if the private-file support is not verified on a system, the control API reports `platform_unsupported`
+  (Windows has not been run on real hardware). The core ipc code and CLI
   compile everywhere; only the Unix path was run here.
 * Event reasons embed `KdeError` text (truncated to 160 printable ASCII chars) which, for pre-trust
   failures, may echo a few characters of peer-controlled data; treat as untrusted text.

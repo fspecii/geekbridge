@@ -1,7 +1,11 @@
 # Android runtime verification (emulator) and UI notes
 
 Status of what was **actually run** for the Android companion, what was not, and what is left. Everything
-here is a debug-signed development build; there is no release build and no real-phone testing.
+here is a debug-signed development build; there is no real-phone testing.
+
+> **Historical record (first emulator pass, 2026-11-01).** Statements below such as "ping only", "Discovery was not
+> run" or "no network" describe that early build. Pairing, discovery, sharing, clipboard, SMS, calendar, calls and
+> self-update have since been run on the emulator; see [e2e-findings.md](e2e-findings.md) for the current record.
 
 ## Environment (all project-local)
 
@@ -61,7 +65,7 @@ here is a debug-signed development build; there is no release build and no real-
   **no screenshot of the pairing dialog**, and no run against a real KDE Connect device or the desktop apps.
 - Discovery (UDP, `MulticastLock`) was not run. Announce was not run.
 - `READ_PHONE_STATE` grant flow and a simulated call (`adb emu gsm`) were not run; READ_CALENDAR grant and the
-  Agenda preview were set up (synthetic events) but not read back.
+  Calendar preview were set up (synthetic events) but not read back.
 - Not tested: real phone, arm64 ART, Android versions other than 16, TalkBack, large font scale, dark theme on
   device (dark resources exist; no screenshot).
 
@@ -108,8 +112,8 @@ state machine, single worker thread, epoch-guarded so stale polls cannot resurre
   or the `paired` event. Unparseable prompts are never approvable. `pin_mismatch`, `identity_mismatch` and
   `peer_requested_repair` are shown as SECURITY messages, not generic errors.
 - Debug-only checkbox "allow loopback peers" (gated on `BuildConfig.DEBUG`) exists for emulator testing.
-- Advertised features: **ping only**. The UI says so; SMS/clipboard/call buttons that would need other packets stay
-  disabled and say "not implemented".
+- Advertised features at that time: **ping only** (the UI said so). The link now also carries clipboard, sharing,
+  call control, contacts, calendar and SMS, each behind a per-computer opt-in.
 
 ## Handoff: the pairing test that still has to be run
 

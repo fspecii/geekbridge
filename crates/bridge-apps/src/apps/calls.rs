@@ -301,6 +301,46 @@ impl Calls {
     }
 }
 
+/// Screenshot aid: a scripted phone report instead of the service (`GEEKBRIDGE_CALLS_FIXTURE`).
+fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
+    use bridge_core::{
+        calls::{CallState, Sensitive},
+        calls_link::{LinkCallReport, PhoneState},
+        calls_view::{self, SourceSnapshot},
+        ipc::CallsStatus,
+    };
+    let report = LinkCallReport {
+        state: if ringing {
+            PhoneState::Ringing
+        } else {
+            PhoneState::OffHook
+        },
+        number: Some(Sensitive::new("+1 555 0100")),
+        name: Some(Sensitive::new("Ada Lovelace")),
+        can_answer: true,
+        can_end: true,
+    };
+    let mut state = CallState::default();
+    report.apply(&mut state);
+    let view = calls_view::build(&[SourceSnapshot {
+        key: "link:fixture".into(),
+        label: "Pixel 9".into(),
+        caps: report.capabilities(),
+        state,
+    }]);
+    let status = CallsStatus {
+        view,
+        notice: None,
+        sources: Vec::new(),
+    };
+    CallFeed::spawn_with(
+        std::time::Duration::from_secs(3600),
+        move || Ok(status.clone()),
+        |_| Ok(()),
+        move || wake.request_repaint(),
+    )
+}
+
 impl AppView for Calls {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
@@ -311,7 +351,10 @@ impl AppView for Calls {
         }
         let feed = self.feed.take().unwrap_or_else(|| {
             let wake = ctx.clone();
-            CallFeed::spawn(move || wake.request_repaint())
+            match std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() {
+                Ok(kind @ ("ringing" | "active")) => fixture_feed(kind == "ringing", wake),
+                _ => CallFeed::spawn(move || wake.request_repaint()),
+            }
         });
         self.sources = feed.state();
         theme::toolbar(ctx, pal, 46.0, |ui| {

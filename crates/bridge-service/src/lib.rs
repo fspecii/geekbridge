@@ -3,6 +3,7 @@
 //! * Public, read-only discovery API ([`serve_api`]): untrusted announcement metadata only.
 //! * Authenticated control API ([`control::serve_control`]): pairing and link lifecycle for
 //!   explicitly chosen phones, backed by `bridge-kde`. See `docs/service-integration.md`.
+pub mod autostart;
 pub mod calendar_edit;
 pub mod call_cli;
 pub mod call_control;
@@ -21,6 +22,7 @@ pub mod hotkey_help;
 pub mod hypr_config;
 pub mod macos_host;
 pub mod notify_text;
+pub mod os_notify;
 pub mod phone_data;
 pub mod private;
 pub mod session_env;
@@ -441,12 +443,24 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         options.share_notifier = Some(Arc::new(share::NotifySend));
         options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
         options.sms_notifier = Some(Arc::new(phone_data::NotifySendSms));
+        // Message text in notifications is opt-in: `touch <state dir>/sms-notify-content` (or set
+        // GEEKBRIDGE_SMS_NOTIFY_CONTENT=show). Without it a notification names the sender only.
+        options.sms_show_content = std::env::var("GEEKBRIDGE_SMS_NOTIFY_CONTENT")
+            .is_ok_and(|v| v == "show")
+            || config.state_dir.join("sms-notify-content").exists();
         desktop_notify::spawn_update_watcher(options.updates.clone());
         if config.calling_probe {
             let session = bridge_calls::Session::new(bridge_calls::default_backend());
             options.call_host =
                 std::sync::Mutex::new(Some(Box::new(call_control::linux::LinuxHfp::new(session))));
         }
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        let banners = Arc::new(os_notify::BannerNotifier);
+        options.share_notifier = Some(banners.clone());
+        options.call_notifier = Some(banners.clone());
+        options.sms_notifier = Some(banners);
     }
     #[cfg(windows)]
     {

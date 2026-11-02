@@ -118,6 +118,7 @@ class PairPanel(
             for (n in names) {
                 kit.row(container, R.drawable.ic_computer, n, activity.getString(R.string.pair_paired_and_trusted), kit.chip(activity.getString(R.string.pair_chip_paired), Tone.Ok), Tone.Ok)
             }
+            container.addView(kit.text(activity.getString(R.string.pair_manage_hint), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
         }
         if (showNext && names.isNotEmpty()) {
             NextSteps.card(activity, kit, container, onHome = {
@@ -187,7 +188,9 @@ class PairPanel(
             }
         }
         val n = controller.notice
-        if (n != null && phase != LinkPhase.Stopped) {
+        // A "waiting for the other device" note is only true while a pairing is actually in progress.
+        val inProgress = pendingDevice != null || s?.connections.orEmpty().any { !it.trusted }
+        if (n != null && phase != LinkPhase.Stopped && (n.tone != Tone.Muted || inProgress || names.isEmpty())) {
             container.addView(kit.text(n.text, 13f, n.tone).apply { setPadding(0, kit.dp(10), 0, 0) })
         } else if (n != null && n.tone != Tone.Muted) {
             container.addView(kit.text(n.text, 13f, n.tone).apply { setPadding(0, kit.dp(10), 0, 0) })

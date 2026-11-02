@@ -359,7 +359,7 @@ impl Connections {
         };
         ui.label(theme::caption(
             pal,
-            "Pair only after comparing the code on this computer and your phone.",
+            "Pairing by name (not by QR code): pair only after the same code shows on this computer and your phone.",
         ));
         if let Some(notice) = &self.state.notice {
             ui.add(egui::Label::new(theme::secondary(pal, notice)).wrap());

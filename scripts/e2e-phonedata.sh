@@ -5,7 +5,7 @@
 #
 #   scripts/e2e-phonedata.sh [STAGE[,STAGE...]] [--stop]
 #
-# Stages: env battery pair phonedata   (default: all, in this order; each is idempotent)
+# Stages: env battery pair phonedata messages   (default: all, in this order; each is idempotent)
 #
 # It reuses the helpers of scripts/e2e-android.sh but shares nothing live with it: its own AVD
 # (gb36d, console port 5598, adb server 16039), desktop state (target/e2e-pd-run), control port 17491,
@@ -15,7 +15,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
-STAGES="${1:-env,battery,pair,phonedata}"
+STAGES="${1:-env,battery,pair,phonedata,messages}"
 [[ "$STAGES" == --stop ]] && { STAGES=""; STOP=1; }
 set --
 export E2E_SOURCE_ONLY=1 E2E_AVD=gb36d E2E_EMU_PORT=5598 E2E_ADB_PORT=16039 E2E_TAG=-pd \
@@ -93,6 +93,41 @@ stage_phonedata() {
   wait_for 30 bash -c "[[ \$(\"${CTL[0]}\" --state-dir \"$RUN/state\" --control-port $CTRL_PORT agenda | python3 -c 'import json,sys;print(len(json.load(sys.stdin)[\"events\"]))') -ge 2 ]]" && ok_e=1
   ctl agenda > "$RUN/agenda.json"
   rec phonedata_agenda "$((ok_c && ok_e ? 1 : 0))" "contacts=$ok_c events=$ok_e negotiated=$caps"
+}
+
+# Messages end to end: an SMS injected with `adb emu sms send` must reach the desktop conversation
+# list (unread, sender), be searchable and be marked read locally; a send from the desktop must be
+# accepted by the phone (its own status packets, never "delivered" on a guess).
+stage_messages() {
+  load_ids; [[ -n "$PHONE_ID" ]] || { rec messages SKIP "not paired (run pair first)"; return 1; }
+  is_connected || { desk_dial; wait_for 15 is_connected; } || { rec messages FAIL "link not connected"; return 1; }
+  wake; grant_all
+  ctl consent "$PHONE_ID" sms on >/dev/null
+  local tag="gbmsg$RANDOM"
+  $ADB emu sms send 5550142 "Hello from the emulator $tag" >/dev/null
+  local seen=0
+  for _ in $(seq 40); do
+    ctl messages "$PHONE_ID" > "$RUN/messages.json" 2>/dev/null
+    jget 'any("'"$tag"'" in c["last_body"] and c["unread"]>=1 for c in d["conversations"])' < "$RUN/messages.json" | grep -q True && { seen=1; break; }
+    sleep 2
+  done
+  rec messages_incoming "$seen" "injected text listed with unread count"
+  [[ $seen == 1 ]] || return 1
+  local tid; tid="$(jget '[c["thread_id"] for c in d["conversations"] if "'"$tag"'" in c["last_body"]][0]' < "$RUN/messages.json")"
+  ctl messages "$PHONE_ID" "$tid" | jget 'any("'"$tag"'" in m["body"] for m in d["selected"]["messages"])' | grep -q True \
+    && rec messages_thread 1 "thread $tid shows the message" || rec messages_thread 0 "thread $tid missing the message"
+  ctl messages-send "$PHONE_ID" 5550142 "Reply from the desktop $tag" >/dev/null
+  local phase=""
+  for _ in $(seq 30); do
+    phase="$(ctl messages "$PHONE_ID" | jget '[s["phase"] for s in d["sends"] if "'"$tag"'" in s["text"]][0]')"
+    case "$phase" in accepted_by_phone|sent|delivered|failed) break;; esac; sleep 2
+  done
+  case "$phase" in accepted_by_phone|sent|delivered) rec messages_send 1 "phone reported: $phase";; *) rec messages_send 0 "phase=$phase";; esac
+  [[ "$phase" == queued || "$phase" == handed_to_phone ]] && rec messages_honest 0 "stuck at $phase" || rec messages_honest 1 "never claimed more than the phone said"
+  $ADB exec-out screencap -p > "$PD_SHOTS/android-messages.png" 2>/dev/null
+  ( cd "$ROOT" && DISPLAY=$XDISP GEEKBRIDGE_STATE_DIR="$RUN/state" GEEKBRIDGE_CONTROL_PORT=$CTRL_PORT \
+      GEEKBRIDGE_MESSAGE_TO=5550142 timeout 8 "$BIN_APPS/geekbridge-messages" --api-port $API_PORT --theme light >/dev/null 2>&1 & sleep 5; \
+      DISPLAY=$XDISP import -window root "$PD_SHOTS/desktop-messages.png" 2>/dev/null; wait ) || true
 }
 
 main_pd() {

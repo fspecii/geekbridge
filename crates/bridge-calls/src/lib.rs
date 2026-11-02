@@ -23,6 +23,7 @@ pub mod error;
 pub mod guard;
 pub mod model;
 pub mod probe;
+pub mod readiness;
 mod session;
 
 #[cfg(target_os = "linux")]

@@ -70,6 +70,15 @@ pub fn parse(
     if !is_clipboard_kind(kind) {
         return Err(WireError::NotClipboard);
     }
+    // The stock desktop writes `{"content":null,"timestamp":0}` as its `.connect` packet when its
+    // clipboard is empty (observed from kdeconnectd 26.08.2). That is "nothing to sync", not a
+    // malformed packet: report it as an unknown-timestamp state, which callers never apply.
+    if kind == CLIPBOARD_CONNECT && body.get("content").is_some_and(Value::is_null) {
+        return Ok(RemoteClip::Connect {
+            content: String::new(),
+            timestamp_ms: 0,
+        });
+    }
     let content = body
         .get("content")
         .and_then(Value::as_str)

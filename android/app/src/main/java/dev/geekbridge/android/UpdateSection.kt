@@ -5,7 +5,6 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -181,7 +180,7 @@ class UpdateSection(
         val expected = o.sha256 ?: return
         if (busy) return
         val file = UpdateFileProvider.file(activity)
-        if (Build.VERSION.SDK_INT >= 26 && !activity.packageManager.canRequestPackageInstalls()) {
+        if (!activity.packageManager.canRequestPackageInstalls()) {
             say("Android needs your permission first: allow GeekBridge to install apps on the next screen, then come back and tap Install again.", Tone.Warn)
             try {
                 activity.startActivity(

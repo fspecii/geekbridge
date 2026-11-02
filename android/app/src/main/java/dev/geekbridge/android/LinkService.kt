@@ -9,11 +9,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import java.net.Inet4Address
 
 /**
  * Keeps the link to paired computers reachable while the app is closed.
@@ -30,6 +32,7 @@ class LinkService : Service() {
     private lateinit var controller: TransportController
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var lastNetwork: Long? = null
+    private var lastV4: Set<String>? = null
     private val restart = Runnable { restartLink(0) }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -83,11 +86,17 @@ class LinkService : Service() {
             override fun onAvailable(network: Network) {
                 val id = network.networkHandle
                 val change = ServicePolicy.shouldRestartOnNetwork(lastNetwork, id)
+                if (id != lastNetwork) lastV4 = null // addresses of the new network arrive in onLinkPropertiesChanged
                 lastNetwork = id
-                if (change) {
-                    main.removeCallbacks(restart)
-                    main.postDelayed(restart, ServicePolicy.RESTART_DEBOUNCE_MS)
-                }
+                if (change) scheduleRestart()
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                if (network.networkHandle != lastNetwork) return
+                val v4 = lp.linkAddresses.mapNotNull { it.address.takeIf { a -> a is Inet4Address }?.hostAddress }.toSet()
+                val changed = ServicePolicy.addressesChanged(lastV4, v4)
+                lastV4 = v4
+                if (changed) scheduleRestart()
             }
         }
         try {
@@ -96,6 +105,11 @@ class LinkService : Service() {
         } catch (_: RuntimeException) {
             // Too many callbacks or missing permission: the link still works, it just will not re-announce.
         }
+    }
+
+    private fun scheduleRestart() {
+        main.removeCallbacks(restart)
+        main.postDelayed(restart, ServicePolicy.RESTART_DEBOUNCE_MS)
     }
 
     /** Re-announce on the new network: stop, then start again once the native side reports stopped. Bounded. */

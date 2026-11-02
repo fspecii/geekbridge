@@ -378,6 +378,8 @@ stage_file_p2d() {
 stage_file_d2p() {
   ensure_session || { rec file_d2p SKIP "no paired, connected phone"; return 1; }
   goto_home; head -c 300000 /dev/urandom >"$RUN/e2e-d2p-file.bin"
+  # Media files survive an uninstall; an older copy makes Android save the new one as "name (1).bin".
+  $ADB shell 'rm -f "/sdcard/Download/GeekBridge/e2e-d2p-file"*' >/dev/null 2>&1
   ctl send-file "$PHONE_ID" "$RUN/e2e-d2p-file.bin" >/dev/null
   waitui "wants to send a file" 20 || { rec file_d2p FAIL "no offer dialog on the phone"; return 1; }
   shot 23-file-offer-on-phone

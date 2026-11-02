@@ -17,7 +17,14 @@ interface CalendarPort {
     fun calendars(): List<CalendarInfo>
 }
 
+/** One active SIM subscription, reported to the computer so it can offer a choice. */
+data class SimInfo(val id: Int, val slot: Int, val label: String)
+
 interface SmsPort {
+    /** Active SIMs (empty = unknown or no permission). Only these ids may be chosen by the computer. */
+    fun subscriptions(): List<SimInfo> = emptyList()
+    /** Unread incoming messages per thread id (empty = unknown); sent with the conversation list. */
+    fun unreadCounts(): Map<Long, Int> = emptyMap()
     /** Newest message of each thread, newest thread first. */
     fun latestPerThread(max: Int): List<SmsRow>
     /** Messages of one thread with `date <= rangeStartMs` (inclusive, null = newest), newest first, at most [limit]. */
@@ -95,7 +102,7 @@ class PhoneDataEngine(
             PhoneDataKinds.CALENDAR_WRITE -> if (f.calendar && f.calendarEdit) calendarWrite(e.body)
             PhoneDataKinds.SMS_REQ_CONVERSATIONS -> if (f.sms) {
                 smsRequested = true
-                pushSms(sms.latestPerThread(PhoneDataLimits.MAX_SMS_PER_PACKET * 2))
+                pushSms(sms.latestPerThread(PhoneDataLimits.MAX_SMS_PER_PACKET * 2), withUnread = true)
             }
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
             PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
@@ -264,12 +271,23 @@ class PhoneDataEngine(
         pushSms(sms.thread(thread, start, minOf(n, PhoneDataLimits.MAX_CONVERSATION_PAGE)))
     }
 
+    /** The SIM list rides on every message packet (a GeekBridge extension; stock desktops ignore it). */
+    private fun addSims(packet: JSONObject) {
+        val sims = PhoneDataProtocol.simsJson(sms.subscriptions())
+        if (sims.length() > 0) packet.put("sims", sims)
+    }
+
     /** Splits [rows] into packets of at most 100 messages / 900 KiB. An empty page still answers (end of history). */
-    private fun pushSms(rows: List<SmsRow>) {
+    private fun pushSms(rows: List<SmsRow>, withUnread: Boolean = false) {
         var batch = JSONArray()
         var bytes = 0
+        var unread: JSONObject? = if (withUnread) PhoneDataProtocol.unreadJson(sms.unreadCounts()) else null
         fun flush() {
-            emit(PhoneDataKinds.SMS_MESSAGES, JSONObject().put("version", 2).put("messages", batch))
+            emit(PhoneDataKinds.SMS_MESSAGES, JSONObject().put("version", 2).put("messages", batch).also {
+                addSims(it)
+                unread?.let { u -> it.put("unread", u) }
+                unread = null // once per list, on its first packet
+            })
             batch = JSONArray()
             bytes = 0
         }
@@ -308,6 +326,10 @@ class PhoneDataEngine(
                 while (smsHourTimes.isNotEmpty() && now - smsHourTimes.first() > 3_600_000) smsHourTimes.removeFirst()
                 if (smsSendTimes.size >= PhoneDataLimits.SMS_SENDS_PER_MINUTE || smsHourTimes.size >= PhoneDataLimits.SMS_SENDS_PER_HOUR) {
                     return status(p.requestId, "failed", "limit")
+                }
+                // A SIM the phone did not list would silently fall back to another one: refuse instead.
+                if (p.subId != null && sms.subscriptions().none { it.id == p.subId }) {
+                    return status(p.requestId, "failed", "unknown_sim")
                 }
                 smsSendTimes.addLast(now)
                 smsHourTimes.addLast(now)

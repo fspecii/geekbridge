@@ -12,7 +12,8 @@ The launcher is `HomeActivity` (paired-computer status, quick actions, settings)
 master (including the battery-optimisation exemption and vendor autostart guidance). A foreground service
 (`LinkService`, type `connectedDevice`) keeps the link reachable while a computer is paired and restarts after boot.
 Design, size and power numbers, and what is not verified: [android-power.md](android-power.md). The paragraphs below
-describe the Diagnostics screen and may still say "development" where that is literally true.
+describe the Diagnostics screen and may still say "development" where that is literally true. The visual design
+is described under [Dot-matrix visual language](#dot-matrix-visual-language-nothing-inspired) below.
 
 ## What works today
 
@@ -29,7 +30,7 @@ Confirmed by running the JVM tests, lint and `assembleDebug` against the `.tools
   Rust rules. It never sends or reads SMS and the app requests no SMS permission.
 - **Contacts preview.** After the user taps "Allow" (runtime `READ_CONTACTS`), shows at most 25 contacts
   (name plus first number, fields clipped to 80 chars) read from the Contacts provider.
-- **Agenda preview.** After the user taps "Allow" (runtime `READ_CALENDAR`), shows at most 25 events in the next
+- **Calendar preview.** After the user taps "Allow" (runtime `READ_CALENDAR`), shows at most 25 events in the next
   7 days (title, time, location) from the Calendar provider.
 - **App updates.** Checks GitHub's latest release when the app opens (at most every 12 h, switchable) and on
   "Check for updates"; shows version and notes; downloads the APK only on a tap, verifies size and SHA-256
@@ -49,7 +50,7 @@ every start.
 
 Threading and lifecycle: provider queries and JNI calls run on a worker thread (`WorkRunner`), one task per slot,
 newer work cancels older work, and provider queries use `CancellationSignal`. `onStop` cancels all work and clears
-on-screen contacts/agenda; `onDestroy` shuts the worker down. Results are bounded (rows, field length, request
+on-screen contacts and calendar; `onDestroy` shuts the worker down. Results are bounded (rows, field length, request
 and response size). Entered text is excluded from saved instance state, so rotating the device clears it.
 
 ## Share / Send to computer
@@ -135,11 +136,12 @@ What changed and how it was checked (screenshots: `dist/screenshots/android/poli
   wizard step 1 or Home); trust is the pinned certificate plus a code compared on both screens. `INTERNET` is
   declared for the computer link and the update check; the link stops when the app leaves the foreground unless
   "Stay connected" is on (see [android-power.md](android-power.md)), and the update check only makes outbound HTTPS
-  requests to GitHub. Native validation success never implies trust or call readiness. Messages and Agenda are not
-  synced to computers yet.
-- **No SMS read/send.** `READ_SMS`/`SEND_SMS` are restricted by Android: stores generally permit them only for
-  the default SMS app, and sideloaded installs on Android 13+ may need "Allow restricted settings". A runtime
-  denial is final until changed in app settings. The app requests neither, and nothing is ever sent automatically.
+  requests to GitHub. Native validation success never implies trust or call readiness. Contacts, calendar and SMS are
+  relayed to a paired computer only after a per-computer opt-in on both sides ([phone-data-link.md](phone-data-link.md)).
+- **SMS only on explicit opt-in.** `READ_SMS`/`SEND_SMS`/`RECEIVE_SMS` are restricted by Android: stores generally
+  permit them only for the default SMS app, and sideloaded installs on Android 13+ may need "Allow restricted
+  settings". They are requested only when the user switches on *Share messages* for a computer, a runtime denial is
+  final until changed in app settings, and nothing is ever sent automatically. No MMS, group or RCS.
 - **No call audio, ever.** The Diagnostics card only reports Idle/Ringing/In call locally and sends nothing. The opt-in
   **call control** feature ([call-control.md](call-control.md), off by default) can report ringing/in-call (and, with
   `READ_CALL_LOG` / `READ_CONTACTS`, who is calling) to a paired computer and let it answer, decline or end the call via
@@ -184,9 +186,10 @@ Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout (the `asse
   `NewerVersionAvailable`).
 - `:app:assembleDebug` with the Rust libraries built by the native agent: APK contains both ABIs, package
   `dev.geekbridge.android`, target SDK 36. That first build declared only `READ_CONTACTS` and `READ_CALENDAR`; the
-  manifest now declares the runtime permissions `READ_CONTACTS`, `READ_CALENDAR` and `READ_PHONE_STATE`, plus
-  `INTERNET` and the other install-time permissions listed in `AndroidManifest.xml` (update install, foreground
-  service, boot, notifications). Never requested: SMS, call log, phone numbers, Bluetooth, storage, location.
+  manifest now declares many more, including `READ_PHONE_STATE`, plus
+  `INTERNET` and the other permissions listed in `AndroidManifest.xml` (update install, foreground service, boot,
+  notifications, battery-optimisation exemption, multicast, SMS, calendar write, call answering, call log), each runtime
+  permission requested only when its feature is switched on. Never requested: phone numbers, Bluetooth, storage, location.
 - Guard check: in a copy of the project without the `.so` files, `assembleDebug` fails in `verifyNativeLibs`
   with the message above.
 
@@ -229,4 +232,5 @@ a few KB of code and vector line icons.
   dark/light follow the system, RTL aligns dot text to the start edge, decorative dot art is hidden from TalkBack.
 * **Design gallery (debug builds only).** `DesignGalleryActivity` shows every component with synthetic data:
   `adb shell am start -n dev.geekbridge.android/.DesignGalleryActivity --es page status|calendar|controls`.
-* **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/nothing-*.png`.
+* **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/nothing-*.png`
+  (`nothing-home-dark`, `nothing-setup-light`, `nothing-status-tiles-dark`, `nothing-calendar-dark`).

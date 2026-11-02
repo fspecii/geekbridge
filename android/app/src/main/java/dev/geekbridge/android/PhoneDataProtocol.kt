@@ -87,6 +87,7 @@ object PhoneDataLimits {
     /** Events whose reminders / attendees are looked up per provider query. */
     const val DETAIL_BATCH = 200
     const val MAX_OPS_REMEMBERED = 200
+    const val MAX_SIMS = 4
     const val MAX_SMS_PER_PACKET = 100
     const val MAX_SMS_BODY_CHARS = 20_000
     const val MAX_CONVERSATION_PAGE = 50
@@ -252,6 +253,23 @@ object PhoneDataProtocol {
         .put("body", clean(r.body, PhoneDataLimits.MAX_SMS_BODY_CHARS, multiline = true))
         .put("date", r.date).put("type", r.type).put("read", if (r.read) 1 else 0)
         .put("thread_id", r.threadId).put("_id", r.id).put("sub_id", r.subId).put("event", 1)
+
+    /** `{"<thread id>": n}` for threads with unread incoming texts; <= 300 threads, counts <= 10000. */
+    fun unreadJson(counts: Map<Long, Int>): JSONObject {
+        val o = JSONObject()
+        for ((t, n) in counts.entries.filter { it.key >= 0 && it.value > 0 }.take(300)) o.put(t.toString(), n.coerceAtMost(10_000))
+        return o
+    }
+
+    /** `[{id, slot, label}]` for at most [PhoneDataLimits.MAX_SIMS] SIMs, labels printable and short. */
+    fun simsJson(sims: List<SimInfo>): JSONArray {
+        val a = JSONArray()
+        for (s in sims.take(PhoneDataLimits.MAX_SIMS)) {
+            if (s.id < 1 || s.id == Int.MAX_VALUE) continue
+            a.put(JSONObject().put("id", s.id).put("slot", s.slot.coerceIn(0, 8)).put("label", clean(s.label, 24)))
+        }
+        return a
+    }
 
     fun smsStatus(requestId: String, state: String, reason: String? = null): JSONObject =
         JSONObject().put("requestId", requestId).put("state", state).also { if (reason != null) it.put("reason", reason) }

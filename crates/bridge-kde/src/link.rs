@@ -39,6 +39,11 @@ use crate::tls::{
 pub(crate) type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
 pub(crate) type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
+/// Diagnostic observer of every packet line on a connection (`true` = sent by us). Receives the
+/// line without its trailing newline; secure-channel lines are seen after TLS decryption. Used by
+/// interop probes to capture real peers' packets; unset in normal operation.
+pub type WireTap = Arc<dyn Fn(bool, &[u8]) + Send + Sync>;
+
 #[derive(Clone, Debug)]
 pub struct Timeouts {
     pub connect: Duration,
@@ -185,16 +190,24 @@ pub(crate) struct Conn {
     pub limits: Limits,
     pub write_timeout: Duration,
     pub payload: PayloadContext,
+    pub tap: Option<WireTap>,
 }
 
 impl Conn {
     pub(crate) async fn send(&mut self, packet: &Packet) -> Result<()> {
         let deadline = Instant::now() + self.write_timeout;
+        if let Some(tap) = &self.tap {
+            let line = packet.to_line();
+            tap(true, &line[..line.len() - 1]);
+        }
         write_packet(&mut self.writer, packet, self.limits.packet_line, deadline).await
     }
 
     pub(crate) async fn recv(&mut self) -> Result<Packet> {
         let line = self.reader.read_line(self.limits.packet_line).await?;
+        if let Some(tap) = &self.tap {
+            tap(false, &line);
+        }
         Packet::from_line(&line)
     }
 }
@@ -355,6 +368,7 @@ pub struct Endpoint {
     config: TransportConfig,
     next_connection: AtomicU64,
     unpaired_slots: Arc<Semaphore>,
+    wire_tap: Option<WireTap>,
 }
 
 struct TlsFacts {
@@ -407,7 +421,20 @@ impl Endpoint {
             config,
             next_connection: AtomicU64::new(1),
             unpaired_slots: Arc::new(Semaphore::new(slots)),
+            wire_tap: None,
         })
+    }
+
+    /// Observe every packet line on connections made by this endpoint (diagnostics only).
+    pub fn with_wire_tap(mut self, tap: WireTap) -> Self {
+        self.wire_tap = Some(tap);
+        self
+    }
+
+    fn tap(&self, outbound: bool, line: &[u8]) {
+        if let Some(tap) = &self.wire_tap {
+            tap(outbound, line);
+        }
     }
 
     pub fn local_identity(&self) -> &Identity {
@@ -470,6 +497,10 @@ impl Endpoint {
         };
 
         let first = self.local.addressed_to(target).to_packet();
+        if self.wire_tap.is_some() {
+            let l = first.to_line();
+            self.tap(true, &l[..l.len() - 1]);
+        }
         write_packet(
             &mut io,
             &first,
@@ -510,6 +541,7 @@ impl Endpoint {
             Instant::now() + t.plaintext_identity,
         )
         .await?;
+        self.tap(false, &line);
         let claimed = Identity::from_packet(&Packet::from_line(&line)?)?;
 
         match &claimed.target_device_id {
@@ -601,6 +633,10 @@ impl Endpoint {
     {
         let t = &self.config.timeouts;
         let l = &self.config.limits;
+        if self.wire_tap.is_some() {
+            let l = self.local.to_packet().to_line();
+            self.tap(true, &l[..l.len() - 1]);
+        }
         write_packet(
             &mut tls,
             &self.local.to_packet(),
@@ -614,6 +650,7 @@ impl Endpoint {
         let line = reader
             .read_line_until(l.identity_line, Instant::now() + t.secure_identity)
             .await?;
+        self.tap(false, &line);
         let secure = Identity::from_packet(&Packet::from_line(&line)?)?;
 
         if secure.device_id != claimed_id {
@@ -667,6 +704,7 @@ impl Endpoint {
                 versions: self.config.tls_versions,
                 config: self.config.payload.clone(),
             },
+            tap: self.wire_tap.clone(),
         };
         Ok(if pinned.is_some() {
             Handshake::Trusted(TrustedLink::new(conn, self.store.clone()))

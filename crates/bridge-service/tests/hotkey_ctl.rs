@@ -1,6 +1,8 @@
 //! `geekbridge-ctl hotkey` and `status --waybar` end to end, in a temporary home. HOME and
 //! XDG_CONFIG_HOME are overridden and the Hyprland instance variable is removed, so the real
 //! `~/.config` is never read or written and the real compositor is never asked to reload.
+//! Hyprland and Waybar are Linux desktop tools: the test uses a POSIX-style home and is Unix-only.
+#![cfg(unix)]
 use std::{fs, path::Path, process::Command};
 
 fn ctl(home: &Path, args: &[&str]) -> (bool, String) {

@@ -46,6 +46,14 @@ class ShareNotifications(private val ctx: Context) {
 
     fun cancel(id: Int) { nm?.cancel(id) }
 
+    /** Without the notification permission a finished transfer would be silent, so say it once on screen. */
+    private fun toastIfSilent(text: String) {
+        if (canPost()) return
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(ctx, Bounds.clip(text, 120), android.widget.Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun open(): PendingIntent = PendingIntent.getActivity(
         ctx, 0, Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -79,6 +87,7 @@ class ShareNotifications(private val ctx: Context) {
     fun clearOffer(transferId: Long) = cancel(ID_BASE + transferId.toInt())
 
     fun received(transferId: Long, name: String, uri: Uri?) {
+        toastIfSilent("File received: $name (Downloads/GeekBridge)")
         val b = builder("File received", name).setAutoCancel(true)
         if (uri != null) {
             val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, NameRules.mimeFor(name))
@@ -91,6 +100,7 @@ class ShareNotifications(private val ctx: Context) {
     }
 
     fun failed(transferId: Long, what: String) {
+        toastIfSilent("Transfer failed: $what")
         post(ID_BASE + transferId.toInt(), builder("Transfer failed", what).setAutoCancel(true).setContentIntent(open()).build())
     }
 

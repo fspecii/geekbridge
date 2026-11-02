@@ -6,7 +6,7 @@ Status 2026-11-01. Code: `HomeActivity`, `SetupActivity`, `PairPanel`, `LinkServ
 ## Screens
 
 - **Home** (launcher): paired-computer card (never says "Connected" without a trusted connection), quick actions
-  (Send file, Send clipboard; plug-in hooks in `QuickActions.kt`), status rows for Calls / Messages / Agenda, settings
+  (Send file, Send clipboard; plug-in hooks in `QuickActions.kt`), status rows for Calls / Messages / Contacts / Calendar, settings
   (Stay connected, Setup & permissions, Diagnostics & about). A persistent warning banner appears whenever a required
   step is open or something that worked was revoked. Light and dark follow the system.
 - **Setup wizard / permission master** (`SetupActivity`): first run, and any time from Home. One step per page:

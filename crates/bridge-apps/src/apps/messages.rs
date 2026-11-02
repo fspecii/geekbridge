@@ -1,7 +1,8 @@
 //! Messages: an iTunes-style window (toolbar with a status display, library sidebar with a
 //! devices group, list/detail content) drawn in a monochrome dot-matrix look with a single
-//! red accent. Drafts and copying are real and local; sending stays blocked until a messaging
-//! backend is authorized for a paired phone. Nothing here is sample data.
+//! red accent. Conversations, names and unread counts come from the paired phone through the
+//! service (memory only, bounded); sends are shown with the phone's real state and are never
+//! resent on their own. Nothing here is sample data.
 use crate::{
     dotmatrix,
     icons::{self, Icon},
@@ -14,14 +15,17 @@ use crate::{
 };
 use bridge_core::{
     ipc::{Feature, Request},
+    messages::{SmsEncoding, sms_segments},
     phone_view::{
-        ConversationItem, DataDevice, DataState, MessagesView, SelectedThread, SendItem, SendPhase,
+        ConversationItem, DataDevice, DataState, MessageItem, MessagesView, SelectedThread,
+        SendItem, SendPhase, SimItem, send_reason_text,
     },
 };
 use eframe::egui::{
     self, Align, CornerRadius, FontFamily, FontId, Layout, Margin, RichText, Sense, Stroke,
     StrokeKind, UiBuilder, vec2,
 };
+use std::collections::HashMap;
 use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -50,6 +54,15 @@ pub struct Messages {
     /// A number handed over by Contacts: open its conversation, or a new message to it.
     open_number: Option<String>,
     open_number_checked: bool,
+    /// Text in the search field of the conversation list.
+    search: String,
+    /// SIM subscription chosen for the next send; `None` = the phone's default.
+    sim: Option<i32>,
+    /// Conversations already marked read on this computer, with how many messages they held then.
+    marked: HashMap<(String, i64), usize>,
+    env_checked: bool,
+    /// Conversations whose earlier messages were already requested on opening.
+    history: std::collections::HashSet<(String, i64)>,
 }
 
 #[derive(Clone, Copy)]
@@ -175,10 +188,13 @@ impl Messages {
             StrokeKind::Inside,
         );
         let tone = env.control.strip(env.model).tone;
-        let led = if tone == Tone::Neutral && matches!(env.model, DiscoveryModel::Checking) {
-            pal.text3
-        } else {
+        // Red is reserved for "needs attention"; a healthy link is a plain lit dot.
+        let led = if env.control.connected() {
+            pal.text
+        } else if matches!(tone, Tone::Warning | Tone::Error) {
             pal.accent
+        } else {
+            pal.text3
         };
         let led_center = egui::pos2(rect.left() + 17.0, rect.center().y);
         painter.circle_filled(led_center, 4.0, led);
@@ -231,13 +247,14 @@ impl Messages {
                 ui.spacing_mut().item_spacing.y = 2.0;
                 ui.label(theme::overline(pal, "Library"));
                 ui.add_space(4.0);
-                let count = self.view().0.conversations.len().to_string();
+                let unread: u32 = self.view().0.conversations.iter().map(|c| c.unread).sum();
+                let count = unread.to_string();
                 if theme::sidebar_item(
                     ui,
                     pal,
                     Icon::Chat,
                     "Conversations",
-                    Some(&count),
+                    (unread > 0).then_some(count.as_str()),
                     self.section == Section::Conversations,
                     None,
                 )
@@ -318,6 +335,26 @@ impl Messages {
                     .inner_margin(Margin::symmetric(8, 8)),
             )
             .show(ctx, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text(RichText::new("Search messages").color(pal.text3))
+                        .desired_width(f32::INFINITY),
+                );
+                input::limit_chars(&mut self.search, 64);
+                ui.add_space(4.0);
+                if view.conversations.is_empty() {
+                    ui.add_space(14.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(theme::secondary(pal, "No conversation matches."));
+                        ui.add(
+                            egui::Label::new(theme::caption(
+                                pal,
+                                "Search covers the messages loaded here. Open a conversation to load its history.",
+                            ))
+                            .wrap(),
+                        );
+                    });
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("thread-list")
                     .auto_shrink([false, false])
@@ -356,6 +393,27 @@ impl Messages {
             .iter()
             .find(|c| c.device_id == device && c.thread_id == thread);
         let dev = view.devices.iter().find(|d| d.device_id == device);
+        // Opening a conversation fetches its earlier messages once (the phone first lists only
+        // the newest one of each); "Load older messages" asks for more.
+        if sel.may_have_older && sel.held < 20 && self.history.insert((device.clone(), thread)) {
+            self.run(Request::MessagesRefresh {
+                device_id: device.clone(),
+                thread_id: Some(thread),
+            });
+        }
+        // Reading a conversation marks it read here (the phone is not told). Asked again only
+        // when more messages arrived since.
+        if let Some(c) = conv
+            && c.unread > 0
+            && self.marked.get(&(device.clone(), thread)) != Some(&c.message_count)
+        {
+            self.marked
+                .insert((device.clone(), thread), c.message_count);
+            self.run(Request::MessagesMarkRead {
+                device_id: device.clone(),
+                thread_id: thread,
+            });
+        }
         egui::Frame::new()
             .inner_margin(Margin::symmetric(18, 10))
             .show(ui, |ui| {
@@ -368,9 +426,24 @@ impl Messages {
                 {
                     ui.label(theme::caption(pal, c.addresses.join(", ")));
                 }
+                ui.label(theme::caption(
+                    pal,
+                    "Read marks stay on this computer; the phone keeps its own.",
+                ));
             });
         theme::hairline(ui, pal);
-        let footer = 150.0;
+        let mine: Vec<&SendItem> = conv.map_or_else(Vec::new, |c| {
+            pending_sends(&view.sends, &device, &c.addresses, &sel.messages, 3)
+        });
+        let ready = dev.is_some_and(|d| send_blocker(d).is_none());
+        let footer = 128.0
+            + 24.0 * mine.len() as f32
+            + if dev.is_some_and(|d| d.sims.len() > 1) {
+                28.0
+            } else {
+                0.0
+            }
+            + if ready { 0.0 } else { 74.0 };
         let body_h = (ui.available_height() - footer).max(80.0);
         let offset = localtime::utc_offset_minutes(localtime::now().date);
         egui::ScrollArea::vertical()
@@ -390,22 +463,34 @@ impl Messages {
                         thread_id: Some(thread),
                     });
                 }
+                if sel.capped {
+                    ui.vertical_centered(|ui| {
+                        ui.label(theme::caption(
+                            pal,
+                            format!(
+                                "Showing the latest {} messages of this conversation. Older ones stay on the phone.",
+                                sel.held
+                            ),
+                        ));
+                    });
+                }
+                let today = localtime::now().date;
+                let mut last_day = None;
                 for m in &sel.messages {
+                    let day = local_day(m.date_ms, offset);
+                    if last_day != Some(day) {
+                        last_day = Some(day);
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(6.0);
+                            ui.label(theme::caption(pal, day_label(day, today)));
+                            ui.add_space(4.0);
+                        });
+                    }
                     bubble(ui, pal, m, offset);
                 }
                 ui.add_space(6.0);
             });
         theme::hairline(ui, pal);
-        let mine: Vec<&SendItem> = view
-            .sends
-            .iter()
-            .filter(|s| {
-                s.device_id == device
-                    && conv
-                        .is_some_and(|c| c.addresses.iter().any(|a| same_number(a, &s.recipient)))
-            })
-            .take(3)
-            .collect();
         for send in mine {
             self.send_line(ui, pal, send, dev);
         }
@@ -435,8 +520,10 @@ impl Messages {
                 .wrap(),
             );
             if again
-                && theme::pill_button(ui, pal, "Send again", ButtonKind::Plain, true)
-                    .on_hover_text("The recipient may get this twice.")
+                && theme::pill_button(ui, pal, "Send again as new", ButtonKind::Plain, true)
+                    .on_hover_text(
+                        "Creates a new message. If the first one did go out, the recipient gets it twice and your plan may bill both.",
+                    )
                     .clicked()
             {
                 let submission_id = format!("r{}-{}", send.send_id, now_ms());
@@ -458,7 +545,7 @@ impl Messages {
         sel: &SelectedThread,
     ) {
         let pal = env.pal;
-        let ready = dev.is_some_and(|d| d.sms == DataState::Ready);
+        let ready = dev.is_some_and(|d| send_blocker(d).is_none());
         let to = conv.and_then(|c| c.addresses.first().cloned());
         ui.add_space(6.0);
         ui.add(
@@ -470,9 +557,12 @@ impl Messages {
                 .desired_width(f32::INFINITY),
         );
         input::limit_chars(&mut self.reply, input::MAX_DRAFT_CHARS);
+        if let Some(d) = dev {
+            self.sim_picker(ui, pal, d);
+        }
         let blocker = if !ready {
             Some(
-                dev.and_then(|d| phone_ui::state_line(d.sms, "Messages"))
+                dev.and_then(send_blocker)
                     .unwrap_or_else(|| "Messages are not available for this phone.".into()),
             )
         } else if to.is_none() {
@@ -485,16 +575,14 @@ impl Messages {
         }
         let can = blocker.is_none() && !self.reply.trim().is_empty();
         ui.horizontal(|ui| {
-            ui.label(theme::caption(
-                pal,
-                format!("{}/{}", self.reply.chars().count(), input::MAX_DRAFT_CHARS),
-            ));
+            ui.label(theme::caption(pal, segment_label(&self.reply)))
+                .on_hover_text(segment_hint(&self.reply));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if theme::round_button(
                     ui,
                     pal,
                     34.0,
-                    pal.accent,
+                    pal.accent_fill,
                     Icon::Send,
                     can,
                     "Send as text message",
@@ -503,11 +591,13 @@ impl Messages {
                     && let (Some(to), Some(d)) = (to, dev)
                 {
                     let submission_id = self.submission();
+                    let sub_id = self.chosen_sim(d);
                     self.run(Request::MessagesSend {
                         device_id: d.device_id.clone(),
                         recipient: to,
                         text: self.reply.clone(),
                         submission_id,
+                        sub_id,
                     });
                     self.reply.clear();
                 }
@@ -516,9 +606,54 @@ impl Messages {
         let _ = sel;
     }
 
+    /// The SIM to send with: only one the phone reported, else the phone's default.
+    fn chosen_sim(&self, d: &DataDevice) -> Option<i32> {
+        self.sim.filter(|id| d.sims.iter().any(|s| s.id == *id))
+    }
+
+    /// "Send with: Phone default | SIM 1 | SIM 2", shown only when the phone reported several SIMs.
+    fn sim_picker(&mut self, ui: &mut egui::Ui, pal: &Palette, d: &DataDevice) {
+        if d.sims.len() < 2 {
+            return;
+        }
+        let current = self.chosen_sim(d);
+        if current != self.sim {
+            self.sim = current;
+        }
+        ui.horizontal(|ui| {
+            ui.label(theme::caption(pal, "Send with"));
+            let text = d
+                .sims
+                .iter()
+                .find(|s| Some(s.id) == self.sim)
+                .map_or_else(|| "Phone default".to_owned(), sim_label);
+            egui::ComboBox::from_id_salt("sim-choice")
+                .selected_text(text)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.sim, None, "Phone default");
+                    for s in &d.sims {
+                        ui.selectable_value(&mut self.sim, Some(s.id), sim_label(s));
+                    }
+                });
+        });
+    }
+
     fn conversations_empty(&mut self, ui: &mut egui::Ui, env: &Env, view: &MessagesView) {
         let pal = env.pal;
         let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
+        if !self.search.trim().is_empty() && state.view.is_some() {
+            ui.centered_and_justified(|ui| {
+                ui.label(theme::secondary(
+                    pal,
+                    if view.conversations.is_empty() {
+                        "Nothing matches this search."
+                    } else {
+                        "Pick a conversation from the results."
+                    },
+                ));
+            });
+            return;
+        }
         let mut action = None;
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.2).clamp(20.0, 90.0));
@@ -536,7 +671,7 @@ impl Messages {
             } else {
                 view.devices
                     .iter()
-                    .find_map(|d| phone_ui::state_line(d.sms, "Messages"))
+                    .find_map(sms_blocker)
                     .unwrap_or_else(|| "Nothing has been shared from a phone yet.".into())
             };
             ui.add(egui::Label::new(theme::secondary(pal, why)).wrap());
@@ -596,7 +731,13 @@ impl Messages {
         theme::hairline(ui, pal);
         ui.add_space(6.0);
 
-        let footer_h = 142.0;
+        let sims = self
+            .view()
+            .0
+            .devices
+            .iter()
+            .any(|d| d.sims.len() > 1 && send_blocker(d).is_none());
+        let footer_h = 176.0 + if sims { 34.0 } else { 0.0 };
         let body_h = (ui.available_height() - footer_h).max(70.0);
         egui::ScrollArea::vertical()
             .id_salt("draft-scroll")
@@ -641,18 +782,22 @@ impl Messages {
         let target = view
             .devices
             .iter()
-            .find(|d| d.sms == DataState::Ready)
+            .find(|d| send_blocker(d).is_none())
             .cloned();
+        if let Some(d) = &target {
+            self.sim_picker(ui, pal, d);
+        }
         let own_block = target.is_none().then(|| {
             view.devices
                 .iter()
-                .find_map(|d| phone_ui::state_line(d.sms, "Messages"))
+                .find_map(send_blocker)
                 .unwrap_or_else(|| {
                     "Messages are not allowed for any phone yet. Open Conversations to allow them."
                         .to_owned()
                 })
         });
-        let blocker = env.blocked_line("send").or(own_block);
+        // The service knows whether this phone can send; the generic discovery gate does not.
+        let blocker = own_block;
         if let Some(reason) = &blocker {
             theme::blocked_note(ui, pal, reason);
         }
@@ -686,7 +831,7 @@ impl Messages {
                     ui,
                     pal,
                     38.0,
-                    pal.accent,
+                    pal.accent_fill,
                     Icon::Send,
                     can_send,
                     "Send as text message",
@@ -695,11 +840,13 @@ impl Messages {
                     && let Some(d) = &target
                 {
                     let submission_id = self.submission();
+                    let sub_id = self.chosen_sim(d);
                     self.run(Request::MessagesSend {
                         device_id: d.device_id.clone(),
                         recipient: self.recipient.clone(),
                         text: self.draft.clone(),
                         submission_id,
+                        sub_id,
                     });
                     self.awaiting = true;
                 }
@@ -741,6 +888,8 @@ impl Messages {
             ));
             ui.label(theme::caption(pal, "Draft stays in this window"));
         });
+        ui.label(theme::caption(pal, segment_label(&self.draft)))
+            .on_hover_text(segment_hint(&self.draft));
     }
 
     fn device(&mut self, ui: &mut egui::Ui, env: &Env, device: &DeviceInfo) {
@@ -858,7 +1007,9 @@ fn send_phase_text(send: &SendItem, phone_reports: bool) -> (String, bool) {
         SendPhase::Failed => (
             format!(
                 "failed{}",
-                send.reason.as_ref().map_or(String::new(), |r| format!(" ({r})"))
+                send.reason
+                    .as_deref()
+                    .map_or(String::new(), |r| format!(": {}", send_reason_text(r)))
             ),
             true,
         ),
@@ -867,6 +1018,130 @@ fn send_phase_text(send: &SendItem, phone_reports: bool) -> (String, bool) {
             true,
         ),
     }
+}
+
+/// "1 SMS, 12 of 160" / "2 SMS (Unicode: emoji or accents), 38 left" for the compose counter.
+fn segment_label(text: &str) -> String {
+    let info = sms_segments(text);
+    if info.segments == 0 {
+        return "Empty".into();
+    }
+    let kind = match info.encoding {
+        SmsEncoding::Gsm7 => "",
+        SmsEncoding::Ucs2 => " (Unicode: emoji or accents)",
+    };
+    format!(
+        "{} SMS{kind}, {} left in the last one",
+        info.segments, info.remaining
+    )
+}
+
+/// Longer messages and Unicode cost more texts; the phone and carrier have the last word.
+fn segment_hint(text: &str) -> String {
+    let info = sms_segments(text);
+    format!(
+        "{} {} used. One text holds {} here; longer messages are split into parts of {} and may be billed as several texts.",
+        info.units,
+        match info.encoding {
+            SmsEncoding::Gsm7 => "characters",
+            SmsEncoding::Ucs2 => "UTF-16 units",
+        },
+        match info.encoding {
+            SmsEncoding::Gsm7 => 160,
+            SmsEncoding::Ucs2 => 70,
+        },
+        match info.encoding {
+            SmsEncoding::Gsm7 => 153,
+            SmsEncoding::Ucs2 => 67,
+        },
+    )
+}
+
+fn sim_label(s: &SimItem) -> String {
+    match (s.label.is_empty(), s.slot) {
+        (true, 0) => format!("SIM {}", s.id),
+        (true, n) => format!("SIM {n}"),
+        (false, 0) => s.label.clone(),
+        (false, n) => format!("{} (SIM {n})", s.label),
+    }
+}
+
+/// Heading for a run of messages from one local day.
+fn day_label(day: localtime::Date, today: localtime::Date) -> String {
+    match today.to_days() - day.to_days() {
+        0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => day.weekday().name().into(),
+        _ => format!(
+            "{} {} {}{}",
+            day.weekday().short(),
+            day.day,
+            &day.month_name()[..3],
+            if day.year == today.year {
+                String::new()
+            } else {
+                format!(" {}", day.year)
+            }
+        ),
+    }
+}
+
+fn local_day(ms: u64, offset_minutes: i32) -> localtime::Date {
+    localtime::split_unix(
+        i64::try_from(ms / 1000).unwrap_or(0),
+        offset_minutes.saturating_mul(60),
+    )
+    .0
+}
+
+/// Sends of this conversation that still need a line of their own: the ones whose text has not
+/// shown up as an outgoing message on the phone yet, plus failed or uncertain ones, which keep
+/// their "Send again" choice. Newest last, at most `max`.
+fn pending_sends<'a>(
+    sends: &'a [SendItem],
+    device: &str,
+    addresses: &[String],
+    messages: &[MessageItem],
+    max: usize,
+) -> Vec<&'a SendItem> {
+    let mut v: Vec<&SendItem> = sends
+        .iter()
+        .filter(|s| s.device_id == device && addresses.iter().any(|a| same_number(a, &s.recipient)))
+        .filter(|s| {
+            matches!(s.phase, SendPhase::Failed | SendPhase::Uncertain)
+                || !messages.iter().any(|m| {
+                    m.outgoing
+                        && m.body.chars().take(160).eq(s.text.chars())
+                        && m.date_ms + 120_000 >= s.created_unix_ms
+                })
+        })
+        .collect();
+    v.sort_by_key(|s| s.created_unix_ms);
+    let skip = v.len().saturating_sub(max);
+    v.split_off(skip)
+}
+
+/// Why this phone cannot be used for Messages right now, with the exact steps; `None` when it can.
+fn sms_blocker(d: &DataDevice) -> Option<String> {
+    match d.sms {
+        DataState::Ready => None,
+        DataState::NotOffered => Some(
+            "The phone is connected but does not offer Messages. On the phone: GeekBridge, Share with computer, switch on Messages and allow SMS. If Android blocks the permission (Android 13 and newer, app installed outside a store): Settings, Apps, GeekBridge, the three-dot menu, Allow restricted settings; then Permissions, SMS, Allow. GeekBridge does not need to be your default SMS app: picture messages (MMS) and RCS stay in your messaging app."
+                .into(),
+        ),
+        other => phone_ui::state_line(other, "Messages"),
+    }
+}
+
+/// `Some(reason)` when this phone can be read but not asked to send.
+fn send_blocker(d: &DataDevice) -> Option<String> {
+    if d.sms != DataState::Ready {
+        return sms_blocker(d);
+    }
+    (!d.sms_send).then(|| {
+        "This phone lets you read messages but does not accept texts to send. Turn on sending in the GeekBridge app, allow the SMS permission, and reconnect."
+            .into()
+    })
 }
 
 fn thread_row(
@@ -887,6 +1162,10 @@ fn thread_row(
     }
     let fg = if selected { pal.selected_fg } else { pal.text };
     let sub = if selected { pal.selected_fg } else { pal.text2 };
+    let preview = match &c.matched {
+        Some(m) => m.clone(),
+        None => short(&c.last_body.replace('\n', " "), 40),
+    };
     let clip = ui.painter().with_clip_rect(rect.shrink2(vec2(6.0, 0.0)));
     clip.text(
         rect.left_top() + vec2(14.0, 9.0),
@@ -899,7 +1178,7 @@ fn thread_row(
     clip.text(
         rect.left_top() + vec2(14.0, 30.0),
         egui::Align2::LEFT_TOP,
-        format!("{prefix}{}", short(&c.last_body.replace('\n', " "), 40)),
+        format!("{prefix}{preview}"),
         FontId::new(12.5, FontFamily::Proportional),
         sub,
     );
@@ -916,17 +1195,40 @@ fn thread_row(
         sub,
     );
     if c.unread > 0 {
-        ui.painter().circle_filled(
-            egui::pos2(rect.right() - 16.0, rect.bottom() - 16.0),
-            5.0,
-            pal.accent,
+        let label = if c.unread > 99 {
+            "99+".to_owned()
+        } else {
+            c.unread.to_string()
+        };
+        let w = if label.len() > 1 { 26.0 } else { 20.0 };
+        let badge = egui::Rect::from_center_size(
+            egui::pos2(rect.right() - 12.0 - w / 2.0, rect.bottom() - 15.0),
+            vec2(w, 18.0),
+        );
+        ui.painter()
+            .rect_filled(badge, CornerRadius::same(9), pal.accent_fill);
+        ui.painter().text(
+            badge.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            FontId::new(11.0, theme::semibold_family()),
+            pal.on_accent,
         );
     }
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
             true,
-            format!("{}: {}", c.title, c.last_body),
+            format!(
+                "{}{}: {}",
+                c.title,
+                if c.unread > 0 {
+                    format!(", {} unread", c.unread)
+                } else {
+                    String::new()
+                },
+                c.last_body
+            ),
         )
     });
     response
@@ -941,7 +1243,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
     ui.with_layout(layout, |ui| {
         ui.add_space(14.0);
         let (fill, fg) = if m.outgoing {
-            (pal.accent, pal.on_accent)
+            (pal.accent_fill, pal.on_accent)
         } else {
             (pal.control, pal.text)
         };
@@ -950,20 +1252,47 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
             .corner_radius(CornerRadius::same(14))
             .inner_margin(Margin::symmetric(12, 7))
             .show(ui, |ui| {
-                ui.set_max_width((ui.available_width() * 0.78).max(120.0));
-                let mut text = m.body.clone();
-                if m.attachments > 0 {
-                    text.push_str(&format!("\n[{} attachment(s) not shown]", m.attachments));
-                }
-                ui.add(egui::Label::new(RichText::new(text).color(fg).size(14.0)).wrap());
-                ui.label(
-                    RichText::new(localtime::clock_label(
-                        i64::try_from(m.date_ms).unwrap_or(0),
-                        offset,
-                    ))
-                    .color(fg.gamma_multiply(0.7))
-                    .size(10.5),
-                );
+                ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width() * 0.78).max(120.0));
+                    if !m.body.is_empty() {
+                        ui.add(
+                            egui::Label::new(RichText::new(m.body.clone()).color(fg).size(14.0))
+                                .wrap(),
+                        );
+                    }
+                    if m.attachments > 0 || m.mms {
+                        let n = m.attachments.max(1);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "Attachment{}",
+                                    if n > 1 {
+                                        format!(" ({n})")
+                                    } else {
+                                        String::new()
+                                    }
+                                ))
+                                .color(fg)
+                                .size(13.0)
+                                .strong(),
+                            )
+                            .wrap(),
+                        );
+                        ui.label(
+                            RichText::new("Picture message: open it on the phone")
+                                .color(fg.gamma_multiply(0.75))
+                                .size(11.0),
+                        );
+                    }
+                    ui.label(
+                        RichText::new(localtime::clock_label(
+                            i64::try_from(m.date_ms).unwrap_or(0),
+                            offset,
+                        ))
+                        .color(fg.gamma_multiply(0.7))
+                        .size(10.5),
+                    );
+                });
             });
     });
     ui.add_space(3.0);
@@ -975,6 +1304,7 @@ impl AppView for Messages {
         let request = Request::MessagesView {
             device_id: self.thread.as_ref().map(|(d, _)| d.clone()),
             thread_id: self.thread.as_ref().map(|(_, t)| *t),
+            query: Some(self.search.trim().to_owned()).filter(|q| !q.is_empty()),
         };
         match &self.feed {
             Some(feed) => feed.set_params(request),
@@ -984,6 +1314,18 @@ impl AppView for Messages {
                     move || repaint.request_repaint(),
                     request,
                 ));
+            }
+        }
+        if !self.env_checked {
+            // Screenshot and test hooks: start in a given state (never set by the launchers).
+            self.env_checked = true;
+            if let Ok(q) = std::env::var("GEEKBRIDGE_MESSAGES_SEARCH") {
+                self.search = q.chars().take(64).collect();
+            }
+            if std::env::var("GEEKBRIDGE_MESSAGES_COMPOSE").is_ok() {
+                self.draft = std::env::var("GEEKBRIDGE_MESSAGES_DRAFT").unwrap_or_default();
+                self.recipient = "+44 20 7946 0001".into();
+                self.open_compose();
             }
         }
         let (view, state) = self.view();
@@ -1007,7 +1349,19 @@ impl AppView for Messages {
                 }
             }
         }
+        // A search can hide the open conversation: follow the first result instead of a stale pane.
+        let hidden = self.thread.as_ref().is_some_and(|(d, t)| {
+            !self.search.trim().is_empty()
+                && !view
+                    .conversations
+                    .iter()
+                    .any(|c| c.device_id == *d && c.thread_id == *t)
+        });
+        if hidden {
+            self.thread = None;
+        }
         if self.thread.is_none()
+            && self.search.trim().is_empty()
             && let Some(first) = view.conversations.first()
         {
             self.thread = Some((first.device_id.clone(), first.thread_id));
@@ -1022,7 +1376,7 @@ impl AppView for Messages {
         }
         match self.section.clone() {
             Section::Conversations => {
-                if !view.conversations.is_empty() {
+                if !view.conversations.is_empty() || !self.search.trim().is_empty() {
                     self.thread_list(ctx, env, &view);
                 }
                 central(ctx, pal, Margin::ZERO, |ui| {
@@ -1081,6 +1435,169 @@ mod tests {
         messages.open_compose();
         assert!(matches!(messages.focus, Some(Focus::Draft)));
         assert!(messages.has_draft());
+    }
+
+    fn send(phase: SendPhase, text: &str, created: u64) -> SendItem {
+        SendItem {
+            send_id: created,
+            device_id: "d".into(),
+            recipient: "+1 555 123 4567".into(),
+            text: text.into(),
+            phase,
+            reason: None,
+            created_unix_ms: created,
+            updated_unix_ms: created,
+        }
+    }
+    fn item(outgoing: bool, body: &str, date: u64) -> MessageItem {
+        MessageItem {
+            uid: 1,
+            mms: false,
+            outgoing,
+            body: body.into(),
+            date_ms: date,
+            attachments: 0,
+            sub_id: None,
+        }
+    }
+
+    #[test]
+    fn segment_labels_count_gsm_and_unicode() {
+        assert_eq!(segment_label(""), "Empty");
+        assert_eq!(segment_label("hello"), "1 SMS, 155 left in the last one");
+        assert!(segment_label(&"a".repeat(161)).starts_with("2 SMS,"));
+        let emoji = segment_label("party 🎉");
+        assert!(emoji.contains("Unicode"), "{emoji}");
+        assert!(segment_label(&"é".repeat(5)).starts_with("1 SMS,"));
+        assert!(segment_label(&"я".repeat(71)).starts_with("2 SMS (Unicode"));
+        assert!(segment_hint("🎉").contains("UTF-16"));
+    }
+
+    #[test]
+    fn a_queued_or_unconfirmed_send_is_never_called_delivered() {
+        for phase in [
+            SendPhase::Queued,
+            SendPhase::HandedToPhone,
+            SendPhase::AcceptedByPhone,
+            SendPhase::Sent,
+            SendPhase::Failed,
+            SendPhase::Uncertain,
+        ] {
+            for reports in [false, true] {
+                let (text, _) = send_phase_text(&send(phase, "x", 1), reports);
+                assert!(!text.starts_with("delivered"), "{phase:?}: {text}");
+            }
+        }
+        assert_eq!(
+            send_phase_text(&send(SendPhase::Delivered, "x", 1), true).0,
+            "delivered"
+        );
+        // Only failed and uncertain sends offer a retry, and the retry is a new record.
+        assert!(send_phase_text(&send(SendPhase::Failed, "x", 1), true).1);
+        assert!(send_phase_text(&send(SendPhase::Uncertain, "x", 1), true).1);
+        assert!(!send_phase_text(&send(SendPhase::Sent, "x", 1), true).1);
+        assert!(!send_phase_text(&send(SendPhase::HandedToPhone, "x", 1), false).1);
+    }
+
+    #[test]
+    fn failure_text_is_plain_language_not_a_code() {
+        let mut s = send(SendPhase::Failed, "x", 1);
+        s.reason = Some("no_service".into());
+        assert!(send_phase_text(&s, true).0.contains("no mobile signal"));
+    }
+
+    #[test]
+    fn day_labels_are_relative_then_dated() {
+        let today = localtime::Date {
+            year: 2026,
+            month: 11,
+            day: 4,
+        };
+        assert_eq!(day_label(today, today), "Today");
+        assert_eq!(day_label(today.add_days(-1), today), "Yesterday");
+        assert_eq!(day_label(today.add_days(-3), today), "Sunday");
+        assert_eq!(day_label(today.add_days(-30), today), "Mon 5 Oct");
+        assert_eq!(
+            day_label(
+                localtime::Date {
+                    year: 2025,
+                    month: 12,
+                    day: 31
+                },
+                today
+            ),
+            "Wed 31 Dec 2025"
+        );
+        // Midnight boundary in the viewer's zone, not UTC.
+        let late_utc = 1_700_000_000_000 + 23 * 3_600_000; // 2023-11-14 22:13 UTC + 23h
+        assert_ne!(local_day(late_utc, 0), local_day(late_utc, 300));
+    }
+
+    #[test]
+    fn local_sends_stay_visible_until_the_phone_echoes_them() {
+        let msgs = vec![item(false, "hi", 1_000)];
+        let addrs = vec!["+15551234567".to_string()];
+        let queued = send(SendPhase::HandedToPhone, "on my way", 5_000);
+        let sends = vec![queued.clone()];
+        assert_eq!(pending_sends(&sends, "d", &addrs, &msgs, 3).len(), 1);
+        // The message now appears in the thread: the line goes away.
+        let echoed = vec![item(true, "on my way", 6_000)];
+        assert!(pending_sends(&sends, "d", &addrs, &echoed, 3).is_empty());
+        // A failed or uncertain send keeps its line (and its retry) even if a twin exists.
+        let failed = vec![send(SendPhase::Failed, "on my way", 5_000)];
+        assert_eq!(pending_sends(&failed, "d", &addrs, &echoed, 3).len(), 1);
+        // Another phone or another person's number never mixes in.
+        assert!(pending_sends(&sends, "other", &addrs, &msgs, 3).is_empty());
+        assert!(pending_sends(&sends, "d", &["+4930123456".to_string()], &msgs, 3).is_empty());
+        // Bounded, newest kept.
+        let many: Vec<_> = (0..9)
+            .map(|i| send(SendPhase::Failed, "t", 100 + i))
+            .collect();
+        let got = pending_sends(&many, "d", &addrs, &msgs, 3);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[2].created_unix_ms, 108);
+    }
+
+    #[test]
+    fn blockers_explain_missing_permission_restricted_settings_and_read_only_phones() {
+        let mut d = DataDevice {
+            device_id: "d".into(),
+            name: "Pixel".into(),
+            contacts: DataState::ConsentOff,
+            calendar: DataState::ConsentOff,
+            sms: DataState::NotOffered,
+            calendar_edit: DataState::ConsentOff,
+            contacts_count: 0,
+            events_count: 0,
+            calendar_names: vec![],
+            calendar_writable: false,
+            calendar_truncated: false,
+            contacts_synced_unix_ms: None,
+            calendar_synced_unix_ms: None,
+            sms_status_reports: false,
+            sms_send: false,
+            sims: vec![],
+        };
+        let text = sms_blocker(&d).unwrap();
+        assert!(text.contains("Allow restricted settings"), "{text}");
+        assert!(text.contains("default SMS app"));
+        d.sms = DataState::Ready;
+        assert!(sms_blocker(&d).is_none());
+        assert!(send_blocker(&d).unwrap().contains("read messages"));
+        d.sms_send = true;
+        assert!(send_blocker(&d).is_none());
+    }
+
+    #[test]
+    fn sims_are_labelled_by_name_and_slot() {
+        let sim = |slot, label: &str| SimItem {
+            id: 3,
+            slot,
+            label: label.into(),
+        };
+        assert_eq!(sim_label(&sim(2, "Work")), "Work (SIM 2)");
+        assert_eq!(sim_label(&sim(1, "")), "SIM 1");
+        assert_eq!(sim_label(&sim(0, "")), "SIM 3");
     }
 
     #[test]

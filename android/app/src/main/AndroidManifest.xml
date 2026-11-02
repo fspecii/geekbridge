@@ -4,8 +4,9 @@
 
     <!--
       Runtime permissions are tied to a visible "Allow" button: contacts, calendar and the coarse call state
-      (READ_PHONE_STATE: idle/ringing/in-call only). No SMS, call log, phone numbers, Bluetooth, storage,
-      notification or location permissions.
+      (READ_PHONE_STATE: idle/ringing/in-call only). POST_NOTIFICATIONS is declared (link status, clipboard
+      tap request, transfers); SMS and call-number permissions are optional and explained at their declarations
+      below. No Bluetooth, storage or location permissions.
       INTERNET is used only by the optional "Computer link" (Rust KDE-protocol transport), which the user
       starts explicitly and which stops when the app leaves the foreground. CHANGE_WIFI_MULTICAST_STATE
       lets that link receive discovery broadcasts while discovery is on; it is a normal, install-time
@@ -50,6 +51,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
+        android:name=".GeekBridgeApp"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"

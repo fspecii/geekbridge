@@ -32,7 +32,7 @@ pub use error::{KdeError, PairingFailure, Result};
 pub use identity::{DeviceId, DeviceType, Identity, PROTOCOL_VERSION};
 pub use link::{
     AddressPolicy, ConnectionId, Endpoint, Handshake, Limits, LinkEvent, LinkInfo, PendingLink,
-    Role, Timeouts, TransportConfig, TrustedLink,
+    Role, Timeouts, TransportConfig, TrustedLink, WireTap,
 };
 pub use packet::Packet;
 pub use pairing::{

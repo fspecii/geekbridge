@@ -40,7 +40,7 @@ set --
 
 : "${E2E_AVD:=gb36k}" "${E2E_EMU_PORT:=5634}" "${E2E_ADB_PORT:=16080}" "${E2E_TAG:=-callui}"
 : "${E2E_RUN:=$ROOT/target/call-ui-run}" "${E2E_SCRATCH:=$ROOT/target/e2e-full-android}" "${E2E_TARGET:=$ROOT/target/call-ui}"
-: "${E2E_XDISP:=:94}" "${E2E_CTRL_PORT:=17511}" "${E2E_API_PORT:=17510}" "${E2E_DISC_PORT:=17546}" "${E2E_LISTEN_PORT:=1737}" "${E2E_REDIR_PORT:=17561}"
+: "${E2E_XDISP:=:97}" "${E2E_CTRL_PORT:=17511}" "${E2E_API_PORT:=17510}" "${E2E_DISC_PORT:=17546}" "${E2E_LISTEN_PORT:=1737}" "${E2E_REDIR_PORT:=17561}"
 export E2E_SOURCE_ONLY=1 E2E_AVD E2E_EMU_PORT E2E_ADB_PORT E2E_TAG E2E_RUN E2E_SCRATCH E2E_TARGET E2E_XDISP \
   E2E_CTRL_PORT E2E_API_PORT E2E_DISC_PORT E2E_LISTEN_PORT E2E_REDIR_PORT
 export E2E_RESULTS="$ROOT/dist/android/logs/e2e-callui-results.tsv"
@@ -103,7 +103,8 @@ start_wayland_and_mako() {
   printf 'default-timeout=0\nignore-timeout=1\nmax-visible=5\nlayer=overlay\n' >"$RUN/mako.conf"
   (env -u LD_LIBRARY_PATH XDG_RUNTIME_DIR="$XRT" XDG_CONFIG_HOME="$PRIV/config" WAYLAND_DISPLAY="$(cat "$RUN/wayland-display")" \
      setsid mako --config "$RUN/mako.conf" >"$RUN/mako.log" 2>&1 & echo $! >"$RUN/mako.pid")
-  wait_for 10 sway_env makoctl list >/dev/null 2>&1
+  # Wait for the name without asking mako anything: a client's request would D-Bus-activate a second mako first.
+  wait_for 15 bash -c "busctl --user list --no-pager 2>/dev/null | grep -q 'org.freedesktop.Notifications.*mako'"
 }
 start_bus_monitor() {
   [[ -f "$RUN/monitor.pid" ]] && kill "$(cat "$RUN/monitor.pid")" 2>/dev/null
@@ -123,8 +124,9 @@ start_desktop_service() {
 stage_env() {
   [[ "$STOPPING" == 1 ]] && return 0
   [[ -x "$SVC" && -x "$CALLS_BIN" && -f "$APK" ]] || { rec callui_env FAIL "missing binaries/APK ($SVC, $CALLS_BIN, $APK)"; return 1; }
-  rm -f "/tmp/.X11-unix/X${XDISP#:}"
-  pkill -f "Xvfb $XDISP" 2>/dev/null; sleep 0.5
+  pkill -f "Xvfb $XDISP" 2>/dev/null
+  wait_for 10 bash -c "! pgrep -f 'Xvfb $XDISP' >/dev/null"
+  rm -f "/tmp/.X11-unix/X${XDISP#:}" "/tmp/.X${XDISP#:}-lock"
   (setsid nohup Xvfb "$XDISP" -screen 0 1280x900x24 -nolisten tcp >"$RUN/xvfb.log" 2>&1 &)
   wait_for 10 test -S "/tmp/.X11-unix/X${XDISP#:}" || { rec callui_env FAIL "Xvfb did not start"; return 1; }
   start_wayland_and_mako || { rec callui_env FAIL "sway/mako did not start: $(tail -3 "$RUN/sway.log" "$RUN/mako.log" | tr '\n' '|')"; return 1; }
@@ -159,10 +161,14 @@ stage_pair() {
     for id in $(paired_ids); do ctl unpair "$id" >/dev/null; done
     $ADB shell pm clear $PKG >/dev/null; wake
     for p in READ_PHONE_STATE ANSWER_PHONE_CALLS READ_CALL_LOG READ_CONTACTS POST_NOTIFICATIONS; do $ADB shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done
-    scan "$(ctl pair-qr 2>/dev/null)"
-    ui wait "Pair with E2E-Desktop" 15 >/dev/null; ui tap Continue >/dev/null
-    ui wait "Computer identity" 40 >/dev/null; ui tap Pair --exact >/dev/null
-    ui wait "What to do next" 40 >/dev/null || { rec callui_pair FAIL "QR pairing did not finish"; return 1; }
+    local qr; qr="$(ctl pair-qr 2>/dev/null | grep -m1 "^geekbridge://")"; echo "${qr:0:60}..." >"$RUN/qr-prefix.txt"
+    [[ "$qr" == geekbridge://* ]] || { rec callui_pair FAIL "pair-qr gave: ${qr:0:120}"; return 1; }
+    scan "$qr"
+    ui wait "Pair with E2E-Desktop" 15 >/dev/null || { rec callui_pair FAIL "no pairing page after the link: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
+    ui tap Continue >/dev/null
+    ui wait "Computer identity" 40 >/dev/null || { rec callui_pair FAIL "no identity step: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
+    ui tap Pair --exact >/dev/null
+    ui wait "What to do next" 40 >/dev/null || { rec callui_pair FAIL "QR pairing did not finish: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     tap "Back to home" >/dev/null 2>&1 || tap "Done" >/dev/null 2>&1
     write_calls_prefs; goto_home
@@ -209,12 +215,16 @@ stage_notify() {
 # ---------------------------------------------------------------- the Calls window
 APPWID=""
 app_start() {
-  pkill -f "^$CALLS_BIN" 2>/dev/null; sleep 0.5
+  pkill -f "^$CALLS_BIN" 2>/dev/null
+  pgrep -af "$E2E_TARGET/release/geekbridge" | grep -v "geekbridge-service\|geekbridge-calls" >"$RUN/other-windows.txt"
+  pkill -f "^$E2E_TARGET/release/geekbridge-(home|agenda|clipboard|contacts|messages|share)( |$)" 2>/dev/null
+  pkill -f "^$E2E_TARGET/release/geekbridge( |$)" 2>/dev/null; sleep 0.5
   ("${APP_ENV[@]}" DISPLAY="$XDISP" GEEKBRIDGE_STATE_DIR="$RUN/state" GEEKBRIDGE_CONTROL_PORT="$CTRL_PORT" \
      setsid nohup "$CALLS_BIN" --api-port "$API_PORT" --theme dark >"$RUN/calls-app.log" 2>&1 &)
   local i
   for ((i = 0; i < 40; i++)); do
-    APPWID="$(DISPLAY=$XDISP xdotool search --onlyvisible --class "dev.geekbridge" 2>/dev/null | head -1)"
+    # By pid: the pairing flow can open other GeekBridge windows (home, calendar) on the same display.
+    APPWID="$(DISPLAY=$XDISP xdotool search --onlyvisible --pid "$(pgrep -nf "^$CALLS_BIN")" 2>/dev/null | head -1)"
     [[ -n "$APPWID" ]] && break; sleep 0.5
   done
   [[ -n "$APPWID" ]] && DISPLAY=$XDISP xdotool windowfocus "$APPWID" 2>/dev/null
@@ -230,35 +240,41 @@ app_shot() { # file
   eval "$(win_geometry)"
   DISPLAY=$XDISP import -window root -crop "${WIDTH}x${HEIGHT}+${X}+${Y}" +repage "$DESK_SHOTS/$1" 2>/dev/null
 }
-ocr() { tesseract "$DESK_SHOTS/$1" - --psm 6 2>/dev/null | tr -s ' \n' ' '; }
-# Button positions inside the 380x680 window (see the pictures): the popup is centred, Decline left, Answer right.
-POPUP_DECLINE_X=${POPUP_DECLINE_X:-120} POPUP_ANSWER_X=${POPUP_ANSWER_X:-260} POPUP_BUTTON_Y=${POPUP_BUTTON_Y:-370}
-HANGUP_X=${HANGUP_X:-325} HANGUP_Y=${HANGUP_Y:-60}
-popup_visible() { app_shot call-popup-probe.png; ocr call-popup-probe.png | grep -qi "INCOMING CALL"; }
+# The window is dark: invert and enlarge it first or tesseract reads little.
+ocr() { { convert "$DESK_SHOTS/$1" -colorspace Gray -negate -resize 250% png:- 2>/dev/null || cat "$DESK_SHOTS/$1"; } | tesseract stdin - --psm 6 2>/dev/null | tr -s ' \n' ' '; }
+px() { convert "$DESK_SHOTS/$1" -format "%[fx:int(255*p{$2,$3}.r)] %[fx:int(255*p{$2,$3}.g)] %[fx:int(255*p{$2,$3}.b)]" info: 2>/dev/null; }
+# Button positions inside the 380x680 window (see the pictures): the popup is centred, Decline (red) left, Answer (off-white pill) right.
+# The headline is dot-matrix ("INCOMING"), which OCR cannot read, and the button labels are white on colour, so the popup is recognised by its explanatory line.
+POPUP_DECLINE_X=${POPUP_DECLINE_X:-100} POPUP_ANSWER_X=${POPUP_ANSWER_X:-278} POPUP_BUTTON_Y=${POPUP_BUTTON_Y:-377}
+HANGUP_X=${HANGUP_X:-301} HANGUP_Y=${HANGUP_Y:-102}
+popup_visible() { app_shot call-popup-probe.png; ocr call-popup-probe.png | grep -qiE "Answers on the phone|Bluetooth headset|Answers here"; }
 stage_popup() {
   hang_up_all; sway_env makoctl dismiss -a >/dev/null 2>&1
   app_start || { rec callui_popup FAIL "the Calls window did not open: $(tail -3 "$RUN/calls-app.log" | tr '\n' '|')"; return 1; }
   sleep 2; app_shot call-popup-idle.png
   # --- ringing
   ring "$NUMBER_C" || { rec callui_popup_ring FAIL "desktop never saw the call ringing"; return 1; }
-  wait_for 15 popup_visible && rec callui_popup_ring PASS "popup 'INCOMING CALL' shown (OCR of call-popup-ringing.png)" \
-    || rec callui_popup_ring FAIL "no INCOMING CALL popup: $(ocr call-popup-probe.png | head -c 200)"
+  wait_for 15 popup_visible && rec callui_popup_ring PASS "popup shown with its explanatory line (OCR of call-popup-ringing.png)" \
+    || rec callui_popup_ring FAIL "no incoming-call popup: $(ocr call-popup-probe.png | head -c 200)"
   app_shot call-popup-ringing.png
-  local ocr_ring; ocr_ring="$(ocr call-popup-ringing.png)"
-  grep -qi "Answer" <<<"$ocr_ring" && grep -qi "Decline" <<<"$ocr_ring" \
-    && rec callui_popup_buttons PASS "popup offers Answer and Decline" || rec callui_popup_buttons FAIL "buttons not read: $ocr_ring"
+  # White-on-colour button labels defeat OCR, so the buttons are checked by colour at their known positions.
+  local dec ans
+  dec="$(px call-popup-ringing.png 40 "$POPUP_BUTTON_Y")"; ans="$(px call-popup-ringing.png 215 "$POPUP_BUTTON_Y")"
+  read -r dr dg db <<<"$dec"; read -r ar ag ab <<<"$ans"
+  if ((dr > 180 && dg < 90)) && ((ar > 220 && ag > 220 && ab > 220)); then rec callui_popup_buttons PASS "red Decline button rgb=$dec, off-white Answer button rgb=$ans (sampled off the labels)"
+  else rec callui_popup_buttons FAIL "no red/off-white buttons where expected: decline rgb=$dec answer rgb=$ans"; fi
   # --- Answer
   click_at "$POPUP_ANSWER_X" "$POPUP_BUTTON_Y"
   if wait_modem 2 12; then rec callui_popup_answer PASS "click on Answer -> modem off-hook"; else rec callui_popup_answer FAIL "modem $(modem_state) after clicking Answer"; fi
   sleep 2; app_shot call-popup-answered.png
   local ocr_live; ocr_live="$(ocr call-popup-answered.png)"
-  grep -qi "In call" <<<"$ocr_live" && grep -qi "Hang up" <<<"$ocr_live" \
+  grep -qiE "In ?call" <<<"$ocr_live" && grep -qiE "Hang ?up" <<<"$ocr_live" \
     && rec callui_popup_incall PASS "in-call panel with timer and Hang up (OCR: $(echo "$ocr_live" | head -c 120))" \
     || rec callui_popup_incall FAIL "in-call panel not read: $ocr_live"
   # --- the audio hint: nothing routed the voice to this computer (no Bluetooth HFP here)
-  local hint; hint="$(calls_json | tr -d '\n' | grep -o '"hint": *"[^"]*"' | head -1)"
+  local hint; hint="$(calls_json | tr '\n' ' ' | grep -io 'answered on the phone[^|]*' | head -1 | head -c 120)"
   if grep -qi "answered on the phone" <<<"$hint" && grep -qi "Audio on the phone" <<<"$ocr_live"; then
-    rec callui_popup_hint PASS "no HFP route: window says 'Audio on the phone', service hint $hint"
+    rec callui_popup_hint PASS "no HFP route: window says 'Audio on the phone', service view says: $hint"
   else rec callui_popup_hint FAIL "hint missing; service: ${hint:-none}; window OCR: $ocr_live"; fi
   # --- Hang up from the panel
   click_at "$HANGUP_X" "$HANGUP_Y"
@@ -270,7 +286,7 @@ stage_popup() {
   click_at "$POPUP_DECLINE_X" "$POPUP_BUTTON_Y"
   if wait_modem 0 12; then rec callui_popup_decline PASS "click on Decline -> modem idle"; else rec callui_popup_decline FAIL "modem $(modem_state) after clicking Decline"; fi
   sleep 2; app_shot call-popup-declined.png
-  ocr call-popup-declined.png | grep -qi "INCOMING CALL" && rec callui_popup_gone FAIL "popup still shown after Decline" || rec callui_popup_gone PASS "popup closed after Decline"
+  ocr call-popup-declined.png | grep -qiE "Answers on the phone|Bluetooth headset" && rec callui_popup_gone FAIL "popup still shown after Decline" || rec callui_popup_gone PASS "popup closed after Decline"
   rm -f "$DESK_SHOTS/call-popup-probe.png"
   hang_up_all
 }

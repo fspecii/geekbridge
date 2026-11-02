@@ -33,12 +33,23 @@ pub fn spawn(args: Vec<String>, on_action: impl FnOnce(&str) + Send + 'static) {
 /// Start a GeekBridge window (`geekbridge-share`, `geekbridge`, ...) next to this binary if it is
 /// there, else from `PATH`. Detached; the child is reaped on a thread.
 pub fn open_app(name: &str) {
-    let sibling = std::env::current_exe()
+    detach(Command::new(app_path(name)));
+}
+
+/// Like [`open_app`], with one environment variable set for the new window (a value that must not
+/// appear on a command line).
+pub fn open_app_with_env(name: &str, var: &str, value: &str) {
+    let mut cmd = Command::new(app_path(name));
+    cmd.env(var, value);
+    detach(cmd);
+}
+
+fn app_path(name: &str) -> PathBuf {
+    std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.join(name)))
-        .filter(|p| p.is_file());
-    let program = sibling.unwrap_or_else(|| PathBuf::from(name));
-    detach(Command::new(program));
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 fn detach(mut cmd: Command) {

@@ -95,6 +95,8 @@ pub struct DaemonOptions {
     pub call_notifier: Option<Arc<dyn CallNotifier>>,
     /// Desktop notification for a newly arrived text (sender only). `None` shows none.
     pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
+    /// Show message text in new-message notifications. Default off ("hide message content").
+    pub sms_show_content: bool,
 }
 
 impl DaemonOptions {
@@ -120,6 +122,7 @@ impl DaemonOptions {
             call_host: Mutex::new(None),
             call_notifier: None,
             sms_notifier: None,
+            sms_show_content: false,
         }
     }
 }
@@ -218,6 +221,34 @@ fn reason(e: &kde::KdeError) -> String {
         .collect()
 }
 
+/// Developer interop capture: with `--dev-loopback` and `GEEKBRIDGE_WIRE_TAP_FILE=PATH`, append every
+/// packet line (after TLS, both directions) to PATH. Packets carry personal data, so this is never on
+/// for a normal run; the file is created owner-only.
+fn dev_wire_tap(endpoint: kde::Endpoint, dev_loopback: bool) -> kde::Endpoint {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("GEEKBRIDGE_WIRE_TAP_FILE").filter(|_| dev_loopback) else {
+        return endpoint;
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let Ok(file) = options.open(path) else {
+        return endpoint;
+    };
+    let file = Mutex::new(file);
+    endpoint.with_wire_tap(Arc::new(move |sent, line| {
+        if let Ok(mut f) = file.lock() {
+            let _ = writeln!(
+                f,
+                "{} {}",
+                if sent { ">>" } else { "<<" },
+                String::from_utf8_lossy(line)
+            );
+        }
+    }))
+}
+
 fn parse_id(id: &str) -> Result<kde::DeviceId, ErrorBody> {
     kde::DeviceId::parse(id).map_err(|_| err(ErrorCode::BadRequest, "invalid device id"))
 }
@@ -256,6 +287,7 @@ impl Daemon {
             store.clone(),
             options.transport.clone(),
         )?;
+        let endpoint = dev_wire_tap(endpoint, options.dev_loopback);
         let calls = CallHub::new();
         if let Some(n) = options.call_notifier.take() {
             calls.set_notifier(n);
@@ -273,6 +305,7 @@ impl Daemon {
             share.set_notifier(n);
         }
         let data = crate::phone_data::PhoneData::new();
+        data.set_notify_content(options.sms_show_content);
         if let Some(n) = options.sms_notifier.take() {
             data.set_notifier(n);
         }
@@ -550,9 +583,10 @@ impl Daemon {
             Request::MessagesView {
                 device_id,
                 thread_id,
+                query,
             } => self
                 .data
-                .messages_view(device_id.as_deref(), thread_id)
+                .messages_view(device_id.as_deref(), thread_id, query.as_deref())
                 .map(|v| Response::Messages(Box::new(v))),
             Request::MessagesRefresh {
                 device_id,
@@ -566,10 +600,18 @@ impl Daemon {
                 recipient,
                 text,
                 submission_id,
+                sub_id,
             } => self
                 .data
-                .send_text(&device_id, &recipient, &text, &submission_id)
+                .send_text(&device_id, &recipient, &text, &submission_id, sub_id)
                 .map(|send_id| Response::MessageQueued { send_id }),
+            Request::MessagesMarkRead {
+                device_id,
+                thread_id,
+            } => self
+                .data
+                .mark_read(&device_id, thread_id)
+                .map(|()| Response::Ack),
             Request::MessagesResend {
                 device_id,
                 send_id,
@@ -1054,7 +1096,15 @@ impl Daemon {
             "too_many_requests" | "link_busy" => ErrorCode::Busy,
             _ => ErrorCode::Unsupported,
         };
-        err(kind, code)
+        let text = match code {
+            "no_enabled_phone_connected" | "device_not_enabled_or_connected" => {
+                "no connected phone has Clipboard switched on. Turn on Clipboard sync in the phone app \
+                 (Home > Settings) and allow Clipboard for it on this computer \
+                 (`geekbridge-ctl consent DEVICE_ID clipboard on`), then try again"
+            }
+            other => other,
+        };
+        err(kind, text)
     }
 
     fn clipboard_pull(&self, device_id: Option<&str>) -> Result<(), ErrorBody> {

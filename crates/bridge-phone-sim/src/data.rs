@@ -115,6 +115,8 @@ pub struct PhoneScript {
     pub messages: Vec<Value>,
     /// Include the `delivered` report (carriers do not always send one).
     pub deliver: bool,
+    /// SIM subscriptions put into every `kdeconnect.sms.messages` packet (`{id, slot, label}`).
+    pub sims: Vec<Value>,
     token: u64,
     last_sent: Option<(String, Vec<(String, String)>)>,
     next_id: i64,
@@ -164,6 +166,7 @@ impl PhoneScript {
                     writable: false,
                 },
             ],
+            sims: Vec::new(),
             writes_enabled: true,
             silent_writes: false,
             write_log: Vec::new(),
@@ -322,6 +325,66 @@ impl PhoneScript {
                 1,
             ),
         ];
+        // Two SIMs, an emoji thread, a picture message and an older day, so the window shows them.
+        s.sims = vec![
+            json!({"id": 3, "slot": 1, "label": "Personal"}),
+            json!({"id": 5, "slot": 2, "label": "Work"}),
+        ];
+        let mut more = vec![
+            m(
+                7,
+                4,
+                1,
+                "+44 20 7946 0003",
+                "Morning! 🌞 Did the proof compile?",
+                60 * 24 + 30,
+                1,
+            ),
+            m(
+                8,
+                4,
+                2,
+                "+44 20 7946 0003",
+                "Almost. One lemma left ✅",
+                60 * 24 + 25,
+                1,
+            ),
+            m(
+                9,
+                4,
+                1,
+                "+44 20 7946 0003",
+                "Ping me when it is done, I will check it tonight.",
+                8,
+                0,
+            ),
+            m(
+                10,
+                4,
+                1,
+                "+44 20 7946 0003",
+                "Also: the paper is due Friday.",
+                7,
+                0,
+            ),
+            m(
+                11,
+                5,
+                1,
+                "+49 151 1234 5678",
+                "Your verification code is 482913",
+                3 * 60 * 24,
+                1,
+            ),
+        ];
+        // A picture message: the phone reports the attachment, the body is the text part only.
+        more.push(
+            json!({"addresses": [{"address": "+1 555 010 0002"}], "body": "Look at this!",
+            "date": now_ms - 25 * 60_000, "type": 1, "read": 0, "thread_id": 2, "_id": 4001,
+            "sub_id": 3, "event": 1,
+            "attachments": [{"part_id": 1, "mime_type": "image/jpeg", "unique_identifier": "u1"}]}),
+        );
+        s.messages.extend(more);
         s
     }
 
@@ -508,6 +571,47 @@ impl PhoneScript {
 
     /// Answers one desktop request with the packets the phone would send back.
     pub fn handle(&mut self, kind: &str, body: &Map<String, Value>) -> Vec<Reply> {
+        let mut out = self.handle_request(kind, body);
+        if kind == SMS_REQUEST_CONVERSATIONS {
+            // A GeekBridge phone adds the real unread count per thread to the conversation list.
+            let mut unread = Map::new();
+            for m in &self.messages {
+                if m["type"] == 1 && m["read"] == 0 {
+                    let t = m["thread_id"].to_string();
+                    let n = unread.get(&t).and_then(Value::as_u64).unwrap_or(0) + 1;
+                    unread.insert(t, json!(n));
+                }
+            }
+            if let Some((_, b)) = out.iter_mut().find(|(k, _)| *k == SMS_MESSAGES) {
+                b.insert("unread".into(), Value::Object(unread));
+            }
+        }
+        if !self.sims.is_empty() {
+            for (k, b) in &mut out {
+                if *k == SMS_MESSAGES {
+                    b.insert("sims".into(), Value::Array(self.sims.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    /// A text arriving on the phone, with the SIM list a GeekBridge phone adds to its pushes.
+    pub fn push_incoming(
+        &mut self,
+        thread: i64,
+        from: &str,
+        body: &str,
+        now_ms: i64,
+    ) -> Vec<Reply> {
+        let mut r = self.incoming_sms(thread, from, body, now_ms);
+        if !self.sims.is_empty() {
+            r.1.insert("sims".into(), Value::Array(self.sims.clone()));
+        }
+        vec![r]
+    }
+
+    fn handle_request(&mut self, kind: &str, body: &Map<String, Value>) -> Vec<Reply> {
         match kind {
             wire::CONTACTS_REQUEST_UIDS => {
                 let mut m = Map::new();

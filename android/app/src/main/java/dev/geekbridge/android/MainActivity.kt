@@ -280,7 +280,7 @@ class MainActivity : Activity() {
                 is CoreOutcome.Ok -> {
                     val v = CoreProtocol.coreVersionOf(o.result)
                     ui.setStatus(coreStatus, "Native core: available" + (if (v != null) " (version $v)" else ""), Tone.Ok)
-                    coreDetail.text = "Core info: " + CoreProtocol.summarize(o.result)
+                    coreDetail.text = getString(R.string.core_info, CoreProtocol.summarize(o.result))
                 }
                 is CoreOutcome.Unavailable -> {
                     ui.setStatus(
@@ -568,13 +568,13 @@ class MainActivity : Activity() {
         val card = ui.card(root, "Privacy")
         ui.body(
             card,
-            "The internet permission is used by the optional computer link (starts when you tap Start, stops when you " +
-                "leave the app) and by update checks, which only read GitHub's public release list when the app opens (at most " +
-                "every 12 hours, can be switched off) or when you tap Check for updates. There is no background service and " +
-                "nothing listens for connections. Updates are installed only after a SHA-256 check and your confirmation in " +
-                "Android's installer. It never asks for " +
-                "accessibility, root or ADB access. Contacts, calendar, clipboard and message text are not " +
-                "logged or saved, and previews are cleared when you leave the app.",
+            "The network is used to talk to the computers you paired (encrypted, certificate-pinned) and by update " +
+                "checks, which only read GitHub's public release list when the app opens (at most every 12 hours, can be " +
+                "switched off) or when you tap Check for updates. A small background service keeps the phone reachable only " +
+                "while \"Stay connected\" is on, and only for computers you paired. Updates are installed only after a SHA-256 " +
+                "check and your confirmation in Android's installer. The app never asks for accessibility, root or ADB " +
+                "access. Contacts, calendar, clipboard and message text are shared only with a paired computer you allowed, " +
+                "are not logged or saved here, and previews are cleared when you leave the app.",
         )
     }
 

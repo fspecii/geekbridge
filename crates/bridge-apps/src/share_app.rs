@@ -271,7 +271,7 @@ fn open_link(url: &str) {
 
 fn choose_files() -> Vec<PathBuf> {
     for (prog, args) in picker_commands() {
-        if let Ok(out) = Command::new(prog)
+        if let Ok(out) = crate::home_app::no_window(&mut Command::new(prog))
             .args(&args)
             .stdin(Stdio::null())
             .stderr(Stdio::null())
@@ -636,6 +636,7 @@ impl ShareApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.text)
                     .desired_width(ui.available_width() - 190.0)
+                    .margin(Margin::symmetric(8, 4))
                     .hint_text("Paste a link or type a note"),
             );
             let trimmed = self.text.trim().to_owned();

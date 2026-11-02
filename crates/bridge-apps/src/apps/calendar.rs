@@ -364,6 +364,46 @@ impl Calendar {
                     .id_salt("cal-side")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
+                        let now = localtime::now();
+                        let shown = self.shown(&now);
+                        ui.horizontal(|ui| {
+                            crate::nothing::dot_text(
+                                ui,
+                                pal,
+                                &format!("{:02}", shown.day),
+                                crate::nothing::PITCH_TITLE,
+                                pal.text,
+                                false,
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} {}",
+                                            shown.month_name(),
+                                            shown.year
+                                        ))
+                                        .size(12.5)
+                                        .color(pal.accent),
+                                    );
+                                },
+                            );
+                        });
+                        ui.add_space(6.0);
+                        let visible: Vec<&EventItem> =
+                            view.events.iter().filter(|e| !self.is_hidden(e)).collect();
+                        if let Some(day) = crate::dot_calendar::dot_month(
+                            ui,
+                            pal,
+                            shown,
+                            now.date,
+                            Some(shown),
+                            &|d| !model::on_day(&visible, d, &off).is_empty(),
+                        ) {
+                            self.select_day(day, &now);
+                        }
+                        ui.add_space(12.0);
                         ui.label(theme::overline(pal, "Calendars"));
                         ui.add_space(4.0);
                         if view.calendars.is_empty() {
@@ -1061,19 +1101,19 @@ impl Calendar {
         let cell_w = avail.width() / 7.0;
         let cell_h = ((avail.height() - head_h) / 6.0).max(60.0);
         let painter = ui.painter().clone();
-        for (i, name) in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-            .iter()
-            .enumerate()
-        {
-            painter.text(
+        for (i, name) in ["M", "T", "W", "T", "F", "S", "S"].iter().enumerate() {
+            let pitch = crate::nothing::scaled(ui, 2.0);
+            let size = crate::dotmatrix::measure(name, pitch);
+            crate::dotmatrix::paint(
+                &painter,
                 pos2(
-                    avail.left() + cell_w * (i as f32 + 0.5),
-                    avail.top() + head_h / 2.0,
+                    avail.left() + cell_w * (i as f32 + 0.5) - size.x / 2.0,
+                    avail.top() + (head_h - size.y) / 2.0,
                 ),
-                Align2::CENTER_CENTER,
-                *name,
-                FontId::new(11.5, theme::semibold_family()),
-                pal.text3,
+                name,
+                pitch,
+                pal.text2,
+                None,
             );
         }
         let (rect, _) =
@@ -1085,11 +1125,10 @@ impl Calendar {
                     pos2(rect.left() + cell_w * i as f32, top + cell_h * w as f32),
                     vec2(cell_w, cell_h),
                 );
-                painter.rect_stroke(
-                    cell,
-                    0.0,
+                painter.hline(
+                    cell.x_range(),
+                    cell.top(),
                     Stroke::new(1.0_f32, pal.separator),
-                    egui::StrokeKind::Inside,
                 );
                 let in_month = day.month == shown.month;
                 let is_today = *day == now.date;
@@ -1103,7 +1142,7 @@ impl Calendar {
                 }
                 let center = pos2(cell.left() + 16.0, cell.top() + 14.0);
                 if is_today {
-                    painter.circle_filled(center, 11.0, pal.accent);
+                    painter.circle_filled(center, 11.0, pal.accent_fill);
                 }
                 painter.text(
                     center,
@@ -1197,7 +1236,7 @@ impl Calendar {
                 );
                 let c = pos2(r.center().x, r.top() + 29.0);
                 if today {
-                    ui.painter().circle_filled(c, 12.0, pal.accent);
+                    ui.painter().circle_filled(c, 12.0, pal.accent_fill);
                 }
                 ui.painter().text(
                     c,
@@ -1694,6 +1733,8 @@ mod tests {
             contacts_synced_unix_ms: None,
             calendar_synced_unix_ms: None,
             sms_status_reports: false,
+            sms_send: false,
+            sims: vec![],
         };
         AgendaView {
             devices: vec![dev],

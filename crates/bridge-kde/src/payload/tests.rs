@@ -396,10 +396,18 @@ async fn development_listener_announces_a_port_a_strict_receiver_accepts() {
     assert!(sender.config.any_port);
     let listener = sender.listen().await.unwrap();
     let port = listener.port();
-    assert!(
-        PAYLOAD_PORTS.contains(&port),
-        "announced {port}, outside {PAYLOAD_PORTS:?}"
-    );
+    if !PAYLOAD_PORTS.contains(&port) {
+        // Another process (a second desktop service, an emulator run) may legitimately hold every
+        // range port right now; only a free range port makes this a failure.
+        let free = PAYLOAD_PORTS
+            .clone()
+            .find(|p| std::net::TcpListener::bind(("0.0.0.0", *p)).is_ok());
+        assert!(
+            free.is_none(),
+            "announced {port} although range port {free:?} was free ({PAYLOAD_PORTS:?})"
+        );
+        return;
+    }
     let mut strict = ctx(&b, &a);
     strict.config.any_port = false;
     let payload = data(70_000);

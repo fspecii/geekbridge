@@ -143,41 +143,83 @@ impl Updates {
             .show_separator_line(false)
             .frame(
                 Frame::new()
-                    .fill(pal.surface)
-                    .stroke(Stroke::new(1.0_f32, pal.separator))
-                    .inner_margin(Margin::symmetric(12, 6)),
+                    .fill(pal.content)
+                    .inner_margin(Margin::symmetric(10, 8)),
             )
             .show(ctx, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    theme::dot(ui, pal.accent, false);
-                    ui.label(theme::semibold(
-                        format!("Update available: v{version}"),
-                        13.0,
-                    ));
-                    ui.label(theme::caption(pal, banner_detail(&status)));
-                    match status.state {
-                        UpdateState::Downloading => {}
-                        UpdateState::Downloaded => {
-                            if ui.button("Show file").clicked() {
-                                action = Some(Action::Reveal);
+                Frame::new()
+                    .fill(pal.tile)
+                    .stroke(Stroke::new(1.0_f32, pal.separator))
+                    .corner_radius(egui::CornerRadius::same(crate::nothing::R_CARD))
+                    .inner_margin(Margin::symmetric(14, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            theme::dot(ui, pal.accent_fill, false);
+                            ui.label(theme::semibold(
+                                format!("Update available: v{version}"),
+                                13.0,
+                            ));
+                            ui.label(theme::caption(pal, banner_detail(&status)));
+                            match status.state {
+                                UpdateState::Downloading => {}
+                                UpdateState::Downloaded => {
+                                    if theme::pill_button(
+                                        ui,
+                                        pal,
+                                        "Show file",
+                                        theme::ButtonKind::Primary,
+                                        true,
+                                    )
+                                    .clicked()
+                                    {
+                                        action = Some(Action::Reveal);
+                                    }
+                                }
+                                _ => {
+                                    if status.downloadable
+                                        && theme::pill_button(
+                                            ui,
+                                            pal,
+                                            "Download",
+                                            theme::ButtonKind::Primary,
+                                            true,
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(Action::Download);
+                                    }
+                                }
                             }
-                        }
-                        _ => {
-                            if status.downloadable && ui.button("Download").clicked() {
-                                action = Some(Action::Download);
+                            if theme::pill_button(
+                                ui,
+                                pal,
+                                "Release notes",
+                                theme::ButtonKind::Plain,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                action = Some(Action::Notes);
                             }
-                        }
-                    }
-                    if ui.button("Release notes").clicked() {
-                        action = Some(Action::Notes);
-                    }
-                    if ui.button("Skip this version").clicked() {
-                        action = Some(Action::Skip);
-                    }
-                    if ui.button("Later").clicked() {
-                        later = true;
-                    }
-                });
+                            if theme::pill_button(
+                                ui,
+                                pal,
+                                "Skip this version",
+                                theme::ButtonKind::Plain,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                action = Some(Action::Skip);
+                            }
+                            if theme::pill_button(ui, pal, "Later", theme::ButtonKind::Plain, true)
+                                .clicked()
+                            {
+                                later = true;
+                            }
+                        });
+                    });
             });
         if later {
             self.dismissed = Some(version.clone());

@@ -124,6 +124,7 @@ async fn main() {
             Feature::Calendar,
             Feature::CalendarEdit,
             Feature::CalendarAlerts,
+            Feature::Sms,
         ] {
             call(
                 port,

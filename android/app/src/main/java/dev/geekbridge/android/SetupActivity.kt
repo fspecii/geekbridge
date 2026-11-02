@@ -185,6 +185,7 @@ class SetupActivity : Activity() {
                 kit.divider(panel)
                 kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
                 panel.addView(kit.text(getString(R.string.setup_sms_restricted), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                panel.addView(kit.text(getString(R.string.setup_sms_default_app), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
             }
             StepId.Battery -> batteryStep(panel, s)
             StepId.AnswerCalls -> answerCallsStep(panel, s)
@@ -203,7 +204,8 @@ class SetupActivity : Activity() {
             else -> {
                 if (p != null) kit.button(panel, getString(if (s.status == StepStatus.Denied) R.string.setup_ask_again else R.string.setup_allow), BtnStyle.Primary) { request(p) }
                 if (s.status == StepStatus.Denied) kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
-                panel.addView(kit.text(getString(R.string.setup_optional_note), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+                val note = if (s.required) R.string.setup_required_note else R.string.setup_optional_note
+                panel.addView(kit.text(getString(note), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
             }
         }
     }
@@ -266,11 +268,13 @@ class SetupActivity : Activity() {
                 panel.addView(kit.text("${i + 1}.  $line", 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
             }
             kit.button(panel, getString(R.string.setup_oem_open, oem.label.substringBefore(' ')), BtnStyle.Tonal) {
-                if (PowerChecks.openOemSettings(this, oem) == LaunchResult.OpenedFallback) {
+                if (PowerChecks.openOemSettings(this, oem) == LaunchResult.OpenedFallback && oem.hasExtraSwitch) {
                     android.widget.Toast.makeText(this, getString(R.string.setup_oem_fallback), android.widget.Toast.LENGTH_LONG).show()
                 }
             }
-            if (!AppState.oemAcknowledged) {
+            if (!oem.hasExtraSwitch) {
+                // Nothing to acknowledge: the battery exemption above is verified by the system.
+            } else if (!AppState.oemAcknowledged) {
                 kit.button(panel, getString(R.string.setup_oem_done), BtnStyle.Plain) { AppState.oemAcknowledged = true; render() }
             } else {
                 panel.addView(kit.text(getString(R.string.setup_oem_marked), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })

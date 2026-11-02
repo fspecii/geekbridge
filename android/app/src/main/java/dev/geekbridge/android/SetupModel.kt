@@ -97,7 +97,7 @@ object SetupModel {
             StepInfo(StepId.Battery, StepStatus.Blocked, true, "Background use is restricted · change it in app settings")
         BatteryState.Optimised ->
             StepInfo(StepId.Battery, StepStatus.Todo, true, "Android may stop the connection to save battery")
-        BatteryState.Unrestricted -> if (i.oem != Oem.Other && !i.oemAcknowledged) {
+        BatteryState.Unrestricted -> if (i.oem.hasExtraSwitch && i.oem != Oem.Other && !i.oemAcknowledged) {
             // The system exemption is verified; the vendor's extra switch cannot be read, so it stays a to-do.
             StepInfo(StepId.Battery, StepStatus.Todo, true, "Unrestricted · ${i.oem.label} has an extra autostart switch")
         } else {

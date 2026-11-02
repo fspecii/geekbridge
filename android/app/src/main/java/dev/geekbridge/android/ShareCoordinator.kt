@@ -12,11 +12,19 @@ import java.util.concurrent.Executors
 
 data class ReceivedText(val id: Long, val kind: TransferKind, val text: String, val from: String)
 
+/** A shared file opened up front: its descriptor plus the name and size the provider reported. */
+class OpenedShare(val pfd: android.os.ParcelFileDescriptor, val name: String?, val size: Long) : AutoCloseable {
+    override fun close() = pfd.close()
+}
+
 /** One file (or text) of the current outgoing share and how it is going. */
 class ShareItem(val label: String) {
     var transferId: Long? = null
     var error: String? = null
     var inFlight = false
+
+    /** The file descriptor opened up front; null for text items. */
+    var source: EarlyOpen<OpenedShare>? = null
 }
 
 /**
@@ -29,6 +37,7 @@ class ShareCoordinator private constructor(app: Context) {
     private val ctx = app.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val io: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-share").apply { isDaemon = true } }
+    private val prefetch: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-share-open").apply { isDaemon = true } }
     private val core: CoreClient by lazy { CoreClient.native() }
     val controller: TransportController = TransportController.get({ core.transportAction(it) }, { main.post(it) })
     val notifications = ShareNotifications(ctx)
@@ -216,10 +225,17 @@ class ShareCoordinator private constructor(app: Context) {
     fun sendFiles(connectionId: Long, uris: List<Uri>) {
         if (sessionActive) return
         beginSession(connectionId)
-        val list = uris.take(ShareLimits.MAX_FILES).map { it to ShareItem(it.lastPathSegment?.let { s -> NameRules.sanitize(s) } ?: "file") }
+        val list = uris.take(ShareLimits.MAX_FILES).map { uri ->
+            uri to ShareItem(uri.lastPathSegment?.let { s -> NameRules.sanitize(s) } ?: "file").also { item ->
+                item.source = EarlyOpen { openShared(uri) }
+            }
+        }
         items = list.map { it.second }
         queue.clear()
         queue.addAll(list)
+        // Open every file now, while the Share screen's temporary read grant is certain to be alive (Photos, Gallery,
+        // Chrome): a later file of a long queue would otherwise be opened after the screen is gone.
+        prefetch.execute { for ((_, item) in list) item.source?.prefetch() }
         pump()
         onChange()
     }
@@ -263,18 +279,26 @@ class ShareCoordinator private constructor(app: Context) {
         endIfDone()
     }
 
+    /** Reads the provider's name and size, then opens the descriptor; both need the temporary read grant. */
+    private fun openShared(uri: Uri): OpenedShare {
+        var name: String? = null
+        var size = -1L
+        ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
+            if (c.moveToFirst()) {
+                c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }?.let { name = c.getString(it) }
+                c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { size = c.getLong(it) }
+            }
+        }
+        val pfd = ctx.contentResolver.openFileDescriptor(uri, "r") ?: throw java.io.IOException("not readable")
+        return OpenedShare(pfd, name, if (size <= 0) pfd.statSize else size)
+    }
+
     private fun prepareAndSend(uri: Uri, item: ShareItem) {
         try {
-            var name: String? = null
-            var size = -1L
-            ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-                if (c.moveToFirst()) {
-                    c.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 && !c.isNull(it) }?.let { name = c.getString(it) }
-                    c.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !c.isNull(it) }?.let { size = c.getLong(it) }
-                }
-            }
-            val pfd = ctx.contentResolver.openFileDescriptor(uri, "r") ?: throw java.io.IOException("not readable")
-            if (size <= 0) size = pfd.statSize
+            val opened = item.source?.take() ?: openShared(uri)
+            val pfd = opened.pfd
+            var size = opened.size
+            val name = opened.name
             val clean = NameRules.sanitize(name ?: uri.lastPathSegment)
             if (size <= 0) {
                 pfd.close()
@@ -283,12 +307,16 @@ class ShareCoordinator private constructor(app: Context) {
             }
             main.post {
                 controller.raw(ShareProtocol.sendFile(sessionConn, pfd.fd, clean, size, null)) { o ->
-                    runCatching { pfd.close() } // the core duplicated the descriptor during the call
                     item.inFlight = false
                     when {
-                        o is CoreOutcome.Ok -> item.transferId = (o.result as? JSONObject)?.optLong("transfer_id", -1)?.takeIf { it >= 0 }
-                        o is CoreOutcome.Rejected && o.code == "busy" -> queue.addFirst(uri to item)
-                        else -> item.error = describe(o)
+                        o is CoreOutcome.Rejected && o.code == "busy" -> {
+                            item.source?.giveBack(opened) ?: runCatching { pfd.close() } // keep it open: the grant may be gone by the retry
+                            queue.addFirst(uri to item)
+                        }
+                        else -> {
+                            runCatching { pfd.close() } // the core duplicated the descriptor during the call
+                            if (o is CoreOutcome.Ok) item.transferId = (o.result as? JSONObject)?.optLong("transfer_id", -1)?.takeIf { it >= 0 } else item.error = describe(o)
+                        }
                     }
                     controller.poll()
                     pump()

@@ -345,6 +345,34 @@ class AndroidSmsPort(context: Context) : SmsPort {
         emptyList()
     }
 
+    private val appContext = context.applicationContext
+
+    @SuppressLint("MissingPermission")
+    override fun subscriptions(): List<SimInfo> = try {
+        if (Build.VERSION.SDK_INT < 22 ||
+            appContext.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED
+        ) emptyList()
+        else appContext.getSystemService(android.telephony.SubscriptionManager::class.java)
+            ?.activeSubscriptionInfoList.orEmpty()
+            .map { SimInfo(it.subscriptionId, it.simSlotIndex + 1, (it.displayName ?: it.carrierName)?.toString().orEmpty()) }
+    } catch (_: SecurityException) {
+        emptyList()
+    }
+
+    override fun unreadCounts(): Map<Long, Int> = try {
+        val q = Bundle().apply {
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${Telephony.Sms.READ} = 0 AND ${Telephony.Sms.TYPE} = 1")
+            putInt(ContentResolver.QUERY_ARG_LIMIT, 5000)
+        }
+        val out = HashMap<Long, Int>()
+        resolver.query(Telephony.Sms.CONTENT_URI, arrayOf(Telephony.Sms.THREAD_ID), q, null)?.use { c ->
+            while (c.moveToNext()) out.merge(c.getLong(0), 1, Int::plus)
+        }
+        out
+    } catch (_: SecurityException) {
+        emptyMap()
+    }
+
     override fun latestPerThread(max: Int): List<SmsRow> {
         val seen = HashSet<Long>()
         val out = ArrayList<SmsRow>()

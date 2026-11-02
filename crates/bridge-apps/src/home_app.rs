@@ -22,8 +22,7 @@ use bridge_core::{
     phone_view::{AgendaView, MessagesView},
 };
 use eframe::egui::{
-    self, Frame, Key, Margin, Modifiers, RichText, ScrollArea, Stroke, ThemePreference,
-    vec2,
+    self, Frame, Key, Margin, Modifiers, RichText, ScrollArea, Stroke, ThemePreference, vec2,
 };
 use std::{
     path::{Path, PathBuf},
@@ -32,14 +31,6 @@ use std::{
 
 /// The palette family used for this window (the neutral system-blue one).
 const LOOK: AppKind = AppKind::Clipboard;
-
-const APPS: [(AppKind, &str); 5] = [
-    (AppKind::Calls, "Calls"),
-    (AppKind::Messages, "Messages"),
-    (AppKind::Contacts, "Contacts"),
-    (AppKind::Agenda, "Calendar"),
-    (AppKind::Clipboard, "Clipboard"),
-];
 
 /// Path of a sibling executable (same directory as this one), falling back to a `PATH` lookup.
 pub fn sibling(name: &str, exe: Option<&Path>) -> PathBuf {
@@ -52,6 +43,17 @@ pub fn sibling(name: &str, exe: Option<&Path>) -> PathBuf {
         .map(|dir| dir.join(&file))
         .filter(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// Windows: do not let a console program started by a GUI-subsystem app open a console window.
+/// No-op elsewhere.
+pub(crate) fn no_window(cmd: &mut Command) -> &mut Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
 }
 
 fn launch(name: &str, args: &[String]) -> Result<(), String> {
@@ -164,7 +166,7 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
         PhoneLine {
             dots: "NO PHONE",
             name: "No phone paired".into(),
-            detail: "Pair one to get started".into(),
+            detail: "Click to pair a phone".into(),
             linked,
             alert: false,
         }
@@ -201,7 +203,7 @@ impl HomeApp {
         let port = self.api_port.to_string();
         std::thread::spawn(move || {
             let exe = std::env::current_exe().ok();
-            let out = Command::new(sibling("geekbridge-ctl", exe.as_deref()))
+            let out = no_window(&mut Command::new(sibling("geekbridge-ctl", exe.as_deref())))
                 .args(["--control-port", &port, "diagnose"])
                 .output();
             let _ = tx.send(match out {
@@ -261,19 +263,24 @@ impl HomeApp {
                 Request::MessagesView {
                     device_id: None,
                     thread_id: None,
+                    query: None,
                 },
             ));
         }
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let pick = |ctx: &egui::Context, key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, key));
+        let pick =
+            |ctx: &egui::Context, key| ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, key));
         if pick(ctx, Key::Num1) {
             self.view = View::Home;
         } else if pick(ctx, Key::Num2) {
             self.view = View::Pair;
         } else if pick(ctx, Key::Num3) || pick(ctx, Key::Comma) {
             self.view = View::Settings;
+        }
+        if pick(ctx, Key::Num9) {
+            self.notice = launch("geekbridge-share", &[]).err();
         }
         for (key, app) in [
             (Key::Num4, AppKind::Calls),
@@ -323,7 +330,14 @@ impl HomeApp {
                         pal,
                         icon,
                         label,
-                        Some(&key.replace('⌘', if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" })),
+                        Some(&key.replace(
+                            '⌘',
+                            if cfg!(target_os = "macos") {
+                                "⌘"
+                            } else {
+                                "Ctrl+"
+                            },
+                        )),
                         self.view == view,
                         None,
                     );
@@ -334,18 +348,26 @@ impl HomeApp {
                 ui.add_space(S3);
                 ui.label(theme::overline(pal, "Open"));
                 ui.add_space(S1);
-                for (kind, icon, label) in [
-                    (AppKind::Calls, Icon::Phone, "Calls"),
-                    (AppKind::Messages, Icon::Chat, "Messages"),
-                    (AppKind::Contacts, Icon::Person, "Contacts"),
-                    (AppKind::Agenda, Icon::Calendar, "Calendar"),
-                    (AppKind::Clipboard, Icon::Clipboard, "Clipboard"),
+                let mod_key = if cfg!(target_os = "macos") {
+                    "⌘"
+                } else {
+                    "Ctrl+"
+                };
+                for (kind, icon, label, n) in [
+                    (AppKind::Calls, Icon::Phone, "Calls", 4),
+                    (AppKind::Messages, Icon::Chat, "Messages", 5),
+                    (AppKind::Contacts, Icon::Person, "Contacts", 6),
+                    (AppKind::Agenda, Icon::Calendar, "Calendar", 7),
+                    (AppKind::Clipboard, Icon::Clipboard, "Clipboard", 8),
                 ] {
-                    if theme::sidebar_item(ui, pal, icon, label, None, false, None).clicked() {
+                    let hint = format!("{mod_key}{n}");
+                    if theme::sidebar_item(ui, pal, icon, label, Some(&hint), false, None).clicked()
+                    {
                         self.notice = launch(identity::binary_name(kind), &[]).err();
                     }
                 }
-                if theme::sidebar_item(ui, pal, Icon::Send, "Share files", None, false, None)
+                let hint = format!("{mod_key}9");
+                if theme::sidebar_item(ui, pal, Icon::Send, "Share files", Some(&hint), false, None)
                     .clicked()
                 {
                     self.notice = launch("geekbridge-share", &[]).err();
@@ -433,7 +455,7 @@ impl HomeApp {
         ui.add_space(S2);
         let width = ui.available_width();
         let color = if alert { pal.accent } else { pal.text };
-        nothing::dot_text_fit(ui, pal, &[dots], PITCH_TITLE, width, color, false);
+        nothing::dot_text_fit(ui, pal, &[dots], PITCH_TITLE * 1.15, width, color, false);
         ui.add_space(S1);
         ui.add(egui::Label::new(theme::semibold(title, 15.0)).truncate());
         ui.add(egui::Label::new(theme::caption(pal, sub)).truncate());
@@ -479,23 +501,52 @@ impl HomeApp {
             Share,
             Calendar,
         }
-        let tiles = [T::Phone, T::Calls, T::Messages, T::Clipboard, T::Share, T::Calendar];
+        let tiles = [
+            T::Phone,
+            T::Calls,
+            T::Messages,
+            T::Clipboard,
+            T::Share,
+            T::Calendar,
+        ];
         for row in tiles.chunks(cols) {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing = vec2(GAP, GAP);
                 for t in row {
                     let clicked = match t {
                         T::Phone => nothing::tile(ui, pal, "Phone link", size, true, |ui| {
-                            Self::tile_body(ui, pal, Icon::Phone, phone.dots, phone.alert, &phone.name, &phone.detail);
+                            Self::tile_body(
+                                ui,
+                                pal,
+                                Icon::Phone,
+                                phone.dots,
+                                phone.alert,
+                                &phone.name,
+                                &phone.detail,
+                            );
                         })
                         .clicked()
-                            .then_some(None),
+                        .then_some(None),
                         T::Calls => {
                             let (dots, alert, title, sub) = match &ringing {
-                                Some((true, who)) => ("RINGING", true, who.clone(), "Incoming call".to_owned()),
-                                Some((false, who)) => ("IN CALL", false, who.clone(), "Call in progress".to_owned()),
-                                None if phone.linked => ("IDLE", false, "Calls".to_owned(), "No call right now".to_owned()),
-                                None => ("---", false, "Calls".to_owned(), "Needs a linked phone".to_owned()),
+                                Some((true, who)) => {
+                                    ("RINGING", true, who.clone(), "Incoming call".to_owned())
+                                }
+                                Some((false, who)) => {
+                                    ("IN CALL", false, who.clone(), "Call in progress".to_owned())
+                                }
+                                None if phone.linked => (
+                                    "IDLE",
+                                    false,
+                                    "Calls".to_owned(),
+                                    "No call right now".to_owned(),
+                                ),
+                                None => (
+                                    "---",
+                                    false,
+                                    "Calls".to_owned(),
+                                    "Needs a linked phone".to_owned(),
+                                ),
                             };
                             nothing::tile(ui, pal, "Calls", size, true, |ui| {
                                 Self::tile_body(ui, pal, Icon::Phone, dots, alert, &title, &sub);
@@ -516,16 +567,38 @@ impl HomeApp {
                             .then_some(Some(AppKind::Messages))
                         }
                         T::Clipboard => {
-                            let sub = clip_line.clone().unwrap_or_else(|| "Nothing received yet".into());
+                            let sub = clip_line
+                                .clone()
+                                .unwrap_or_else(|| "Nothing received yet".into());
                             nothing::tile(ui, pal, "Clipboard", size, true, |ui| {
-                                Self::tile_body(ui, pal, Icon::Clipboard, "CLIP", false, "Clipboard", &sub);
+                                Self::tile_body(
+                                    ui,
+                                    pal,
+                                    Icon::Clipboard,
+                                    "CLIP",
+                                    false,
+                                    "Clipboard",
+                                    &sub,
+                                );
                             })
                             .clicked()
                             .then_some(Some(AppKind::Clipboard))
                         }
                         T::Share => nothing::tile(ui, pal, "Send files", size, true, |ui| {
-                            let (dots, alert) = if hovering { ("DROP", true) } else { ("SEND", false) };
-                            Self::tile_body(ui, pal, Icon::Send, dots, alert, "Send files", "Drop files anywhere here");
+                            let (dots, alert) = if hovering {
+                                ("DROP", true)
+                            } else {
+                                ("SEND", false)
+                            };
+                            Self::tile_body(
+                                ui,
+                                pal,
+                                Icon::Send,
+                                dots,
+                                alert,
+                                "Send files",
+                                "Drop files anywhere here",
+                            );
                         })
                         .clicked()
                         .then_some(Some(AppKind::Clipboard)),
@@ -575,9 +648,20 @@ impl HomeApp {
     fn calendar_tile(ui: &mut egui::Ui, pal: &Palette, events: &Option<Vec<(String, String)>>) {
         let today = localtime::now().date;
         ui.horizontal(|ui| {
-            nothing::dot_text(ui, pal, &format!("{:02}", today.day), PITCH_TITLE, pal.text, false);
+            nothing::dot_text(
+                ui,
+                pal,
+                &format!("{:02}", today.day),
+                PITCH_TITLE,
+                pal.text,
+                false,
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(today.month_name()).size(13.0).color(pal.accent));
+                ui.label(
+                    RichText::new(today.month_name())
+                        .size(13.0)
+                        .color(pal.accent),
+                );
             });
         });
         ui.add_space(S2);
@@ -598,7 +682,9 @@ impl HomeApp {
                         ui.painter().circle_filled(r.center(), 3.0, c);
                         ui.add(
                             egui::Label::new(
-                                RichText::new(format!("{title}  {when}")).size(12.5).color(pal.text2),
+                                RichText::new(format!("{title}  {when}"))
+                                    .size(12.5)
+                                    .color(pal.text2),
                             )
                             .truncate(),
                         );
@@ -614,13 +700,16 @@ impl HomeApp {
         ui.horizontal(|ui| {
             nothing::dot_text(ui, pal, title, PITCH_TITLE, pal.text, false);
             let today = localtime::now().date;
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{} {}", today.day, today.month_name()))
-                        .size(13.0)
-                        .color(pal.accent),
-                );
-            });
+            // The date yields to the title when the window (or a large text scale) leaves no room.
+            if ui.available_width() > 130.0 {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(format!("{} {}", today.day, today.month_name()))
+                            .size(13.0)
+                            .color(pal.accent),
+                    );
+                });
+            }
         });
         ui.add_space(S3);
     }
@@ -651,7 +740,11 @@ impl HomeApp {
         nothing::card(ui, pal, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let busy = self.diagnostics.is_some();
-                let label = if busy { "Collecting…" } else { "Copy diagnostics" };
+                let label = if busy {
+                    "Collecting…"
+                } else {
+                    "Copy diagnostics"
+                };
                 if theme::pill_button(ui, pal, label, ButtonKind::Plain, !busy).clicked() {
                     self.collect_diagnostics(&ctx);
                 }
@@ -759,7 +852,7 @@ pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
             .with_title("GeekBridge")
             .with_app_id("dev.geekbridge.GeekBridge")
             .with_inner_size([960.0, 680.0])
-            .with_min_inner_size([560.0, 480.0])
+            .with_min_inner_size([560.0, 520.0])
             .with_drag_and_drop(true)
             .with_decorations(true),
         ..Default::default()

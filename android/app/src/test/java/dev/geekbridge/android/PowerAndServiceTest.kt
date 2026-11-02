@@ -23,6 +23,10 @@ class PowerAndServiceTest {
             if (o == Oem.Other) {
                 assertTrue(OemIntents.candidates(o).isEmpty())
                 assertTrue(OemGuides.steps(o).isEmpty())
+            } else if (!o.hasExtraSwitch) {
+                // Nothing OS: no vendor screen exists, so every launch falls back to app settings; the guide still explains.
+                assertTrue(OemIntents.candidates(o).isEmpty())
+                assertTrue("$o guide", OemGuides.steps(o).isNotEmpty())
             } else {
                 assertTrue("$o intents", OemIntents.candidates(o).isNotEmpty())
                 assertTrue("$o guide", OemGuides.steps(o).isNotEmpty())

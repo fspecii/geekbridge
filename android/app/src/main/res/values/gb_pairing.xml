@@ -18,15 +18,13 @@
     <string name="qr_confirm_addr_label">This phone would connect to</string>
     <string name="qr_confirm_fp_label">Certificate fingerprint (start)</string>
     <string name="qr_confirm_fp_hint">The full fingerprint is shown again when you approve; it must match your computer’s. If you did not start this yourself, cancel.</string>
-    <string name="qr_confirm_title">Pair with %1$s?</string>
-    <string name="qr_confirm_body">A pairing link asks this phone to connect to “%1$s” at %2$s. Only continue if you just chose “Pair with QR code” on your own computer.</string>
     <string name="qr_cancel">Cancel</string>
     <string name="qr_connecting">Connecting to %1$s…</string>
     <string name="qr_connecting_hint">Checking that this is the computer in the QR code. You will be asked to confirm.</string>
     <string name="qr_done_title">Paired with %1$s</string>
     <string name="qr_next_title">What to do next</string>
-    <string name="qr_next_clipboard">Try the clipboard: turn on Clipboard sync on the Home screen, copy something on this phone, then press Ctrl+Shift+V on your computer.</string>
-    <string name="qr_next_file">Send a file: pick one below, or use Share → Send to computer in any app.</string>
+    <string name="qr_next_clipboard">Try the clipboard: on Home, scroll to Settings and turn on Clipboard sync. Copy some text on this phone, then on your computer open Clipboard and click Paste from phone (or press Ctrl+Shift+V in that window).</string>
+    <string name="qr_next_file">Send a file: first, on your computer, open Share files and tick “Allow this phone to send me files”. Then pick one below, or use Share → Send to computer in any app.</string>
     <string name="qr_next_home">Open Home</string>
     <string name="qr_next_file_btn">Choose a file to send</string>
     <string name="qr_next_done">Done</string>

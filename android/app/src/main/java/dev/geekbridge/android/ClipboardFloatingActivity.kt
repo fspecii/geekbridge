@@ -27,9 +27,11 @@ class ClipboardFloatingActivity : Activity() {
         if (!hasFocus || handled) return
         handled = true
         val appCtx = applicationContext
-        val snapshot = AndroidClipboardHost.read(this)
+        // Only the clip reference is taken here; every provider access happens on the worker.
+        val clip = AndroidClipboardHost.grab(this)
         val engine = ClipboardRuntime.engine()
         ClipboardRuntime.async {
+            val snapshot = clip?.let { AndroidClipboardHost.snapshot(appCtx, it) }
             val result = engine?.onGesture(snapshot) ?: SendResult(false, "disabled")
             Handler(Looper.getMainLooper()).post {
                 Toast.makeText(appCtx, result.message, Toast.LENGTH_SHORT).show()
