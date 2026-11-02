@@ -4,6 +4,11 @@ name: Release
 # [workspace.package] version in Cargo.toml (the single version source; see docs/builds.md).
 # Artifact names are what the in-app update checkers look for:
 #   geekbridge-<linux|windows|macos>-<x86_64|aarch64>.<tar.gz|zip>, geekbridge-android.apk, SHA256SUMS
+#
+# Where the release is published: by default this repository. Set the repository variable RELEASE_REPO
+# (owner/name) and the secret RELEASES_TOKEN (fine-grained token, Contents: read/write on that repo only) to
+# publish to a separate public releases-only repository instead, e.g. while this one is private. The shipped
+# apps must then be built with the same repo (GEEKBRIDGE_RELEASE_REPO / -Pgb.releaseRepo; docs/builds.md).
 
 on:
   push:
@@ -133,6 +138,8 @@ jobs:
     name: Android APK
     needs: version
     runs-on: ubuntu-latest
+    outputs:
+      signer_note: ${{ steps.sign.outputs.signer_note }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -180,34 +187,61 @@ jobs:
           cd android
           gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
       - name: Sign APK (release keystore if the secrets exist, else debug-signed prerelease)
+        id: sign
         shell: bash
         env:
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          # Optional repo variable: lowercase hex SHA-256 of the release certificate (scripts/make-keystore.sh
+          # prints it). When set, a release signed by any other key fails.
+          ANDROID_SIGNER_SHA256: ${{ vars.ANDROID_SIGNER_SHA256 }}
         run: |
           set -euo pipefail
+          bt="$ANDROID_HOME/build-tools/36.0.0"
           mkdir -p dist
           cd android
-          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" ]]; then
-            ( umask 077; echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks" )
+          release_signed=false
+          if [[ -n "${ANDROID_KEYSTORE_B64:-}" ]]; then
+            ( umask 077; echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks" )
             unsigned="$(ls app/build/outputs/apk/release/*.apk | head -n1)"
-            "$ANDROID_HOME/build-tools/36.0.0/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
-            "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$RUNNER_TEMP/release.jks" \
+            "$bt/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+            # v1 + v2 + v3 (minSdk 26: v2/v3 are what the platform checks; v1 is kept for older tooling).
+            "$bt/apksigner" sign --ks "$RUNNER_TEMP/release.jks" \
               --ks-pass env:ANDROID_KEYSTORE_PASSWORD --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --key-pass env:ANDROID_KEY_PASSWORD --out ../dist/geekbridge-android.apk "$RUNNER_TEMP/aligned.apk"
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+              --out ../dist/geekbridge-android.apk "$RUNNER_TEMP/aligned.apk"
+            release_signed=true
             echo "Signed with the release keystore."
           else
             if [[ "$PRERELEASE" != "true" ]]; then
-              echo "::error::A stable release needs the release keystore secrets; refusing to publish a debug-signed APK that phones cannot update from or to."
+              echo "::error::A stable release needs the release keystore secrets (ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD; create them with scripts/make-keystore.sh); refusing to publish a debug-signed APK that phones cannot update from or to."
               exit 1
             fi
             cp app/build/outputs/apk/debug/app-debug.apk ../dist/geekbridge-android.apk
             echo "::warning::No release keystore secrets: the APK is DEBUG-signed. Phones cannot update it over an APK signed with a different key."
           fi
-          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs ../dist/geekbridge-android.apk
+          verify="$("$bt/apksigner" verify --verbose --print-certs ../dist/geekbridge-android.apk)"
+          echo "$verify"
+          signer="$(echo "$verify" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -n1 | tr 'A-F' 'a-f')"
+          [[ "$signer" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::could not read the signer certificate from apksigner"; exit 1; }
+          if [[ "$release_signed" == true ]]; then
+            echo "$verify" | grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" || { echo "::error::APK is not v2-signed"; exit 1; }
+            echo "$verify" | grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" || { echo "::error::APK is not v3-signed"; exit 1; }
+            want="$(echo "${ANDROID_SIGNER_SHA256:-}" | tr -d ': ' | tr 'A-F' 'a-f')"
+            if [[ -n "$want" && "$signer" != "$want" ]]; then
+              echo "::error::signer SHA-256 $signer does not match the repository variable ANDROID_SIGNER_SHA256 ($want): wrong keystore. Phones that have the app installed would refuse this update."
+              exit 1
+            fi
+            [[ -n "$want" ]] || echo "::warning::ANDROID_SIGNER_SHA256 is not set, so the signing key is not pinned. Set it to $signer."
+            echo "signer_note=Android APK signer certificate SHA-256: \`$signer\`" >> "${GITHUB_OUTPUT:-/dev/null}"
+          else
+            echo "signer_note=Android APK is DEBUG-signed (prerelease only; not updatable from or to a release build). Signer SHA-256: \`$signer\`" >> "${GITHUB_OUTPUT:-/dev/null}"
+          fi
+          echo "signer=$signer" >> "${GITHUB_OUTPUT:-/dev/null}"
       - name: Remove the keystore
         if: always()
         shell: bash
@@ -242,15 +276,31 @@ jobs:
           sha256sum -- geekbridge-* $(compgen -G "geekbridge_*" || true) | tee SHA256SUMS
       - name: Create release
         env:
-          GH_TOKEN: ${{ github.token }}
+          DEFAULT_TOKEN: ${{ github.token }}
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          RELEASE_REPO: ${{ vars.RELEASE_REPO }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          SIGNER_NOTE: ${{ needs.android.outputs.signer_note }}
         shell: bash
         run: |
           set -euo pipefail
+          repo="${RELEASE_REPO:-$GITHUB_REPOSITORY}"
+          [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::RELEASE_REPO must be owner/name"; exit 1; }
           flags=()
           [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+          if [[ "$repo" == "$GITHUB_REPOSITORY" ]]; then
+            export GH_TOKEN="$DEFAULT_TOKEN"
+            flags+=(--verify-tag --generate-notes --notes "$SIGNER_NOTE")
+          else
+            # Another repository: the job token cannot write there. The tag does not exist there, so gh
+            # creates it at the default branch head (the releases repo needs at least one commit).
+            [[ -n "$RELEASES_TOKEN" ]] || { echo "::error::RELEASE_REPO is set but the RELEASES_TOKEN secret is missing"; exit 1; }
+            export GH_TOKEN="$RELEASES_TOKEN"
+            flags+=(--notes "GeekBridge ${GITHUB_REF_NAME#v} (built from ${GITHUB_REPOSITORY}@${GITHUB_SHA}). ${SIGNER_NOTE}")
+          fi
+          echo "Publishing $GITHUB_REF_NAME to $repo"
           # Draft first, publish once every asset is attached: the in-app updaters read
           # releases/latest and must never see a release that has no SHA256SUMS yet.
-          gh release create "$GITHUB_REF_NAME" artifacts/* --draft --verify-tag \
-            --repo "$GITHUB_REPOSITORY" --title "GeekBridge ${GITHUB_REF_NAME#v}" --generate-notes "${flags[@]}"
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release create "$GITHUB_REF_NAME" artifacts/* --draft \
+            --repo "$repo" --title "GeekBridge ${GITHUB_REF_NAME#v}" "${flags[@]}"
+          gh release edit "$GITHUB_REF_NAME" --repo "$repo" --draft=false

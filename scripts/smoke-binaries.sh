@@ -27,7 +27,8 @@ EXT=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) EXT=".exe" ;; esac
 bin() { echo "$BIN/$1$EXT"; }
 
-fresh="$(mktemp -d)"
+source "scripts/lib-tmp.sh"
+fresh="$(gb_mktemp smoke -d)"
 native() { if [ -n "$EXT" ]; then cygpath -w "$1"; else echo "$1"; fi; }
 home="$(native "$fresh/home")"
 state="$(native "$fresh/state")"

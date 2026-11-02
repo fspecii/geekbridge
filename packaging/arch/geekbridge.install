@@ -1,0 +1,46 @@
+# Messages only; nothing here changes the system beyond refreshing the icon/desktop caches.
+
+post_install() {
+  command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+  command -v update-desktop-database >/dev/null && update-desktop-database -q usr/share/applications 2>/dev/null || true
+  cat <<'MSG'
+
+GeekBridge is installed. Nothing was enabled or changed in your home directory. First run:
+
+  1. Firewall: allow TCP and UDP 1716-1764 from your LAN to this computer
+     (e.g. ufw allow from 192.168.0.0/16 to any port 1716:1764 proto tcp  (and proto udp)).
+     `geekbridge-ctl firewall` prints the rules for your setup.
+  2. Start the service at login (per user, you choose):
+       geekbridge-ctl autostart enable
+     or with the systemd user unit that the package ships:
+       systemctl --user enable --now geekbridge-service.service
+  3. Hyprland / Omarchy hotkey and window rules, previewed first (a dry run changes nothing):
+       geekbridge-ctl hotkey install
+     Add --apply only if the preview looks right.
+  4. Open "GeekBridge" from the application menu (or run `geekbridge`) and pair your phone.
+
+Optional packages: wl-clipboard or xclip (clipboard), libnotify + mako (notifications),
+bluez + pipewire-pulse (call audio). See `pacman -Qi geekbridge`.
+Licence: none chosen yet; see /usr/share/licenses/geekbridge/LICENSE-PLACEHOLDER.txt.
+
+MSG
+}
+
+post_upgrade() {
+  command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+  command -v update-desktop-database >/dev/null && update-desktop-database -q usr/share/applications 2>/dev/null || true
+  # The service binary changed on disk; a running copy keeps the old one until restarted.
+  echo "GeekBridge was upgraded. Restart the service to use the new version: systemctl --user restart geekbridge-service.service"
+}
+
+post_remove() {
+  command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f usr/share/icons/hicolor 2>/dev/null || true
+  command -v update-desktop-database >/dev/null && update-desktop-database -q usr/share/applications 2>/dev/null || true
+  cat <<'MSG'
+
+GeekBridge was removed. Per-user leftovers are kept; remove them yourself if you want a clean slate:
+  geekbridge-ctl autostart disable   (run before removing, or delete ~/.config/autostart/geekbridge-service.desktop)
+  systemctl --user disable geekbridge-service.service
+  ~/.local/share/geekbridge   (pairing data)
+MSG
+}

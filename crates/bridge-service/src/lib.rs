@@ -359,7 +359,8 @@ fn shutdown_signal() -> io::Result<impl std::future::Future<Output = io::Result<
 /// background schedule (check shortly after start, then about daily) runs unless the operator set
 /// `GEEKBRIDGE_NO_UPDATE_CHECK`. Manual checks from the UI or `geekbridge-ctl` work either way.
 fn update_service(state_dir: &std::path::Path) -> Arc<bridge_update::Updater> {
-    let mut cfg = bridge_update::Config::github(env!("CARGO_PKG_VERSION"));
+    // `GEEKBRIDGE_UPDATE_REPO` (owner/name) and `GEEKBRIDGE_UPDATE_TOKEN` (testers; private repo).
+    let mut cfg = bridge_update::Config::github_from_env(env!("CARGO_PKG_VERSION"));
     cfg.state_file = Some(state_dir.join("update-state.json"));
     // Test hook (scripts/e2e/update-install.sh): a mock release server. Only a loopback `http://` URL is
     // honoured, and the updater itself never contacts another http host.

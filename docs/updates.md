@@ -20,6 +20,36 @@ to the same allow-list (https `github.com`, `api.github.com`, `*.githubuserconte
 deadline. A rate-limit answer (403/429) pauses automatic checks for the time GitHub names (at least a minute,
 at most a day).
 
+## Choosing the release source
+
+The built-in source is `fspecii/geekbridge`; a build can point elsewhere (`GEEKBRIDGE_RELEASE_REPO` /
+`-Pgb.releaseRepo`, see [builds.md](builds.md#releases-and-versioning)), so releases may live in a separate
+public releases-only repository. At run time:
+
+* Desktop: `GEEKBRIDGE_UPDATE_REPO=owner/name` for `geekbridge-service` (malformed values are ignored).
+* Android: debug builds only, the `updates` preference `debug_repo`
+  (`adb shell run-as dev.geekbridge.android` and edit `shared_prefs/updates.xml`), like `debug_base_url`.
+
+### Private repository, 404 and 403
+
+An unauthenticated request for a private repository's releases gets **404** (and 403 when access is refused).
+That is reported as its own state, not "up to date" and not a failure:
+*"No public release found: the project repository may be private or has no releases yet."*
+(`geekbridge-ctl update status`, the Details panel, the Android Diagnostics update card). It is re-asked
+no more than every 5 minutes on a manual check and otherwise on the normal ~daily schedule, so there is no
+retry storm. A real rate limit (429, or 403 with `Retry-After` / an exhausted quota) is still reported as
+such and pauses checks as described above.
+
+### Testers: `GEEKBRIDGE_UPDATE_TOKEN` (desktop only)
+
+Set `GEEKBRIDGE_UPDATE_TOKEN` to a read-only fine-grained token (*Contents: read* on the one repository) in the
+service's environment to see private releases. The token lives in memory only: it is never written to the state
+file or logs (its `Debug` output is redacted). It is sent as `Authorization: Bearer` **only** to
+`https://api.github.com` (release list and the API URL of assets); GitHub redirects that to a pre-signed
+download host, which never receives it, and a redirect to any host outside the allow-list is refused.
+Android has **no token support**: a secret shipped inside an APK, or kept in app storage, can be extracted by
+whoever holds the app, so the Android updater only works with a public repository.
+
 ## Version comparison
 
 The release tag (`vX.Y.Z`) is parsed as semver and compared with the running build's version
@@ -66,10 +96,11 @@ exactly these names.
   (a minimal, non-exported, read-only `ContentProvider` standing in for AndroidX `FileProvider`) with a one-time
   read grant. If "Install unknown apps" is not allowed for GeekBridge, the button first opens that Android
   settings page (`REQUEST_INSTALL_PACKAGES`); the system then asks you to confirm.
-* An update installs only over an app signed with the same key. The pipeline signs with a release keystore when
-  the secrets in [builds.md](builds.md#releases-and-versioning) exist; otherwise the APK is debug-signed and
-  will not update an app installed from a differently signed build (Android refuses it).
-* The app opens no listening socket for this; all connections are outbound HTTPS.
+* An update installs only over an app signed with the same key (or a v3 rotation lineage that contains it). The
+  pipeline signs with the release keystore ([builds.md](builds.md#first-release-android-signing-key)); stable tags fail
+  without it. The Android app compares the downloaded APK's signer certificate (SHA-256, via `PackageManager`
+  `GET_SIGNING_CERTIFICATES`) with its own **before** showing Install; on a mismatch the file is deleted and the app
+  explains it (a debug build never updates to a release build: uninstall once, then install the release APK).
 
 ## Tested / not tested
 

@@ -156,6 +156,7 @@ object CallControlRuntime {
     private fun startObserving(e: CallControlEngine) {
         val a = app ?: return
         async { e.reset() }
+        async { core.transportAction(CallsProtocol.configRequest(true)) } // the core forgets the opt-in when the process dies
         val perms = CallPermissionsReader.read(a)
         if (monitor == null && perms.readPhoneState) {
             val m = CallStateMonitor(

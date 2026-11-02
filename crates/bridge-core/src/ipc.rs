@@ -627,6 +627,10 @@ pub struct PairQr {
     pub addresses: Vec<String>,
 }
 
+/// Wording for [`UpdateState::NoPublicRelease`], shared by `geekbridge-ctl` and the desktop UI.
+pub const UPDATE_NO_PUBLIC_RELEASE: &str =
+    "No public release found: the project repository may be private or has no releases yet.";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpdateState {
@@ -634,6 +638,9 @@ pub enum UpdateState {
     Idle,
     Checking,
     UpToDate,
+    /// The release list answered 404/403: the repository may be private or have no releases yet.
+    /// Not "up to date", and not a failure.
+    NoPublicRelease,
     /// A newer release exists.
     Available,
     Downloading,

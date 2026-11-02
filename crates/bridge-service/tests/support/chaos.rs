@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 /// CI-friendly mode.
 pub fn soak() -> bool {
     std::env::var("GEEKBRIDGE_CHAOS").is_ok_and(|v| v == "soak")
+        || std::env::var("GEEKBRIDGE_SOAK").is_ok_and(|v| v == "1")
 }
 
 pub fn scaled(short: usize, long: usize) -> usize {

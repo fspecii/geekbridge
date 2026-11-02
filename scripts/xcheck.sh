@@ -14,7 +14,8 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-stubs="$(mktemp -d)"
+source "scripts/lib-tmp.sh"
+stubs="$(gb_mktemp xcheck -d)"
 trap 'rm -rf "$stubs"' EXIT
 cat > "$stubs/fakecc" <<'STUB'
 #!/bin/bash

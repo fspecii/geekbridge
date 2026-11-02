@@ -110,7 +110,8 @@ APK="$DIST_DIR/geekbridge-debug.apk"
 install -m 0644 "${apks[0]}" "$APK"
 
 listing="$(unzip -Z1 "$APK")"
-VERIFY="$(mktemp -d)"
+source "$HERE/lib-tmp.sh"
+VERIFY="$(gb_mktemp build-android -d)"
 trap 'rm -rf "$VERIFY"' EXIT
 for abi in arm64-v8a x86_64; do
     grep -qx "lib/$abi/$LIB_NAME" <<<"$listing" || die "APK is missing lib/$abi/$LIB_NAME"

@@ -18,7 +18,8 @@ if [[ -z "${A11Y_INNER:-}" ]]; then
     exec dbus-run-session -- "${BASH_SOURCE[0]}" "$@"
 fi
 
-TMP="$(mktemp -d)"
+source "$ROOT/scripts/lib-tmp.sh"
+TMP="$(gb_mktemp a11y -d)"
 PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done; rm -rf "$TMP"; }
 trap cleanup EXIT

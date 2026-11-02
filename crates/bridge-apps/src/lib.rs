@@ -16,6 +16,9 @@ pub mod icons;
 pub mod identity;
 pub mod input;
 pub mod localtime;
+#[cfg(feature = "memstats")]
+pub mod memstats;
+pub mod memtrim;
 pub mod nothing;
 pub mod pace;
 pub mod phone_feed;

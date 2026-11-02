@@ -870,6 +870,9 @@ fn describe_update(s: &UpdateStatus) {
             }
         }
         (Some(latest), false) => println!("latest:   v{} - you are up to date", latest.version),
+        (None, _) if s.state == UpdateState::NoPublicRelease => {
+            println!("latest:   {}", ipc::UPDATE_NO_PUBLIC_RELEASE);
+        }
         (None, _) => println!("latest:   unknown (no check has completed)"),
     }
     if let Some(path) = &s.downloaded_path {

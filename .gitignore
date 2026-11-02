@@ -8,3 +8,10 @@
 /android/**/build/
 /android/app/src/main/jniLibs/**/*.so
 /android/.kotlin/
+
+# Signing keys must never be committed
+*.jks
+*.p12
+*.keystore
+*.pass
+release-keystore*

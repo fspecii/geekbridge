@@ -127,9 +127,15 @@ if [[ -f "$APKS/gb-0.2.0.apk" ]]; then
   # real keystore path
   keytool -genkeypair -keystore "$S/rel.jks" -storepass relpass1 -keypass relpass1 -alias rel -keyalg RSA -keysize 2048 -validity 100 -dname "CN=GeekBridge dryrun" >/dev/null 2>&1
   b64="$(base64 -w0 "$S/rel.jks")"; [[ -s "$S/rel.jks" ]] || bad "keytool could not create the test keystore"
-  t  "stable tag with a (generated) release keystore: zipalign + apksigner" sign PRERELEASE=false ANDROID_KEYSTORE_BASE64="$b64" ANDROID_KEYSTORE_PASSWORD=relpass1 ANDROID_KEY_ALIAS=rel ANDROID_KEY_PASSWORD=relpass1
+  t  "stable tag with a (generated) release keystore: zipalign + apksigner" sign PRERELEASE=false ANDROID_KEYSTORE_B64="$b64" ANDROID_KEYSTORE_PASSWORD=relpass1 ANDROID_KEY_ALIAS=rel ANDROID_KEY_PASSWORD=relpass1
+  fp="$(keytool -list -v -keystore "$S/rel.jks" -storepass relpass1 -alias rel 2>/dev/null | awk -F'SHA256: ' '/SHA256:/ {print $2; exit}' | tr -d ': ' | tr 'A-F' 'a-f')"
+  t  "release signing with the correct pinned ANDROID_SIGNER_SHA256" sign PRERELEASE=false ANDROID_KEYSTORE_B64="$b64" ANDROID_KEYSTORE_PASSWORD=relpass1 ANDROID_KEY_ALIAS=rel ANDROID_KEY_PASSWORD=relpass1 ANDROID_SIGNER_SHA256="$fp"
+  tn "wrong ANDROID_SIGNER_SHA256 fails the release" sign PRERELEASE=false ANDROID_KEYSTORE_B64="$b64" ANDROID_KEYSTORE_PASSWORD=relpass1 ANDROID_KEY_ALIAS=rel ANDROID_KEY_PASSWORD=relpass1 ANDROID_SIGNER_SHA256="$(printf '0%.0s' {1..64})"
+  t  "signing again for the remaining checks" sign PRERELEASE=false ANDROID_KEYSTORE_B64="$b64" ANDROID_KEYSTORE_PASSWORD=relpass1 ANDROID_KEY_ALIAS=rel ANDROID_KEY_PASSWORD=relpass1 ANDROID_SIGNER_SHA256="$fp"
+  apksigner verify --verbose "$S/dist/geekbridge-android.apk" 2>&1 | grep -q "scheme (APK Signature Scheme v3): true" && ok "APK verifies with v1, v2 and v3 schemes" || bad "v3 scheme"
   [[ -f "$S/dist/geekbridge-android.apk" ]] && apksigner verify --print-certs "$S/dist/geekbridge-android.apk" 2>&1 | grep -q "CN=GeekBridge dryrun" && ok "signed APK verifies with the release certificate" || bad "signed APK certificate"
-  [[ "$(aapt dump badging "$S/dist/geekbridge-android.apk" | grep -c "versionCode='2000'")" == 1 ]] && ok "signed APK keeps versionCode 2000" || bad "versionCode"
+  vc_in="$(aapt dump badging "$APKS/gb-0.2.0.apk" | sed -n "s/.*versionCode='\([0-9]*\)'.*/\1/p" | head -1)"
+  [[ -n "$vc_in" && "$(aapt dump badging "$S/dist/geekbridge-android.apk" | grep -c "versionCode='$vc_in'")" == 1 ]] && ok "signed APK keeps its versionCode ($vc_in)" || bad "versionCode"
   zipalign -c -P 16 4 "$S/dist/geekbridge-android.apk" >/dev/null 2>&1 && ok "zipalign -P 16 check passes" || bad "zipalign check"
   [[ ! -e "$S/tmp/release.jks" ]] && echo "note: keystore removal is a separate step (always())" || true
 else echo "SKIP  android signing (build $APKS/gb-0.2.0.apk first: scripts/e2e/update-install.sh builds nothing itself)"; fi

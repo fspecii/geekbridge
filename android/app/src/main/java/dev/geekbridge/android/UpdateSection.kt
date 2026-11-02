@@ -137,6 +137,10 @@ class UpdateSection(
                 offer = null
                 say("GeekBridge ${BuildConfig.VERSION_NAME} is up to date.", Tone.Ok)
             }
+            is UpdateCheckResult.NoPublicRelease -> {
+                offer = null
+                say(UpdateCheckResult.NoPublicRelease.MESSAGE, Tone.Muted)
+            }
             is UpdateCheckResult.Failed -> say(result.reason, Tone.Warn)
         }
         render()
@@ -158,7 +162,7 @@ class UpdateSection(
                         main.post { say("Downloading… ${(done * 100 / total).coerceIn(0, 100)}%", Tone.Muted) }
                     }
                 }
-                null
+                signerProblem(dir)
             } catch (e: UpdateChecker.UpdateException) {
                 e.message ?: "The download failed."
             }
@@ -173,6 +177,15 @@ class UpdateSection(
                 render()
             }
         }
+    }
+
+    /** Non-null (user text) when the verified APK is signed by a different key than the installed app; the file is deleted. */
+    private fun signerProblem(dir: File?): String? {
+        val file = dir?.let { File(it, UpdateChecker.UPDATE_FILE_NAME) } ?: return null
+        val verdict = SignerCheck.check(SignerCheck.AndroidSource(activity.packageManager, activity.packageName), file.path)
+        val text = SignerCheck.message(verdict, BuildConfig.DEBUG) ?: return null
+        file.delete()
+        return text
     }
 
     private fun startInstall() {
@@ -196,9 +209,14 @@ class UpdateSection(
         worker.execute {
             // Re-check the file the installer will read, right before handing it over.
             val ok = file.isFile && sha256Of(file) == expected.lowercase()
+            val signer = if (ok) signerProblem(file.parentFile) else null
             main.post {
                 busy = false
-                if (!ok) {
+                if (signer != null) {
+                    file.delete()
+                    verified = false
+                    say(signer, Tone.Warn)
+                } else if (!ok) {
                     file.delete()
                     verified = false
                     say("The downloaded file changed or disappeared. Download it again.", Tone.Warn)

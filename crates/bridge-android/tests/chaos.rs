@@ -21,6 +21,7 @@ use tokio::time::timeout;
 
 fn soak() -> bool {
     std::env::var("GEEKBRIDGE_CHAOS").is_ok_and(|v| v == "soak")
+        || std::env::var("GEEKBRIDGE_SOAK").is_ok_and(|v| v == "1")
 }
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {

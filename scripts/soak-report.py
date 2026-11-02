@@ -258,7 +258,7 @@ def main():
         charts = ["soak-desktop.png", "soak-phone-memory.png", "soak-phone-handles.png", "soak-latency.png"]
         w("## Charts\n")
         for c in charts:
-            w(f"![{c}]({'img/' if publish else ''}{c if not publish else 'soak-' + c.replace('soak-', '')})\n")
+            w(f"![{c}]({'img/' if publish else ''}{c})\n")
 
     w("## Resource trends (leak check)\n")
     w("Growth = median of the last quarter minus the median of the first quarter of the samples after the first "
@@ -284,6 +284,25 @@ def main():
     w("```\n")
     w("**Leak verdict:** " + ("; ".join(f"{n} +{a['growth']:.1f} over {a['minutes']:.0f} min ({fmt(a['slope'], '', 2)}/h)" for n, a in leaks)
                            if leaks else "no series grew past its floor in the measured window.") + "\n")
+
+    # budgets from docs/performance.md and docs/android-perf.md (idle budgets; the soak is busier than idle, so the
+    # peak is informational and the late median is the comparable number)
+    budgets = [("Desktop RSS", 10.0, "MiB", "idle 10 000 kB"), ("Desktop threads", 8, "", "idle budget"), ("Desktop open fds", 20, "", "idle budget"),
+               ("Phone PSS (total)", 35.0, "MiB", "idle, app closed"), ("Phone threads", 32, "", "idle, app closed"),
+               ("Phone wake locks held", 0, "", "idle"), ("Phone alarms", 0, "", "idle")]
+    w("## Against the documented budgets\n")
+    w("| series | budget | peak in the soak | late median | verdict |")
+    w("|---|---|---|---|---|")
+    for name, limit, unit, note in budgets:
+        pts = next((m[2] for m in metrics if m[0] == name), [])
+        if not pts:
+            continue
+        a = analyse(pts, 0)
+        peak = max(v for _, v in pts)
+        late = a["late"] if a else None
+        ok = "within" if (late is not None and late <= limit) else "**over** (late median)"
+        w(f"| {name} | {limit}{unit} ({note}) | {fmt(peak, unit)} | {fmt(late, unit)} | {ok} |")
+    w("")
 
     # operations
     w("## Operations\n")

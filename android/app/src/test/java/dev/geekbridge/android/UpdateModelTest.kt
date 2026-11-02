@@ -32,10 +32,17 @@ class UpdateModelTest {
 
     @Test
     fun versionCodeFormula() {
-        assertEquals(1_000, v("0.1.0").toVersionCode())
-        assertEquals(1_002_003, v("1.2.3").toVersionCode())
-        assertNull(v("1.1000.0").toVersionCode())
-        assertTrue(v("0.2.0").toVersionCode()!! > v("0.1.9").toVersionCode()!!)
+        val expected = listOf(
+            "0.1.0" to 10_099, "0.1.1" to 10_199, "0.2.0-rc.1" to 20_051, "0.2.0" to 20_099,
+            "1.0.0-alpha.1" to 1_000_001, "1.0.0-beta.2" to 1_000_027, "1.0.0-rc.1" to 1_000_051, "1.0.0" to 1_000_099,
+        )
+        for ((v, code) in expected) assertEquals(v, code, v(v).toVersionCode())
+        // Strictly increasing in semver order, so rc < final and Android always accepts the upgrade.
+        val order = listOf("0.1.0", "0.1.1", "0.2.0-rc.1", "0.2.0-rc.2", "0.2.0", "1.0.0-alpha.1", "1.0.0-beta.1", "1.0.0-rc.1", "1.0.0", "1.0.1", "1.1.0")
+        for ((a, b) in order.zipWithNext()) assertTrue("$a < $b", v(a).toVersionCode()!! < v(b).toVersionCode()!!)
+        assertNull(v("1.100.0").toVersionCode())
+        assertNull(v("215.0.0").toVersionCode())
+        assertTrue(v("214.99.99").toVersionCode()!! > 0)
     }
 
     @Test

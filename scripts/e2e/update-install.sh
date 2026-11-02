@@ -7,7 +7,7 @@
 # Isolated from the other e2e runs: own scratch dir (target/e2e-update), own mock port (18891), own desktop
 # service ports (17680/17681/17616/1930) and state dir, own AVD gb36u (console 5624, adb server 16048).
 # Needs: the release desktop binaries in $DESK_TARGET (built here when missing) and, for android, two debug
-# APKs signed with the same key: v0.1.0 (versionCode 1000) and v0.2.0 (2000), built from scratch copies of
+# APKs signed with the same key: v0.1.0 (versionCode 10099) and v0.2.0 (20099), built from scratch copies of
 # android/ with a patched Cargo.toml version (the working tree is not touched).
 # Results: dist/android/logs/e2e-update-results.tsv; screenshots dist/screenshots/android/e2e-upd-*.png.
 set -uo pipefail
@@ -231,7 +231,7 @@ android() {
   for _ in $(seq 20); do [[ "$(pkgver)" == *"versionName=0.2.0"* ]] && { ok=0; break; }; sleep 2; done
   check android-upgrade-installed $ok "$(pkgver)"
   check android-data-survived $([[ "$(appstate)" == "$before" && "$($ADB shell run-as $PKG cat files/e2e-marker.txt | tr -d '\r')" == before-update-marker ]]; echo $?) "files/ shared_prefs/ databases/ hashes unchanged, marker intact"
-  $ADB shell dumpsys package $PKG | grep -q "versionCode=2000" ; check android-version-code $? "versionCode 2000"
+  $ADB shell dumpsys package $PKG | grep -q "versionCode=20099" ; check android-version-code $? "versionCode 20099"
   $ADB shell am start -n "$PKG/.HomeActivity" >/dev/null; sleep 4
   check android-app-starts-after-update $([[ -n "$($ADB shell pidof $PKG | tr -d '\r')" ]]; echo $?) ""
   # now current: no further offer

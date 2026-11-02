@@ -58,12 +58,25 @@ impl fmt::Debug for DeviceId {
     }
 }
 
-/// Strip the characters peers strip, drop control characters, cap the length.
+/// Zero-width, bidirectional-format and similar invisible characters: they can reorder or hide the text around a
+/// name (`U+202E` makes "Evil" display as "live"), so a name never keeps them (the phone app strips the same set).
+fn is_invisible_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{061C}'
+            | '\u{FEFF}'
+    )
+}
+
+/// Strip the characters peers strip, drop control and invisible direction characters, cap the length.
 /// Returns `None` when nothing is left.
 pub fn sanitize_device_name(raw: &str) -> Option<String> {
     let cleaned: String = raw
         .chars()
-        .filter(|c| !NAME_STRIP.contains(c) && !c.is_control())
+        .filter(|c| !NAME_STRIP.contains(c) && !c.is_control() && !is_invisible_format(*c))
         .take(MAX_NAME_CHARS)
         .collect();
     let trimmed = cleaned.trim();
@@ -338,6 +351,19 @@ mod tests {
         }
         assert!(validate_device_name(&"a".repeat(MAX_USER_NAME_CHARS)).is_ok());
         assert!(validate_device_name(&"a".repeat(MAX_USER_NAME_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn names_lose_direction_marks_and_markup_stays_inert() {
+        assert_eq!(
+            validate_device_name("Ev\u{202e}il\u{200f} PC").unwrap(),
+            "Evil PC"
+        );
+        assert_eq!(validate_device_name("\u{200b}\u{feff}x").unwrap(), "x");
+        assert!(validate_device_name("\u{202e}\u{200f}").is_err());
+        assert_eq!(validate_device_name("<b>Bold</b>").unwrap(), "bBold/b");
+        assert_eq!(validate_device_name("Laptop 🚀").unwrap(), "Laptop 🚀");
+        assert_eq!(sanitize_device_name("a\u{202e}b").as_deref(), Some("ab"));
     }
 
     fn packet(body: Value) -> Packet {

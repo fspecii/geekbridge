@@ -145,6 +145,22 @@ phone_id_now() { PHONE_ID="$(cat "$P/desk/phone-id" 2>/dev/null)"; }
 desk_pid() { pgrep -f "^$SVC_BIN --state-dir $P/desk/state" | head -1; }
 SCREEN_OFF_UNTIL=0
 
+# Phone -> desktop payloads: the phone listens on the first free port of 1739-1764 and the desktop dials the same port on
+# 127.0.0.1. Every emulator on the host keeps a few of those 26 host ports redirected, and the desktop's own payload listener
+# (desktop -> phone) needs a free one, so this run keeps ONE redirect and blocks the busy ports inside the guest (E2E-11).
+desk_dial() {
+  $ADB emu redir add "tcp:$REDIR_PORT:1716" >/dev/null 2>&1
+  local p mine=0
+  for ((p = 1739; p <= 1764 && mine < 1; p++)); do
+    if $ADB emu redir list 2>/dev/null | grep -q "tcp:$p  *=> *$p"; then mine=1
+    elif $ADB emu redir add "tcp:$p:$p" 2>&1 | grep -q '^OK'; then mine=1
+    else   # a port another emulator owns on the host: occupy it in the guest for good (a looping nc), so the phone cannot pick it
+      $ADB shell "pgrep -f 'nc -l -p $p' >/dev/null || setsid sh -c 'while :; do nc -l -p $p </dev/null >/dev/null 2>&1; sleep 1; done' </dev/null >/dev/null 2>&1 &" >/dev/null 2>&1
+    fi
+  done
+  ctl connect "$PHONE_ID" 127.0.0.1 "$REDIR_PORT" >/dev/null
+}
+
 # ---------------------------------------------------------------- event + failure records
 EV="$OUT/events.tsv" FAILS="$OUT/failures.log"
 [[ -f "$EV" ]] || printf 'elapsed_s\tkind\tok\tlatency_ms\tdetail\n' >"$EV"
@@ -254,6 +270,14 @@ XML
     <boolean name="enabled" value="true" />
 </map>
 XML
+  # Per-computer opt-ins: the phone enforces which paired computer may use calls/contacts/calendar/SMS (the Allowed
+  # computers dialog); the file is what that dialog writes.
+  write_pref_root geekbridge_grants <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="grants">{&quot;migrated&quot;:true,&quot;grants&quot;:{&quot;$DESK_ID&quot;:[&quot;calls&quot;,&quot;contacts&quot;,&quot;calendar&quot;,&quot;sms&quot;]}}</string>
+</map>
+XML
   wake; goto_home; sleep 3; ensure_link >/dev/null 2>&1 || true
   goto_home; sleep 2
   desk_dial; wait_for 25 is_connected || { log "link not connected after setup"; return 1; }
@@ -312,6 +336,10 @@ TASK_N=0
 declare -A TASK_LIMIT=([clip]=200 [file]=330 [flap]=330 [call]=150 [data]=160 [restart]=150 [idle]=$((IDLE_SECS + 150)))
 declare -A RUNS
 ensure_up() { # link connected, phone awake; redial otherwise. Prints nothing; returns 1 if the link cannot be restored
+  if [[ "$(A get-state 2>/dev/null)" != device ]]; then   # the emulator was killed from outside (another agent, OOM): end the run
+    [[ -e "$OUT/abort" ]] || { echo emulator-gone >"$OUT/abort"; ev emulator_gone 0 0 "adb no longer sees $SERIAL"; fail emulator_gone "the emulator process disappeared during the soak"; }
+    return 1
+  fi
   link_up && return 0
   local t0; t0=$(msnow)
   wake; A shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1; sleep 2
@@ -397,7 +425,9 @@ t_file() {
     if [[ -n "$got" && "$(sha256sum "$got" | cut -d' ' -f1)" == "$want" ]]; then ev file_p2d 1 "$ms" "${mb}MB"
     else ev file_p2d 0 "$ms" "${mb}MB"; fail file_p2d "$name: not received/sha mismatch (transfer: $(ctl share 2>/dev/null | grep "$name" | tail -1))"; tap Cancel >/dev/null 2>&1; fi
     rm -f "$f" "$HOME_SCRATCH"/Downloads/GeekBridge/"$name"* ; A shell "rm -f /sdcard/Download/$name.png" >/dev/null 2>&1
-    A shell am force-stop com.android.intentresolver >/dev/null 2>&1
+    # A finished Share screen stays on the task stack (singleTop) with its old session: start the app clean, as the e2e script does.
+    A shell am force-stop com.android.intentresolver >/dev/null 2>&1; A shell am force-stop "$PKG"; sleep 1; wake; goto_home; sleep 3
+    desk_dial; wait_for 20 is_connected
   fi
 }
 t_flap() {
@@ -408,14 +438,17 @@ t_flap() {
     wait_for 10 bash -c "! \"${CTL[0]}\" --state-dir \"$P/desk/state\" --control-port $PERF_CTRL_PORT status | grep -q connected"
     ev flap_close 1 $(( $(msnow) - t0 )) "ctl disconnect noticed"
     sleep 3
-  else                 # silent: every packet to/from the guest is dropped (no FIN, no RST); measure the dead-link detection
+  else                 # silent: every packet to/from the guest is dropped for 25 s (no FIN, no RST), then restored.
+    # The emulator's own network stack terminates the desktop's TCP connection on the host, so the desktop's keepalive
+    # cannot see this outage (see docs/soak-report.md); what is measured is that the link survives or recovers.
     A shell "iptables -I INPUT -j DROP; iptables -I OUTPUT -j DROP" >/dev/null 2>&1
-    t0=$(msnow); det=0
-    for ((i = 0; i < 150; i++)); do link_up || { det=1; break; }; sleep 1; done
-    if ((det)); then ev dead_link_detect 1 $(( $(msnow) - t0 )) "desktop dropped the black-holed link"
-    else ev dead_link_detect 0 $(( $(msnow) - t0 )) "desktop still thought the link was up after 150 s"; fail dead_link "desktop still showed the black-holed link as connected after 150 s"; fi
+    sleep 25
     A shell "iptables -D INPUT -j DROP; iptables -D OUTPUT -j DROP" >/dev/null 2>&1
-    sleep 2
+    t0=$(msnow)
+    if wait_for 30 bash -c "\"${CTL[0]}\" --state-dir \"$P/desk/state\" --control-port $PERF_CTRL_PORT ping $PHONE_ID >/dev/null 2>&1"; then
+      ev blackhole_recover 1 $(( $(msnow) - t0 )) "25 s black hole, ping answered again"; return 0
+    fi
+    ev blackhole_recover 0 $(( $(msnow) - t0 )) "no ping answer 30 s after a 25 s black hole"; fail blackhole_recover "link did not answer a ping after the black hole was lifted"
   fi
   wake; A shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1; sleep 2
   t1=$(msnow); desk_dial
@@ -431,10 +464,10 @@ t_call() {
   A emu gsm call $num >/dev/null
   if ! wait_for 25 call_state_is ringing; then ev call_ring 0 $(( $(msnow) - t0 )) "desktop never saw it ringing"; fail call_ring "no ringing call on the desktop: $(ctl calls --reveal 2>&1 | head -c 200)"; A emu gsm cancel $num >/dev/null 2>&1; return; fi
   ev call_ring 1 $(( $(msnow) - t0 )) "ringing on desktop"
-  t0=$(msnow); ctl call answer >/dev/null 2>&1
+  t0=$(msnow); local aout; aout="$(ctl call answer 2>&1 | head -c 200)"
   local ok=0 i; for ((i = 0; i < 24; i++)); do [[ "$(modem_state)" == 2 ]] && { ok=1; break; }; sleep 0.5; done
   ev call_answer $ok $(( $(msnow) - t0 )) "modem off-hook"
-  ((ok)) || fail call_answer "answer did not take the modem off-hook (state $(modem_state))"
+  ((ok)) || fail call_answer "answer did not take the modem off-hook (state $(modem_state)); ctl said: $aout; calls: $(ctl calls --reveal 2>&1 | head -c 300 | tr '\n' '|')"
   sleep 5; t0=$(msnow); ctl call hangup >/dev/null 2>&1; ok=0
   for ((i = 0; i < 24; i++)); do [[ "$(modem_state)" == 0 ]] && { ok=1; break; }; sleep 0.5; done
   ev call_hangup $ok $(( $(msnow) - t0 )) "modem idle"
@@ -463,13 +496,15 @@ t_data() {
 }
 t_restart() {
   local n=$TASK_N; local t0; t0=$(msnow)
-  A shell am force-stop "$PKG"; sleep 3
+  A shell am force-stop "$PKG"
+  local gone=0 i; for ((i = 0; i < 60; i++)); do link_up || { gone=1; break; }; sleep 1; done
+  ev peer_gone_detect $gone $(( $(msnow) - t0 )) "desktop noticed the phone app being killed (FIN/RST path)"
+  sleep 2
   wake; A shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1; sleep 4
   desk_dial
   if wait_for 40 is_connected; then ev app_restart 1 $(( $(msnow) - t0 )) "force-stop $n, trusted redial without a code"
   else ev app_restart 0 $(( $(msnow) - t0 )) "force-stop $n"; fail app_restart "link did not come back after a force-stop (phases: $(link_phases))"; fi
-  for f in clipboard; do ctl consent "$PHONE_ID" $f on >/dev/null 2>&1; done
-  phone_clip_sync_on >/dev/null 2>&1
+  # No Off/On cycling of Clipboard sync here: the next clip round trip proves the saved setting is live again after the kill.
 }
 t_idle() {
   local n=$TASK_N; local t0; t0=$(msnow)
@@ -490,7 +525,7 @@ run_loop() {
   schedule data 240 "$DATA_EVERY"; schedule call 420 "$CALL_EVERY"; schedule restart $((RESTART_EVERY / 2)) "$RESTART_EVERY"
   schedule idle "$IDLE_EVERY" "$IDLE_EVERY"
   local order=(idle restart call flap data file clip) name
-  while (($(elapsed) < DURATION)); do
+  while (($(elapsed) < DURATION)) && [[ ! -e "$OUT/abort" ]]; do
     local ran=0
     for name in "${order[@]}"; do
       (($(elapsed) >= DURATION)) && break

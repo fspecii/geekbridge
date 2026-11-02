@@ -6,8 +6,11 @@ plugins {
 }
 
 // Single version source: [workspace.package] version in the repository's Cargo.toml. The release workflow
-// tags that exact version (vX.Y.Z); versionCode = major*1_000_000 + minor*1_000 + patch (same formula as
-// AppVersion.toVersionCode in UpdateModel.kt).
+// tags that exact version (vX.Y.Z[-pre]). versionCode must strictly increase for every release or Android
+// refuses the update, so it is derived, never hand-edited (same formula as AppVersion.toVersionCode in
+// UpdateModel.kt and scripts/version-code.sh; documented in docs/builds.md):
+//   versionCode = (major*10_000 + minor*100 + patch) * 100 + slot
+//   slot: 99 final; prerelease alpha.N 0..24, beta.N 25..49, rc.N 50..74 (N capped at 24), so rc < final.
 val workspaceVersion: String = run {
     val cargo = rootProject.projectDir.resolve("../Cargo.toml")
     val text = cargo.readText()
@@ -16,11 +19,16 @@ val workspaceVersion: String = run {
         ?: throw GradleException("No [workspace.package] version in ${cargo.canonicalPath}")
 }
 val workspaceVersionCode: Int = run {
-    val m = Regex("""^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$""").matchEntire(workspaceVersion)
-        ?: throw GradleException("Workspace version '$workspaceVersion' is not major.minor.patch")
-    val (major, minor, patch) = m.destructured
-    require(major.toInt() <= 2000 && minor.toInt() <= 999 && patch.toInt() <= 999) { "version component out of range" }
-    major.toInt() * 1_000_000 + minor.toInt() * 1_000 + patch.toInt()
+    val m = Regex("""^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$""").matchEntire(workspaceVersion)
+        ?: throw GradleException("Workspace version '$workspaceVersion' is not major.minor.patch[-pre]")
+    val (major, minor, patch, pre) = m.destructured
+    require(major.toInt() <= 214 && minor.toInt() <= 99 && patch.toInt() <= 99) { "version component out of range" }
+    val ids = pre.split('.')
+    val slot = if (pre.isEmpty()) 99 else {
+        val base = when (ids[0].lowercase()) { "beta" -> 25; "rc" -> 50; else -> 0 }
+        base + (ids.getOrNull(1)?.toLongOrNull() ?: 0L).coerceIn(0L, 24L).toInt()
+    }
+    (major.toInt() * 10_000 + minor.toInt() * 100 + patch.toInt()) * 100 + slot
 }
 
 val packagedAbis: List<String> =
@@ -40,6 +48,11 @@ android {
         // Contract: phone and emulator only.
         // -Pgb.abis=arm64-v8a builds a phone-only APK (about half the size); default is phone + emulator.
         ndk { abiFilters += packagedAbis }
+        // Where the updater looks for releases (owner/name). -Pgb.releaseRepo=acme/geekbridge-releases points
+        // a build at a separate public releases-only repo; validated again at runtime (UpdateModel.validRepo).
+        val releaseRepo = (findProperty("gb.releaseRepo") as String?)?.trim()?.takeIf { it.isNotEmpty() } ?: "fspecii/geekbridge"
+        require(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+").matches(releaseRepo)) { "gb.releaseRepo must be owner/name" }
+        buildConfigField("String", "RELEASE_REPO", "\"$releaseRepo\"")
     }
 
     buildTypes {

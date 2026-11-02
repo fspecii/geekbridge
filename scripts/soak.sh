@@ -40,6 +40,7 @@ while (($#)); do
 done
 
 cd "$ROOT"
+source "$ROOT/scripts/lib-tmp.sh"   # GB_TMP: scratch dir (also exported as TMPDIR / GEEKBRIDGE_TEST_TMP)
 chaos() {
     echo "== part 3: chaos / failure-injection tests (soak mode) =="
     GEEKBRIDGE_CHAOS=soak cargo test --release --locked -p bridge-service \
@@ -56,7 +57,7 @@ GEEKBRIDGE_FUZZ_ITERS="$FUZZ" cargo test --release --locked -p bridge-kde --test
 echo "== part 2: real service under junk traffic for ${SECONDS_TOTAL}s =="
 cargo build --release --locked -p bridge-service
 BIN_DIR="$(cd "$BIN_DIR" && pwd -P)"
-TMP="$(mktemp -d)"
+TMP="$(gb_mktemp soak -d)"
 SVC=""
 cleanup() { [[ -n "$SVC" ]] && kill "$SVC" 2>/dev/null || true; wait 2>/dev/null || true; rm -rf "$TMP"; }
 trap cleanup EXIT

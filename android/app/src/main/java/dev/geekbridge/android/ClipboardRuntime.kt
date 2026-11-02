@@ -92,7 +92,13 @@ object ClipboardRuntime {
             e.reset()
             return
         }
-        if (settings.enabled) startWaiter(e)
+        // The native core starts with clipboard sync off: after the process was killed the saved "On" must be pushed again,
+        // or the UI reads On while the core ignores the computer (soak finding, E2E-6).
+        if (settings.enabled) {
+            val s = settings
+            async { core.clipboardAction(ClipboardProtocol.configRequest(s.enabled, s.maxImageBytes)) }
+            startWaiter(e)
+        }
     }
 
     /** A setting was switched on while the link is already up. */

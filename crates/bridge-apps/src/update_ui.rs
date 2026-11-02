@@ -16,7 +16,8 @@ use std::{
 };
 use zeroize::Zeroize;
 
-const RELEASE_PREFIX: &str = "https://github.com/fspecii/geekbridge/";
+/// Release pages open only on github.com; the repository is configurable (`GEEKBRIDGE_UPDATE_REPO`).
+const RELEASE_PREFIX: &str = "https://github.com/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Command {
@@ -277,7 +278,7 @@ impl Updates {
         });
         ui.label(theme::caption(
             pal,
-            "Only GitHub's public release list is contacted. Nothing is installed automatically.",
+            "Only GitHub's release list is contacted. Nothing is installed automatically.",
         ));
     }
 }
@@ -330,6 +331,9 @@ fn summary_line(status: &UpdateStatus) -> String {
         .last_checked_unix
         .map_or("not checked yet".to_owned(), |_| "checked".to_owned());
     let line = match (&status.latest, status.newer) {
+        _ if status.state == UpdateState::NoPublicRelease => {
+            ipc::UPDATE_NO_PUBLIC_RELEASE.to_owned()
+        }
         (Some(latest), true) => format!(
             "v{} is available (you have v{}).",
             latest.version, status.current_version
@@ -345,10 +349,11 @@ fn summary_line(status: &UpdateStatus) -> String {
     }
 }
 
-/// Only our own release pages are ever opened.
+/// Only a GitHub `<owner>/<repo>/releases...` page is ever opened (the service has already
+/// restricted the URL to the configured repository).
 fn release_url_ok(url: &str) -> bool {
     url.strip_prefix(RELEASE_PREFIX).is_some_and(|rest| {
-        !rest.is_empty()
+        rest.split('/').nth(2) == Some("releases")
             && rest
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_' | b'+'))
@@ -405,7 +410,7 @@ mod tests {
                 version: "0.2.0".into(),
                 tag: "v0.2.0".into(),
                 notes: String::new(),
-                release_url: format!("{RELEASE_PREFIX}releases/tag/v0.2.0"),
+                release_url: format!("{RELEASE_PREFIX}fspecii/geekbridge/releases/tag/v0.2.0"),
                 asset_name: Some("a.zip".into()),
                 asset_size: Some(1),
                 sha256: Some("0".repeat(64)),
@@ -436,10 +441,10 @@ mod tests {
     #[test]
     fn only_our_release_pages_are_opened() {
         assert!(release_url_ok(&format!(
-            "{RELEASE_PREFIX}releases/tag/v0.2.0"
+            "{RELEASE_PREFIX}fspecii/geekbridge/releases/tag/v0.2.0"
         )));
         for bad in [
-            "https://github.com/evil/geekbridge/releases",
+            "https://github.com/evil/geekbridge/issues",
             "https://github.com/fspecii/geekbridge/",
             "http://github.com/fspecii/geekbridge/releases",
             "https://github.com/fspecii/geekbridge/releases;calc",
@@ -448,6 +453,17 @@ mod tests {
         ] {
             assert!(!release_url_ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn no_public_release_is_worded_plainly() {
+        let mut s = status(false, false);
+        s.state = UpdateState::NoPublicRelease;
+        s.latest = None;
+        let line = summary_line(&s);
+        assert!(line.contains("No public release found"), "{line}");
+        assert!(line.contains("private or has no releases yet"));
+        assert!(!line.contains("up to date"));
     }
 
     #[test]

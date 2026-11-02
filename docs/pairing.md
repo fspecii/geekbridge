@@ -63,6 +63,10 @@ Flow (phone scans):
    plain-language reason and sends `pair:false`; nothing is stored.
 4. The phone shows "Pair with X?" (no code, because the certificate was pinned from the QR code) and still requires an
    explicit tap. Trust is written only after that tap, for the certificate on that connection, like every other pairing.
+5. Scanning is "pair again": if the phone still remembers a computer with the same device id (for example the computer
+   forgot the phone), the phone forgets that record first (`QrStep.Forget`) and pairs for real. It never reports
+   "Paired" without sending the request, because the computer would not know. A computer that still trusts the
+   phone treats the request as a normal approval on the same connection.
 
 A QR code from a hostile source can at worst make the phone dial the attacker's own device and show "Pair with
 <attacker's name>?" with the attacker's certificate fingerprint; a link arriving from outside the app is therefore

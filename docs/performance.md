@@ -18,7 +18,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without) | 5 600 000 B |
 | `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 200 000 B |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
-| UI idle RSS (`--ui`) | 67-68 MB | 65.7 MB | 90 MB |
+| UI idle RSS (`--ui`, warm GL shader cache) | 67-68 MB | 65.1 MB (2026-11-02, was 68.5 MB on the same machine) | 75 MB |
 | GUI binaries with AccessKit (2026-11-02, `accesskit` feature, default) | n/a | messages 6.16 -> 8.05 MB (+1.9 MB), idle RSS +1.5-2.5 MB, +3 threads, ~+2 wakeups/s | not budgeted. On the 2026-11-02 machine the UI idle RSS is 105-124 MB with or without it (budget 90 MB exceeded by the GL stack, not AccessKit); see `docs/accessibility.md` |
 | UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
 
@@ -98,10 +98,71 @@ Idle RSS: 6.2 MB (opt 3 + LTO) vs 5.6 MB (opt "s" + LTO).
   focused activity); the only `postDelayed` pollers (`LinkSection`, `PairPanel`, `ShareCoordinator`)
   are UI-only and stopped in `onStop`/`onPause`. Nothing to remove.
 
+## GUI memory pass (2026-11-02)
+
+Tooling: `scripts/ui-mem.sh [--apps "home calls ..."] [--wayland]` prints Rss/Pss/Anonymous and the file-backed
+split from `/proc/PID/smaps_rollup` per app and state (settled, focused, window unmapped, remapped) under a private
+Xvfb or headless sway. `cargo build --features memstats` adds a counting global allocator; with
+`GEEKBRIDGE_MEMSTATS=1` the app prints live/peak Rust heap every 3 s and at marks (GL ready, fonts installed, frames
+1/3/90 around a trim). `heaptrack`, `valgrind` and `weston`/`cage` are not installed; sway is, but headless sway has no
+GPU, so it measures Mesa llvmpipe, not a real driver.
+
+**Where the 65 MB goes** (NVIDIA proprietary driver, X11, this machine, `geekbridge-calls`): Rust's own live heap is
+only ~6 MB (1.1 MB at GL-ready, 2.5 MB with fonts, ~6 MB after the first frame, peak 10 MB). The rest is the GL driver
+and libraries: `libnvidia-glcore` 14 MB, `libnvidia-gpucomp` (shader compiler) 26 MB mapped, `/dev/nvidiactl` 5 MB,
+~11 MB driver heap. Per app the numbers are the same (home, calls, messages, calendar, contacts within +-0.5 MB):
+every app is the same shell, so no screen holds a big buffer (no photo or calendar caches exist; contact photos are
+not loaded). Windows that are hidden or unfocused do not change RSS (no repaint when minimised; nothing to drop).
+
+| Before -> after (RSS kB, warm cache, real display, 7 s settled) | before | after |
+| --- | --- | --- |
+| geekbridge (home) | 67 700 (anon 21 192) | 62 728 (anon 17 292) |
+| geekbridge-calls | 68 396 | 64 608 |
+| geekbridge-messages | 68 520 | 65 008 |
+| geekbridge-agenda (calendar) | 68 660 | 62 864 |
+| geekbridge-contacts | 68 032 | 64 928 |
+
+Wins implemented:
+
+* **Glyph atlas width** (`memtrim::cap_atlas`, via `raw_input_hook` in all three apps): egui sizes its font atlas as
+  wide as the GPU allows (16384 px on NVIDIA, an f32 per pixel plus an RGBA copy for upload). Capping at 2048 cut the
+  Rust live heap after the first frame 5.9 -> 4.4 MB and the start-up peak 10.3 -> 5.7 MB, and the driver-side texture
+  with it. No visual change (the atlas just grows taller; egui rebuilds it if it ever fills).
+* **`malloc_trim(0)`** (`memtrim::on_frame`): at frame 3, frame 90 and when the window loses focus / is minimised,
+  never per frame. glibc only; a no-op elsewhere. Anonymous memory 21.0 -> 17.4 MB warm. Together with the atlas cap
+  that is the 4-6 MB above.
+
+Findings that are not fixable in the app:
+
+* **Cold GL shader cache costs +40-45 MB.** With the NVIDIA disk cache disabled (`__GL_SHADER_DISK_CACHE=0`) or
+  evicted, the driver compiles the shader in-process and keeps ~47 MB of live heap and `libnvidia-gpucomp`: RSS 111-123
+  MB, anonymous 55-68 MB. `malloc_trim` does not return it (it is live driver state, not freed memory). It happened
+  unprompted once or twice during measuring (cache entries written by concurrent processes), and is once per driver
+  update in normal use. `scripts/perf-check.sh --ui` therefore does a throw-away warm-up launch first. This is
+  also why `docs/accessibility.md` once saw 105-124 MB.
+* **Software GL (Xvfb, headless sway) is 105 MB / 177 MB**: llvmpipe maps a 45 MB `libLLVM`, starts ~24 render
+  threads and keeps 33-52 MB anonymous. Do not use those numbers for the budget, and do not force
+  `LIBGL_ALWAYS_SOFTWARE` (strictly worse, as measured).
+* **AccessKit** (2026-11-02, same build flags, `--no-default-features` vs default): RSS +3 MB (66.0 vs 69.0 MB in an
+  opt-level 1 build; anonymous +0.4 MB, the rest is zbus/AT-SPI code pages), +3 threads. Kept: accessibility wins.
+* **Fonts**: one system regular (+ bold) file is read, 1.25 MB; egui's built-in fallbacks stay for glyph coverage.
+  No CJK or colour-emoji font is ever loaded (NotoColorEmoji is 10 MB and skipped); dropping the built-in
+  fallbacks would save <1 MB and risks missing-glyph boxes, so it was left.
+* **Several GUI processes at once.** Home launches each app as its own process on demand (`launch`), so nothing is
+  paid until opened. Concurrent cost measured with five apps open: each adds ~18-21 MB private anonymous plus ~9 MB
+  private file pages (Pss ~38 MB each, the other ~36 MB of RSS is shared library pages counted once system-wide), so
+  the true marginal cost of an extra window is ~30 MB, not 65. A single multi-window process (egui viewports) would
+  save roughly 25 MB per extra app, but it merges crash domains, app ids and the launch contract and needs a
+  rewrite of `shell::run`; not done. Recommendation: keep separate processes, and revisit if users routinely keep 4+
+  open.
+* **wgpu vs glow** (analysis only): wgpu on Vulkan typically maps more driver code than GL (Vulkan ICD + loader,
+  and egui-wgpu pulls naga/wgpu-core, +3-4 MB binary) and has a higher idle RSS in published egui comparisons; its win
+  would be Windows/macOS via Metal/D3D. No measurement here, so no change.
+
 ## Remaining findings
 
-* UI RSS is 65 MB, of which ~46 MB is file-backed (GL/Mesa and Wayland/X libraries mapped by
-  `glow`); anonymous memory is ~20 MB.
+* UI RSS is 65 MB, of which ~47 MB is file-backed (GL driver and Wayland/X libraries mapped by
+  `glow`); anonymous memory is ~17 MB (6 MB of it Rust's).
 * `bridge-update` scheduler uses a dedicated OS thread that sleeps; harmless, costs one thread.
 * Dead-peer detection relies on TCP keepalive (30 s idle, 10 s interval, 3 retries, `bridge-kde`
   `link.rs`). There is no application-level ping timeout, so a half-open link can stay "connected" for

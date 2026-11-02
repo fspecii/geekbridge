@@ -1,0 +1,76 @@
+# Maintainer: GeekBridge <noreply@users.noreply.github.com>
+#
+# LICENCE: the project has not chosen a licence yet (docs/licence-decision.md), and this file does
+# not invent one. `license=('custom')` is a placeholder; the package ships a note saying so in
+# /usr/share/licenses/geekbridge/. Replace it with the real SPDX id and install the LICENSE file once
+# the owner decides.
+#
+# Local build:  packaging/arch/build-local.sh   (creates the source tarball, runs makepkg in a scratch dir)
+# Release build: point `source` at the tag archive and fill in the checksum, e.g.
+#   source=("$pkgname-$pkgver.tar.gz::https://github.com/fspecii/geekbridge/archive/refs/tags/v$pkgver.tar.gz")
+#   (the extracted directory is then geekbridge-$pkgver as well).
+pkgname=geekbridge
+# Keep in step with [workspace.package] version in Cargo.toml (build-local.sh checks this).
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Bridge between your computer and your Android phone: pairing, clipboard, files, calls'
+arch=('x86_64')
+url='https://github.com/fspecii/geekbridge'
+license=('custom')
+# The GUI loads these with dlopen at run time, so ldd on the binaries lists only glibc and libgcc.
+depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'libx11' 'libxcb' 'libxcursor' 'libxi' 'libxrandr')
+makedepends=('cargo' 'pkgconf' 'librsvg')
+optdepends=('wl-clipboard: clipboard sync on Wayland'
+            'xclip: clipboard sync on X11'
+            'libnotify: desktop notifications'
+            'mako: notification daemon for wlroots/Hyprland sessions'
+            'bluez: Bluetooth link for call audio'
+            'pipewire-pulse: call audio routing'
+            'xdg-utils: open links and files'
+            'zenity: file picker for the Share window')
+options=('!lto')
+install=geekbridge.install
+# build-local.sh generates this tarball from the working tree and pins its checksum.
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+_bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages
+       geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share)
+_apps=(GeekBridge Calls Messages Agenda Contacts Clipboard Share PasteFromPhone)
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release -p bridge-service -p bridge-apps
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  local b a s pk=packaging/linux
+  for b in "${_bins[@]}"; do install -Dm755 "target/release/$b" "$pkgdir/usr/bin/$b"; done
+
+  # systemd user unit: shipped, not enabled (see geekbridge.install for the hints)
+  sed 's|@BINDIR@|/usr/bin|' "$pk/geekbridge-service.service" > "$srcdir/geekbridge-service.service"
+  install -Dm644 "$srcdir/geekbridge-service.service" "$pkgdir/usr/lib/systemd/user/geekbridge-service.service"
+
+  for a in "${_apps[@]}"; do
+    install -Dm644 "$pk/dev.geekbridge.$a.desktop" "$pkgdir/usr/share/applications/dev.geekbridge.$a.desktop"
+    install -Dm644 assets/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/dev.geekbridge.$a.svg"
+    for s in 48 128 256; do
+      mkdir -p "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps"
+      rsvg-convert -w "$s" -h "$s" assets/icon.svg -o "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/dev.geekbridge.$a.png"
+    done
+  done
+
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_NOTICES.md"
+  install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
+  install -Dm644 packaging/arch/LICENSE-PLACEHOLDER.txt "$pkgdir/usr/share/licenses/$pkgname/LICENSE-PLACEHOLDER.txt"
+}

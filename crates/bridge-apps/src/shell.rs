@@ -233,6 +233,10 @@ impl Shell {
 }
 
 impl eframe::App for Shell {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::memtrim::cap_atlas(raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame(ctx);
     }
@@ -255,11 +259,17 @@ pub fn run(
             .with_decorations(true),
         ..Default::default()
     };
+    #[cfg(feature = "memstats")]
+    crate::memstats::start();
     eframe::run_native(
         &identity::window_title(app),
         options,
         Box::new(move |cc| {
+            #[cfg(feature = "memstats")]
+            crate::memstats::mark("gl context ready");
             theme::apply(&cc.egui_ctx, app);
+            #[cfg(feature = "memstats")]
+            crate::memstats::mark("theme applied");
             cc.egui_ctx.set_theme(match theme_choice {
                 ThemeChoice::System => ThemePreference::System,
                 ThemeChoice::Light => ThemePreference::Light,

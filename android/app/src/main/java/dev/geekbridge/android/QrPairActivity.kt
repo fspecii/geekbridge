@@ -161,23 +161,28 @@ class QrPairActivity : Activity() {
         plan = QrPlan(t)
         report = null
         mode = Mode.Connecting(t)
-        if (controller.phase == LinkPhase.Stopped) {
-            // The scan is self-contained: this phone only dials out, so discovery stays off.
-            controller.start(
-                LinkRuntime.startOptions(
-                    stateDir = filesDir.absolutePath,
-                    deviceName = DeviceName.current(this),
-                    discoveryListen = false,
-                    announce = false,
-                ),
-            )
-        }
+        startLinkIfStopped()
         render()
+    }
+
+    /** The scan is self-contained: this phone only dials out, so discovery stays off. */
+    private fun startLinkIfStopped() {
+        if (controller.phase != LinkPhase.Stopped) return
+        controller.start(
+            LinkRuntime.startOptions(
+                stateDir = filesDir.absolutePath,
+                deviceName = DeviceName.current(this),
+                discoveryListen = false,
+                announce = false,
+            ),
+        )
     }
 
     private fun tick() {
         val m = mode
         if (m !is Mode.Connecting) return
+        // Forgetting the last computer stops the link (E2E-3): start it again to carry on with this scan.
+        if (controller.phase == LinkPhase.Stopped) startLinkIfStopped()
         if (controller.phase != LinkPhase.Running) return
         controller.poll()
         prompt.sync()
@@ -200,6 +205,7 @@ class QrPairActivity : Activity() {
                 }
                 failed(m.target, why)
             }
+            is QrStep.Forget -> controller.unpair(step.deviceId)
             QrStep.Waiting, null -> {}
         }
     }

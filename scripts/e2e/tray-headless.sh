@@ -22,7 +22,8 @@ else
 fi
 SVC="$T/$PROFILE/geekbridge-service"; CTL="$T/$PROFILE/geekbridge-ctl"; WATCH="$T/$PROFILE/examples/tray-fake-watcher"
 OUT="${OUT:-$T/tray-headless}"; rm -rf "$OUT"; mkdir -p "$OUT"
-TMP="$(mktemp -d)"; PIDS=()
+source "$ROOT/scripts/lib-tmp.sh"
+TMP="$(gb_mktemp tray -d)"; PIDS=()
 cleanup() { for p in "${PIDS[@]:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done; wait 2>/dev/null || true
             [[ $KEEP == 1 ]] && echo "kept $TMP" || rm -rf "$TMP"; }
 trap cleanup EXIT

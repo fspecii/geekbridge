@@ -30,11 +30,18 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-pub const REPO: &str = "fspecii/geekbridge";
+/// Built-in release source; `GEEKBRIDGE_RELEASE_REPO=owner/name` at build time points a build at a
+/// separate public releases-only repository (see docs/release-checklist.md).
+pub const REPO: &str = match option_env!("GEEKBRIDGE_RELEASE_REPO") {
+    Some(repo) => repo,
+    None => "fspecii/geekbridge",
+};
+pub use bridge_core::ipc::UPDATE_NO_PUBLIC_RELEASE as NO_PUBLIC_RELEASE;
 const API_BASE: &str = "https://api.github.com";
 const MAX_API_BYTES: u64 = 1024 * 1024;
 const MAX_SUMS_BYTES: u64 = 64 * 1024;
 const MAX_STATE_BYTES: u64 = 256 * 1024;
+const NOT_PUBLIC_COOLDOWN: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -80,11 +87,45 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// A bearer token that never prints: `Debug` is redacted and there is no `Display`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Secret {
+        Secret(value.into())
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+/// `owner/name` as GitHub spells it: the only shapes that may end up in an API URL.
+pub fn valid_repo(repo: &str) -> bool {
+    let part = |p: &str| {
+        !p.is_empty()
+            && p.len() <= 100
+            && p != "."
+            && p != ".."
+            && p.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    repo.split_once('/')
+        .is_some_and(|(owner, name)| part(owner) && part(name))
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     /// `https://api.github.com`; tests point this at a loopback mock server.
     pub base_url: String,
+    /// `owner/name`; a separate public releases-only repository works as well as the main one.
     pub repo: String,
+    /// Optional read-only token for a private repository (testers). Sent to `api.github.com`
+    /// only; never stored, never logged.
+    pub token: Option<Secret>,
     pub current_version: String,
     pub platform: Platform,
     /// Where settings, the ETag and the last answer persist. `None` keeps everything in memory.
@@ -114,6 +155,7 @@ impl Config {
         Config {
             base_url: API_BASE.to_owned(),
             repo: REPO.to_owned(),
+            token: None,
             current_version: current_version.to_owned(),
             platform: Platform::current(),
             state_file: None,
@@ -127,6 +169,27 @@ impl Config {
             tick: Duration::from_secs(30),
             manual_cooldown: Duration::from_secs(30),
         }
+    }
+
+    /// [`Config::github`] plus the operator's overrides: `GEEKBRIDGE_UPDATE_REPO` (`owner/name`,
+    /// ignored with a warning if malformed) and `GEEKBRIDGE_UPDATE_TOKEN` (read-only token for a
+    /// private repository, kept in memory only).
+    pub fn github_from_env(current_version: &str) -> Config {
+        let mut cfg = Config::github(current_version);
+        if let Ok(repo) = std::env::var("GEEKBRIDGE_UPDATE_REPO") {
+            let repo = repo.trim();
+            if valid_repo(repo) {
+                cfg.repo = repo.to_owned();
+            } else if !repo.is_empty() {
+                eprintln!("GeekBridge: ignoring GEEKBRIDGE_UPDATE_REPO (expected owner/name)");
+            }
+        }
+        cfg.token = std::env::var("GEEKBRIDGE_UPDATE_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .map(Secret::new);
+        cfg
     }
 }
 
@@ -152,6 +215,9 @@ struct Persisted {
     last_checked_unix: Option<u64>,
     #[serde(default)]
     release: Option<Cached>,
+    /// The last check got 404/403: no public release is reachable (not "up to date").
+    #[serde(default)]
+    no_public_release: bool,
 }
 
 fn yes() -> bool {
@@ -166,6 +232,7 @@ impl Default for Persisted {
             etag: None,
             last_checked_unix: None,
             release: None,
+            no_public_release: false,
         }
     }
 }
@@ -190,9 +257,12 @@ struct Runtime {
     last_attempt_unix: Option<u64>,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum Fetch {
     NotModified,
     NoRelease,
+    /// 404/403: private repository, wrong name, or nothing published.
+    NotPublic,
     Fresh {
         etag: Option<String>,
         cached: Cached,
@@ -223,10 +293,14 @@ impl Updater {
         if !policy.allows(&base) {
             return Err(Error::Url("update base URL is not permitted".into()));
         }
+        if !valid_repo(&cfg.repo) {
+            return Err(Error::Url("update repository must be owner/name".into()));
+        }
         let client = http::Client::new(
             &format!("geekbridge-updater/{}", cfg.current_version),
             policy,
             cfg.io_timeout,
+            cfg.token.as_ref().map(|t| t.0.clone()),
         )?;
         // Leftovers of crashed or abandoned downloads (up to 512 MiB each). Recent ones may belong
         // to another running instance, so only old directories go.
@@ -281,6 +355,8 @@ impl Updater {
             UpdateState::Downloaded
         } else if newer {
             UpdateState::Available
+        } else if rt.persisted.no_public_release {
+            UpdateState::NoPublicRelease
         } else if rt.persisted.last_checked_unix.is_some() {
             UpdateState::UpToDate
         } else {
@@ -376,12 +452,18 @@ impl Updater {
             rt.error = Some(err.to_string());
             return Err(err);
         }
+        // A repository without a public release is asked again no more than every few minutes.
+        let cooldown = if rt.persisted.no_public_release {
+            self.cfg.manual_cooldown.max(NOT_PUBLIC_COOLDOWN)
+        } else {
+            self.cfg.manual_cooldown
+        };
         if manual
             && rt.error.is_none()
             && rt
                 .persisted
                 .last_checked_unix
-                .is_some_and(|t| now.saturating_sub(t) < self.cfg.manual_cooldown.as_secs())
+                .is_some_and(|t| now.saturating_sub(t) < cooldown.as_secs())
         {
             return Ok(None);
         }
@@ -401,14 +483,25 @@ impl Updater {
         rt.checking = false;
         let now = now_unix();
         match result {
-            Ok(Fetch::NotModified) => rt.persisted.last_checked_unix = Some(now),
+            Ok(Fetch::NotModified) => {
+                rt.persisted.last_checked_unix = Some(now);
+                rt.persisted.no_public_release = false;
+            }
             Ok(Fetch::NoRelease) => {
                 rt.persisted.last_checked_unix = Some(now);
                 rt.persisted.release = None;
                 rt.persisted.etag = None;
+                rt.persisted.no_public_release = false;
+            }
+            Ok(Fetch::NotPublic) => {
+                rt.persisted.last_checked_unix = Some(now);
+                rt.persisted.release = None;
+                rt.persisted.etag = None;
+                rt.persisted.no_public_release = true;
             }
             Ok(Fetch::Fresh { etag, cached }) => {
                 rt.persisted.last_checked_unix = Some(now);
+                rt.persisted.no_public_release = false;
                 rt.persisted.etag = etag;
                 rt.persisted.release = Some(cached);
             }
@@ -457,12 +550,14 @@ impl Updater {
         match fetched.status {
             200 => {}
             304 if etag.is_some() => return Ok(Fetch::NotModified),
-            404 => return Ok(Fetch::NoRelease),
             _ if fetched.rate_limited => {
                 return Err(Error::RateLimited {
                     retry_after_secs: fetched.retry_after.unwrap_or(3600),
                 });
             }
+            // A private repository answers 404 to anonymous callers (403 when a token lacks
+            // access): report it as such, neither "up to date" nor a failure.
+            403 | 404 => return Ok(Fetch::NotPublic),
             status => return Err(Error::Http(status)),
         }
         let release = Release::parse(&body)?;
@@ -504,7 +599,7 @@ impl Updater {
                 && release::url_allowed(policy, &sums.browser_download_url)
             {
                 let (f, text) = self.get_bytes(
-                    &sums.browser_download_url,
+                    self.fetch_url(sums),
                     "application/octet-stream",
                     MAX_SUMS_BYTES,
                     None,
@@ -524,6 +619,20 @@ impl Updater {
             fetched.etag
         };
         Ok(Fetch::Fresh { etag, cached })
+    }
+
+    /// Where to fetch `asset` from. With a token (private repository) the API URL is used: it
+    /// redirects to a pre-signed CDN URL, which never receives the token. Otherwise the plain
+    /// public download URL.
+    fn fetch_url<'a>(&self, asset: &'a Asset) -> &'a str {
+        match &asset.url {
+            Some(api)
+                if self.cfg.token.is_some() && release::url_allowed(&self.client.policy, api) =>
+            {
+                api
+            }
+            _ => &asset.browser_download_url,
+        }
     }
 
     /// Download the offered installer into a fresh private directory and verify its SHA-256.
@@ -604,7 +713,7 @@ impl Updater {
             let mut hasher = Sha256::new();
             let mut written = 0_u64;
             let fetched = self.client.get(
-                &asset.browser_download_url,
+                self.fetch_url(asset),
                 &[("Accept", "application/octet-stream")],
                 asset.size,
                 self.cfg.download_timeout,

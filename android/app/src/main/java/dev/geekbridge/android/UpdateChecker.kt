@@ -18,7 +18,7 @@ class UpdateChecker(
     private val currentName: String,
     private val currentCode: Int,
     private val baseUrl: String = "https://api.github.com",
-    private val repo: String = "fspecii/geekbridge",
+    private val repo: String = DEFAULT_REPO,
     private val allowLoopback: Boolean = false,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 15_000,
@@ -42,8 +42,13 @@ class UpdateChecker(
                 text
             }
             304 -> cache?.body ?: throw UpdateException("GitHub answered 'not modified' without a cached copy.")
-            404 -> return UpdateCheckResult.UpToDate(null)
-            403, 429 -> throw UpdateException("GitHub is rate limiting requests. Try again later.")
+            // Checked before 404/403: a rate-limited 403 is not "no public release".
+            403, 429 -> if (response.rateLimited || response.status == 429) {
+                throw UpdateException("GitHub is rate limiting requests. Try again later.")
+            } else {
+                return UpdateCheckResult.NoPublicRelease
+            }
+            404 -> return UpdateCheckResult.NoPublicRelease
             else -> throw UpdateException("GitHub answered HTTP ${response.status}.")
         }
         val release = try {
@@ -67,12 +72,14 @@ class UpdateChecker(
         return UpdateModel.findChecksum(String(r.body, Charsets.UTF_8), apkName)
     }
 
-    class Response(val status: Int, val etag: String?, val body: ByteArray)
+    class Response(val status: Int, val etag: String?, val body: ByteArray, val rateLimited: Boolean = false)
+
+    private class Head(val status: Int, val etag: String?, val rateLimited: Boolean)
 
     private fun get(startUrl: String, accept: String, maxBytes: Int, etag: String?): Response {
         val out = java.io.ByteArrayOutputStream()
         val head = request(startUrl, accept, etag, maxBytes.toLong()) { stream -> readBounded(stream, maxBytes.toLong()) { b, off, len -> out.write(b, off, len) } }
-        return Response(head.first, head.second, out.toByteArray())
+        return Response(head.status, head.etag, out.toByteArray(), head.rateLimited)
     }
 
     /**
@@ -98,7 +105,7 @@ class UpdateChecker(
                         onProgress(written, offer.apkSize)
                     }
                 }
-                if (head.first != 200) throw UpdateException("GitHub answered HTTP ${head.first} for the download.")
+                if (head.status != 200) throw UpdateException("GitHub answered HTTP ${head.status} for the download.")
             }
             if (written != offer.apkSize) throw UpdateException("The download has the wrong size; it was deleted.")
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
@@ -112,7 +119,10 @@ class UpdateChecker(
 
     /**
      * One GET with manual, host-checked redirects. [consume] reads the body of a 200; other bodies are
-     * ignored. Returns (status, etag).
+     * ignored. Returns the status, ETag and whether GitHub signalled a rate limit.
+     *
+     * No `Authorization` header is ever sent: an access token baked into an APK (or kept in app storage)
+     * can be extracted by anyone who holds the app, so private-repository testing is desktop-only.
      */
     private fun request(
         startUrl: String,
@@ -120,7 +130,7 @@ class UpdateChecker(
         etag: String?,
         maxBytes: Long,
         consume: (InputStream) -> Unit,
-    ): Pair<Int, String?> {
+    ): Head {
         var url = startUrl
         repeat(MAX_REDIRECTS + 1) {
             if (!UpdateModel.urlAllowed(url, allowLoopback)) throw UpdateException("Refusing to contact an untrusted address.")
@@ -153,7 +163,8 @@ class UpdateChecker(
                     if (enc != null && !enc.equals("identity", true)) throw UpdateException("Unexpected content encoding.")
                     conn.inputStream.use(consume)
                 }
-                return status to conn.getHeaderField("ETag")?.takeIf { it.length <= 256 && it.all { c -> c in ' '..'~' } }
+                val rateLimited = conn.getHeaderField("Retry-After") != null || conn.getHeaderField("X-RateLimit-Remaining") == "0"
+                return Head(status, conn.getHeaderField("ETag")?.takeIf { it.length <= 256 && it.all { c -> c in ' '..'~' } }, rateLimited)
             } finally {
                 conn.disconnect()
             }
@@ -177,6 +188,8 @@ class UpdateChecker(
         const val MAX_API_BYTES = 1024 * 1024
         const val MAX_SUMS_BYTES = 64 * 1024
         const val MAX_REDIRECTS = 5
+        /** Set at build time with `-Pgb.releaseRepo=owner/name` (default `fspecii/geekbridge`). */
+        val DEFAULT_REPO: String = BuildConfig.RELEASE_REPO
         const val UPDATE_FILE_NAME = "geekbridge-update.apk"
 
         /**
@@ -185,13 +198,15 @@ class UpdateChecker(
          * Release builds ignore it, and [allowLoopback] still refuses any non-loopback http URL.
          */
         fun forBuild(context: android.content.Context): UpdateChecker {
-            val base = if (BuildConfig.DEBUG) {
-                context.getSharedPreferences("updates", android.content.Context.MODE_PRIVATE).getString("debug_base_url", null)
-            } else null
+            val prefs = context.getSharedPreferences("updates", android.content.Context.MODE_PRIVATE)
+            val base = if (BuildConfig.DEBUG) prefs.getString("debug_base_url", null) else null
+            // Debug builds only, like debug_base_url: `debug_repo` = owner/name of a (public) releases repo.
+            val repo = (if (BuildConfig.DEBUG) prefs.getString("debug_repo", null) else null)
+                ?.takeIf { UpdateModel.validRepo(it) } ?: DEFAULT_REPO
             return if (base != null && base.startsWith("http://127.0.0.1")) {
-                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, baseUrl = base, allowLoopback = true)
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, baseUrl = base, repo = repo, allowLoopback = true)
             } else {
-                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, repo = repo)
             }
         }
     }

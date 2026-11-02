@@ -68,6 +68,7 @@ class UpdateCheckerTest {
             hits.merge(path, 1, Int::plus)
             req["user-agent"]?.let { v -> headers["ua:$path"] = v }
             req["if-none-match"]?.let { v -> headers["inm:$path"] = v }
+            req["authorization"]?.let { v -> headers["auth:$path"] = v }
             val out = java.io.BufferedOutputStream(it.getOutputStream())
             val ex = Ex(path, req, out)
             try {
@@ -181,10 +182,31 @@ class UpdateCheckerTest {
         }
         reply(latest, ByteArray(0), 500)
         assertTrue(checker().check(null) is UpdateCheckResult.Failed)
-        reply(latest, ByteArray(0), 403)
+        reply(latest, ByteArray(0), 403, "X-RateLimit-Remaining" to "0")
         assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.contains("rate"))
-        reply(latest, ByteArray(0), 404)
-        assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
+        reply(latest, ByteArray(0), 429)
+        assertTrue((checker().check(null) as UpdateCheckResult.Failed).reason.contains("rate"))
+    }
+
+    @Test fun privateOrEmptyRepositoryIsReportedAsNoPublicRelease() {
+        reply(latest, """{"message":"Not Found"}""".toByteArray(), 404)
+        assertEquals(UpdateCheckResult.NoPublicRelease, checker().check(null))
+        reply(latest, ByteArray(0), 403) // plain refusal, not a rate limit
+        assertEquals(UpdateCheckResult.NoPublicRelease, checker().check(null))
+        assertTrue(UpdateCheckResult.NoPublicRelease.MESSAGE.contains("private or has no releases yet"))
+    }
+
+    @Test fun anotherRepositoryCanBeQueried_andNoAuthorizationIsEverSent() {
+        val apk = ByteArray(10)
+        val path = "/repos/acme/geekbridge-releases/releases/latest"
+        val json = """{"tag_name":"v0.2.0","html_url":"$base/rel","assets":[{"name":"geekbridge-android.apk","size":10,"browser_download_url":"$base/dl/geekbridge-android.apk"}]}"""
+        reply(path, json.toByteArray())
+        val c = UpdateChecker("0.1.0", 1_000, baseUrl = base, repo = "acme/geekbridge-releases", allowLoopback = true)
+        assertTrue(c.check(null) is UpdateCheckResult.Available)
+        assertNull(headers["auth:$path"])
+        assertTrue(UpdateModel.validRepo("acme/geekbridge-releases"))
+        for (bad in listOf("", "acme", "a/b/c", "../x", "a/..", "a b/c", null)) assertFalse("$bad", UpdateModel.validRepo(bad))
+        assertEquals(10, apk.size)
     }
 
     @Test fun redirectsToUntrustedHostsAreRefused() {

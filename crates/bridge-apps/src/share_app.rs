@@ -478,6 +478,10 @@ impl ShareApp {
 }
 
 impl eframe::App for ShareApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        crate::memtrim::cap_atlas(raw_input);
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame(ctx);
     }
@@ -922,6 +926,8 @@ pub fn run(theme_choice: ThemeChoice, files: Vec<String>) -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
+    #[cfg(feature = "memstats")]
+    crate::memstats::start();
     eframe::run_native(
         "GeekBridge Share",
         options,

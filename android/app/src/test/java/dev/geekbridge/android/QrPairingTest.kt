@@ -81,10 +81,22 @@ class QrPairingTest {
         assertEquals(QrStep.Failed(QrFailure.ConnectionLost), plan.next(snap(), 300))
     }
 
-    @Test fun anAlreadyPairedComputerIsDoneWithoutDialling() {
+    @Test fun aRememberedComputerIsForgottenThenPairedForReal() {
+        // The computer may have forgotten this phone: "Paired" without a request would be a lie (E2E: B_qr).
         val plan = QrPlan(target("192.168.1.20"))
         val paired = listOf(PairedPeer(id, "Work laptop", "desktop", cert))
-        assertEquals(QrStep.Paired, plan.next(snap(paired = paired), 0))
+        assertEquals(QrStep.Forget(id), plan.next(snap(paired = paired), 0))
+        assertEquals(QrStep.Waiting, plan.next(snap(paired = paired), 500)) // the core has not dropped it yet
+        assertEquals(QrStep.Dial(QrAddress("192.168.1.20", 1716)), plan.next(snap(), 1_000))
+        assertEquals(QrStep.Pair(7), plan.next(snap(listOf(conn("parked"))), 1_500))
+        assertEquals(QrStep.Paired, plan.next(snap(paired = paired), 2_000)) // trust recorded by this scan
+    }
+
+    @Test fun aForgetThatNeverShowsDoesNotStallTheScan() {
+        val plan = QrPlan(target("192.168.1.20"))
+        val paired = listOf(PairedPeer(id, "Work laptop", "desktop", cert))
+        plan.next(snap(paired = paired), 0)
+        assertEquals(QrStep.Dial(QrAddress("192.168.1.20", 1716)), plan.next(snap(paired = paired), 6_000))
     }
 
     @Test fun pairRequestCarriesTheTokenAndThePinnedCertificate() {

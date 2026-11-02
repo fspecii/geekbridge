@@ -18,6 +18,7 @@ const UNPAIRED: u32 = 2;
 pub fn observe(ctx: &eframe::egui::Context, model: &DiscoveryModel) {
     let active = ctx.input(|i| i.focused && !i.viewport().minimized.unwrap_or(false));
     ACTIVE.store(active, Ordering::Relaxed);
+    crate::memtrim::on_frame(active);
     // Only a reachable service with an empty device list counts as "nothing paired".
     let paired = !model.service_reachable() || !model.devices().is_empty();
     PAIRED.store(paired, Ordering::Relaxed);
@@ -27,6 +28,7 @@ pub fn observe(ctx: &eframe::egui::Context, model: &DiscoveryModel) {
 pub fn observe_focus(ctx: &eframe::egui::Context) {
     let active = ctx.input(|i| i.focused && !i.viewport().minimized.unwrap_or(false));
     ACTIVE.store(active, Ordering::Relaxed);
+    crate::memtrim::on_frame(active);
 }
 
 /// `base` stretched by the current backoff.

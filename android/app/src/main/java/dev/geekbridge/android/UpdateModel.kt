@@ -14,10 +14,18 @@ class AppVersion private constructor(
 ) : Comparable<AppVersion> {
     val isPrerelease: Boolean get() = pre.isNotEmpty()
 
-    /** Same formula as `android/app/build.gradle.kts`: major*1_000_000 + minor*1_000 + patch. */
+    /**
+     * Same formula as `android/app/build.gradle.kts` and `scripts/version-code.sh` (docs/builds.md):
+     * `(major*10_000 + minor*100 + patch) * 100 + slot`; slot 99 for a final release, else
+     * alpha 0..24, beta 25..49, rc 50..74 by the number after the label (capped), so rc < final.
+     */
     fun toVersionCode(): Int? {
-        if (major > 2000 || minor > 999 || patch > 999) return null
-        return (major * 1_000_000 + minor * 1_000 + patch).toInt()
+        if (major > 214 || minor > 99 || patch > 99) return null
+        val slot = if (pre.isEmpty()) 99 else {
+            val base = when (pre[0].lowercase(Locale.ROOT)) { "beta" -> 25; "rc" -> 50; else -> 0 }
+            base + (pre.getOrNull(1)?.toLongOrNull() ?: 0L).coerceIn(0L, 24L).toInt()
+        }
+        return ((major * 10_000 + minor * 100 + patch) * 100 + slot).toInt()
     }
 
     override fun compareTo(other: AppVersion): Int {
@@ -107,6 +115,11 @@ sealed class UpdateCheckResult {
     data class UpToDate(val latest: String?) : UpdateCheckResult()
     data class Available(val offer: UpdateOffer) : UpdateCheckResult()
     data class Failed(val reason: String) : UpdateCheckResult()
+
+    /** GitHub answered 404/403 for the release list: private repository, or nothing published yet. */
+    data object NoPublicRelease : UpdateCheckResult() {
+        const val MESSAGE = "No public release found: the project repository may be private or has no releases yet."
+    }
 }
 
 object UpdateModel {
@@ -117,6 +130,15 @@ object UpdateModel {
     /** Automatic check on app open: at most once per 12 hours (clock moving backwards also counts as due). */
     fun autoCheckDue(lastCheckMs: Long, nowMs: Long): Boolean =
         lastCheckMs <= 0 || nowMs < lastCheckMs || nowMs - lastCheckMs >= CHECK_INTERVAL_MS
+
+    /** `owner/name` as GitHub spells it; anything else never reaches an API URL. */
+    fun validRepo(repo: String?): Boolean {
+        val parts = repo?.split('/') ?: return false
+        return parts.size == 2 && parts.all { p ->
+            p.isNotEmpty() && p.length <= 100 && p != "." && p != ".." &&
+                p.all { it in '0'..'9' || it in 'a'..'z' || it in 'A'..'Z' || it == '-' || it == '_' || it == '.' }
+        }
+    }
 
     fun isHex64(s: String) = s.length == 64 && s.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 

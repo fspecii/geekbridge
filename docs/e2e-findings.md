@@ -40,7 +40,7 @@ Screenshots: `dist/screenshots/android/e2e-*.png`.
 | **File desktop -> phone** | PASS (after fixes E2E-5, E2E-5c, E2E-14) | Offer dialog, Accept, SHA-256 of the received file equals the sent one, 100 MB and 500 MB included; text share still works |
 | **File phone -> desktop (Share sheet, `am start ACTION_SEND`)** | PASS (after fixes E2E-4, E2E-7) | System chooser -> "Send to computer" -> file arrives in the desktop save folder, SHA-256 equal |
 | **Update check (mock release server)** | PASS (after fixes) | v99.0.0 offered; download and SHA-256 verified against `SHA256SUMS`; "Install update" opened Android's "Install unknown apps" page for GeekBridge. The installation itself was not completed here; completed in the self-update row below. See E2E-8 |
-| **Self-update, Android: real upgrade install** | PASS | v0.1.0 (versionCode 1000) -> v0.2.0 (2000), same debug key, via the app's Install button and the system package installer; versionName/versionCode changed, private data intact. See "Self-update end to end" below |
+| **Self-update, Android: real upgrade install** | PASS | v0.1.0 (versionCode 10099) -> v0.2.0 (20099), same debug key, via the app's Install button and the system package installer; versionName/versionCode changed, private data intact. See "Self-update end to end" below |
 | **Self-update, desktop (service + `geekbridge-ctl update`)** | PASS | check, SHA-256 verified download, skip persistence, nothing executed. See below |
 
 ### Re-run on the current tree, 2026-11-01 (pairing experience, call control, phone data, diagnostics report)
@@ -451,6 +451,59 @@ the `contents: write` permission scoping, matrix `fail-fast`, artifact upload/do
 GitHub's real redirects/TLS/ETag/rate-limit behaviour for the updaters, and upgrading from a release-signed, R8-minified
 APK (the dry run only proves signing and alignment, and the e2e upgrade used debug-signed unminified builds).
 
+## Pairing lifecycle and rename (`scripts/e2e/pair-lifecycle.sh`, 2026-11-02)
+
+Private rig (AVD `gb36u`, adb server 16090, desktop control port 17591, own state dir and Xvfb, scratch APK build from the
+tree of that day). Every scenario ran 3 times; "first attempt" means one pass through the pairing screens with no retry
+and no manual unpair. Results file: `dist/android/logs/pair-lifecycle-results.tsv`, screenshots
+`dist/screenshots/pairing/pair-*.png`.
+
+| Scenario | What | Result 2026-11-02 |
+| --- | --- | --- |
+| A_qr | phone unpairs while the computer still trusts it, re-pair by QR link | PASS 3/3 first attempt (15-16 s) |
+| A_code | same, re-pair by code comparison | SKIP: the phone must start the request, which needs UDP discovery (the emulator's NAT drops broadcasts). The phone-initiated request is exercised by A_qr; unit/integration tests cover the by-name path |
+| B_qr | computer forgets the phone, phone still trusts it, re-pair by QR | PASS 3/3 (after E2E-P1/P2 fixes; failed before) |
+| B_code | same by code (computer asks, phone confirms) | PASS 3/3 (about 45 s) |
+| C_qr / C_code | both sides forget, re-pair | PASS 3/3 each |
+| repeat | computer asks twice (second request on a new connection): only the new code is valid, the first challenge is refused as stale, approving the new one pairs | PASS 3/3 (same-connection replacement is covered by the `bridge-kde` `Machine` tests; docs/pairing.md) |
+| rename_good | phone renamed in Settings, computer renamed with `ctl rename`; each name shows on the other side after reconnect; the computer name survives a service restart | PASS 3/3 |
+| rename_hostile | computer: control characters and 40 characters refused, RTL marks stripped, `<b>` markup reduced to harmless text, emoji kept, name of only marks refused. Phone: over-long and control-character stored names fall back to the model name, RTL marks stripped, emoji kept, the Settings field is capped at 32 | PASS 3/3 |
+| rename_notify | text shared from the renamed phone raises a desktop notification that names it; a hostile phone name arrives as plain text (`Evil bHi/b ＆ Co`) | PASS 3/3 |
+| rename_report | the phone's Diagnostics "Copy report" and `geekbridge-ctl diagnose` hold neither custom name (the report prints only model, versions, permissions, counts; `diagnose` aliases devices `device-N`) | PASS 3/3 |
+
+Harness note: under a host load average of 30-40 (other agents' emulators and builds) uiautomator timed out and systemui showed
+an ANR dialog that blocked every tap; the script sets `hide_error_dialogs` and uses a 60 s uiautomator timeout. Those
+failures were the host, not the product, and the affected scenarios were re-run to 3/3.
+
+### E2E-P1 (fixed) A QR scan for a computer the phone remembers said "Paired" without telling the computer -- High
+
+Computer forgets the phone (Forget in its app, or `ctl unpair`), phone still lists the computer. Scanning the new QR code
+showed "Paired with X" at once, but nothing was sent (`QrPlan` returned `Paired` as soon as the phone's own store held the
+device id). The computer never saw the request, so the phone believed it was paired and the computer did not (no events at
+all on the computer). Fix: `QrPlan` now emits `QrStep.Forget` first (the scan means "pair again"), waits for the record to go
+(5 s cap), dials, sends the request, and only reports `Paired` once trust was recorded by this scan. Tests:
+`QrPairingTest.aRememberedComputerIsForgottenThenPairedForReal`, `aForgetThatNeverShowsDoesNotStallTheScan`.
+
+### E2E-P2 (fixed) The QR screen stalled on "Connecting" after the phone forgot its last computer -- Medium
+
+Forgetting the last paired computer stops the phone's link (E2E-3), and `QrPairActivity.tick` returned early while the link
+was stopped, so with E2E-P1's forget step the scan never dialled. `tick` now restarts the link (`startLinkIfStopped`).
+
+### E2E-P3 (fixed) Computer names kept invisible direction marks -- Low
+
+`validate_device_name`/`sanitize_device_name` (`bridge-kde`) only stripped control characters, so a name with `U+202E` or
+zero-width characters was accepted, stored, announced to phones, and shown by them (the phone app already stripped them
+for its own name, and the notification path strips them on display). They are now removed on the computer too, for our
+own name and for names that peers announce. Test: `identity::tests::names_lose_direction_marks_and_markup_stays_inert`.
+Note: ZWJ (`U+200D`) is in that set, so a joined emoji sequence such as a family emoji is shown as its separate emoji.
+
+### E2E-P4 Phone "Paired computers" keeps the name from pairing time -- Low (open)
+
+After the computer is renamed, Home ("Connected to X", "To X") and the notifications show the new name after the next
+connection, but Diagnostics > Paired computers (button "Unpair X...") and `geekbridge-ctl status` `paired[].name` keep the name from
+pairing time on both sides: the trust record is written once, at pairing. Refreshing it on a trusted connect needs a
+`TrustStore` update that cannot resurrect a record the user just forgot, so it was not changed in this pass.
+
 ## Files changed by this work
 
 * New: `scripts/e2e-android.sh`, `scripts/e2e/adbui.py`, `scripts/e2e/mock_release_server.py`,
@@ -469,6 +522,7 @@ scripts/e2e-android.sh --rebuild --only env,file_d2p,file_p2d   # file transfers
 scripts/e2e-android.sh --no-build --only pair,reconnect
 scripts/e2e-android.sh --rebuild             # rebuild desktop binaries and the APK first
 scripts/e2e-android.sh --stop                # stop the emulator, service and Xvfb it started
+scripts/e2e/pair-lifecycle.sh [--repeat N] [A_qr B_code C_qr repeat rename ...]   # pairing lifecycle + rename, private rig
 scripts/e2e-qr-pairing.sh                     # QR expiry / pairing / reuse (needs env stage first)
 scripts/e2e-new.sh                           # hints, call answer/reject, SMS notification, agenda, Copy report
 scripts/e2e/update-install.sh all             # self-update, desktop + Android (needs target/e2e-update/gb-0.{1,2}.0.apk)

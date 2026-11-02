@@ -440,12 +440,188 @@ fn manual_checks_are_throttled() {
 }
 
 #[test]
-fn no_release_published_is_up_to_date() {
+fn a_404_is_reported_as_no_public_release_not_up_to_date() {
     let rig = Rig::new();
     let up = rig.updater("0.1.0");
     up.check(true).unwrap();
+    let st = up.status();
+    assert_eq!(st.state, UpdateState::NoPublicRelease);
+    assert!(st.latest.is_none() && !st.newer);
+    assert!(st.error.is_none(), "not a failure");
+    // No retry storm: repeated manual checks are answered without another request.
+    for _ in 0..3 {
+        up.check(true).unwrap();
+    }
+    assert_eq!(rig.mock.hits(LATEST), 1);
+    // The answer survives a restart and is still not "up to date".
+    assert_eq!(
+        rig.updater("0.1.0").status().state,
+        UpdateState::NoPublicRelease
+    );
+}
+
+#[test]
+fn a_plain_403_is_also_no_public_release_but_a_rate_limit_is_not() {
+    let rig = Rig::new();
+    rig.mock.set(
+        LATEST,
+        Reply::Status {
+            code: 403,
+            headers: vec![("X-RateLimit-Reset".into(), "99999999999".into())],
+        },
+    );
+    let up = rig.updater("0.1.0");
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::NoPublicRelease);
+    assert!(up.status().error.is_none());
+}
+
+#[test]
+fn no_release_published_in_a_public_repo_is_not_an_error() {
+    // A draft or pre-release as "latest" means nothing is on offer: up to date.
+    let rig = Rig::new();
+    rig.mock.set(
+        LATEST,
+        json_ok(
+            serde_json::to_vec(&serde_json::json!({"tag_name":"v9.0.0","prerelease":true}))
+                .unwrap(),
+        ),
+    );
+    let up = rig.updater("0.1.0");
+    up.check(true).unwrap();
     assert_eq!(up.status().state, UpdateState::UpToDate);
-    assert!(up.status().latest.is_none());
+}
+
+fn token_config(rig: &Rig) -> Config {
+    let mut cfg = rig.config("0.1.0");
+    cfg.token = Some(bridge_update::Secret::new("github_pat_SECRET123"));
+    cfg
+}
+
+#[test]
+fn token_goes_to_the_api_only_and_never_to_download_hosts() {
+    let rig = Rig::new();
+    let payload = vec![7_u8; 300];
+    rig.publish("v0.2.0", &payload, Some(good_sums(&payload)));
+    // Private-repo style: the asset's API URL redirects to a signed CDN-like path.
+    let base = rig.mock.url();
+    let rel = serde_json::json!({
+    "tag_name": "v0.2.0", "html_url": format!("{base}/release/v0.2.0"),
+    "assets": [
+        {"name": ASSET, "size": payload.len(),
+         "browser_download_url": format!("{base}/dl/{ASSET}"),
+         "url": format!("{base}/repos/fspecii/geekbridge/releases/assets/1")},
+        {"name": "SHA256SUMS", "size": 100,
+         "browser_download_url": format!("{base}/dl/SHA256SUMS"),
+         "url": format!("{base}/repos/fspecii/geekbridge/releases/assets/2")},
+    ]});
+    rig.mock
+        .set(LATEST, json_ok(serde_json::to_vec(&rel).unwrap()));
+    rig.mock.set(
+        "/repos/fspecii/geekbridge/releases/assets/2",
+        Reply::Ok {
+            headers: vec![],
+            body: good_sums(&payload).into_bytes(),
+        },
+    );
+    rig.mock.set(
+        "/repos/fspecii/geekbridge/releases/assets/1",
+        Reply::Status {
+            code: 302,
+            headers: vec![("Location".into(), "/signed/blob".into())],
+        },
+    );
+    rig.mock.set(
+        "/signed/blob",
+        Reply::Ok {
+            headers: vec![],
+            body: payload.clone(),
+        },
+    );
+    let up = Updater::new(token_config(&rig)).unwrap();
+    up.check(true).unwrap();
+    let bearer = Some("Bearer github_pat_SECRET123".to_owned());
+    assert_eq!(rig.mock.header(LATEST, "authorization"), bearer);
+    up.download().unwrap();
+    assert_eq!(
+        rig.mock.header(
+            "/repos/fspecii/geekbridge/releases/assets/1",
+            "authorization"
+        ),
+        bearer
+    );
+    assert_eq!(
+        rig.mock.header("/signed/blob", "authorization"),
+        None,
+        "the redirected CDN request must not carry the token"
+    );
+    assert_eq!(rig.mock.hits(&format!("/dl/{ASSET}")), 0);
+    // Without a token nothing is sent, and the public download URL is used.
+    let rig2 = Rig::new();
+    rig2.publish("v0.2.0", &payload, Some(good_sums(&payload)));
+    let up2 = rig2.updater("0.1.0");
+    up2.check(true).unwrap();
+    up2.download().unwrap();
+    assert_eq!(rig2.mock.header(LATEST, "authorization"), None);
+    assert_eq!(
+        rig2.mock.header(&format!("/dl/{ASSET}"), "authorization"),
+        None
+    );
+}
+
+#[test]
+fn a_redirect_that_leaves_the_allow_list_is_refused_with_a_token() {
+    let rig = Rig::new();
+    let payload = vec![7_u8; 300];
+    rig.publish("v0.2.0", &payload, Some(good_sums(&payload)));
+    let up = Updater::new(token_config(&rig)).unwrap();
+    up.check(true).unwrap();
+    rig.mock.set(
+        &format!("/dl/{ASSET}"),
+        Reply::Status {
+            code: 302,
+            headers: vec![("Location".into(), "https://evil.example/steal".into())],
+        },
+    );
+    assert!(matches!(up.download(), Err(Error::Url(_))));
+    // A redirect on the API call itself is refused too.
+    rig.mock.set(
+        LATEST,
+        Reply::Status {
+            code: 301,
+            headers: vec![("Location".into(), "https://evil.example/".into())],
+        },
+    );
+    assert!(matches!(up.check(true), Err(Error::Url(_))));
+}
+
+#[test]
+fn the_token_never_appears_in_debug_output_or_errors() {
+    let rig = Rig::new();
+    let cfg = token_config(&rig);
+    assert!(!format!("{cfg:?}").contains("SECRET123"));
+    let mut bad = rig.config("0.1.0");
+    bad.token = Some(bridge_update::Secret::new("bad token\r\nX: y"));
+    let err = Updater::new(bad).err().unwrap();
+    assert!(!err.to_string().contains("bad token"));
+    let mut repo = rig.config("0.1.0");
+    repo.repo = "../etc/passwd".into();
+    assert!(Updater::new(repo).is_err());
+}
+
+#[test]
+fn another_repository_can_be_configured() {
+    let rig = Rig::new();
+    let payload = [1_u8; 10];
+    rig.mock.set(
+        "/repos/acme/geekbridge-releases/releases/latest",
+        json_ok(release_json(&rig.mock, "v0.3.0", false, payload.len())),
+    );
+    let mut cfg = rig.config("0.1.0");
+    cfg.repo = "acme/geekbridge-releases".into();
+    let up = Updater::new(cfg).unwrap();
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::Available);
 }
 
 #[test]

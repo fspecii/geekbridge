@@ -333,3 +333,4 @@ impl Rng {
 }
 
 pub mod chaos;
+pub mod space;

@@ -122,6 +122,17 @@ pub struct Policy {
 }
 
 impl Policy {
+    /// Whether a bearer token may accompany a request to `url`: only the GitHub API host over
+    /// TLS. Asset CDNs get pre-signed URLs and must never see the token, and a redirect to any
+    /// other host is dropped before it is contacted. (The loopback test origin plays the API
+    /// host for `/repos/...` paths only, so tests can tell API and CDN requests apart.)
+    pub fn sends_auth(&self, url: &Url) -> bool {
+        if url.https {
+            return url.port == 443 && url.host == "api.github.com";
+        }
+        self.allows(url) && url.path.starts_with("/repos/")
+    }
+
     pub fn allows(&self, url: &Url) -> bool {
         if url.https && url.port == 443 && is_github_host(&url.host) {
             return true;
@@ -149,13 +160,25 @@ pub struct Client {
     user_agent: String,
     pub policy: Policy,
     pub io_timeout: Duration,
+    token: Option<String>,
 }
 
 trait Stream: Read + Write {}
 impl<T: Read + Write> Stream for T {}
 
 impl Client {
-    pub fn new(user_agent: &str, policy: Policy, io_timeout: Duration) -> Result<Client, Error> {
+    pub fn new(
+        user_agent: &str,
+        policy: Policy,
+        io_timeout: Duration,
+        token: Option<String>,
+    ) -> Result<Client, Error> {
+        if token
+            .as_deref()
+            .is_some_and(|t| t.is_empty() || t.bytes().any(|b| b <= b' ' || b >= 0x7f))
+        {
+            return Err(Error::Url("the update token is not usable".into()));
+        }
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
@@ -171,6 +194,7 @@ impl Client {
             user_agent: user_agent.to_owned(),
             policy,
             io_timeout,
+            token,
         })
     }
 
@@ -208,6 +232,13 @@ impl Client {
                     return Err(Error::Url("bad header".into()));
                 }
                 request.push_str(&format!("{name}: {value}\r\n"));
+            }
+            if let Some(token) = self
+                .token
+                .as_deref()
+                .filter(|_| self.policy.sends_auth(&url))
+            {
+                request.push_str(&format!("Authorization: Bearer {token}\r\n"));
             }
             request.push_str("\r\n");
             guard.arm()?;
@@ -538,6 +569,24 @@ fn read_chunked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_is_for_the_api_host_over_tls_only() {
+        let policy = Policy::default();
+        let sends = |u: &str| policy.sends_auth(&Url::parse(u).unwrap());
+        assert!(sends("https://api.github.com/repos/a/b/releases/latest"));
+        for no in [
+            "https://github.com/a/b/releases/download/v1/x",
+            "https://objects.githubusercontent.com/x",
+            "https://release-assets.githubusercontent.com/x",
+            "https://api.github.com.evil.example/x",
+            "https://evil.example/x",
+            "http://api.github.com/x",
+            "https://api.github.com:8443/x",
+        ] {
+            assert!(!sends(no), "{no}");
+        }
+    }
 
     #[test]
     fn parses_urls() {

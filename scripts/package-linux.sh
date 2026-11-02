@@ -30,7 +30,8 @@ bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-m
 for b in "${bins[@]}"; do [[ -x "$bindir/$b" ]] || { echo "missing binary: $bindir/$b" >&2; exit 66; }; done
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)" >&2; exit 69; }
 
-work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+source "$ROOT/scripts/lib-tmp.sh"
+work="$(gb_mktemp package -d)"; trap 'rm -rf "$work"' EXIT
 pk="$ROOT/packaging/linux"
 desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
 

@@ -19,7 +19,8 @@ case "${1:-}" in
   *) echo "usage: $0 [--check|--stdout]" >&2; exit 2 ;;
 esac
 
-tmp="$(mktemp -d)"
+source "$root/scripts/lib-tmp.sh"
+tmp="$(gb_mktemp notices -d)"
 trap 'rm -rf "$tmp"' EXIT
 (cd "$root" && cargo metadata --locked --format-version 1 >"$tmp/meta.json")
 

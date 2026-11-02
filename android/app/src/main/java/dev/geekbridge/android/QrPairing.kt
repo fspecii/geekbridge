@@ -92,9 +92,13 @@ sealed interface QrStep {
     data class Dial(val address: QrAddress) : QrStep
     data class Pair(val connectionId: Long) : QrStep
     data object Waiting : QrStep
+    /** Scanning means "pair again": a computer this phone still remembers is forgotten first (it may have forgotten the phone). */
+    data class Forget(val deviceId: String) : QrStep
     data object Paired : QrStep
     data class Failed(val why: QrFailure) : QrStep
 }
+
+private const val FORGET_WAIT_MS = 5_000L
 
 enum class QrFailure { NoAddressAnswered, ConnectionLost }
 
@@ -107,10 +111,19 @@ class QrPlan(val target: QrTarget, private val dialTimeoutMs: Long = 6_000) {
     private var index = -1
     private var dialStartedAt = 0L
     private var pairSent = false
+    private var forgetAt = -1L
 
     fun next(s: TransportSnapshot?, nowMs: Long): QrStep {
         if (s == null) return QrStep.Waiting
-        if (s.paired.any { it.deviceId == target.deviceId }) return QrStep.Paired
+        val known = s.paired.firstOrNull { it.deviceId == target.deviceId }
+        if (known != null) {
+            // Trust recorded by this scan.
+            if (pairSent) return QrStep.Paired
+            // Not by this scan: the computer may have forgotten this phone (then "Paired" would be a lie and the
+            // computer would never see the request), so forget it here and pair for real. Never wait for ever.
+            if (forgetAt < 0) { forgetAt = nowMs; return QrStep.Forget(known.deviceId) }
+            if (nowMs - forgetAt < FORGET_WAIT_MS) return QrStep.Waiting
+        }
         val c = s.connections.firstOrNull { it.peer.deviceId == target.deviceId }
         if (c != null) {
             return when {

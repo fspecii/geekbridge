@@ -62,7 +62,8 @@ fi
 
 # 4. Bump.
 today="$(date -u +%F)"
-tmp="$(mktemp)"
+source "$ROOT/scripts/lib-tmp.sh"
+tmp="$(gb_mktemp release)"
 trap 'rm -f "$tmp"' EXIT
 awk -v v="$VERSION" '/^\[workspace.package\]/{s=1} /^\[/ && !/^\[workspace.package\]/{s=0}
     s && /^version[[:space:]]*=/ && !done {print "version = \"" v "\""; done=1; next} {print}' Cargo.toml > "$tmp"

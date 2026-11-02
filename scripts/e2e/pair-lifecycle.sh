@@ -7,6 +7,7 @@
 #   A_qr / A_code   the PHONE unpairs while the computer still trusts it, then re-pair (QR link / code comparison)
 #   B_qr / B_code   the COMPUTER forgets the phone while the phone still trusts it, then re-pair
 #   C_qr / C_code   both sides forget, then re-pair
+#   repeat          the computer asks twice (second request on a new connection): only the new code is valid
 #   rename          rename phone and computer (hostile names too), check the other side, notifications, Diagnostics
 # "First attempt" means: one pass through the pairing screens, no retry, no manual unpair.
 #
@@ -27,7 +28,7 @@ while (($#)); do
   esac
   shift
 done
-[[ ${#SCEN[@]} -eq 0 ]] && SCEN=(A_qr A_code B_qr B_code C_qr C_code rename)
+[[ ${#SCEN[@]} -eq 0 ]] && SCEN=(A_qr A_code B_qr B_code C_qr C_code repeat rename)
 # PL_DEFAULTS: a private set of ports and a free AVD; export E2E_* before calling to change them.
 : "${E2E_AVD:=gb36u}" "${E2E_EMU_PORT:=5624}" "${E2E_ADB_PORT:=16090}" "${E2E_TAG:=-pl}"
 : "${E2E_RUN:=$ROOT/target/pl-run}" "${E2E_SCRATCH:=$ROOT/target/pl-android}" "${E2E_TARGET:=$ROOT/target/pl}"
@@ -37,6 +38,7 @@ export E2E_SOURCE_ONLY=1 E2E_AVD E2E_EMU_PORT E2E_ADB_PORT E2E_TAG E2E_RUN E2E_S
   E2E_CTRL_PORT E2E_API_PORT E2E_DISC_PORT E2E_LISTEN_PORT E2E_REDIR_PORT E2E_RESULTS
 # shellcheck disable=SC1091
 source scripts/e2e-android.sh "${BUILDARG[@]}"
+export ADBUI_TIMEOUT="${ADBUI_TIMEOUT:-60}"   # a loaded host makes uiautomator slow
 PL_SHOTS="$ROOT/dist/screenshots/pairing"; mkdir -p "$PL_SHOTS"
 pshot() { $ADB exec-out screencap -p >"$PL_SHOTS/pair-$1.png" 2>/dev/null; }
 STUB="$RUN/stub-bin"; NOTIFY_LOG="$RUN/notify.log"
@@ -56,12 +58,18 @@ start_desktop() { # NAME : (re)start the service with a stub notify-send and a Q
 pl_env() {
   [[ -x "$SVC" && -f "$APK" ]] || { BUILD=yes; stage_env || return 1; BUILD=auto; }
   start_xvfb; start_emulator || return 1
-  $ADB shell svc power stayon true; wake
+  $ADB shell svc power stayon true; $ADB shell settings put global hide_error_dialogs 1; wake
   $ADB install -r "$APK" 2>&1 | tail -1 | grep -q Success || return 1
   start_desktop; desk_id
 }
 
 # ---------------------------------------------------------------- phone helpers
+dismiss_anr() { # a loaded host makes system UI / launcher ANR; the dialog would block every tap
+  local i; for i in 1 2 3; do
+    $ADB shell dumpsys window 2>/dev/null | grep mCurrentFocus | grep -q "Not Responding" || return 0
+    ui tap Wait >/dev/null 2>&1 || $ADB shell input keyevent KEYCODE_BACK; sleep 2
+  done
+}
 scan() { $ADB shell am start -W -a android.intent.action.VIEW -d "'$1'" $PKG >/dev/null; }
 finish_setup() { # mark the setup wizard finished so Home/Diagnostics open directly
   $ADB shell am force-stop $PKG; sleep 1
@@ -127,11 +135,12 @@ verify_paired() {
   ctl ping "$PHONE_ID" >/dev/null 2>&1 || { echo "ping failed" >&2; return 1; }
 }
 fresh_pair() { # wipe the phone, forget on the PC, pair once by QR, finish the wizard
+  dismiss_anr
   for id in $(paired_ids); do ctl unpair "$id" >/dev/null 2>&1; done
   $ADB shell pm clear $PKG >/dev/null; wake
   qr_pair >/dev/null || return 1
   PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
-  finish_setup; goto_home
+  finish_setup; $ADB shell pm grant $PKG android.permission.POST_NOTIFICATIONS >/dev/null 2>&1; goto_home
 }
 
 repeat_scenario() { # name function
@@ -180,6 +189,36 @@ s_B_code() { scn_B code; }
 s_C_qr() { scn_C qr; }
 s_C_code() { scn_C code; }
 
+# ---------------------------------------------------------------- E: repeated pair requests (docs/pairing.md)
+# The computer asks, the user does not answer, the computer asks again (new connection): the phone must show the NEW
+# code only, the first prompt's approval must be refused as stale, and approving the new one pairs on the first try.
+# (Replacement on the same connection is covered by the bridge-kde Machine tests; the emulator test needs a raw peer.)
+phone_code_is() { [[ "$(ui code 2>/dev/null)" == "$1" ]]; }
+phone_code_changed_from() { local c; c="$(ui code 2>/dev/null)"; [[ -n "$c" && "$c" != "$1" ]]; }
+s_repeat() {
+  local T0; T0=$(date +%s)
+  fresh_pair || { echo "setup pairing failed"; return 1; }
+  ctl disconnect "$PHONE_ID" >/dev/null 2>&1; ctl unpair "$PHONE_ID" >/dev/null; phone_unpair || { echo "phone unpair failed"; return 1; }
+  goto_diag; ensure_link || return 1
+  desk_dial; wait_for 12 has_unpaired_link || { echo "no link for the first request"; return 2; }
+  ctl pair "$PHONE_ID" request >/dev/null; wait_for 20 ui code >/dev/null || { echo "no first prompt"; return 3; }
+  local c1 id1; c1="$(ui code)"; id1="$(ctl status | jget 'd["challenges"][0]["challenge_id"]')"
+  pshot "$TAG-repeat-first-prompt"
+  ctl disconnect "$PHONE_ID" >/dev/null 2>&1; sleep 2
+  desk_dial; wait_for 12 has_unpaired_link || { echo "no link for the second request"; return 4; }
+  ctl pair "$PHONE_ID" request >/dev/null
+  wait_for 25 phone_code_changed_from "$c1" || { pshot "$TAG-repeat-no-new-prompt"; echo "phone still shows the old code '$c1' or none"; return 5; }
+  local c2 id2 d2; c2="$(ui code)"; id2="$(ctl status | jget 'd["challenges"][-1]["challenge_id"]')"; d2="$(ctl status | jget 'd["challenges"][-1]["verification_key"]')"
+  pshot "$TAG-repeat-second-prompt"
+  [[ "$c2" == "$d2" ]] || { echo "codes differ phone=$c2 pc=$d2"; return 6; }
+  ctl approve "$id1" "$c1" >/dev/null 2>&1 && { echo "the stale first challenge was still approvable"; return 7; }
+  ctl approve "$id2" "$c2" >/dev/null || { echo "approving the new challenge failed"; return 8; }
+  ui tap Pair >/dev/null; sleep 4
+  wait_for 15 pc_paired || { pshot "$TAG-repeat-not-paired"; echo "not paired after approving the new prompt"; return 9; }
+  verify_paired || return 10
+  echo "$(( $(date +%s) - ${T0:-$(date +%s)} ))"
+}
+
 # ---------------------------------------------------------------- D: rename (see rename_scenarios below)
 # shellcheck disable=SC1091
 [[ -f scripts/e2e/pair-rename.sh ]] && source scripts/e2e/pair-rename.sh
@@ -188,7 +227,8 @@ main_pl() {
   pl_env || { rec env FAIL "environment did not come up"; return 1; }
   for s in "${SCEN[@]}"; do
     case "$s" in
-      rename) declare -F rename_scenario >/dev/null && rename_scenario || rec rename SKIP "pair-rename.sh missing" ;;
+      A_code) rec A_code SKIP "$(date +%F) the phone must start the request (computer still trusts it); that needs UDP discovery, which the emulator's NAT drops. The same phone-initiated request is exercised by A_qr; unit/integration tests cover the by-name path" ;;
+      rename) declare -F rename_scenario >/dev/null && for ((rn = 1; rn <= REPEAT; rn++)); do log "== rename run $rn/$REPEAT"; rename_scenario; done || rec rename SKIP "pair-rename.sh missing" ;;
       *) repeat_scenario "$s" "s_$s" ;;
     esac
   done

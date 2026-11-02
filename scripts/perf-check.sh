@@ -31,7 +31,7 @@ UI=0
 : "${BUDGET_STARTUP_MS:=300}"         # exec to "discovery API" line, warm cache
 : "${BUDGET_SERVICE_BYTES:=5600000}"  # stripped binary size (5.0 -> 5.3 -> 5.6 MB on 2026-11-02: the tray, docs/performance.md)
 : "${BUDGET_CTL_BYTES:=1200000}"
-: "${BUDGET_UI_RSS_KIB:=90000}"       # geekbridge-messages, idle
+: "${BUDGET_UI_RSS_KIB:=75000}"       # geekbridge-messages, idle, warm GL shader cache (65 MB measured 2026-11-02; 90000 before the memtrim/atlas work)
 : "${BUDGET_UI_WAKEUPS_PER_S:=12}"
 
 while (($#)); do
@@ -54,7 +54,8 @@ fi
 BIN_DIR="$(cd "$BIN_DIR" 2>/dev/null && pwd -P || echo "$BIN_DIR")"
 [[ -x "$BIN_DIR/geekbridge-service" ]] || { echo "no release binary in $BIN_DIR (use --build or --bin-dir)" >&2; exit 2; }
 
-TMP="$(mktemp -d)"
+source "$ROOT/scripts/lib-tmp.sh"
+TMP="$(gb_mktemp perf -d)"
 PIDS=()
 cleanup() {
     for p in "${PIDS[@]:-}"; do [[ -n "$p" ]] && kill "$p" 2>/dev/null || true; done
@@ -132,6 +133,9 @@ if ((UI)); then
     if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" || ! -x "$BIN_DIR/geekbridge-messages" ]]; then
         echo "== geekbridge-messages: skipped (no display or binary) =="
     else
+        # Warm-up launch: with a cold GL shader disk cache the NVIDIA driver compiles in-process and
+        # keeps ~40 MB (110 MB RSS vs 65 MB); that is the driver, not the app, so measure warm.
+        (cd "$TMP" && timeout 5 "$BIN_DIR/geekbridge-messages" --api-port "$API_PORT" >/dev/null 2>&1) || true
         (cd "$TMP" && exec "$BIN_DIR/geekbridge-messages" --api-port "$API_PORT" >"$TMP/ui.log" 2>&1) &
         UIP=$!
         PIDS+=("$UIP")

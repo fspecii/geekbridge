@@ -30,6 +30,9 @@ pub struct Release {
 pub struct Asset {
     pub name: String,
     pub browser_download_url: String,
+    /// The API URL of the asset (`/releases/assets/<id>`), used with a token for private repos.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub size: u64,
 }
@@ -198,6 +201,7 @@ mod tests {
         Asset {
             name: name.into(),
             browser_download_url: format!("https://github.com/x/y/releases/download/v1/{name}"),
+            url: None,
             size,
         }
     }
