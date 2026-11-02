@@ -54,7 +54,11 @@ fn sample() -> Sample {
 
 /// RSS is allocator- and test-profile dependent, so allow generous but bounded growth: a real leak
 /// of a few KiB per cycle shows up over hundreds of cycles; noise does not reach this bound.
-const RSS_GROWTH_BUDGET_KIB: usize = 6 * 1024;
+const RSS_GROWTH_BUDGET_KIB: usize = if cfg!(debug_assertions) {
+    6 * 1024
+} else {
+    1536
+};
 const FD_SLACK: usize = 4;
 
 #[tokio::test]

@@ -119,6 +119,9 @@ const VCARD_RETRY_MS: u64 = 15_000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
 const SENDS_PER_MINUTE: usize = 10;
+/// Texts remembered per phone (settled ones beyond this are forgotten, oldest first), so a link that stays
+/// up for months does not grow the send book or the status snapshot without bound.
+const SEND_HISTORY: usize = 200;
 const NOTIFY_MAX_AGE_MS: u64 = 10 * 60 * 1000;
 const NOTIFY_MIN_GAP_MS: u64 = 2_000;
 const BUCKET_CAPACITY: f64 = 600.0;
@@ -1659,6 +1662,13 @@ impl Dev {
         let _ = self.ledger.apply(id, SendEvent::Dispatched, now);
         self.requests.insert(request_id, id);
         self.send_times.push_back(now);
+        let gone = self.ledger.prune_settled(SEND_HISTORY);
+        if !gone.is_empty() {
+            self.requests.retain(|_, sid| !gone.contains(sid));
+            for sid in &gone {
+                self.send_reasons.remove(sid);
+            }
+        }
         Ok(())
     }
 }
@@ -2206,6 +2216,34 @@ mod tests {
         let new = h.resend(ID, v.sends[0].send_id, "s2").unwrap();
         assert_ne!(new, v.sends[0].send_id);
         assert_eq!(drain(&mut rx2), vec![sms::REQUEST]);
+    }
+
+    #[test]
+    fn send_book_stays_bounded_over_a_long_lived_link() {
+        let h = PhoneData::new();
+        let (mut rx, _g) = h.link_up(ID, "Pixel", caps_all(), (false, false, true));
+        drain(&mut rx);
+        for i in 0..(SEND_HISTORY * 3) {
+            let id = h
+                .send_text(ID, "5551230000", "x", &format!("s{i}"), None)
+                .unwrap();
+            let mut g = h.lock();
+            let d = g.devices.get_mut(ID).unwrap();
+            d.send_times.clear(); // the per-minute limit is not what is under test
+            d.send_reasons.insert(SendId(id), "r".into());
+            let _ = d.ledger.apply(SendId(id), SendEvent::PhoneAccepted, 1);
+            let _ = d.ledger.apply(SendId(id), SendEvent::PhoneDelivered, 2);
+            drop(g);
+            drain(&mut rx);
+        }
+        let g = h.lock();
+        let d = g.devices.get(ID).unwrap();
+        assert!(d.ledger.len() <= SEND_HISTORY, "ledger {}", d.ledger.len());
+        assert!(d.requests.len() <= SEND_HISTORY);
+        assert!(d.send_reasons.len() <= SEND_HISTORY);
+        drop(g);
+        let v = h.messages_view(None, None, None).unwrap();
+        assert!(v.sends.len() <= SEND_HISTORY);
     }
 
     #[test]

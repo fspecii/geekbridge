@@ -1142,6 +1142,33 @@ impl SendLedger {
             .apply(event, now_ms)
             .map_err(ApplyError::Transition)
     }
+    /// Forget the oldest settled sends (sent, delivered, failed) while more than `keep` records are held.
+    /// Sends still in flight or uncertain are never dropped, they wait for the phone or the user.
+    /// Returns the ids that were removed so the caller can drop its own references.
+    pub fn prune_settled(&mut self, keep: usize) -> Vec<SendId> {
+        let excess = self.records.len().saturating_sub(keep);
+        if excess == 0 {
+            return Vec::new();
+        }
+        let doomed: Vec<SendId> = self
+            .records
+            .values()
+            .filter(|r| {
+                matches!(
+                    r.state(),
+                    SendState::Sent | SendState::Delivered | SendState::Failed { .. }
+                )
+            })
+            .map(|r| r.id)
+            .take(excess)
+            .collect();
+        for id in &doomed {
+            if let Some(r) = self.records.remove(id) {
+                self.by_submission.remove(&r.submission);
+            }
+        }
+        doomed
+    }
     /// Oldest record that has never left the machine; the only kind a sender loop may pick up alone.
     pub fn next_auto_sendable(&self) -> Option<SendId> {
         self.records
@@ -1877,6 +1904,41 @@ mod tests {
             ledger.submit(sub("over"), intent("x"), 1),
             Err(StoreError::LedgerFull)
         );
+    }
+
+    #[test]
+    fn prune_settled_keeps_in_flight_and_the_newest() {
+        let mut ledger = SendLedger::new();
+        let mut ids = Vec::new();
+        for i in 0..10 {
+            let Submit::Created(id) = ledger
+                .submit(sub(&format!("s{i}")), intent("x"), 1)
+                .unwrap()
+            else {
+                unreachable!()
+            };
+            ledger.apply(id, SendEvent::Dispatched, 2).unwrap();
+            ids.push(id);
+        }
+        // 0 and 1 stay in flight; 2..8 are delivered; 8 and 9 in flight.
+        for id in &ids[2..8] {
+            ledger.apply(*id, SendEvent::PhoneAccepted, 3).unwrap();
+            ledger.apply(*id, SendEvent::PhoneSent, 4).unwrap();
+        }
+        let gone = ledger.prune_settled(6);
+        assert_eq!(gone, ids[2..6].to_vec());
+        assert_eq!(ledger.len(), 6);
+        assert!(ledger.get(ids[0]).is_some() && ledger.get(ids[9]).is_some());
+        // The forgotten submission id is free again, the kept one is still idempotent.
+        assert!(matches!(
+            ledger.submit(sub("s0"), intent("x"), 5),
+            Ok(Submit::Existing(_))
+        ));
+        assert!(matches!(
+            ledger.submit(sub("s2"), intent("x"), 5),
+            Ok(Submit::Created(_))
+        ));
+        assert!(ledger.prune_settled(1_000).is_empty());
     }
 
     // --- correlation ----------------------------------------------------------------------------
