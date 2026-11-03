@@ -239,8 +239,9 @@ Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout (the `asse
   `dev.geekbridge.android`, target SDK 36. That first build declared only `READ_CONTACTS` and `READ_CALENDAR`; the
   manifest now declares many more, including `READ_PHONE_STATE`, plus
   `INTERNET` and the other permissions listed in `AndroidManifest.xml` (update install, foreground service, boot,
-  notifications, battery-optimisation exemption, multicast, SMS, calendar write, call answering, call log), each runtime
-  permission requested only when its feature is switched on. Never requested: phone numbers, Bluetooth, storage, location.
+  notifications, battery-optimisation exemption, multicast, SMS, calendar write, call answering, call log, call placing for the optional PC dial), each runtime
+  permission requested only when its feature is switched on. Phone notification mirroring uses Android's special
+  Notification access (a `NotificationListenerService` the user enables in system settings), not a runtime permission. Never requested: phone numbers, Bluetooth, storage, location.
 - Guard check: in a copy of the project without the `.so` files, `assembleDebug` fails in `verifyNativeLibs`
   with the message above.
 

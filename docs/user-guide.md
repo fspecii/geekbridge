@@ -24,7 +24,7 @@ the app refuses such an update. Uninstall one before installing the other (this 
 again).
 
 **Uninstall.** Linux: `./install.sh --uninstall` removes the program but keeps your pairings, identity and settings in
-`~/.local/state/geekbridge`; add `--purge-data` to delete that folder too (`./install.sh --uninstall --purge-data`). The
+`~/.local/share/geekbridge` (`$XDG_DATA_HOME/geekbridge/service`); add `--purge-data` to delete that folder (and the updater's notes in `~/.local/state/geekbridge`) too (`./install.sh --uninstall --purge-data`). The
 package route is `sudo apt remove geekbridge`. Also forget the computer on the phone (Diagnostics & about > Unpair).
 
 ### The tray icon
@@ -41,6 +41,7 @@ GeekBridge. The menu (right click) shows the phone name and a status line, then:
 | Paste clipboard from phone | the same as the paste-from-phone hotkey (needs clipboard sync on for a connected phone) |
 | Send file... | opens the share window |
 | Pause sync / Resume sync | switches the clipboard feature off for the phones that have it on, and back on for exactly those |
+| Show phone notifications / Stop showing phone notifications | only offered when a connected phone declares notification mirroring (or it is on); switches the per-phone consent |
 | Check for updates | asks GitHub for a newer release now |
 | Quit | stops the service until the next login (or `geekbridge-service`) |
 
@@ -56,6 +57,14 @@ open **GeekBridge** from Applications.
 
 Requirements: Android 8 or newer, phone and computer on the same network, the background service running, and the
 computer's firewall open for TCP and UDP **1716-1764** from your LAN (see Troubleshooting).
+
+While no phone is paired, the GeekBridge Home window shows a **Get started** card: a QR code and link for the Android
+app, the pairing steps (it names phones already announcing themselves), which optional features exist and stay off,
+this computer's name, the update status, whether the service starts at login, and, when it can see that a firewall
+blocks 1716-1764 (ufw or firewalld on Linux, Windows Defender Firewall, the macOS application firewall), the exact
+commands to copy. GeekBridge never runs them for you. `geekbridge-ctl firewall` prints the same commands and
+`geekbridge-ctl autostart [status|enable|disable]` starts the service at login (XDG autostart, LaunchAgent or the per-user
+Run key).
 
 **With a QR code (quickest, no code to compare).**
 
@@ -91,6 +100,14 @@ The computer can show the phone's battery level and whether it is charging (tray
 on the phone switch on *Share battery level* in Settings and allow it for that computer; on the computer switch on *Show
 phone battery* (or `geekbridge-ctl consent DEVICE_ID battery on`). The value is kept in memory only. It uses the stock KDE
 Connect battery packets. Checked with automated tests and the emulator; not yet confirmed on the real phone.
+
+## Disconnecting and the phone's redial
+
+**Disconnect** (Home, the tray, `geekbridge-ctl disconnect`) keeps the pairing and closes the link. A GeekBridge phone
+is told (the `geekbridge.goodbye` packet), so it does not dial straight back: both sides stay off each other for 5
+minutes, or until either one connects by hand. Stopping the service tells the phone too, but then it keeps redialing
+with its normal back-off and returns as soon as the service is back. A stock KDE Connect phone is not sent anything
+and may reconnect on its own.
 
 ## Why is my phone not connected
 
@@ -148,6 +165,19 @@ Drop files on the GeekBridge window (they open in **Geekbridge Share** for the f
 Share and use **Choose files**. From the phone, use *Share → Send to computer*. Receiving on the computer is off per
 phone until you allow it; received files land in `~/Downloads/GeekBridge`. Details: [sharing.md](sharing.md).
 
+## The command line
+
+`geekbridge-ctl --help` is the authoritative list. Groups: **link** (`status`, `connect`, `pair`, `pair-qr`,
+`test-connection`, `approve`, `deny`, `disconnect`, `unpair`, `rename`, `ping`, `events`); **permissions** (`consent DEVICE
+FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
+`battery`, plus `calendar_edit` and `calendar_alerts`, which the command accepts although `--help` does not list them); **phone data** (`agenda`,
+`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `notifications`); **calls**
+(`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial`); **clipboard and sharing** (`clipboard ...`,
+`send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
+`autostart`, `tray`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
+with a debug build of the phone app. `report` shows exactly what a prefilled bug report carries (the redacted `diagnose`
+output) and sends nothing itself.
+
 ## Updates
 
 A banner appears when a newer release exists: **Download** (checked against the published SHA-256), **Show file**,
@@ -169,8 +199,8 @@ the optional update check to `api.github.com` (turn it off with `geekbridge-ctl 
 
 ## Troubleshooting
 
-Start with `geekbridge-ctl doctor` (run it as the same user as the service, in your desktop session): it checks the service, the firewall (ufw/firewalld ports 1716-1764), your desktop
-session (Wayland/X11 variables), paired phones, clipboard, calls and Messages, and prints the fix for each problem
+Start with `geekbridge-ctl doctor` (run it as the same user as the service, in your desktop session): it checks the service, the firewall (ufw/firewalld ports 1716-1764 on Linux, Windows Defender Firewall, the macOS
+application firewall), your desktop session (Wayland/X11 variables; Linux), paired phones, clipboard, calls and Messages, and prints the fix for each problem
 (it exits 1 if a check failed). Then the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
 `geekbridge-ctl diagnose` and, on the phone, **Diagnostics & about > Copy report** (both are redacted and safe to attach
 to a bug report).
@@ -209,7 +239,7 @@ to a bug report).
 
 ### Firewall, VPN, guest Wi-Fi
 * Allow TCP **and** UDP **1716-1764** from your LAN (`geekbridge-ctl firewall` prints the commands for your firewall,
-  `geekbridge-ctl doctor` tells you whether they are in place; the checks read ufw and firewalld and say so when they cannot). ufw: `sudo ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp`
+  `geekbridge-ctl doctor` tells you whether they are in place; the checks read ufw, firewalld, Windows Defender Firewall or the macOS application firewall and say so when they cannot). ufw: `sudo ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp`
   and the same for `udp` (use your own subnet). firewalld: `sudo firewall-cmd --add-port=1716-1764/tcp --add-port=1716-1764/udp --permanent`.
   Windows prompts once for "Private network"; accept it.
 * VPNs that route all traffic (full tunnel) usually block LAN access; use split tunnelling or disconnect.

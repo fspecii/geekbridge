@@ -110,8 +110,10 @@ markup, control and bidirectional characters neutralised and follows `--`, so it
 ```
 
 States (`alt`, and the first `class`): `offline` (service not running), `unpaired`, `disconnected`, `connected`,
-`ringing`. Extra classes: `unread` (unread SMS, when the phone shares messages), `update` (newer release). It carries no
-caller, number or message text. A battery level is not part of the phone link yet, so none is shown.
+`ringing`. Extra classes: `unread` (unread SMS, when the phone shares messages), `update` (newer release), `why-<code>` (second
+class while `disconnected`: the reason code, with the plain sentence and fix in the tooltip), and, while connected and
+the phone's battery sharing is on for this computer, `charging` / `battery-low` plus a numeric `battery` field and a
+tooltip line. It carries no caller, number or message text.
 
 `~/.config/waybar/config.jsonc`:
 

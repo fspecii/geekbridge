@@ -13,18 +13,17 @@ explicit outbound dial, pairing in both directions with an explicit local decisi
 unpair (both directions), one connection per device, bounded state, optional UDP discovery, a `ping`
 packet in both directions.
 
-**Not done / not proven:**
-
-- It has not run on ART, an emulator or a phone, and has not interoperated with a real KDE Connect
-  device or with the desktop apps. The cdylib was cross-built and linked for both ABIs, nothing more.
-- It advertises `kdeconnect.ping` and `kdeconnect.share.request` (incoming and outgoing) and nothing else.
-  Sharing is described in [sharing.md](sharing.md) and the `share_*` actions in [android-contract.md](android-contract.md).
-  No SMS, contacts, calendar, telephony or notification packets exist here; those need their own
-  reviewed work and must not be advertised until they do. Clipboard packets are declared only when `transport_start` is given a
-  `clipboard` object (see [Clipboard actions](#clipboard-actions)). Cellular calls and SMS are not part of this transport.
-- It is not a background service. There is no foreground service, no persistent link and no reconnect
-  loop; see [Lifecycle](#lifecycle).
-- Discovery is optional, off by default, and never connects or trusts anything on its own.
+**Status update (2026-11-03).** This section was written when the transport was new. Since then it has run under ART
+on an emulator and was paired once with a real phone; it interoperates with the desktop service and, in the emulator
+rehearsal, with the stock KDE Connect app ([kdeconnect-interop.md](kdeconnect-interop.md)); a foreground service
+([android-power.md](android-power.md)) keeps the link, and the core has a redial loop with back-off, an application
+heartbeat, a goodbye handler and per-computer permits (below). The base start (no options) still advertises only
+`kdeconnect.ping` and `kdeconnect.share.request`; everything else is declared only when `transport_start` asks for it:
+clipboard ([Clipboard actions](#clipboard-actions)), calls, and the phone-data relays (contacts, calendar, SMS, debug,
+battery, notifications; see [android-contract.md](android-contract.md) and [phone-data-link.md](phone-data-link.md)),
+and only while the user's switch is on. A `geekbridge.heartbeat` marker is declared in every identity. Cellular calls and
+SMS themselves are done by the Kotlin side, not this transport. Discovery is optional, off by default at this API level
+(the app turns it on), and never connects or trusts anything on its own.
 
 `version` and `validate_*` stay side-effect free. Creating the dispatcher (loading the library) starts no
 thread, socket or file; the first `transport_start` does.
@@ -243,8 +242,18 @@ progress, or a trusted link). Result `{disconnected:true}`; `unknown_connection`
 
 `connection_id`. Queues one `kdeconnect.ping` on a trusted connection (`not_trusted` otherwise,
 `busy` if its queue is full). Result `{queued:true}`. Received pings only increment
-`connections[].pings_received`; their content is not kept. Any other packet type from a trusted peer
-is dropped and counted in `ignored_packets`.
+`connections[].pings_received`; their content is not kept. A trusted peer's packet whose type was not negotiated
+(see the feature sections for the types each relay accepts) is dropped and counted in `ignored_packets`.
+
+### `transport_set_name`, `transport_permits`, `transport_screen`
+
+* `transport_set_name {device_name}`: renames this phone for later connections (same cleaning as at start).
+* `transport_permits {permits:{calls?, contacts?, calendar?, calendar_edit?, sms?, battery?, notifications?: [device ids]}}`:
+  the per-computer allow-lists (at most 16 ids each). The core sends a feature's packets only to a computer on its list,
+  whatever the global switch says; a computer paired later is on no list.
+* `transport_screen {on}`: tells the core whether the screen is on. While it is off (and no one uses the link) the
+  heartbeat ping slows from 20 s to 60 s and the core skips UDP announcements while every paired computer is linked
+  (`bridge_core::heartbeat::IDLE_EVERY`). It needs no running transport and survives a restart.
 
 ### `version`
 

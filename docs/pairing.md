@@ -97,7 +97,9 @@ Stock KDE Connect Android derives the verification key from the timestamp of *ev
    the certificate fingerprint **and** the code, so it fails on a mismatch.
 3. Nothing is auto-accepted and an acceptance is never carried over to a new key. The accept packet is sent only
    from a decision on the *current* generation, after which the machine is finished, so it goes out exactly once per
-   pairing.
+   pairing. When the desktop approves, the trust record is
+   written to disk before the accept leaves, so a pairing the phone saw as complete is always durable and visible in
+   `status` on the computer.
 4. Budget: at most 5 requests per 60 seconds per connection may open or replace a prompt (`MAX_REPLACEMENTS`,
    `REPLACEMENT_WINDOW`). More are ignored and count toward the unexpected-packet budget, which drops the link. A
    request with the same timestamp, or outside the clock-skew window, changes nothing. The connection is bound to one

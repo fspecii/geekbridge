@@ -109,8 +109,14 @@ each packet line after TLS, including the pairing exchange).
 Types with the `geekbridge.` prefix are only ever sent to a peer that advertised them in its identity,
 but GeekBridge also lists them in its own `incomingCapabilities` / `outgoingCapabilities`:
 
-`geekbridge.clipboard.{pull,item,none}`, `geekbridge.calls.{request,state,result}`,
-`geekbridge.calendar.{request,sync,write,write_result}`, `geekbridge.sms.status`.
+`geekbridge.clipboard.{pull,item,none}`, `geekbridge.calls.{request,state,result}` (the request's `action` includes
+`dial`), `geekbridge.calendar.{request,sync,write,write_result}`, `geekbridge.sms.status`,
+`geekbridge.debug.{log,state,state_request}` (debug-build phones only), `geekbridge.goodbye` (below) and the empty
+marker `geekbridge.heartbeat`, which a GeekBridge phone declares in every identity so the computer knows to send it
+the periodic `kdeconnect.ping`. The heartbeat is a plain ping every 20 s from the computer and from the phone (the phone slows to 60 s while its
+screen is off and nobody is using the link); a
+peer that has heartbeated and then says nothing for 70 s is dropped (`bridge-core/src/heartbeat.rs`). A stock peer
+never gets the periodic ping and is never dropped for silence.
 
 Checked against the stock desktop:
 

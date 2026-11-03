@@ -28,7 +28,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 - [Desktop design](design-desktop.md): the Nothing x macOS/iOS visual language
 - [Performance](performance.md): budgets and how to measure them
 - [Golden images](golden-images.md): visual regression tests for the desktop and Android UI, and how to update them
-- [Translating](translating.md): adding a language on Android and desktop, pseudo-locales, glossary, tone
+- [Adding a language](translations.md): the short hands-on contributor guide (worked example `eo`), with [Translating](translating.md) as the full rules: file formats, pseudo-locales, glossary, tone
 - [Disk hygiene](disk-hygiene.md): `make disk` / `make clean-dev`, scratch roots, free-space pre-flight
 - [Test coverage](coverage.md): measured line/function/region coverage, targets and how to regenerate
 - [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [CI dry run](ci-dry-run.md)
@@ -50,3 +50,6 @@ Findings from reviews, audits and long runs. Open items are kept visible; later 
 - Code correctness: [code review](reports/code-review.md), [code review 2](reports/code-review-2.md)
 - Testing: [emulator end-to-end findings](reports/e2e-findings.md), [soak report](reports/soak-report.md), [scale report](reports/scale-report.md), [chaos findings](reports/chaos-findings.md), [release-candidate report](reports/release-candidate-report.md)
 - Audits: [production readiness](reports/production-readiness.md), [first-run audit](reports/first-run-audit.md), [desktop UI review](reports/desktop-ui-review.md), [Android device risks](reports/android-device-risks.md)
+- Features (design notes and what was checked): [notification mirroring](reports/notification-mirroring.md), [battery status](reports/battery-status-feature.md), [why disconnected](reports/why-disconnected.md), [goodbye and listening-port hint](reports/goodbye-and-port-hint.md), [desktop onboarding](reports/desktop-onboarding.md), [redial collision](reports/redial-collision.md), [emulator features end to end](reports/emulator-features-e2e.md), [Windows and macOS doctor parity](reports/windows-macos-doctor-parity.md)
+- Performance and long runs: [size and memory round 3](reports/size-memory-round-3.md), [Android ICF](reports/android-icf-validation.md), [4-hour soak](reports/soak-4h-2026-11-03.md), [regression run 2026-11-03](reports/regression-2026-11-03.md)
+- Docs audits: [docs audit 4](reports/docs-audit-4.md)

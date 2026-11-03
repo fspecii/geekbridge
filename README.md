@@ -60,6 +60,7 @@ individually confirmed there.**
 | Android home-screen widgets | Connection (2x1), Quick actions (2x2), Agenda (4x2) in dot-matrix; light/dark, resizable, no polling | Emulator screenshots, JVM tests for the state/agenda logic | not yet |
 | Updates | GitHub release check, SHA-256 verified download, never auto-installs | Emulator self-update against a mock release server; real GitHub not contacted | not yet |
 | Phone battery on the computer | Level and charging state in the tray, Home and `status`; **off by default** on both ends | Scripted tests and unit tests against stock `kdeconnect.battery` packets | not yet |
+| Phone notifications on the computer | Banners with Dismiss and the phone's own buttons (no typed replies); only apps you pick; **off by default** on both ends; memory only | Emulator and scripted tests against stock `kdeconnect.notification` packets | not yet |
 | Dial from the computer | Type a number in Calls (or `geekbridge-ctl call dial`), confirm, the phone places the call; the voice stays on the phone | Scripted tests against a stand-in phone only; nothing was dialed on any network | not yet |
 | "Why is it disconnected" | One plain sentence and a fix for each paired phone without a link (Home, tray, waybar, `status`, `doctor`) | Unit and service tests; wording not yet judged on real failures | not yet |
 | Android service / battery | Foreground link service, boot restart, OEM battery guidance | Emulator reboot and battery dialog; no OEM device | not yet |
@@ -97,7 +98,9 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    **Calendar** on the computer. Editing the calendar is a separate opt-in.
 7. **Updates.** A banner "Update available" appears in every app and on Android; downloads are checksum-verified and never
    installed automatically.
-8. **Something wrong?** Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
+8. **Start at login.** The installers do it; otherwise `geekbridge-ctl autostart enable` (XDG autostart, LaunchAgent or the
+   per-user Run key).
+9. **Something wrong?** Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
    fix for each problem and exits 1 if a check failed). A paired phone without a link gets a plain reason and a
    suggested fix in Home, the tray, `geekbridge-ctl status` and waybar.
 
@@ -106,14 +109,14 @@ makes) is signed with a local debug key: it works for testing, but it can never 
 round; uninstall one before installing the other.
 
 **Uninstall (Linux).** `./install.sh --uninstall` removes the program and keeps your pairings and settings;
-`./install.sh --uninstall --purge-data` also deletes them (`~/.local/state/geekbridge`).
+`./install.sh --uninstall --purge-data` also deletes them (`~/.local/share/geekbridge`, plus the updater's notes in `~/.local/state/geekbridge`).
 
 ## Requirements
 
 - **Android 8.0 or newer** (API 26).
 - **Same local network** for phone and computer (no guest-Wi-Fi client isolation, no full-tunnel VPN).
-- **Firewall: allow TCP and UDP 1716-1764** from your LAN to the computer (`geekbridge-ctl firewall` prints the commands;
-  `geekbridge-ctl doctor` checks them, the desktop session, your phones and Messages, and says what to fix). The first free port in that range is used; file
+- **Firewall: allow TCP and UDP 1716-1764** from your LAN to the computer (`geekbridge-ctl firewall` prints the commands for ufw, firewalld, Windows Defender Firewall or the macOS application firewall;
+  `geekbridge-ctl doctor` checks them and the Home window's first-run card shows them, the desktop session, your phones and Messages, and says what to fix). The first free port in that range is used; file
   transfers use further ports in it. The control API itself stays on loopback (17380, 17381).
 - **Bluetooth:** answering, declining and hanging up from the computer work over the GeekBridge link and need **no**
   Bluetooth. Hearing and speaking on the computer needs the computer to be the phone's Bluetooth hands-free device, so a

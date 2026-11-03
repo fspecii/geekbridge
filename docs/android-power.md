@@ -41,7 +41,11 @@ adds "Battery optimisation is on".
 - No polling or timers in the service. It reacts to a default-network change (`registerDefaultNetworkCallback`,
   debounced 3 s, bounded retries) by re-announcing once. Dead peers are detected by kernel TCP keepalive that `bridge-kde` arms on every accepted and dialed socket
   (30 s idle, 10 s interval, 3 probes, `TCP_USER_TIMEOUT` 60 s; Android included), plus a 20 s application
-  heartbeat (ping) in both directions; see docs/reports/real-device-link-stability.md.
+  heartbeat (ping) in both directions. While the screen is off and nobody uses the link the phone pings every 60 s
+  instead (the computer keeps its own 20 s check, and silence is judged at 70 s), and it skips its UDP announcements
+  while every paired computer is already linked; see docs/reports/real-device-link-stability.md and
+  docs/reports/android-battery-audit-2.md. A manual Disconnect on the computer makes the phone stay off it for 5 minutes
+  (`geekbridge.goodbye`, [kdeconnect-interop.md](kdeconnect-interop.md)).
 - `BootReceiver` (`RECEIVE_BOOT_COMPLETED`, `MY_PACKAGE_REPLACED`) calls `LinkService.sync`.
 - While Home/Setup is visible the UI polls `transport_status` every 1-2 s (the core API is poll-based); the service
   never does. Moving between the app's screens does not stop the link (`ActivityTracker`).

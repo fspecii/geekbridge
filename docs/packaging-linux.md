@@ -81,6 +81,6 @@ Note that these artifacts were packaged from the binaries already in `target/rel
 
 `install.sh` (per user, `~/.local`): upgrading over an existing install restarts a running service
 (`systemctl --user try-restart`). `install.sh --uninstall` removes exactly what it installed and keeps the state
-directory (`$XDG_STATE_HOME/geekbridge`, default `~/.local/state/geekbridge`: pairings, identity, settings);
-`install.sh --uninstall --purge-data` also deletes that directory. The whole flow runs in a sandbox with
+directory (`$XDG_DATA_HOME/geekbridge`, default `~/.local/share/geekbridge`: pairings, identity, settings, under `service/`);
+`install.sh --uninstall --purge-data` also deletes that directory and the updater's notes in `$XDG_STATE_HOME/geekbridge`. The whole flow runs in a sandbox with
 `scripts/e2e/install-sandbox.sh` (fake HOME/XDG, stub `systemctl`).

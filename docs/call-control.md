@@ -87,6 +87,15 @@ Rules (service, `gate.rs` + `call_control.rs`):
   reconnect. While it is off nothing is reported and requests are refused. A computer that connects while a call is ringing receives the current report at once. When the
   app's switch is off, requests are refused by the core itself and never reach Kotlin.
 
+### Phone-side dial protection
+
+A paired computer with call access could otherwise dial any plain number, so the phone adds three layers of its own:
+a rate limit of 3 dial requests per computer per 10 minutes (the Rust core answers `rate_limited`, counted on arrival so
+failed attempts cannot probe); a visible notice ("Dialing <number> requested by <computer>") whenever a call is really
+about to be placed; and an optional on-phone confirmation (a "Place this call?" notification with Call / Deny, 45 s to
+answer, **off by default**, switch in the Answer calls step; unanswerable counts as declined). The computer shows the
+refusals `rate_limited` and `declined` in its usual notice line. Details: [reports/followups-security-5.md](reports/followups-security-5.md).
+
 ## Android side (`CallControl.kt`, `CallControlAndroid.kt`)
 
 | Permission | Why | Needed for |
@@ -95,6 +104,7 @@ Rules (service, `gate.rs` + `call_control.rs`):
 | `ANSWER_PHONE_CALLS` (runtime, API 26+) | `TelecomManager.acceptRingingCall()`, `endCall()` | answer / decline / hang up |
 | `READ_CALL_LOG` (runtime, optional) | the only way Android gives an app the **caller's number** (`ACTION_PHONE_STATE_CHANGED` extra); the call log itself is never read | caller number |
 | `READ_CONTACTS` (already optional) | look the number up on the phone | caller name |
+| `CALL_PHONE` (runtime, optional) | place a call when the computer asks to dial | dialing from the computer (`canDial`) |
 
 - Each is its own wizard step ("Answer calls", "Caller number") with a plain explanation; calls are shared with a computer
   only after the user turns on **"Share call status with my computer"** in the Answer calls step (off by default,
@@ -145,9 +155,9 @@ Hosts are started only when the service's calling probe is enabled. Their capabi
   block is not compiled on Linux.
 - The `notify-send` Answer/Decline notification depends on the desktop's notification daemon; it was only tested as
   argument construction, not on a live desktop.
-- Dialing over the link (`dial`, `CALL_PHONE`) is covered by the stand-in phone tests and Rust/Kotlin unit tests only; it
-  has not run on an Android device or emulator (the Android Gradle build was not available when it was written), and no
-  call was placed anywhere.
+- Dialing over the link (`dial`, `CALL_PHONE`) is covered by the stand-in phone tests, Rust/Kotlin unit tests and the
+  emulator script `scripts/e2e/features.sh` ([reports/emulator-features-e2e.md](reports/emulator-features-e2e.md); a
+  simulated modem was dialed, no network). It has not run on a real phone, and no real call was placed anywhere.
 - Not implemented: waiting/second calls over the link (Android reports one current call), hold/swap from the UI, DTMF
   tones, dialing `*`/`#` codes, a Windows/macOS phone picker, microphone mute on Linux/macOS, an OS notification that
   launches the Calls window when none is open (the service notification covers Linux only).

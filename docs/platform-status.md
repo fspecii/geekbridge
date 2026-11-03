@@ -1,6 +1,6 @@
 # Platform status: what is verified on which OS
 
-Written 2026-11-02. The author machine is Linux; Windows and macOS code has never run on a real Windows or Mac by
+Written 2026-11-02, updated 2026-11-03. The author machine is Linux; Windows and macOS code has never run on a real Windows or Mac by
 us. This table says, per capability, how far each OS has been checked. Do not read more into a row than its level.
 
 Levels (a row can have several):
@@ -10,9 +10,11 @@ Levels (a row can have several):
 * **unit**: a host test exercises the logic with injected inputs (pure command-line builders, path rules, parsers),
   so it also runs on Linux. The OS call itself is not exercised.
 * **CI**: `.github/workflows/check.yml` runs it on a `windows-latest` / `macos-latest` runner (build, `cargo test
-  --workspace`, `scripts/smoke-binaries.sh`). **CI is configured but has not run yet** on these runners (GitHub started no job on 2026-11-02: annotation "recent account payments have failed or your spending limit needs to be increased"; fix the account's Billing & plans, or make the repository public, which has free Actions minutes); until the
-  first green run a CI cell means "will be exercised", and the first failures are expected to be informative, not
-  surprising. Update this file after the first run.
+  --workspace`, `scripts/smoke-binaries.sh`). These runners have run green since 2026-11-02 (history in
+  [reports/windows-ci.md](reports/windows-ci.md) and [reports/ci-first-run.md](reports/ci-first-run.md)). The manual
+  workflow `build-binaries.yml` also builds Windows and macOS binaries as short-lived workflow artifacts and smoke-tests
+  them on their own OS ([reports/windows-macos-artifacts.md](reports/windows-macos-artifacts.md)); they are unsigned
+  and are not published as releases.
 * **device**: tried by a person on real hardware. Nothing below has this level for Windows or macOS.
 
 | Capability | Linux | Windows | macOS | Notes |
@@ -34,8 +36,8 @@ Levels (a row can have several):
 | Clipboard images | opt-in live | **not supported** | **not supported** | Reported as "unsupported" by the backend; text only. Needs Win32 `CF_DIB`/PNG or `NSPasteboard`; not done because it cannot be checked here |
 | Incoming call / transfer / text notices | unit | unit (command builder), type-check | unit (command builder), type-check | Linux: `notify-send` with buttons. Windows: PowerShell toast (WinRT, app id of Windows PowerShell); macOS: `osascript display notification`. Text reaches the helper as an argument / environment variable, never as script source (unit-tested). Banners have no buttons: answering happens in the Calls / Share windows |
 | Desktop call audio and control | CI (signalling only) + unit | type-check, host tests of the engine | type-check, 119 host tests with the mock feature | Real Bluetooth/HFP audio is device-only on every OS and has not been tested anywhere |
-| Autostart | unit | unit (reg.exe command), type-check | unit (plist), type-check | `geekbridge-ctl autostart status/enable/disable`: XDG autostart file, LaunchAgent plist, `HKCU\...\Run` value. No admin rights; effective at next login |
-| Firewall | n/a | unit (text) | unit (text) | `geekbridge-ctl firewall` prints the exact `netsh advfirewall` rules (admin PowerShell) or `socketfilterfw` commands; first-run OS prompts are the expected path. Ports TCP+UDP 1716-1764. Nothing changes the firewall by itself |
+| Autostart | unit | unit (reg.exe command), type-check | unit (plist), type-check | `geekbridge-ctl autostart status/enable/disable`: XDG autostart file, LaunchAgent plist, `HKCU\...\Run` value (status parses `reg query` / the plist and warns when the entry starts a different copy; on macOS the `launchctl` lines to start it now are shown). No admin rights; effective at next login |
+| Firewall | n/a | unit (text) | unit (text) | `geekbridge-ctl firewall` and `doctor` read the state without elevation (Linux ufw/firewalld; Windows `netsh advfirewall`, English output only; macOS `socketfilterfw`, output wording unverified on a real Mac) and print the exact `netsh advfirewall` rules (admin PowerShell) or `socketfilterfw` commands to copy; the desktop Home first-run guide shows the same. First-run OS prompts are the expected path. Ports TCP+UDP 1716-1764. Nothing changes the firewall by itself |
 | GUI apps start without a console | n/a | type-check | n/a | Release builds on Windows use the GUI subsystem; helper processes started by them use `CREATE_NO_WINDOW`. A debug build keeps its console. (Consequence: `--help` of a release GUI app prints nothing on Windows) |
 | Update check and download | CI (mock server) | CI | CI | Download + SHA-256 verified before anything is offered. Assets are `.zip` / `.tar.gz` archives, not installers: "open" reveals the verified file (`explorer`, `open -R`, `xdg-open`); nothing is run or installed by GeekBridge. A `.msi`/`.dmg` hand-off does not exist because those are not published |
 | Hyprland hotkey, waybar | CI (unit) | n/a | n/a | Linux only |
@@ -55,8 +57,8 @@ Levels (a row can have several):
 
 ## Reading CI results
 
+(`Rust / windows-latest` and `Rust / macos-latest` are green now; the steps below are for reading a future red run.)
+
 1. `Rust / windows-latest` and `Rust / macos-latest` are the first runtime signal. Start with the failing step name.
 2. `Smoke test a live service` is allowed to fail on those two OSes; its log shows `service.log` on failure.
 3. `Type-check Windows and macOS targets` must be green before and after any change to shared crates.
-4. After the first green run, move the Windows/macOS cells above from "CI (pending)" semantics to plain CI and record
-   the run URL here.

@@ -1,9 +1,9 @@
 # Service integration: daemon, control API, client wiring
 
-Status as of 2026-11-02 (the request table below is the original core; later ops are listed after it). `geekbridge-service` now owns the TLS identity, the trust store and the one live
+Status as of 2026-11-03 (the request table below is the original core; later ops are listed after it). `geekbridge-service` now owns the TLS identity, the trust store and the one live
 link per phone, and exposes them through an **authenticated loopback control API**. The old public
 discovery API is unchanged. Verified with generated `bridge_kde` peers, scripted phones and the Android emulator;
-**no real phone has been paired** (see "Gaps").
+one real phone has been paired and linked, but the features on top were not individually confirmed on it (see "Gaps").
 
 ## Two listeners, two trust levels
 
@@ -27,8 +27,8 @@ it was and makes "nothing but discovery on 17380" a property of the code, not of
 
 ```
 geekbridge-service [--state-dir DIR] [--api-port P] [--control-port P] [--discovery-port P]
-                   [--name NAME] [--listen-inbound ADDR:PORT] [--no-calling-probe]
-                   [--dev-loopback] [--print-token-path]
+                   [--name NAME] [--listen-inbound ADDR:PORT | --no-listen-inbound] [--no-announce]
+                   [--no-calling-probe] [--tray | --no-tray] [--dev-loopback] [--print-token-path]
 ```
 
 * State directory: `--state-dir`, else `$GEEKBRIDGE_STATE_DIR`, else `$XDG_DATA_HOME/geekbridge/service`
@@ -38,17 +38,20 @@ geekbridge-service [--state-dir DIR] [--api-port P] [--control-port P] [--discov
   daemon's directory.
 * Files (all through `bridge_kde::fsutil`, i.e. owner-only, symlinks and loose modes refused):
   `identity.pem` (TLS key+cert, created once, never regenerated), `trusted_peers.json` (pins),
-  `consent.json` (per-device opt-ins, no phone content), `ipc-token` (64 hex chars).
+  `consent.json` (per-device opt-ins, no phone content), `ipc-token` (64 hex chars). The other files
+  (share, clipboard, update and what's-new state, tray markers) are listed in [state-formats.md](state-formats.md).
 * `--print-token-path` prints the token file's **path**. Nothing prints or logs the token.
-* `--listen-inbound` is off by default. The service does not broadcast its identity, so phones do not dial
-  it unless you enable this and arrange discovery; the usual flow is outbound `connect`.
+* The service listens for phones (`--listen-inbound`, default `0.0.0.0:1716`, then the next free port up to 1764) and
+  announces itself on the LAN every 15 s, so phones can find and dial it. `--no-listen-inbound` and `--no-announce`
+  switch these off (outbound `connect` only). The port actually bound is announced in `tcpPort` and, inside TLS, as
+  `geekbridgePort` ([kdeconnect-interop.md](kdeconnect-interop.md)). `--tray` / `--no-tray` choose the tray icon.
 * `--dev-loopback` (tests/developers only) allows loopback peers and any TCP port. Without it, dialled
   endpoints must be private/link-local/CGNAT/ULA addresses on ports 1716-1764.
 
 ### Protected state unavailable
 
 If the state directory, identity, trust store, consent file or token cannot be opened privately (wrong
-owner or mode, symlink, corrupt file, unsupported platform such as Windows until `fsutil` lands there),
+owner or mode, symlink, corrupt file, unsupported platform),
 the public API keeps working and the control port answers every connection with
 
 ```
@@ -96,12 +99,18 @@ S -> C  ERR unauthorized                     (wrong/missing mac; request never p
 | `set_consent {device_id, feature, enabled}` | per-device opt-in (paired devices only) | `not_found` |
 | `ping {device_id}` | one `kdeconnect.ping` on a connected paired link (no body, no consent needed) | `not_connected`, `unsupported`, `busy` |
 | `calling_status` | read-only calling backend summary (counts + verdict, no numbers/addresses) | `busy`, `failed` |
+| `set_device_name {name}` | rename this computer (phones see it from their next connection) | `bad_request` |
 
 Later ops (see `bridge_core::ipc::Request` for the exact shapes): `pair_qr` / `pair_qr_cancel` and `test_connection`
-([pairing.md](pairing.md)); `calls`, `call_action`, `call_mute`, `call_audio` ([call-control.md](call-control.md));
+([pairing.md](pairing.md)); `calls`, `call_action`, `call_dial`, `call_mute`, `call_audio` ([call-control.md](call-control.md));
+`notifications`, `dismiss_notification`, `notification_action` (mirrored phone notifications, memory only);
+`phone_debug_state` (debug-build phones; the log arrives as events);
 `update_status`, `update_check`, `update_download`, `update_skip`, `update_set_enabled` ([updates.md](updates.md));
 `clipboard_status|pull|push|settings` ([clipboard-sync.md](clipboard-sync.md)); `share_status|send_file|send_text|decide|
-cancel|dismiss|settings` ([sharing.md](sharing.md)); `agenda_view` and `calendar_edit` ([phone-data-link.md](phone-data-link.md)).
+cancel|dismiss|settings` ([sharing.md](sharing.md)); `agenda_view`, `agenda_refresh`, `calendar_edit`, `calendar_edit_retry` and
+`messages_view|refresh|send|mark_read|resend` ([phone-data-link.md](phone-data-link.md)).
+`geekbridge-ctl doctor`, `diagnose`, `report`, `autostart`, `tray`, `firewall`, `hotkey` and `whats-new` mostly run
+in the client process and need no service request.
 
 ### Link and challenge model
 
@@ -123,26 +132,28 @@ cancel|dismiss|settings` ([sharing.md](sharing.md)); `agenda_view` and `calendar
 * **Never auto-approved.** Neither `connect`, `pair`, an incoming phone request nor a phone-side accept
   completes pairing without `approve`.
 * **Peer events**: phone unpair (`peer_unpaired`, trust already deleted by `bridge_kde`, link closed),
-  re-pair request (`peer_requested_re_pair`, informational), link loss/EOF/keepalive timeout
-  (`link_lost`, pairing kept), failed dial (`connect_failed`, e.g. pin mismatch), `pair_failed`.
+  re-pair request (`peer_requested_re_pair`, informational), link loss/EOF/keepalive or heartbeat timeout
+  (`link_lost`, pairing kept; a GeekBridge phone's `geekbridge.goodbye` is reported as `peer_goodbye` /
+  `peer_shutdown`), failed dial (`connect_failed`, e.g. pin mismatch), `pair_failed`.
   Event log: 256 retained, <= 128 per page, `ping_received` coalesced to one per second.
 
 ### Feature negotiation and consent
 
-The service declares the packet types in `gate::LOCAL_INCOMING` / `LOCAL_OUTGOING` (14 each at the time of writing:
-ping, clipboard, `share.request`, the `geekbridge.calls`, contacts, calendar and SMS packets). A packet is
+The service declares the packet types in `gate::LOCAL_INCOMING` / `LOCAL_OUTGOING` (18 incoming and 19 outgoing at the time of
+writing: ping, battery, notification, clipboard, `share.request`, the `geekbridge.calls`, contacts, calendar, SMS and
+debug packets, and the outgoing-only `geekbridge.goodbye`). A packet is
 accepted from a paired phone only if its type is in (phone's outgoing ∩ our incoming); everything else
-(notifications, other telephony, unknown types) is counted in
+(replies to notifications, other telephony, unknown types) is counted in
 `rejected_packets`, dropped unread, never routed, and a link that sends 64 of them is dropped. Packet
 lines are capped at 64 KiB (raise it together with an adapter). Discovery capability lists never take
 part in negotiation and never touch the trust store; the pin only ever comes from a locally approved
 pairing.
 
-`set_consent` stores per-device booleans for `sms`, `contacts`, `clipboard`, `notifications`,
-`telephony`, **all off by default**. Consent is necessary but not sufficient: `gate::check_outgoing`
-also needs the type negotiated and an integrated adapter (`ConsentEntry.adapter_integrated`, currently
-`false` for every feature), so enabling consent today sends nothing. Ping is the single exception and
-carries no content. Consent is removed on unpair. Status/events/consent files contain connection facts
+`set_consent` stores per-device booleans for the ten `Feature`s: `sms`, `contacts`, `calendar`, `calendar_edit`,
+`calendar_alerts`, `clipboard`, `notifications`, `telephony`, `debug` and `battery`, **all off by default**
+(`debug` is on by default for a debug-build phone that advertises it). Consent is necessary but not sufficient:
+`gate::check_outgoing` also needs the type negotiated and an integrated adapter (`ConsentEntry.adapter_integrated`,
+currently `true` for every feature). Ping and `geekbridge.goodbye` need no consent and carry no content. Consent is removed on unpair. Status/events/consent files contain connection facts
 only; the types have no field for message bodies, contacts, clipboard text or ping text.
 
 ## Client integration (for the GUI wiring)
@@ -181,12 +192,13 @@ ipc::call(port, &token, &Request::Connect { device_id, endpoint: None })?;
 6. Treat every string from the phone (names) as untrusted text; they are control-character-filtered and
    length-capped but not trustworthy as an identity. Prefer showing the cert fingerprint prefix with the
    name.
-7. Do not show features as "available" because the phone advertises them: only `negotiated`
-   (ping today) and `ConsentEntry.adapter_integrated` mean anything.
+7. Do not show features as "available" because the phone advertises them: only `negotiated` and
+   `ConsentEntry.adapter_integrated` mean anything.
 
 `geekbridge-ctl` is a working reference client (`status`, `events`, `connect`, `pair`, `approve ID CODE`
 (refuses unless CODE equals the challenge's verification key shown on the phone), `deny`, `disconnect`,
-`unpair`, `consent`, `ping`, `calling`, `token-path`). It prints JSON and never the token.
+`unpair`, `consent`, `ping`, `calling`, `token-path` and the feature commands; `geekbridge-ctl --help` is the
+authoritative list). It prints JSON and never the token.
 
 ## Calling
 
@@ -194,8 +206,9 @@ ipc::call(port, &token, &Request::Connect { device_id, endpoint: None })?;
 reads; never a control method) on a blocking thread with a 2 s deadline and a single in-flight probe, and
 returns `{platform, backend, verdict, telephony_service_present, bluetooth_controllers, phones, calls,
 read_only}`. Only counts: no numbers, names or Bluetooth addresses. `--no-calling-probe` replaces it with
-a static "disabled" answer. There is no dial/answer/hang-up request in the protocol, and no bridge from
-the KDE link to the Bluetooth stack. On this development machine the live probe reports
+a static "disabled" answer. Answering, declining, hanging up, muting and dialing go through the phone link
+(`call_action`, `call_dial`, `call_mute`, see [call-control.md](call-control.md)); there is no bridge from the KDE
+link to the Bluetooth stack, which only carries the voice. On this development machine the live probe reports
 `no_bluetooth_controller` (0 controllers), so nothing beyond the unavailable-hardware path was observed.
 
 ## Tests
@@ -224,19 +237,19 @@ no phone/BT/LAN):
 * **No hardware interoperability.** Pairing/linking is exercised against `bridge_kde` peers (and
   `bridge_kde`'s own raw-rustls tests), not a stock Android KDE Connect or the GeekBridge Android app.
   Real-phone discovery -> connect -> pair has not been run.
-* Clipboard, sharing, call control, contacts, calendar and SMS are integrated (each opt-in per phone); notifications
-  mirroring is not. Bluetooth call *audio* is not carried by this service.
+* Clipboard, sharing, call control (including dialing), contacts, calendar, SMS, battery and notification mirroring are
+  integrated (each opt-in per phone). Bluetooth call *audio* is not carried by this service.
 * The service announces itself on the LAN and listens for phones by default (`--no-listen-inbound` disables this; see
   [pairing.md](pairing.md)). No mDNS.
-* Link liveness depends on TCP keepalive/user-timeout from `bridge_kde` (~1 minute to notice a dead
-  Wi-Fi phone); there is no application-level heartbeat.
+* Link liveness: TCP keepalive/user-timeout from `bridge_kde` (~1 minute to notice a dead Wi-Fi phone) plus an
+  application heartbeat to GeekBridge phones (a ping every 20 s from each side, 60 s from a phone whose screen is off;
+  a heartbeating peer silent for 70 s is dropped). Stock peers are never pinged or dropped for silence.
 * The control token is a bearer secret for the whole user session: any process running as the same user
   can read it (as with the identity key). Other users are stopped by the owner-only directory, and by the
   MAC scheme if they race for the port. Loopback ports are not user-scoped, so another local user can
   occupy the control port first (the service then fails to start; a client still never sends the token).
-* Windows: if the private-file support is not verified on a system, the control API reports `platform_unsupported`
-  (Windows has not been run on real hardware). The core ipc code and CLI
-  compile everywhere; only the Unix path was run here.
+* Windows: private-file support exists (`bridge_kde::fsutil` Windows backend) but is CI-tested only; if it cannot
+  verify a system the control API reports `platform_unsupported`. Windows and macOS have not been run on real hardware.
 * Event reasons embed `KdeError` text (truncated to 160 printable ASCII chars) which, for pre-trust
   failures, may echo a few characters of peer-controlled data; treat as untrusted text.
 * Concurrent writers: the trust store is cached in the daemon; another process writing the same state
@@ -245,7 +258,7 @@ no phone/BT/LAN):
 
 ## Parent desktop integration
 
-The four native desktop apps now read protected status on their own bounded background workers. Details includes nearby/paired links, explicit Connect/Pair/Disconnect/Forget actions, a manual address option, and a pairing dialog that requires typing the matching eight-digit phone code. The connection strip and Messages status distinguish authenticated connection from discovery. Phone feature buttons remain unavailable until real adapters are connected; pairing does not enable them.
+The four native desktop apps now read protected status on their own bounded background workers. Details includes nearby/paired links, explicit Connect/Pair/Disconnect/Forget actions, a manual address option, and a pairing dialog that requires typing the matching eight-digit phone code. The connection strip and Messages status distinguish authenticated connection from discovery. Phone feature buttons are offered only when the phone declared the feature and stay off until the user switches the per-phone consent on; pairing does not enable them.
 
 Configure a custom service with `GEEKBRIDGE_STATE_DIR` (absolute path) and `GEEKBRIDGE_CONTROL_PORT` in the desktop apps' environment. The GUI never logs or displays the token. Commands use a bounded queue and token-file reads use the shared secure platform helpers. IPC token creation now also holds a cross-process private-file lock to avoid concurrent initialization races.
 

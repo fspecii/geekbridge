@@ -15,15 +15,15 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | Wakeups (voluntary context switches, all threads) | ~1/s | ~0.3-2/s | 3/s |
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
-| `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without) | 5 800 000 B (raised from 5.6 MB after the first real CI run: the GitHub runner built 5 577 488 B (older commit) and 5 657 360 B (release candidate), a dev box 5 663 032 B) |
-| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02); 1 214 392 B after round 3 | 1 300 000 B (round 3 put it back to 1.3 MB; had been raised from 1.3 MB on 2026-11-03: CI runner 1 211 496 B and 1 247 056 B, then 1 310 112 B at d669c2109 after 8e9c976fa added the plain-words "why the phone is not connected" reason codes and sentences to `status`/`ctl`/waybar; +63 kB over the earlier build is consistent with that added text and formatting (no new dependency; not bisected); 40 kB headroom kept) |
-| `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
+| `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without); 5 846 328 B on 2026-11-03 (phone mirroring, battery, notifications, dial, doctor, goodbye) | 6 000 000 B (5.0 -> 5.3 -> 5.6 -> 5.8 -> 6.0 MB; the last step on 2026-11-03 because the feature work above reached 5.85 MB; earlier raises followed the first real CI run: the GitHub runner built 5 577 488 B and 5 657 360 B, a dev box 5 663 032 B) |
+| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02); 1 214 392 B after round 3; 1 249 056 B on 2026-11-03 | 1 300 000 B (round 3 put it back to 1.3 MB; had been raised from 1.3 MB on 2026-11-03: CI runner 1 211 496 B and 1 247 056 B, then 1 310 112 B at d669c2109 after 8e9c976fa added the plain-words "why the phone is not connected" reason codes and sentences to `status`/`ctl`/waybar; +63 kB over the earlier build is consistent with that added text and formatting (no new dependency; not bisected); 40 kB headroom kept) |
+| `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B (2026-11-02); 7 868 672 B on 2026-11-03 (AccessKit, i18n, onboarding, mirroring UI) | not budgeted |
 | UI idle RSS (`--ui`, warm GL shader cache) | 67-68 MB | 65.1 MB (2026-11-02, was 68.5 MB on the same machine) | 75 MB |
 | GUI binaries with AccessKit (2026-11-02, `accesskit` feature, default) | n/a | messages 6.16 -> 8.05 MB (+1.9 MB), idle RSS +1.5-2.5 MB, +3 threads, ~+2 wakeups/s | not budgeted. On the 2026-11-02 machine the UI idle RSS is 105-124 MB with or without it (budget 90 MB exceeded by the GL stack, not AccessKit); see `docs/accessibility.md` |
 | UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
 
 On CI (`GB_CI=1`, set by the performance job) the load-dependent rows get slack because shared runners differ in CPU count,
-neighbours and kernel: RSS 12 500 kB, threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
+neighbours and kernel: RSS 8000 kB, threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
 8060-8188 kB, 5-6 threads, 20 fds, 1-4 wakeups/s (the 3/s budget was exceeded once), 0 ticks, 12 ms. Binary sizes stay strict on CI. Any `BUDGET_*` variable still overrides.
 
 Size budgets were raised on 2026-11-02 (service 5.0 -> 5.3 MB, ctl 0.8 -> 1.2 MB) after trimming was
@@ -78,8 +78,8 @@ directory. Tools: `nm -S --size-sort`, `size`, `readelf -S`, `/proc/PID/smaps` (
 * **Idle code pages.** An idle service held 608 kB of anonymous memory but 7.7 MB RSS: 4.4 MB was the executable's own
   clean code pages, mapped 16 at a time by fault-around during start-up (TLS, D-Bus, key set-up) and never run again.
   They are page cache (no private cost, reclaimable), but they are what `top` and the budget count.
-  `bridge_core::codepages::drop_idle()` `madvise(MADV_DONTNEED)`s only private `r-xp` file mappings (never data or
-  RELRO, where that call would revert relocated pointers) 2 s after start and after each 20 s bus probe; pages
+  `bridge_core::codepages::drop_idle()` `madvise(MADV_DONTNEED)`s only private `r-xp` plain-file mappings with no anonymous (privately written) page (never
+  data or RELRO, `[vdso]`, `/memfd:` or `/dev/` objects, where that call would revert relocated pointers or lose the only copy) 2 s after start and after each 20 s bus probe; pages
   come back on demand as minor faults. It lowers RSS (and Pss), not allocator
   memory. A busy process (phone linked, window drawing) regrows to its working set, measured +0.5 MB for a focused app
   window; the GL driver's file-backed share shrinks 71 -> 31 MB while idle. Hence the RSS budget 10 000 -> 6000 kB
@@ -144,9 +144,10 @@ Idle RSS: 6.2 MB (opt 3 + LTO) vs 5.6 MB (opt "s" + LTO).
   busy), share (500 ms) and the periodic repaints now stretch x4 when the window is unfocused or
   minimised and x2 when the service is reachable but no phone is paired (x8 both). User commands still
   wake a worker at once. `--ui` wakeups 4/s -> 2/s with the unfocused test window.
-* **Dead-link ping** (`bridge-kde`): not added. TCP keepalive (30 s + 3 x 10 s) plus
-  `TCP_USER_TIMEOUT` 60 s already bounds a half-open link to ~60 s; an app-level ping would force a
-  radio wake-up on the phone every interval for little gain and changes protocol traffic.
+* **Dead-link ping** (`bridge-kde`): not added at the transport layer. TCP keepalive (30 s + 3 x 10 s) plus
+  `TCP_USER_TIMEOUT` 60 s already bounds a half-open link to ~60 s. (Superseded in part: the later real-device fixes
+  added an application heartbeat for GeekBridge phones, 20 s with a 70 s silence limit and 60 s while the phone screen
+  is off, see `bridge-core/src/heartbeat.rs`; stock peers are never pinged.)
 * **Android**: `ClipboardAndroid.kt` has no timers or polling (clipboard is read on demand from a
   focused activity); the only `postDelayed` pollers (`LinkSection`, `PairPanel`, `ShareCoordinator`)
   are UI-only and stopped in `onStop`/`onPause`. Nothing to remove.
@@ -217,10 +218,11 @@ Findings that are not fixable in the app:
 * UI RSS is 65 MB, of which ~47 MB is file-backed (GL driver and Wayland/X libraries mapped by
   `glow`); anonymous memory is ~17 MB (6 MB of it Rust's).
 * `bridge-update` scheduler uses a dedicated OS thread that sleeps; harmless, costs one thread.
-* Dead-peer detection relies on TCP keepalive (30 s idle, 10 s interval, 3 retries, `bridge-kde`
-  `link.rs`). There is no application-level ping timeout, so a half-open link can stay "connected" for
-  up to ~60 s. `lifecycle.rs` asserts the keepalive timer is armed; it cannot black-hole packets
-  without privileges.
+* Dead-peer detection: TCP keepalive (30 s idle, 10 s interval, 3 retries, `bridge-kde`
+  `keepalive.rs`) bounds a half-open link to ~60 s; GeekBridge phones are additionally pinged every 20 s from each
+  side (60 s from a phone whose screen is off) and a heartbeating peer silent for 70 s is dropped
+  (`bridge-core/src/heartbeat.rs`). Stock peers get no periodic ping. `lifecycle.rs` asserts the keepalive timer is
+  armed; it cannot black-hole packets without privileges.
 
 ## Fuzz finding
 

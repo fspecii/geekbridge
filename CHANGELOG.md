@@ -35,7 +35,22 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   and a per-phone consent on the computer. Shown in the tray tooltip, the Home phone card and
   `geekbridge-ctl status` / `status --waybar`; kept in memory only. See docs/kdeconnect-interop.md.
 
+- Desktop first-run guide on Home while no phone is paired: install QR and link, the pairing steps, optional features,
+  this computer's name, update status, start at login, and the firewall fix to copy. Windows and macOS parity for
+  `doctor` and `geekbridge-ctl firewall`/`autostart`: Windows Defender Firewall and macOS application-firewall detection
+  with copyable commands (nothing is run elevated), autostart status parsing, and a hint when the state directory
+  inherited loose permissions.
+- Phone-side protection for dialing from the computer: at most 3 dial requests per computer per 10 minutes, a visible
+  notice when a call is placed, and an optional on-phone confirmation (off by default).
+
 ### Changed
+- The service size budget is 6.0 MB (was 5.8); the Android libraries are linked with lld `--icf=all` (about -100 kB per
+  library); the idle service drops its idle code pages after start (RSS about 3.5 MB instead of 8 MB; mappings with a
+  privately written page are never touched).
+- When the phone and the computer dial each other at the same moment, the connection dialed by the smaller device id wins
+  on both ends (shared `bridge_kde::tiebreak`), so the two connections no longer cancel each other.
+- Switching Clipboard sync on while a link is up reconnects once if the link had not declared the clipboard packets.
+- The pairing trust record is written before the accept is sent.
 - While the phone's screen is off its heartbeat is every 60 s (20 s with the screen on) and it stops broadcasting while
   every paired computer is linked. Code-audited and tested; no battery measurement on a real phone yet.
 - Docs: one real phone (Samsung SM-F946B) has been paired; Windows and macOS are CI-tested only and have no prebuilt

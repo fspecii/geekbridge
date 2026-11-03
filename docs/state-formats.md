@@ -49,8 +49,9 @@ files, symlink/permission checks, locks).
 
 ## Desktop state directory
 
-`$XDG_STATE_HOME/geekbridge` (Linux), the per-user application-support / `%LOCALAPPDATA%` directory
-elsewhere; mode 0700.
+`$XDG_DATA_HOME/geekbridge/service` (default `~/.local/share/geekbridge/service`) on Linux,
+`~/Library/Application Support/geekbridge/service` on macOS, `%LOCALAPPDATA%\geekbridge\service` on Windows;
+overridden by `--state-dir` / `$GEEKBRIDGE_STATE_DIR`; owner-only (mode 0700 on Unix, a protected ACL on Windows).
 
 | File | Content | Version | Damaged, no backup | Notes |
 |---|---|---|---|---|
@@ -65,7 +66,7 @@ elsewhere; mode 0700.
 | `ipc-token` | 64 hex chars, local control token | unversioned | replaced with a new token (clients re-read it), line logged | holds no pairing data |
 | `tray-paused` | JSON list of device ids paused from the tray | unversioned list | treated as empty | atomic write |
 | `tray-disabled`, `sms-notify-content` | empty marker files | n/a | n/a | existence is the value |
-| `*.lock` | lock files | n/a | n/a | never deleted |
+| `control-token.lock`, `*.lock` | lock files | n/a | n/a | never deleted |
 
 Not persisted on the desktop: calendar write ledger (`calendar_edit.rs`), phone-data caches
 (contacts, messages, calendar), call state. They are in memory and rebuilt from the phone after a
@@ -89,8 +90,8 @@ keys additively and rely on defaults.
 | `gb_state` | prefs: `schema_version` | the version marker |
 | `geekbridge_state` | prefs, scalars | paired keys are re-derived from the trust store |
 | `geekbridge_clipboard` | prefs: `enabled`, `window_ms`, `max_image` | scalar |
-| `geekbridge_calls` | prefs: `enabled` | scalar |
-| `geekbridge_phonedata` | prefs: scalars, blobs `calendar_ops` (JSON, backed), `sms_requests` (newline list, unbacked) | `calendar_ops` has `.bak` |
+| `geekbridge_calls` | prefs: `enabled` (and the on-phone dial confirmation switch) | scalar |
+| `geekbridge_phonedata` | prefs: scalars (the sharing switches including `battery` and `notifications`, and the `notification_apps` string set of apps allowed to be mirrored, empty by default), blobs `calendar_ops` (JSON, backed), `sms_requests` (newline list, unbacked) | `calendar_ops` has `.bak` |
 | `geekbridge_grants` | prefs: `grants` JSON `{migrated, grants:{id:[features]}}` (per-computer opt-ins migrated from the global ones) | backed; unknown features dropped on read |
 | `share_policy` | prefs: `auto_accept:<id>` | scalar |
 | `geekbridge_device_name` | prefs: `name` | scalar |

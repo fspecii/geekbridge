@@ -12,6 +12,10 @@ What stock KDE Connect does with clipboard packets is summarised below and in [k
 | Phone → computer | The computer **pulls**: hotkey / `geekbridge-ctl clipboard paste-from-phone` / the "Paste from phone" button asks the phone for its latest item. | No. On demand only |
 | Either direction, rich items | HTML (with plain-text fallback), URLs, and PNG/JPEG images (streamed as a KDE payload, never inline JSON). Computer → phone images/HTML are sent with `clipboard push-to-phone` / "Send clipboard to phone". | On request |
 
+Switching Clipboard sync on in the phone's Settings while a link is up reconnects once if that link did not declare the
+clipboard packets (the phone declares them in its identity only while the switch is on), so a phone that was linked first
+and switched sync on afterwards does not stay silent until the next restart.
+
 The phone **never sends its clipboard on its own**. It answers a pull only with an item that
 
 1. was copied within the **freshness window** (default 30 s; 5 s to 10 min; a setting on both devices, the phone's
