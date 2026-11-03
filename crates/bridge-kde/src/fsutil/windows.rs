@@ -28,8 +28,9 @@ use std::ptr::{addr_of, null, null_mut};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_LOCK_VIOLATION,
-    ERROR_SHARING_VIOLATION, ERROR_SUCCESS, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING,
+    ERROR_LOCK_VIOLATION, ERROR_OPERATION_ABORTED, ERROR_SHARING_VIOLATION, ERROR_SUCCESS, HANDLE,
+    INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
@@ -43,15 +44,17 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY,
-    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
-    GetFileType, GetVolumeInformationByHandleW, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-    LockFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW, OPEN_ALWAYS,
-    OPEN_EXISTING, READ_CONTROL, UnlockFileEx,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_TYPE_DISK, GetFileType, GetVolumeInformationByHandleW,
+    LOCKFILE_EXCLUSIVE_LOCK, LockFileEx, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    MoveFileExW, OPEN_ALWAYS, OPEN_EXISTING, READ_CONTROL, UnlockFileEx,
 };
-use windows_sys::Win32::System::IO::OVERLAPPED;
+use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE};
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
+};
 
 use crate::error::{KdeError, Result};
 
@@ -580,7 +583,10 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<()> {
 
 fn move_replace(from: &Path, to: &Path) -> Result<()> {
     let (from, to) = (wide(from)?, wide(to)?);
-    let mut attempt = 0;
+    // Bounded by time, not attempts: under heavy load on a shared runner a scanner or indexer can
+    // hold the target for longer than a handful of short naps.
+    let give_up = Instant::now() + Duration::from_secs(5);
+    let mut nap = Duration::from_millis(5);
     loop {
         // SAFETY: both paths are NUL-terminated and live across the call.
         if unsafe {
@@ -600,11 +606,11 @@ fn move_replace(from: &Path, to: &Path) -> Result<()> {
             err.raw_os_error().map(|c| c as u32),
             Some(ERROR_ACCESS_DENIED | ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
         );
-        attempt += 1;
-        if !transient || attempt >= 20 {
+        if !transient || Instant::now() >= give_up {
             return Err(err.into());
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(nap);
+        nap = (nap * 2).min(Duration::from_millis(100));
     }
 }
 
@@ -646,7 +652,8 @@ pub fn lock_private_file(path: &Path, timeout: Duration) -> Result<FileLock> {
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         attrs.as_ptr(),
         OPEN_ALWAYS,
-        FILE_FLAG_OPEN_REPARSE_POINT,
+        // Overlapped so that a blocked `LockFileEx` can be waited on with a timeout and cancelled.
+        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED,
     )?;
     verify_object(
         &file,
@@ -654,40 +661,65 @@ pub fn lock_private_file(path: &Path, timeout: Duration) -> Result<FileLock> {
         false,
         &user,
     )?;
+    wait_for_lock(&file, path, timeout)?;
+    Ok(FileLock { file })
+}
+
+/// Take the byte-range lock by queueing a blocking `LockFileEx` on the overlapped handle and waiting
+/// on its event for at most `timeout`. The kernel grants queued requests as the holder unlocks, so
+/// waiters are served in arrival order. Polling with `LOCKFILE_FAIL_IMMEDIATELY` was unfair: a
+/// thread that unlocked and re-locked at once almost always beat the sleeping pollers, so one waiter
+/// could sit through every other cycle of every other thread (measured on a hosted runner: a single
+/// thread waited 0.9 s of a 1.1 s run, and a slow disk turned that into the 10 s timeout).
+fn wait_for_lock(file: &File, path: &Path, timeout: Duration) -> Result<()> {
     let deadline = Instant::now() + timeout;
-    // Poll quickly at first so a lock that is held for a few milliseconds is picked up promptly
-    // (a flat 10-15 ms nap lets the releasing thread win every race), then back off.
-    let mut nap = Duration::from_millis(1);
-    loop {
-        let mut ov = OVERLAPPED::default();
-        // SAFETY: the handle is live; `ov` is zeroed (offset 0) and not used
-        // for overlapped I/O since the handle was opened synchronously.
-        let ok = unsafe {
-            LockFileEx(
-                file.as_raw_handle(),
-                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                0,
-                1,
-                0,
-                &mut ov,
-            )
-        };
-        if ok != 0 {
-            return Ok(FileLock { file });
-        }
-        let err = io::Error::last_os_error();
-        if err.raw_os_error() != Some(ERROR_LOCK_VIOLATION as i32) {
-            return Err(err.into());
-        }
-        if Instant::now() >= deadline {
-            return Err(KdeError::Store(format!(
-                "timed out after {timeout:?} waiting for another process to release {}",
-                path.display()
-            )));
-        }
-        std::thread::sleep(nap);
-        nap = (nap * 2).min(Duration::from_millis(20));
+    // SAFETY: a manual-reset, initially unsignalled event with no name and default security.
+    let event = unsafe { CreateEventW(null(), 1, 0, null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error().into());
     }
+    // SAFETY: CreateEventW returned a new handle that nothing else owns; closed on drop.
+    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    let handle = file.as_raw_handle();
+    let mut ov = OVERLAPPED {
+        hEvent: event.as_raw_handle(),
+        ..Default::default()
+    };
+    // SAFETY: the handle is live and overlapped; `ov` stays alive and unmoved until the request has
+    // completed or been cancelled and reaped below.
+    let ok = unsafe { LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &mut ov) };
+    if ok != 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+        return Err(err.into());
+    }
+    let left = deadline.saturating_duration_since(Instant::now());
+    let ms = left.as_millis().min(u128::from(u32::MAX - 1)) as u32;
+    // SAFETY: the event handle is live.
+    let waited = unsafe { WaitForSingleObject(event.as_raw_handle(), ms) };
+    if waited != WAIT_OBJECT_0 {
+        // Timed out (or the wait failed): withdraw the request. It may still have been granted in
+        // the meantime; the result below says which.
+        // SAFETY: cancels only the request tied to `ov` on this handle.
+        unsafe { CancelIoEx(handle, &ov) };
+    }
+    let mut transferred = 0u32;
+    // SAFETY: `ov` is the request issued above; waiting here guarantees it is finished before it
+    // goes out of scope.
+    let done = unsafe { GetOverlappedResult(handle, &ov, &mut transferred, 1) };
+    if done != 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if waited != WAIT_OBJECT_0 && err.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32) {
+        return Err(KdeError::Store(format!(
+            "timed out after {timeout:?} waiting for another process to release {}",
+            path.display()
+        )));
+    }
+    Err(err.into())
 }
 
 /// These run only on Windows (`cargo test -p bridge-kde` there); on this

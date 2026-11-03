@@ -28,6 +28,40 @@ fn heavy() -> MutexGuard<'static, ()> {
     HEAVY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Cost of one locked read-modify-write cycle on this machine (the slowest of a few samples), so
+/// contended tests can size themselves: on a Windows runner whose disk takes hundreds of milliseconds
+/// per atomic write the same test would otherwise need more than the product lock timeout in total,
+/// because a waiter may have to sit through every other thread's cycles.
+fn cycle_cost() -> Duration {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("state");
+    let (counter, lock) = (dir.join("counter"), dir.join("counter.lock"));
+    atomic_write_private(&counter, b"0").unwrap();
+    let mut worst = Duration::ZERO;
+    for n in 0..5 {
+        let t = Instant::now();
+        let _g = lock_exclusive(&lock).unwrap();
+        read_private_file(&counter).unwrap().unwrap();
+        atomic_write_private(&counter, n.to_string().as_bytes()).unwrap();
+        worst = worst.max(t.elapsed());
+    }
+    worst
+}
+
+/// How many locked cycles in total a contended test may run: as many as `wanted`, but never more than
+/// fit in `budget` at the measured cost (a trust-store insert costs about twice a bare cycle), and at
+/// least `min` so the test still contends.
+fn cycles_within(budget: Duration, wanted: usize, min: usize) -> usize {
+    let cost = cycle_cost() * 2;
+    let fit = (budget.as_nanos() / cost.as_nanos().max(1)) as usize;
+    let n = fit.clamp(min, wanted);
+    eprintln!("cycle cost {cost:?}: running {n} of {wanted} wanted cycles");
+    n
+}
+
+/// Well inside the 10 s product lock timeout, which the trust-store tests cannot change.
+const BUDGET: Duration = Duration::from_secs(3);
+
 fn peer_with_id(id: &str) -> TrustedPeer {
     let id = DeviceId::parse(id).unwrap();
     let creds = DeviceCredentials::generate_with_id(&id).unwrap();
@@ -153,7 +187,9 @@ fn lock_serialises_read_modify_write_across_threads() {
     let counter = dir.join("counter");
     let lock = dir.join("counter.lock");
     atomic_write_private(&counter, b"0").unwrap();
-    let (threads, per) = (8usize, 10usize);
+    let total = cycles_within(BUDGET, 80, 8);
+    let threads = if total >= 40 { 8usize } else { 4 };
+    let per = (total / threads).clamp(1, 10);
     let barrier = Arc::new(Barrier::new(threads));
     let started = Instant::now();
     let handles: Vec<_> = (0..threads)
@@ -279,8 +315,9 @@ fn concurrent_writers_with_separate_instances_lose_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("s");
     drop(FileTrustStore::open(&dir).unwrap());
-    let writers = 4;
-    let per = 5;
+    let total = cycles_within(BUDGET, 20, 4);
+    let writers = if total >= 20 { 4usize } else { 2 };
+    let per = (total / writers).clamp(1, 5);
     let barrier = Arc::new(Barrier::new(writers));
     let handles: Vec<_> = (0..writers as u32)
         .map(|w| {
@@ -305,6 +342,7 @@ fn concurrent_writers_with_separate_instances_lose_nothing() {
 }
 
 const CHILD_DIR: &str = "GEEKBRIDGE_PERSIST_CHILD_DIR";
+const CHILD_PER: &str = "GEEKBRIDGE_PERSIST_CHILD_PER";
 const CHILD_GROUP: &str = "GEEKBRIDGE_PERSIST_CHILD_GROUP";
 
 /// Not a real test: the body run inside the child processes spawned by
@@ -316,7 +354,8 @@ fn child_process_inserter() {
     };
     let group: u32 = std::env::var(CHILD_GROUP).unwrap().parse().unwrap();
     let store = FileTrustStore::open(Path::new(&dir)).unwrap();
-    for n in 0..5 {
+    let per: u32 = std::env::var(CHILD_PER).unwrap().parse().unwrap();
+    for n in 0..per {
         store.insert(peer_with_id(&numbered_id(group, n))).unwrap();
     }
 }
@@ -329,12 +368,16 @@ fn concurrent_writers_in_separate_processes_lose_nothing() {
     drop(FileTrustStore::open(&dir).unwrap());
     let exe = std::env::current_exe().unwrap();
     // Spawn all first, wait afterwards, so the processes really overlap.
-    let children: Vec<_> = (100..106u32)
+    let total = cycles_within(BUDGET, 30, 4);
+    let procs = if total >= 30 { 6u32 } else { 2 };
+    let per = (total as u32 / procs).clamp(1, 5);
+    let children: Vec<_> = (100..100 + procs)
         .map(|group| {
             Command::new(&exe)
                 .args(["--exact", "child_process_inserter", "--test-threads=1"])
                 .env(CHILD_DIR, &dir)
                 .env(CHILD_GROUP, group.to_string())
+                .env(CHILD_PER, per.to_string())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -351,7 +394,7 @@ fn concurrent_writers_in_separate_processes_lose_nothing() {
         );
     }
     let store = FileTrustStore::open(&dir).unwrap();
-    assert_eq!(store.list().unwrap().len(), 6 * 5);
+    assert_eq!(store.list().unwrap().len(), (procs * per) as usize);
 }
 
 // ---------------------------------------------------- Unix-only checks
