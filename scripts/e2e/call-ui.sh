@@ -220,7 +220,8 @@ stage_notify() {
   # Answer/Decline buttons need a notify-send that sends actions. Ubuntu 24.04's libnotify 0.8.8 (the CI runner) prints
   # "Actions are not supported by this notifications server" against mako and sends the notification without actions (the
   # server does list the capability), so the action round trip cannot be tested there. Say so instead of failing.
-  if [[ -n "${CI:-}" ]] && timeout 5 notify-send --app-name=Probe --action=a=A -- probe x 2>&1 | grep -q "Actions are not supported"; then
+  local probe=""; [[ -n "${CI:-}" ]] && probe="$(timeout 4 notify-send --app-name=Probe --wait --action=a=Alpha --action=b=Beta -- probe x 2>&1)"
+  if grep -q "Actions are not supported" <<<"$probe"; then
     sway_env makoctl dismiss -a >/dev/null 2>&1
     rec callui_notify_answer SKIP "notify-send $(notify-send --version 2>&1 | head -1): 'Actions are not supported by this notifications server' (mako), nothing to invoke"
     rec callui_notify_decline SKIP "same reason"; return 0
