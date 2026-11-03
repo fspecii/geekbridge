@@ -1,9 +1,35 @@
 name: Cross-platform Rust checks
 
+# Docs-only changes skip this workflow (the docs.yml link check still runs for them). CHANGELOG.md and
+# THIRD_PARTY_NOTICES.md are deliberately not ignored: tests and the notices check read them.
+# push is limited to main and the Windows debugging branch: other branches get their run from pull_request, so a
+# Dependabot or feature PR no longer runs the whole matrix twice.
 on:
   push:
+    branches: [main, ci-windows-debug]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'CONTRIBUTING.md'
+      - 'CODE_OF_CONDUCT.md'
+      - 'ARCHITECTURE.md'
+      - 'SUPPORT.md'
   pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'CONTRIBUTING.md'
+      - 'CODE_OF_CONDUCT.md'
+      - 'ARCHITECTURE.md'
+      - 'SUPPORT.md'
   workflow_dispatch:
+
+# A newer push to the same branch or PR supersedes the older run. Nothing here publishes anything.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -204,6 +230,8 @@ jobs:
   # exact version with --locked rather than fetched through a third-party action.
   coverage:
     name: Coverage report (Rust llvm-cov, Android JaCoCo; non-blocking)
+    # Not on pull requests: it is the longest job (up to 90 min) and gates nothing.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     continue-on-error: true
