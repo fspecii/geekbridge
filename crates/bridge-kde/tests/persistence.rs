@@ -9,7 +9,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
@@ -18,6 +18,15 @@ use bridge_kde::fsutil::{
     MAX_STATE_FILE, atomic_write_private, lock_exclusive, lock_exclusive_timeout, read_private_file,
 };
 use bridge_kde::{DeviceCredentials, DeviceId, FileTrustStore, KdeError, TrustStore, TrustedPeer};
+
+/// The timing- and contention-sensitive tests take this so they do not compete with each other for
+/// the disk: on Windows CI runners one atomic write can take hundreds of milliseconds under load,
+/// which pushed contended tests past the 10 s lock timeout when all of them ran at once.
+static HEAVY: Mutex<()> = Mutex::new(());
+
+fn heavy() -> MutexGuard<'static, ()> {
+    HEAVY.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn peer_with_id(id: &str) -> TrustedPeer {
     let id = DeviceId::parse(id).unwrap();
@@ -108,6 +117,7 @@ fn lock_times_out_while_held_and_is_released_on_drop() {
 /// inside the 10 s lock timeout, so a slow disk (fsync) shows up here first.
 #[test]
 fn uncontended_locked_cycle_is_fast_enough() {
+    let _heavy = heavy();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("state");
     let counter = dir.join("counter");
@@ -137,6 +147,7 @@ fn uncontended_locked_cycle_is_fast_enough() {
 
 #[test]
 fn lock_serialises_read_modify_write_across_threads() {
+    let _heavy = heavy();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("state");
     let counter = dir.join("counter");
@@ -176,6 +187,7 @@ fn lock_serialises_read_modify_write_across_threads() {
 
 #[test]
 fn second_instance_sees_changes_and_does_not_lose_updates() {
+    let _heavy = heavy();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("s");
     let daemon = FileTrustStore::open(&dir).unwrap();
@@ -252,6 +264,7 @@ fn tampering_after_open_fails_closed_and_the_damage_is_kept() {
 
 #[test]
 fn concurrent_writers_with_separate_instances_lose_nothing() {
+    let _heavy = heavy();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("s");
     drop(FileTrustStore::open(&dir).unwrap());
@@ -299,6 +312,7 @@ fn child_process_inserter() {
 
 #[test]
 fn concurrent_writers_in_separate_processes_lose_nothing() {
+    let _heavy = heavy();
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("s");
     drop(FileTrustStore::open(&dir).unwrap());
