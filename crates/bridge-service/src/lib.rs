@@ -25,6 +25,7 @@ pub mod hotkey_help;
 pub mod hypr_config;
 pub mod lan_select;
 pub mod macos_host;
+pub mod memtrim;
 pub mod mirror;
 pub mod notify_text;
 pub mod os_notify;

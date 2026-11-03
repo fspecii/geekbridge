@@ -7,6 +7,7 @@ pub mod calls_link;
 pub mod calls_view;
 pub mod clipboard;
 pub mod clipboard_wire;
+pub mod codepages;
 pub mod collate;
 pub mod debug_link;
 pub mod heartbeat;

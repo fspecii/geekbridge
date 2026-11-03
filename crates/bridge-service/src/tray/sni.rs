@@ -456,7 +456,7 @@ impl Sni {
 /// The session bus socket: `address` (a `DBUS_SESSION_BUS_ADDRESS` value, as tests pass), else the
 /// environment's, else `$XDG_RUNTIME_DIR/bus`. Only `unix:path=` and `unix:abstract=` entries are
 /// understood; anything else means "no usable bus", which is a silent no-tray.
-fn connect(address: Option<&str>) -> Result<std::os::unix::net::UnixStream, String> {
+pub(crate) fn connect(address: Option<&str>) -> Result<std::os::unix::net::UnixStream, String> {
     use std::os::{
         linux::net::SocketAddrExt,
         unix::net::{SocketAddr, UnixStream},

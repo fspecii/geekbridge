@@ -24,13 +24,23 @@ pub fn set_other_sync_app_running(running: bool) {
 pub async fn watch() {
     loop {
         set_other_sync_app_running(probe().await);
+        // The probe just faulted the D-Bus code back in; let it go again (`bridge_core::codepages`).
+        bridge_core::codepages::drop_idle();
         tokio::time::sleep(std::time::Duration::from_secs(20)).await;
     }
 }
 
 #[cfg(target_os = "linux")]
 async fn probe() -> bool {
-    let Ok(connection) = zbus::Connection::session().await else {
+    // Connect the socket ourselves: `Connection::session()` would do it on the `blocking` crate's
+    // thread pool, whose first thread then wakes twice a second for the life of the process.
+    let Ok(stream) = crate::tray::sni::connect(None) else {
+        return false;
+    };
+    let Ok(connection) = zbus::connection::Builder::async_io_unix_stream(stream)
+        .build()
+        .await
+    else {
         return false;
     };
     let Ok(bus) = zbus::fdo::DBusProxy::new(&connection).await else {

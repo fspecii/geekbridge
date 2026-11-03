@@ -27,6 +27,9 @@ async fn run() -> std::io::Result<()> {
             println!("{}", path.display());
             Ok(())
         }
-        Parsed::Run(config) => bridge_service::run(config).await,
+        Parsed::Run(config) => {
+            bridge_service::memtrim::after_startup();
+            bridge_service::run(config).await
+        }
     }
 }

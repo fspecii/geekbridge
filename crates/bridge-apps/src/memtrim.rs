@@ -22,6 +22,7 @@ pub fn trim() {
     unsafe {
         malloc_trim(0);
     }
+    bridge_core::codepages::drop_idle();
 }
 
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]

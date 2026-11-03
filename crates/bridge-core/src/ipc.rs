@@ -1033,6 +1033,90 @@ pub enum Response {
     Error(ErrorBody),
 }
 
+/// Adding a `Response` variant stops compiling here until `Response::from_json` learns it too.
+#[allow(dead_code)]
+fn every_response_is_parsed(r: &Response) {
+    match r {
+        Response::Status(_)
+        | Response::Events(_)
+        | Response::CallingStatus(_)
+        | Response::PhoneDebugState { .. }
+        | Response::Calls(_)
+        | Response::Notifications(_)
+        | Response::Update(_)
+        | Response::ClipboardStatus(_)
+        | Response::Share(_)
+        | Response::PairQr(_)
+        | Response::ConnectionTest(_)
+        | Response::Agenda(_)
+        | Response::Messages(_)
+        | Response::MessageQueued { .. }
+        | Response::TransferStarted { .. }
+        | Response::Ack
+        | Response::Error(_) => {}
+    }
+}
+
+impl Response {
+    /// Parse a response body. Same wire format and result as `serde_json::from_slice::<Response>`, but
+    /// the `kind` tag is read first and the payload is then deserialized straight into its own type.
+    /// The derived impl buffers every reply into serde's `Content` tree and replays it, which
+    /// instantiates a second copy of every nested type's deserializer.
+    pub fn from_json(json: &[u8]) -> Result<Response, serde_json::Error> {
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        struct Tag {
+            kind: String,
+        }
+        #[derive(Deserialize)]
+        struct Text {
+            text: String,
+        }
+        #[derive(Deserialize)]
+        struct SendId {
+            send_id: u64,
+        }
+        #[derive(Deserialize)]
+        struct TransferId {
+            transfer_id: u64,
+        }
+        fn p<'a, T: Deserialize<'a>>(json: &'a [u8]) -> Result<T, serde_json::Error> {
+            serde_json::from_slice(json)
+        }
+        let tag: Tag = p(json)?;
+        Ok(match tag.kind.as_str() {
+            "status" => Response::Status(Box::new(p(json)?)),
+            "events" => Response::Events(p(json)?),
+            "calling_status" => Response::CallingStatus(p(json)?),
+            "phone_debug_state" => Response::PhoneDebugState {
+                text: p::<Text>(json)?.text,
+            },
+            "calls" => Response::Calls(Box::new(p(json)?)),
+            "notifications" => Response::Notifications(Box::new(p(json)?)),
+            "update" => Response::Update(Box::new(p(json)?)),
+            "clipboard_status" => Response::ClipboardStatus(Box::new(p(json)?)),
+            "share" => Response::Share(Box::new(p(json)?)),
+            "pair_qr" => Response::PairQr(Box::new(p(json)?)),
+            "connection_test" => Response::ConnectionTest(Box::new(p(json)?)),
+            "agenda" => Response::Agenda(Box::new(p(json)?)),
+            "messages" => Response::Messages(Box::new(p(json)?)),
+            "message_queued" => Response::MessageQueued {
+                send_id: p::<SendId>(json)?.send_id,
+            },
+            "transfer_started" => Response::TransferStarted {
+                transfer_id: p::<TransferId>(json)?.transfer_id,
+            },
+            "ack" => Response::Ack,
+            "error" => Response::Error(p(json)?),
+            other => {
+                return Err(serde_json::Error::custom(format_args!(
+                    "unknown variant `{other}`"
+                )));
+            }
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -1238,7 +1322,7 @@ pub fn call(port: u16, token: &Token, request: &Request) -> Result<Response, Ipc
     if !constant_time_eq(&expected, &their_mac) {
         return Err(IpcError::Protocol("response authentication failed".into()));
     }
-    match serde_json::from_slice::<Response>(body).map_err(|e| IpcError::Protocol(e.to_string()))? {
+    match Response::from_json(body).map_err(|e| IpcError::Protocol(e.to_string()))? {
         Response::Error(e) => Err(IpcError::Service(e)),
         other => Ok(other),
     }
@@ -1377,6 +1461,41 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["kind"], "link_lost");
         assert_eq!(serde_json::from_value::<Event>(json).unwrap(), e);
+    }
+
+    #[test]
+    fn from_json_matches_the_derived_response_parser() {
+        let samples = [
+            Response::Ack,
+            Response::MessageQueued { send_id: 7 },
+            Response::TransferStarted { transfer_id: 9 },
+            Response::PhoneDebugState {
+                text: "a\nb".into(),
+            },
+            Response::Error(ErrorBody {
+                code: ErrorCode::Busy,
+                message: "m".into(),
+            }),
+            Response::Events(EventPage {
+                events: vec![Event {
+                    seq: 1,
+                    at_unix_ms: 2,
+                    device_id: None,
+                    kind: EventKind::Connected,
+                }],
+                next_after: 1,
+                gap: false,
+            }),
+        ];
+        for r in samples {
+            let json = serde_json::to_vec(&r).unwrap();
+            assert_eq!(Response::from_json(&json).unwrap(), r);
+            assert_eq!(serde_json::from_slice::<Response>(&json).unwrap(), r);
+        }
+        assert!(Response::from_json(br#"{"kind":"nope"}"#).is_err());
+        assert!(Response::from_json(br#"{"x":1}"#).is_err());
+        assert!(Response::from_json(br#"{"kind":"message_queued"}"#).is_err());
+        assert!(Response::from_json(b"not json").is_err());
     }
 
     #[test]

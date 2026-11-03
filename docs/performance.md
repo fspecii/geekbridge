@@ -9,14 +9,14 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 
 | Metric (service, idle) | Before | After | Budget |
 | --- | --- | --- | --- |
-| Idle RSS | 6824 kB | 5808 kB | 10000 kB |
+| Idle RSS | 6824 kB | 5808 kB (3.4-3.6 MB after round 3, below) | 6000 kB (was 10000; round 3) |
 | Threads | 25 | 3 | 8 |
 | Open fds | 12 | 12 | 20 |
 | Wakeups (voluntary context switches, all threads) | ~1/s | ~0.3-2/s | 3/s |
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
 | `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without) | 5 800 000 B (raised from 5.6 MB after the first real CI run: the GitHub runner built 5 577 488 B (older commit) and 5 657 360 B (release candidate), a dev box 5 663 032 B) |
-| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 350 000 B (raised from 1.3 MB on 2026-11-03: CI runner 1 211 496 B and 1 247 056 B, then 1 310 112 B at d669c2109 after 8e9c976fa added the plain-words "why the phone is not connected" reason codes and sentences to `status`/`ctl`/waybar; +63 kB over the earlier build is consistent with that added text and formatting (no new dependency; not bisected); 40 kB headroom kept) |
+| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02); 1 214 392 B after round 3 | 1 300 000 B (round 3 put it back to 1.3 MB; had been raised from 1.3 MB on 2026-11-03: CI runner 1 211 496 B and 1 247 056 B, then 1 310 112 B at d669c2109 after 8e9c976fa added the plain-words "why the phone is not connected" reason codes and sentences to `status`/`ctl`/waybar; +63 kB over the earlier build is consistent with that added text and formatting (no new dependency; not bisected); 40 kB headroom kept) |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
 | UI idle RSS (`--ui`, warm GL shader cache) | 67-68 MB | 65.1 MB (2026-11-02, was 68.5 MB on the same machine) | 75 MB |
 | GUI binaries with AccessKit (2026-11-02, `accesskit` feature, default) | n/a | messages 6.16 -> 8.05 MB (+1.9 MB), idle RSS +1.5-2.5 MB, +3 threads, ~+2 wakeups/s | not budgeted. On the 2026-11-02 machine the UI idle RSS is 105-124 MB with or without it (budget 90 MB exceeded by the GL stack, not AccessKit); see `docs/accessibility.md` |
@@ -53,6 +53,49 @@ the service pokes a `Notify`; the task sleeps in between), and it connects the b
 sends the connect to the `blocking` crate's pool, whose first thread then wakes every 500 ms for the life of the
 process (measured: +2 wakeups/s, which put the service exactly on its 3/s budget). With no bus or no watcher the cost is
 the same connection and nothing visible.
+
+## Size and memory round 3 (2026-11-03)
+
+Report: `docs/reports/size-memory-round-3.md`. Same machine, same toolchain, A/B from one worktree (HEAD b168d27f9
+against HEAD plus the changes), `scripts/perf-check.sh` and `scripts/ui-mem.sh` against private state under a scratch
+directory. Tools: `nm -S --size-sort`, `size`, `readelf -S`, `/proc/PID/smaps` (no `cargo-bloat`, `bloaty`, `perf`).
+
+| Change | Measured | Before | After |
+| --- | --- | --- | --- |
+| `Response::from_json` (tag first, payload straight into its own type) instead of the derived internally tagged `Response` deserializer | ctl and every GUI binary | ctl 1 307 376 B, `geekbridge` 8 061 984 B | ctl 1 214 392 B (-92 984), GUI binaries -90 to -93 kB each |
+| Drop idle code pages after start (`bridge_core::codepages`) | service idle RSS (20 s window) | 7952-8220 kB | 3400-3650 kB |
+| Same, in the GUI apps (frame 3, frame 90, window goes idle) | Xvfb + llvmpipe, `geekbridge` / `geekbridge-calls` RSS | 107 112 / 105 488 kB (file-backed 71 / 70 MB) | 66 288 / 64 140 kB (file-backed 31 / 29 MB) |
+| Session-bus probe (`coexist.rs`) connects its socket itself | service threads, wakeups | 6 threads, 4-5 /s | 5 threads, 2-3 /s |
+| Service size (cost of the two small modules above) | `geekbridge-service` | 5 732 536 B | 5 745 336 B (+12.8 kB; budget stays 5.8 MB) |
+
+* **Serde `Content` duplicates.** The unstripped ctl (`nm -S --size-sort`) had 313 kB of
+  `ContentDeserializer` instantiations: `Response` is `#[serde(tag = "kind")]`, so serde buffers each reply and then
+  replays it through a second copy of every nested type's deserializer (every `Vec<T>` visitor appeared twice).
+  `Response::from_json` reads the tag with a one-field struct and deserializes the payload struct directly. Wire
+  format unchanged (a test compares it with the derived parser; `ipc::call` uses it). 313 kB -> 25 kB of Content code,
+  net -93 kB after the added dispatch code. The service side (`Request`, `deny_unknown_fields` per variant, 125 kB of
+  Content code) was left: a hand dispatch would need one struct per variant and would risk the strictness.
+* **Idle code pages.** An idle service held 608 kB of anonymous memory but 7.7 MB RSS: 4.4 MB was the executable's own
+  clean code pages, mapped 16 at a time by fault-around during start-up (TLS, D-Bus, key set-up) and never run again.
+  They are page cache (no private cost, reclaimable), but they are what `top` and the budget count.
+  `bridge_core::codepages::drop_idle()` `madvise(MADV_DONTNEED)`s only private `r-xp` file mappings (never data or
+  RELRO, where that call would revert relocated pointers) 2 s after start and after each 20 s bus probe; pages
+  come back on demand as minor faults. It lowers RSS (and Pss), not allocator
+  memory. A busy process (phone linked, window drawing) regrows to its working set, measured +0.5 MB for a focused app
+  window; the GL driver's file-backed share shrinks 71 -> 31 MB while idle. Hence the RSS budget 10 000 -> 6000 kB
+  (CI 12 500 -> 8000 kB; CI measured 8.06-8.19 MB before this).
+* **A hidden `blocking` thread.** The 20 s KDE Connect probe used `zbus::Connection::session()`, which connects on the
+  `blocking` crate's pool; that thread then wakes twice a second for the life of the process (the tray comment in
+  `tray/sni.rs` already described this). The probe now reuses the tray's own socket connect. -1 thread and about
+  -2 wakeups/s, even without a tray.
+* **Measured and not changed.** Android arm64 `libgeekbridge_android.so` (opt-level `z`, fat LTO): 2 859 208 B stripped;
+  ring/rustls/x509 575 kB (P-256 table 152 kB, TLS 1.2 needed by KDE Connect peers), tokio 176 kB, unwind tables
+  (`.eh_frame` + `.gcc_except_table` + hdr) ~840 kB which panic = "unwind" requires, std backtrace 129 kB. The APK
+  stores the library uncompressed, so APK delta = library delta. Linking with lld `--icf=all` measured -100 448 B
+  (2 848 040 -> 2 747 592 B); `--icf=safe` does nothing because rustc emits no address-significance table. Not applied:
+  folding code is safe in practice but could not be validated on a device in this round. GUI binaries (8 MB) are
+  1.44 MB AccessKit/zbus, 1.14 MB winit/x11/wayland, 0.75 MB egui; features are already trimmed (no default features),
+  AccessKit stays for accessibility. Widget-preview PNGs (64 kB) do not recompress.
 
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
