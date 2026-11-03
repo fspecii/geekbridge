@@ -149,27 +149,21 @@ impl<V> Drop for Feed<V> {
 }
 
 fn unexpected() -> String {
-    "The service answered with something unexpected.".into()
+    crate::i18n::tr("feed.unexpected").into()
 }
 
 fn act_on(cfg: &Config, request: &Request) -> ActionResult {
     match cfg.request(request)? {
         Response::Ack => Ok(match request {
             Request::SetConsent { enabled: true, .. } => {
-                Some("Allowed. Asking the phone now.".into())
+                Some(crate::i18n::tr("feed.consent_on").into())
             }
-            Request::SetConsent { .. } => {
-                Some("Turned off. What was shared has been erased.".into())
-            }
-            Request::CalendarEdit { .. } => {
-                Some("Sent to the phone. Waiting for it to confirm.".into())
-            }
-            Request::CalendarEditRetry { .. } => Some("Asked the phone again.".into()),
+            Request::SetConsent { .. } => Some(crate::i18n::tr("feed.consent_off").into()),
+            Request::CalendarEdit { .. } => Some(crate::i18n::tr("feed.edit_sent").into()),
+            Request::CalendarEditRetry { .. } => Some(crate::i18n::tr("feed.edit_retry").into()),
             _ => None,
         }),
-        Response::MessageQueued { .. } => Ok(Some(
-            "Handed to the phone. Waiting for it to confirm.".into(),
-        )),
+        Response::MessageQueued { .. } => Ok(Some(crate::i18n::tr("feed.message_queued").into())),
         Response::Error(e) => Err(e.message),
         _ => Err(unexpected()),
     }

@@ -105,7 +105,7 @@ object CallRules {
     fun dialable(raw: String?): Boolean = raw != null && dialNumber.matches(raw)
 
     /** A computer's self-chosen name, made safe to show: no control or bidi/invisible characters, short. */
-    fun cleanComputer(raw: String?): String {
+    fun cleanComputer(raw: String?, strings: Strings): String {
         val s = buildString {
             for (c in raw.orEmpty()) {
                 val t = Character.getType(c)
@@ -114,11 +114,15 @@ object CallRules {
                 append(if (bad) ' ' else c)
             }
         }.trim().replace(Regex("\\s+"), " ")
-        return if (s.isEmpty()) "a paired computer" else MirrorRules.clip(s, 40)
+        return if (s.isEmpty()) strings.get(R.string.call_computer_fallback) else MirrorRules.clip(s, 40)
     }
 
-    /** What the owner reads when a computer asks the phone to dial. */
-    fun dialNotice(number: String, computer: String?) = "Dialing $number requested by ${cleanComputer(computer)}"
+    /**
+     * What the owner reads when a computer asks the phone to dial. The number and the computer's self-chosen name are
+     * isolated (see [Bidi]) so a right-to-left name cannot reorder the sentence or the digits around it.
+     */
+    fun dialNotice(number: String, computer: String?, strings: Strings): String =
+        strings.get(R.string.call_dial_notice, Bidi.ltr(number), Bidi.isolate(cleanComputer(computer, strings)))
 
     /** The same checks [handle] makes before a dial, without placing it; null means it could be placed now. */
     fun dialPreflight(state: CallState?, p: CallPermissions, number: String?): CallFailure? = when {
@@ -298,6 +302,7 @@ class CallControlEngine(
     private val settings: () -> CallLinkSettings,
     private val lookup: ContactLookup,
     private val sdk: Int,
+    private val strings: Strings,
     private val clock: () -> Long = System::currentTimeMillis,
     private val prompts: DialPrompts = object : DialPrompts {
         override fun announce(text: String) {}
@@ -418,7 +423,7 @@ class CallControlEngine(
         if (early != null || number == null) return answer(r, early ?: CallFailure.Failed)
         if (!settings().confirmDial) return place(r, number)
         if (pendingDials.size >= MAX_PENDING_DIALS) return answer(r, CallFailure.Declined)
-        val asked = prompts.ask(r.requestId, CallRules.dialNotice(number, r.computer))
+        val asked = prompts.ask(r.requestId, CallRules.dialNotice(number, r.computer, strings))
         if (!asked) return answer(r, CallFailure.Declined)
         pendingDials[r.requestId] = PendingDial(r, clock())
     }
@@ -426,7 +431,7 @@ class CallControlEngine(
     private fun place(r: CallRequest, number: String) {
         // Re-checked against the state as it is now; announced only when the phone is really about to dial.
         if (CallRules.dialPreflight(state, permissions(), number) == null) {
-            prompts.announce(CallRules.dialNotice(number, r.computer))
+            prompts.announce(CallRules.dialNotice(number, r.computer, strings))
         }
         answer(r, CallRules.handle(CallAction.Dial, state, sdk, permissions(), telecom, number))
     }

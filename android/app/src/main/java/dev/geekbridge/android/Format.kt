@@ -11,7 +11,7 @@ import java.util.Locale
 /** Pure text builders for the UI, kept free of Android types so they run in JVM tests. */
 object Format {
     fun contactLine(s: Strings, c: ContactPreview): String =
-        if (c.number == null) c.name else s.get(R.string.fmt_joined, c.name, c.number)
+        if (c.number == null) Bidi.isolate(c.name) else s.get(R.string.fmt_joined, Bidi.isolate(c.name), Bidi.ltr(c.number))
 
     fun eventLines(s: Strings, e: AgendaEvent, zone: ZoneId, locale: Locale): String {
         val day = DateTimeFormatter.ofPattern("EEE, MMM d", locale)

@@ -19,7 +19,9 @@ pub fn launch_with(binary: &str, var: &str, value: &str) -> Result<(), String> {
         .env(var, value)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("Could not start {binary}: {e}"))
+        .map_err(|e| {
+            crate::i18n::tr_args("home.launch_failed", &[("name", &binary), ("error", &e)])
+        })
 }
 
 static DIAL_TAKEN: AtomicBool = AtomicBool::new(false);

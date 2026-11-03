@@ -203,6 +203,7 @@ class CallControlTest {
             settings = { CallLinkSettings(enabled, confirm) },
             lookup = { names[it] },
             sdk = sdk,
+            strings = TestStrings,
             clock = { now },
             prompts = prompts,
         )
@@ -218,7 +219,7 @@ class CallControlTest {
         val h = Harness(may)
         h.engine.onState(CallState.Idle)
         h.engine.onRequests(listOf(dialReq()))
-        assertEquals(listOf("Dialing +15550100 requested by Desk"), h.prompts.announced)
+        assertEquals(listOf("Dialing \u2066+15550100\u2069 requested by \u2068Desk\u2069"), h.prompts.announced)
         assertEquals(listOf("dial"), h.telecom.log)
         assertFalse(h.lastResult().has("failure"))
         assertTrue(h.prompts.asked.isEmpty())
@@ -233,11 +234,11 @@ class CallControlTest {
     }
 
     @Test fun computerNamesAreMadeSafeToShow() {
-        assertEquals("a paired computer", CallRules.cleanComputer(null))
-        assertEquals("a paired computer", CallRules.cleanComputer("\u202e\n "))
-        assertEquals("Desk PC", CallRules.cleanComputer("De\u202esk\n\u200bPC").replace("  ", " ").replace("De sk", "Desk"))
-        assertTrue(CallRules.cleanComputer("x".repeat(500)).length <= 40)
-        assertEquals("Dialing 5550100 requested by a paired computer", CallRules.dialNotice("5550100", ""))
+        assertEquals("a paired computer", CallRules.cleanComputer(null, TestStrings))
+        assertEquals("a paired computer", CallRules.cleanComputer("\u202e\n ", TestStrings))
+        assertEquals("Desk PC", CallRules.cleanComputer("De\u202esk\n\u200bPC", TestStrings).replace("  ", " ").replace("De sk", "Desk"))
+        assertTrue(CallRules.cleanComputer("x".repeat(500), TestStrings).length <= 40)
+        assertEquals("Dialing \u20665550100\u2069 requested by \u2068a paired computer\u2069", CallRules.dialNotice("5550100", "", TestStrings))
     }
 
     @Test fun withConfirmationOnNothingIsDialedUntilTheOwnerAllows() {
@@ -245,7 +246,7 @@ class CallControlTest {
         h.engine.onState(CallState.Idle)
         val before = h.sent.size
         h.engine.onRequests(listOf(dialReq("d-7")))
-        assertEquals(listOf("d-7" to "Dialing +15550100 requested by Desk"), h.prompts.asked)
+        assertEquals(listOf("d-7" to "Dialing \u2066+15550100\u2069 requested by \u2068Desk\u2069"), h.prompts.asked)
         assertTrue(h.telecom.log.isEmpty())
         assertEquals(before, h.sent.size) // no answer yet
         h.engine.resolveDial("d-7", allow = true)
@@ -409,6 +410,7 @@ class CallControlTest {
             settings = { CallLinkSettings(true) },
             lookup = { throw IllegalStateException("provider died") },
             sdk = 34,
+            strings = TestStrings,
         )
         boom.onState(CallState.Ringing, "1") // must not throw
     }

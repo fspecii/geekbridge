@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TEST-ONLY fixture, never packaged: the worked example in docs/translating.md (Esperanto, a small locale). It
+     proves the loader and the placeholder / plural checks accept a real translation. Not a shipped language. -->
+<resources>
+    <string name="dial_allow">Voki</string>
+    <string name="dial_deny">Rifuzi</string>
+    <!-- Word order differs from English: the positional numbers are why %1$s and %2$s can swap. -->
+    <string name="call_dial_notice">Komputilo %2$s petis vokon al %1$s</string>
+    <string name="list_numbered">%1$d.  %2$s</string>
+    <string name="pd_pick_with_state">%2$s · %1$s</string>
+    <string name="pd_calendar_google">GeekBridge neniam ensalutas al Google. Redaktoj estas skribitaj al la kalendaro de ĉi tiu telefono.</string>
+    <plurals name="mirror_apps_count">
+        <item quantity="one">%d aplikaĵo elektita</item>
+        <item quantity="other">%d aplikaĵoj elektitaj</item>
+    </plurals>
+</resources>

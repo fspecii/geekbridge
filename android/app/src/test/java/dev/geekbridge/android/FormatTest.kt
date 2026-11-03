@@ -12,8 +12,8 @@ import org.junit.Test
 class FormatTest {
     @Test
     fun contactLine() {
-        assertEquals("Ada", Format.contactLine(TestStrings, ContactPreview("Ada", null)))
-        assertEquals("Ada · 123", Format.contactLine(TestStrings, ContactPreview("Ada", "123")))
+        assertEquals("\u2068Ada\u2069", Format.contactLine(TestStrings, ContactPreview("Ada", null)))
+        assertEquals("\u2068Ada\u2069 · \u2066123\u2069", Format.contactLine(TestStrings, ContactPreview("Ada", "123")))
     }
 
     @Test

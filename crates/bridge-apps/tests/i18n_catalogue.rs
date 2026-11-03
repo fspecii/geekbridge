@@ -268,33 +268,137 @@ fn every_english_key_is_used() {
     }
 }
 
+fn placeholders(s: &str) -> BTreeSet<String> {
+    let s = s.replace("{{", "").replace("}}", "");
+    s.split('{')
+        .skip(1)
+        .filter_map(|t| t.split_once('}'))
+        .map(|(n, _)| n.to_owned())
+        .collect()
+}
+
+/// Every check a translation file must pass: known keys, the same placeholders, a plural `other`.
+fn check_translation(tag: &str, src: &str) {
+    let en = english();
+    let tr = i18n::parse_catalogue(src);
+    for (k, v) in &tr {
+        let known = en
+            .get(k)
+            .or_else(|| en.get(&format!("{}.other", base_key(k))));
+        let Some(known) = known else {
+            panic!("{tag}: {k} is not an English key");
+        };
+        // zero/two/few/many forms may drop `{n}` ("one", "two"), so only compare the rest.
+        let relaxed = [".zero", ".two", ".few", ".many"]
+            .iter()
+            .any(|s| k.ends_with(s));
+        if !relaxed {
+            assert_eq!(placeholders(v), placeholders(known), "{tag}: {k}");
+        }
+        for c in v.chars() {
+            assert!(
+                !is_bidi_control(c),
+                "{tag}: {k} holds a hidden direction control U+{:04X}; the app isolates names itself",
+                c as u32
+            );
+        }
+    }
+    for k in tr.keys() {
+        if let Some(b) = k.strip_suffix(".one") {
+            assert!(
+                tr.contains_key(&format!("{b}.other")) || en.contains_key(&format!("{b}.other")),
+                "{tag}: {k} needs {b}.other"
+            );
+        }
+    }
+}
+
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 #[test]
 fn translations_use_known_keys_and_the_same_placeholders() {
-    fn placeholders(s: &str) -> BTreeSet<String> {
-        let s = s.replace("{{", "").replace("}}", "");
-        s.split('{')
-            .skip(1)
-            .filter_map(|t| t.split_once('}'))
-            .map(|(n, _)| n.to_owned())
-            .collect()
-    }
-    let en = english();
     for (tag, src) in BUNDLED {
-        for (k, v) in i18n::parse_catalogue(src) {
-            let known = en
-                .get(&k)
-                .or_else(|| en.get(&format!("{}.other", base_key(&k))));
-            let Some(known) = known else {
-                panic!("{tag}: {k} is not an English key");
-            };
-            // zero/two/few/many forms may drop `{n}` ("one", "two"), so only compare the rest.
-            let relaxed = [".zero", ".two", ".few", ".many"]
-                .iter()
-                .any(|s| k.ends_with(s));
-            if !relaxed {
-                assert_eq!(placeholders(&v), placeholders(known), "{tag}: {k}");
+        check_translation(tag, src);
+    }
+}
+
+/// Test-only locales in tests/fixtures (the worked example of docs/translating.md) go through the same
+/// checks as a shipped translation, so the guide stays true.
+#[test]
+fn fixture_translations_pass_the_translation_checks() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut seen = 0;
+    for e in std::fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_some_and(|x| x == "properties") {
+            let tag = p.file_stem().unwrap().to_string_lossy().into_owned();
+            check_translation(&tag, &std::fs::read_to_string(&p).unwrap());
+            seen += 1;
+        }
+    }
+    assert!(seen > 0, "no fixture locale found");
+}
+
+#[test]
+fn a_fixture_is_never_bundled() {
+    assert!(
+        BUNDLED.iter().all(|(t, _)| *t != "eo"),
+        "the eo fixture is test-only"
+    );
+}
+
+#[test]
+fn english_has_no_hidden_direction_controls_and_numbered_placeholders_are_words() {
+    for (k, v) in english() {
+        assert!(
+            !v.chars().any(is_bidi_control),
+            "{k}: hidden direction control"
+        );
+        for p in placeholders(&v) {
+            assert!(
+                !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{k}: placeholder {{{p}}} must be a plain word"
+            );
+        }
+    }
+}
+
+/// A sentence built from translated pieces cannot be reordered by a translator: give them one key with
+/// placeholders instead.
+#[test]
+fn translated_fragments_are_not_concatenated() {
+    let mut bad = Vec::new();
+    for (file, src) in sources() {
+        if file == "i18n.rs" {
+            continue;
+        }
+        for (n, line) in non_test(&src).lines().enumerate() {
+            let l = line.trim_start();
+            if l.starts_with("//") {
+                continue;
+            }
+            let joined = line.contains("tr(\"")
+                && (line.contains(") + ")
+                    || line.contains(" + crate::i18n::tr(")
+                    || line.contains(" + tr("));
+            let pushed =
+                line.contains("push_str(crate::i18n::tr(") || line.contains("push_str(tr(");
+            if (joined || pushed) && !line.contains("i18n-ok") {
+                bad.push(format!("{file}:{}: {}", n + 1, l));
             }
         }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}
+
+/// Pseudo-localisation must keep every placeholder, or the en-XA check of the real UI would hide bugs.
+#[test]
+fn pseudo_locale_keeps_every_placeholder() {
+    for (k, v) in english() {
+        let p = i18n::pseudo(&v);
+        assert_eq!(placeholders(&p), placeholders(&v), "{k}");
     }
 }
 

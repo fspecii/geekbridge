@@ -40,12 +40,12 @@ impl CallFeed {
             POLL,
             move || match fetch_cfg.request(&Request::Calls)? {
                 Response::Calls(c) => Ok(*c),
-                _ => Err("The service answered with something unexpected.".into()),
+                _ => Err(crate::i18n::tr("feed.unexpected").into()),
             },
             move |request| match send_cfg.request(request)? {
                 Response::Ack => Ok(()),
                 Response::Error(e) => Err(e.message),
-                _ => Err("The service answered with something unexpected.".into()),
+                _ => Err(crate::i18n::tr("feed.unexpected").into()),
             },
             wake,
         )

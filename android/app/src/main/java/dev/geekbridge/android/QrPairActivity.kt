@@ -278,7 +278,7 @@ class QrPairActivity : Activity() {
         card.addView(kit.text(getString(R.string.qr_confirm_title2), 20f, bold = true))
         card.addView(kit.text(getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
         card.addView(kit.text(getString(R.string.qr_confirm_name_label), 12f, Tone.Muted))
-        card.addView(kit.text("“$name”  ·  " + getString(R.string.qr_confirm_unverified), 16f, Tone.Warn, bold = true))
+        card.addView(kit.text(getString(R.string.qr_confirm_name_unverified, Bidi.isolate(name), getString(R.string.qr_confirm_unverified)), 16f, Tone.Warn, bold = true))
         card.addView(kit.text(getString(R.string.qr_confirm_addr_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
         card.addView(kit.ui.mono(QrConfirmText.address(t), 13f))
         card.addView(kit.text(getString(R.string.qr_confirm_fp_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
@@ -290,7 +290,7 @@ class QrPairActivity : Activity() {
 
     private fun connecting(root: LinearLayout, t: QrTarget) {
         val card = kit.panel(root)
-        card.addView(kit.text(getString(R.string.qr_connecting, t.name.ifEmpty { getString(R.string.pair_this_computer) }), 18f, bold = true))
+        card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(t.name.ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
         card.addView(kit.text(getString(R.string.qr_connecting_hint), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) {
             plan = null
@@ -347,9 +347,9 @@ object NextSteps {
     fun card(ctx: android.content.Context, kit: UiKit, parent: LinearLayout, onHome: () -> Unit, onFile: () -> Unit) {
         val card = kit.panel(parent)
         card.addView(kit.text(ctx.getString(R.string.qr_next_title), 16f, bold = true))
-        card.addView(kit.text("1. " + ctx.getString(R.string.qr_next_clipboard), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.text(ctx.getString(R.string.list_numbered, 1, ctx.getString(R.string.qr_next_clipboard)), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, ctx.getString(R.string.qr_next_home), BtnStyle.Tonal) { onHome() }
-        card.addView(kit.text("2. " + ctx.getString(R.string.qr_next_file), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.text(ctx.getString(R.string.list_numbered, 2, ctx.getString(R.string.qr_next_file)), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, ctx.getString(R.string.qr_next_file_btn), BtnStyle.Tonal) { onFile() }
     }
 }
@@ -359,8 +359,8 @@ object ReportView {
     fun add(kit: UiKit, parent: LinearLayout, r: NetReport) {
         parent.addView(kit.text(r.headline, 16f, if (r.ok) Tone.Ok else Tone.Warn, bold = true).apply { setPadding(0, kit.dp(12), 0, kit.dp(4)) })
         for (s in r.steps) {
-            parent.addView(kit.text((if (s.ok) "✔  " else "✖  ") + s.label + " – " + s.detail, 13f, if (s.ok) Tone.Muted else Tone.Warn))
+            parent.addView(kit.text(kit.context.getString(if (s.ok) R.string.net_step_ok else R.string.net_step_bad, s.label, s.detail), 13f, if (s.ok) Tone.Muted else Tone.Warn))
         }
-        for (a in r.advice) parent.addView(kit.text("• $a", 13f).apply { setPadding(0, kit.dp(4), 0, 0) })
+        for (a in r.advice) parent.addView(kit.text(kit.context.getString(R.string.list_bullet, a), 13f).apply { setPadding(0, kit.dp(4), 0, 0) })
     }
 }

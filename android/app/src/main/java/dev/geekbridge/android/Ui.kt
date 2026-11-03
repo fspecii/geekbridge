@@ -77,7 +77,7 @@ class Ui(private val ctx: Context) {
                 dot(if (accent) color(R.color.gb_red) else color(R.color.gb_line), 8), null, null, null,
             )
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(6), 0, 0, 0)
+            setPaddingRelative(dp(6), 0, 0, 0)
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         }
         parent.addView(label, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(24); bottomMargin = dp(8) })

@@ -81,12 +81,14 @@ pub fn dot_month(
                 WidgetInfo::labeled(
                     WidgetType::Button,
                     true,
-                    format!(
-                        "{} {}{}{}",
-                        day.day,
-                        day.month_name(),
-                        if is_today { ", today" } else { "" },
-                        if has { ", has events" } else { "" }
+                    crate::i18n::tr_args(
+                        match (is_today, has) {
+                            (false, false) => "cal.cd.plain",
+                            (true, false) => "cal.cd.today",
+                            (false, true) => "cal.cd.events",
+                            (true, true) => "cal.cd.today_events",
+                        },
+                        &[("day", &day.day), ("month", &day.month_name())],
                     ),
                 )
             });

@@ -67,6 +67,18 @@
     <string name="channel_dial">Calls requested by a computer</string>
     <string name="channel_dial_desc">Tells you when a paired computer asks this phone to place a call, and asks first if you chose that.</string>
     <string name="dial_notice_title">Call placed for a computer</string>
+    <!-- Joiners. Their own strings so a language can reorder, re-punctuate or drop the separator. -->
+    <string name="list_bullet">•  %1$s</string>
+    <string name="list_numbered">%1$d.  %2$s</string>
+    <string name="pd_sub_with_state">%1$s\n%2$s</string>
+    <string name="pd_pick_with_state">%1$s · %2$s</string>
+    <string name="net_step_ok">✔  %1$s – %2$s</string>
+    <string name="net_step_bad">✖  %1$s – %2$s</string>
+    <string name="offer_message_with_note">%1$s\n\n%2$s</string>
+    <string name="cal_time_detail">%1$s · %2$s</string>
+    <string name="qr_confirm_name_unverified">“%1$s”  ·  %2$s</string>
+    <string name="call_dial_notice">Dialing %1$s requested by %2$s</string>
+    <string name="call_computer_fallback">a paired computer</string>
     <string name="dial_confirm_title">Place this call?</string>
     <string name="dial_allow">Call</string>
     <string name="dial_deny">Deny</string>

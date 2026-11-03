@@ -285,9 +285,9 @@ class LinkSection(
         fill(discoveredBox, sig) {
             ui.body(discoveredBox, activity.getString(R.string.link_disc_intro), Tone.Muted)
             list.forEachIndexed { i, d ->
-                ui.row(discoveredBox, i, d.name.ifEmpty { noName() }, "${d.ip}:${d.tcpPort}".let { if (d.paired) activity.getString(R.string.link_disc_paired_before, it) else it }, Tone.Muted)
+                ui.row(discoveredBox, i, Bidi.isolate(d.name.ifEmpty { noName() }), "${d.ip}:${d.tcpPort}".let { if (d.paired) activity.getString(R.string.link_disc_paired_before, it) else it }, Tone.Muted)
                 ui.mono(d.deviceId, 11f, tone = Tone.Muted).also { discoveredBox.addView(it) }
-                ui.button(discoveredBox, activity.getString(R.string.link_connect_to, d.name.ifEmpty { activity.getString(R.string.link_this_computer) })) { controller.connect(d.ip, d.tcpPort, d.deviceId) }
+                ui.button(discoveredBox, activity.getString(R.string.link_connect_to, Bidi.isolate(d.name.ifEmpty { activity.getString(R.string.link_this_computer) }))) { controller.connect(d.ip, d.tcpPort, d.deviceId) }
             }
         }
     }
@@ -306,7 +306,7 @@ class LinkSection(
         fill(connectionsBox, sig) {
             for (c in list) {
                 val (text, tone) = phaseText(c)
-                ui.body(connectionsBox, activity.getString(R.string.link_conn_head, c.peer.name.ifEmpty { noName() }, c.peer.ip, c.role), Tone.Normal)
+                ui.body(connectionsBox, activity.getString(R.string.link_conn_head, Bidi.isolate(c.peer.name.ifEmpty { noName() }), c.peer.ip, c.role), Tone.Normal)
                 ui.mono(c.peer.deviceId, 11f, tone = Tone.Muted).also { connectionsBox.addView(it) }
                 ui.body(connectionsBox, text, tone)
                 if (!c.trusted && c.peer.certSha256.isNotEmpty()) {
@@ -333,13 +333,13 @@ class LinkSection(
         val sig = list.joinToString("|") { "${it.deviceId}/${it.name}/${it.certSha256}/${policy.autoAccept(it.deviceId)}" }
         fill(pairedBox, sig) {
             for (p in list) {
-                ui.body(pairedBox, p.name.ifEmpty { noName() }, Tone.Normal)
+                ui.body(pairedBox, Bidi.isolate(p.name.ifEmpty { noName() }), Tone.Normal)
                 ui.mono(p.deviceId, 11f, tone = Tone.Muted).also { pairedBox.addView(it) }
                 ui.mono(TransportText.group(p.certSha256), 11f, tone = Tone.Muted).also { pairedBox.addView(it) }
                 ui.check(pairedBox, activity.getString(R.string.link_auto_accept), checked = policy.autoAccept(p.deviceId)).setOnCheckedChangeListener { _, on ->
                     policy.setAutoAccept(p.deviceId, on)
                 }
-                ui.button(pairedBox, activity.getString(R.string.link_unpair_button, p.name.ifEmpty { activity.getString(R.string.link_this_computer) }), emphasis = Emphasis.Quiet) { confirmUnpair(p) }
+                ui.button(pairedBox, activity.getString(R.string.link_unpair_button, Bidi.isolate(p.name.ifEmpty { activity.getString(R.string.link_this_computer) })), emphasis = Emphasis.Quiet) { confirmUnpair(p) }
             }
         }
     }
@@ -354,7 +354,7 @@ class LinkSection(
 
     private fun confirmUnpair(p: PairedPeer) {
         AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.link_unpair_title, p.name.ifEmpty { activity.getString(R.string.link_this_computer) }))
+            .setTitle(activity.getString(R.string.link_unpair_title, Bidi.isolate(p.name.ifEmpty { activity.getString(R.string.link_this_computer) })))
             .setMessage(activity.getString(R.string.link_unpair_message))
             .setPositiveButton(R.string.link_unpair) { _, _ -> controller.unpair(p.deviceId) }
             .setNegativeButton(R.string.link_cancel, null)
@@ -387,8 +387,8 @@ class LinkSection(
         }
         body.addView(
             ui.text(
-                if (outgoing) activity.getString(R.string.link_prompt_outgoing, p.peerName.ifEmpty { activity.getString(R.string.link_this_device) })
-                else activity.getString(R.string.link_prompt_incoming, p.peerName.ifEmpty { activity.getString(R.string.link_a_device) }),
+                if (outgoing) activity.getString(R.string.link_prompt_outgoing, Bidi.isolate(p.peerName.ifEmpty { activity.getString(R.string.link_this_device) }))
+                else activity.getString(R.string.link_prompt_incoming, Bidi.isolate(p.peerName.ifEmpty { activity.getString(R.string.link_a_device) })),
             ),
         )
         body.addView(ui.mono(p.code, 28f, bold = true).apply { letterSpacing = 0.12f })
@@ -409,7 +409,7 @@ class LinkSection(
             ),
         )
         val d = AlertDialog.Builder(activity)
-            .setTitle(if (outgoing) activity.getString(R.string.link_prompt_title_outgoing, p.peerName.ifEmpty { activity.getString(R.string.link_this_device) }) else activity.getString(R.string.link_prompt_title_incoming))
+            .setTitle(if (outgoing) activity.getString(R.string.link_prompt_title_outgoing, Bidi.isolate(p.peerName.ifEmpty { activity.getString(R.string.link_this_device) })) else activity.getString(R.string.link_prompt_title_incoming))
             .setView(ScrollView(activity).apply { addView(body) })
             .setCancelable(false)
             .setPositiveButton(R.string.link_prompt_pair) { _, _ -> finishPrompt(p, true) }

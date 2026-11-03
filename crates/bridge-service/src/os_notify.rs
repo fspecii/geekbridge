@@ -11,7 +11,7 @@
 //! The command lines are built by pure functions for both systems so they are unit-tested on any
 //! host; actually showing a banner is only verified on a real Windows or Mac (docs/platform-status.md).
 use crate::call_control::{CallNotifier, RingChoice};
-use crate::notify_text::plain;
+use crate::notify_text::{banner_safe, isolate};
 use crate::share::Notifier;
 use std::path::Path;
 
@@ -44,8 +44,9 @@ $n=[Windows.UI.Notifications.ToastNotification]::new($x);\
 
 /// The helper command that shows `title` / `body` as a banner on `os`.
 pub fn banner(os: Os, title: &str, body: &str) -> Banner {
-    let title = plain(title, 80);
-    let body = plain(body, 160);
+    // Phone-chosen parts arrive already isolated (see `isolate`); anything else loses its direction controls.
+    let title = banner_safe(title, 80);
+    let body = banner_safe(body, 160);
     match os {
         Os::Windows => Banner {
             program: "powershell.exe",
@@ -124,7 +125,7 @@ impl CallNotifier for BannerNotifier {
     ) {
         show(
             "Incoming call",
-            &format!("{caller}: open GeekBridge Calls to answer"),
+            &format!("{}: open GeekBridge Calls to answer", isolate(caller, 80)),
         );
     }
 }
@@ -138,13 +139,16 @@ impl Notifier for BannerNotifier {
         _reply: Box<dyn FnOnce(bool) + Send>,
     ) {
         show(
-            &format!("{device} wants to send a file"),
-            &format!("{file}: open GeekBridge Share to accept"),
+            &format!("{} wants to send a file", isolate(device, 48)),
+            &format!("{}: open GeekBridge Share to accept", isolate(file, 80)),
         );
     }
     fn received_text(&self, device: &str, is_url: bool) {
         let what = if is_url { "a link" } else { "text" };
-        show(&format!("Received {what}"), &format!("From {device}"));
+        show(
+            &format!("Received {what}"),
+            &format!("From {}", isolate(device, 48)),
+        );
     }
     fn received_file(&self, path: &Path) {
         let name = path
@@ -162,18 +166,18 @@ impl crate::mirror::MirrorNotifier for BannerNotifier {
     ) {
         // No buttons in a plain banner: dismiss and buttons are `geekbridge-ctl notifications`.
         let body = match &b.text {
-            Some(t) if !t.is_empty() => format!("{}: {t}", b.title),
-            _ => format!("On {}", b.device_name),
+            Some(t) if !t.is_empty() => format!("{}: {}", isolate(&b.title, 80), isolate(t, 160)),
+            _ => format!("On {}", isolate(&b.device_name, 48)),
         };
-        show(&b.app, &body);
+        show(&isolate(&b.app, 48), &body);
     }
 }
 
 impl crate::phone_data::SmsNotifier for BannerNotifier {
     fn received(&self, device: &str, sender: &str) {
         show(
-            &format!("New message from {sender}"),
-            &format!("On {device}"),
+            &format!("New message from {}", isolate(sender, 60)),
+            &format!("On {}", isolate(device, 48)),
         );
     }
     fn event_soon(&self, device: &str, title: &str, minutes: u32) {
@@ -183,8 +187,8 @@ impl crate::phone_data::SmsNotifier for BannerNotifier {
             format!("In {minutes} min")
         };
         show(
-            &format!("{when}: {title}"),
-            &format!("Calendar on {device}"),
+            &format!("{when}: {}", isolate(title, 70)),
+            &format!("Calendar on {}", isolate(device, 48)),
         );
     }
 }

@@ -206,7 +206,7 @@ fun UiKit.agendaCard(parent: LinearLayout, dayOfMonth: Int, monthLabel: String, 
         row.addView(TimelineDot(context, i == 0, i == entries.lastIndex), LinearLayout.LayoutParams(dp(20), Ui.MATCH))
         val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
         col.addView(text(e.title, 15f))
-        col.addView(text(e.time + (e.detail?.let { " · $it" } ?: ""), 13f, Tone.Muted))
+        col.addView(text(e.detail?.let { context.getString(R.string.cal_time_detail, e.time, it) } ?: e.time, 13f, Tone.Muted))
         row.addView(col, LinearLayout.LayoutParams(0, Ui.WRAP, 1f).apply { marginStart = dp(10) })
         card.addView(row, LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP))
     }

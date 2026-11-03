@@ -102,9 +102,9 @@ impl Config {
         let mut bytes = bridge_kde::fsutil::read_private_file(&ipc::token_path(dir))
             .map_err(|_| "The phone-link settings couldn't be read securely.".to_owned())?
             .ok_or_else(|| {
-                format!(
-                    "Start the GeekBridge service to set up phone linking. {}",
-                    crate::i18n::tr("doctor.short")
+                crate::i18n::tr_args(
+                    "connection.no_token",
+                    &[("hint", &crate::i18n::tr("doctor.short"))],
                 )
             })?;
         let token =
@@ -123,7 +123,10 @@ impl Config {
 }
 fn service_error(error: ipc::IpcError) -> String {
     match error {
-        ipc::IpcError::Io(_) => format!("Phone linking isn't reachable. Start the GeekBridge service and check its settings. {}", crate::i18n::tr("doctor.short")),
+        ipc::IpcError::Io(_) => crate::i18n::tr_args(
+            "connection.unreachable",
+            &[("hint", &crate::i18n::tr("doctor.short"))],
+        ),
         ipc::IpcError::Unavailable { .. } => "The service can't protect its private settings. Phone linking is unavailable.".into(),
         ipc::IpcError::Unauthorized | ipc::IpcError::Protocol(_) => "The service couldn't be authenticated. Check that both apps use the same phone-link settings.".into(),
         ipc::IpcError::Service(body) => display_text(&body.message),

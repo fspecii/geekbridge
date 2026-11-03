@@ -78,7 +78,7 @@ class ShareNotifications(private val ctx: Context) {
 
     fun offer(t: Transfer) {
         val shown = t.size?.let { ctx.getString(R.string.share_name_size, t.name, ProgressText.bytes(it, ctx.strings)) } ?: t.name
-        val b = builder(ctx.getString(R.string.offer_wants_file, t.peerName.ifEmpty { ctx.getString(R.string.offer_a_computer) }), shown)
+        val b = builder(ctx.getString(R.string.offer_wants_file, Bidi.isolate(t.peerName.ifEmpty { ctx.getString(R.string.offer_a_computer) })), shown)
             .setContentIntent(open()).setAutoCancel(true)
             .addAction(Notification.Action.Builder(null, ctx.getString(R.string.offer_accept), action(ShareActionReceiver.ACTION_ACCEPT, t.id)).build())
             .addAction(Notification.Action.Builder(null, ctx.getString(R.string.offer_decline), action(ShareActionReceiver.ACTION_DECLINE, t.id)).build())

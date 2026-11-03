@@ -94,7 +94,7 @@ pub fn dot_progress(ui: &mut Ui, pal: &Palette, total: usize, lit: usize, on: Co
         WidgetInfo::labeled(
             WidgetType::ProgressIndicator,
             true,
-            format!("{lit} of {total}"),
+            crate::i18n::tr_args("nothing.progress", &[("lit", &lit), ("total", &total)]),
         )
     });
 }

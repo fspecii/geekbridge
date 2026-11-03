@@ -66,7 +66,7 @@ fn launch(name: &str, args: &[String]) -> Result<(), String> {
         .args(args)
         .spawn()
         .map(|_| ())
-        .map_err(|e| format!("Could not start {name}: {e}"))
+        .map_err(|e| crate::i18n::tr_args("home.launch_failed", &[("name", &name), ("error", &e)]))
 }
 
 /// Local, dropped file paths only (a drop of text or a web URL has no path and is ignored).
@@ -174,8 +174,8 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
         }
         return PhoneLine {
             dots: "...",
-            name: "Looking for the service".into(),
-            detail: "Checking the background service".into(),
+            name: crate::i18n::tr("home.looking.title").into(),
+            detail: crate::i18n::tr("home.looking.detail").into(),
             linked: false,
             alert: false,
         };
@@ -195,10 +195,12 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
             .find_map(|l| l.battery);
         PhoneLine {
             dots: "LINKED",
-            name: crate::state::display_text(&name.unwrap_or_else(|| "Phone".into())),
+            name: crate::state::display_text(
+                &name.unwrap_or_else(|| crate::i18n::tr("home.phone_default").into()),
+            ),
             detail: match battery {
                 Some(b) => crate::i18n::tr_args("home.battery.detail", &[("battery", &b.text())]),
-                None => "Connected over your network".into(),
+                None => crate::i18n::tr("home.connected.detail").into(),
             },
             linked,
             alert: false,
@@ -206,8 +208,8 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
     } else if !status.challenges.is_empty() {
         PhoneLine {
             dots: "COMPARE",
-            name: "Pairing code".into(),
-            detail: "Check it matches your phone".into(),
+            name: crate::i18n::tr("home.compare.title").into(),
+            detail: crate::i18n::tr("home.compare.detail").into(),
             linked,
             alert: true,
         }
@@ -216,7 +218,7 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
             dots: "RETRYING",
             name: crate::state::display_text(&name),
             detail: phone_why(state).map_or_else(
-                || "Reconnecting to your phone…".into(),
+                || crate::i18n::tr("home.retrying.detail").into(),
                 crate::why_ui::sentence,
             ),
             linked,
@@ -227,7 +229,7 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
             dots: "OFFLINE",
             name: crate::state::display_text(&name),
             detail: phone_why(state).map_or_else(
-                || "Paired, not reachable right now".into(),
+                || crate::i18n::tr("home.offline.detail").into(),
                 crate::why_ui::sentence,
             ),
             linked,
@@ -236,8 +238,8 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
     } else {
         PhoneLine {
             dots: "NO PHONE",
-            name: "No phone paired".into(),
-            detail: "Click to pair a phone".into(),
+            name: crate::i18n::tr("home.nophone.title").into(),
+            detail: crate::i18n::tr("home.nophone.detail").into(),
             linked,
             alert: false,
         }
@@ -395,7 +397,7 @@ impl HomeApp {
             ui.horizontal(|ui| {
                 theme::dot(ui, pal.accent_fill, false);
                 ui.add(egui::Label::new(theme::semibold(
-                    format!("Updated to {}", notes.version),
+                    crate::i18n::tr_args("home.whatsnew.title", &[("version", &notes.version)]),
                     15.0,
                 )));
             });
@@ -412,17 +414,32 @@ impl HomeApp {
             }
             ui.add_space(S2);
             ui.horizontal_wrapped(|ui| {
-                if theme::pill_button(ui, pal, "Full release notes", ButtonKind::Plain, true)
-                    .clicked()
+                if theme::pill_button(
+                    ui,
+                    pal,
+                    crate::i18n::tr("home.whatsnew.notes"),
+                    ButtonKind::Plain,
+                    true,
+                )
+                .clicked()
                 {
                     let url = bridge_core::whats_new::release_url(&notes.version);
                     if !bridge_core::report::open_in_browser(&url) {
-                        self.notice = Some(format!(
-                            "Could not open the browser. The notes are at {url}"
+                        self.notice = Some(crate::i18n::tr_args(
+                            "home.whatsnew.no_browser",
+                            &[("url", &url)],
                         ));
                     }
                 }
-                if theme::pill_button(ui, pal, "Dismiss", ButtonKind::Primary, true).clicked() {
+                if theme::pill_button(
+                    ui,
+                    pal,
+                    crate::i18n::tr("home.whatsnew.dismiss"),
+                    ButtonKind::Primary,
+                    true,
+                )
+                .clicked()
+                {
                     dismiss = true;
                 }
             });
@@ -562,9 +579,24 @@ impl HomeApp {
                 self.device_card(ui, pal);
                 ui.add_space(S3);
                 for (view, icon, label, key) in [
-                    (View::Home, Icon::Home, "Home", "⌘1"),
-                    (View::Pair, Icon::Phone, "Pair a phone", "⌘2"),
-                    (View::Settings, Icon::Sliders, "Settings", "⌘3"),
+                    (
+                        View::Home,
+                        Icon::Home,
+                        crate::i18n::tr("home.nav.home"),
+                        "⌘1",
+                    ),
+                    (
+                        View::Pair,
+                        Icon::Phone,
+                        crate::i18n::tr("home.nav.pair"),
+                        "⌘2",
+                    ),
+                    (
+                        View::Settings,
+                        Icon::Sliders,
+                        crate::i18n::tr("home.nav.settings"),
+                        "⌘3",
+                    ),
                 ] {
                     let r = theme::sidebar_item(
                         ui,
@@ -576,7 +608,7 @@ impl HomeApp {
                             if cfg!(target_os = "macos") {
                                 "⌘"
                             } else {
-                                "Ctrl+"
+                                crate::i18n::tr("home.shortcut.ctrl")
                             },
                         )),
                         self.view == view,
@@ -587,19 +619,44 @@ impl HomeApp {
                     }
                 }
                 ui.add_space(S3);
-                ui.label(theme::overline(pal, "Open"));
+                ui.label(theme::overline(pal, crate::i18n::tr("home.sidebar.open")));
                 ui.add_space(S1);
                 let mod_key = if cfg!(target_os = "macos") {
                     "⌘"
                 } else {
-                    "Ctrl+"
+                    crate::i18n::tr("home.shortcut.ctrl")
                 };
                 for (kind, icon, label, n) in [
-                    (AppKind::Calls, Icon::Phone, "Calls", 4),
-                    (AppKind::Messages, Icon::Chat, "Messages", 5),
-                    (AppKind::Contacts, Icon::Person, "Contacts", 6),
-                    (AppKind::Agenda, Icon::Calendar, "Calendar", 7),
-                    (AppKind::Clipboard, Icon::Clipboard, "Clipboard", 8),
+                    (
+                        AppKind::Calls,
+                        Icon::Phone,
+                        crate::i18n::tr("home.app.calls"),
+                        4,
+                    ),
+                    (
+                        AppKind::Messages,
+                        Icon::Chat,
+                        crate::i18n::tr("home.app.messages"),
+                        5,
+                    ),
+                    (
+                        AppKind::Contacts,
+                        Icon::Person,
+                        crate::i18n::tr("home.app.contacts"),
+                        6,
+                    ),
+                    (
+                        AppKind::Agenda,
+                        Icon::Calendar,
+                        crate::i18n::tr("home.app.calendar"),
+                        7,
+                    ),
+                    (
+                        AppKind::Clipboard,
+                        Icon::Clipboard,
+                        crate::i18n::tr("home.app.clipboard"),
+                        8,
+                    ),
                 ] {
                     let hint = format!("{mod_key}{n}");
                     if theme::sidebar_item(ui, pal, icon, label, Some(&hint), false, None).clicked()
@@ -608,8 +665,16 @@ impl HomeApp {
                     }
                 }
                 let hint = format!("{mod_key}9");
-                if theme::sidebar_item(ui, pal, Icon::Send, "Share files", Some(&hint), false, None)
-                    .clicked()
+                if theme::sidebar_item(
+                    ui,
+                    pal,
+                    Icon::Send,
+                    crate::i18n::tr("home.app.share"),
+                    Some(&hint),
+                    false,
+                    None,
+                )
+                .clicked()
                 {
                     self.notice = launch("geekbridge-share", &[]).err();
                 }
@@ -621,9 +686,9 @@ impl HomeApp {
                         self.model.service_reachable(),
                         false,
                         if self.model.service_reachable() {
-                            "Background service running"
+                            crate::i18n::tr("home.service.running")
                         } else {
-                            "Background service not running"
+                            crate::i18n::tr("home.service.not_running")
                         },
                     );
                 });
@@ -813,97 +878,173 @@ impl HomeApp {
                 ui.spacing_mut().item_spacing = vec2(GAP, GAP);
                 for t in row {
                     let clicked = match t {
-                        T::Phone => nothing::tile(ui, pal, "Phone link", size, true, |ui| {
-                            Self::tile_body(
-                                ui,
-                                pal,
-                                Icon::Phone,
-                                phone.dots,
-                                phone.alert,
-                                &phone.name,
-                                &phone.detail,
-                            );
-                        })
+                        T::Phone => nothing::tile(
+                            ui,
+                            pal,
+                            crate::i18n::tr("home.tile.phone"),
+                            size,
+                            true,
+                            |ui| {
+                                Self::tile_body(
+                                    ui,
+                                    pal,
+                                    Icon::Phone,
+                                    phone.dots,
+                                    phone.alert,
+                                    &phone.name,
+                                    &phone.detail,
+                                );
+                            },
+                        )
                         .clicked()
                         .then_some(None),
                         T::Calls => {
                             let (dots, alert, title, sub) = match &ringing {
-                                Some((true, who)) => {
-                                    ("RINGING", true, who.clone(), "Incoming call".to_owned())
-                                }
-                                Some((false, who)) => {
-                                    ("IN CALL", false, who.clone(), "Call in progress".to_owned())
-                                }
+                                Some((true, who)) => (
+                                    "RINGING",
+                                    true,
+                                    who.clone(),
+                                    crate::i18n::tr("home.tile.calls.ringing").to_owned(),
+                                ),
+                                Some((false, who)) => (
+                                    "IN CALL",
+                                    false,
+                                    who.clone(),
+                                    crate::i18n::tr("home.tile.calls.in_call").to_owned(),
+                                ),
                                 None if phone.linked => (
                                     "IDLE",
                                     false,
-                                    "Calls".to_owned(),
-                                    "No call right now".to_owned(),
+                                    crate::i18n::tr("home.app.calls").to_owned(),
+                                    crate::i18n::tr("home.tile.calls.none").to_owned(),
                                 ),
                                 None => (
                                     "---",
                                     false,
-                                    "Calls".to_owned(),
-                                    "Needs a linked phone".to_owned(),
+                                    crate::i18n::tr("home.app.calls").to_owned(),
+                                    crate::i18n::tr("home.tile.needs_phone").to_owned(),
                                 ),
                             };
-                            nothing::tile(ui, pal, "Calls", size, true, |ui| {
-                                Self::tile_body(ui, pal, Icon::Phone, dots, alert, &title, &sub);
-                            })
+                            nothing::tile(
+                                ui,
+                                pal,
+                                crate::i18n::tr("home.app.calls"),
+                                size,
+                                true,
+                                |ui| {
+                                    Self::tile_body(
+                                        ui,
+                                        pal,
+                                        Icon::Phone,
+                                        dots,
+                                        alert,
+                                        &title,
+                                        &sub,
+                                    );
+                                },
+                            )
                             .clicked()
                             .then_some(Some(AppKind::Calls))
                         }
                         T::Messages => {
                             let (dots, alert, sub) = match unread {
-                                Some(0) => ("0".to_owned(), false, "No unread messages"),
-                                Some(n) => (n.min(999).to_string(), true, "Unread conversations"),
-                                None => ("---".to_owned(), false, "Needs a linked phone"),
+                                Some(0) => (
+                                    "0".to_owned(),
+                                    false,
+                                    crate::i18n::tr("home.tile.messages.none"),
+                                ),
+                                Some(n) => (
+                                    n.min(999).to_string(),
+                                    true,
+                                    crate::i18n::tr("home.tile.messages.unread"),
+                                ),
+                                None => (
+                                    "---".to_owned(),
+                                    false,
+                                    crate::i18n::tr("home.tile.needs_phone"),
+                                ),
                             };
-                            nothing::tile(ui, pal, "Messages", size, true, |ui| {
-                                Self::tile_body(ui, pal, Icon::Chat, &dots, alert, "Messages", sub);
-                            })
+                            nothing::tile(
+                                ui,
+                                pal,
+                                crate::i18n::tr("home.app.messages"),
+                                size,
+                                true,
+                                |ui| {
+                                    Self::tile_body(
+                                        ui,
+                                        pal,
+                                        Icon::Chat,
+                                        &dots,
+                                        alert,
+                                        crate::i18n::tr("home.app.messages"),
+                                        sub,
+                                    );
+                                },
+                            )
                             .clicked()
                             .then_some(Some(AppKind::Messages))
                         }
                         T::Clipboard => {
-                            let sub = clip_line
-                                .clone()
-                                .unwrap_or_else(|| "Nothing received yet".into());
-                            nothing::tile(ui, pal, "Clipboard", size, true, |ui| {
-                                Self::tile_body(
-                                    ui,
-                                    pal,
-                                    Icon::Clipboard,
-                                    "CLIP",
-                                    false,
-                                    "Clipboard",
-                                    &sub,
-                                );
-                            })
+                            let sub = clip_line.clone().unwrap_or_else(|| {
+                                crate::i18n::tr("home.tile.clipboard.none").into()
+                            });
+                            nothing::tile(
+                                ui,
+                                pal,
+                                crate::i18n::tr("home.app.clipboard"),
+                                size,
+                                true,
+                                |ui| {
+                                    Self::tile_body(
+                                        ui,
+                                        pal,
+                                        Icon::Clipboard,
+                                        "CLIP",
+                                        false,
+                                        crate::i18n::tr("home.app.clipboard"),
+                                        &sub,
+                                    );
+                                },
+                            )
                             .clicked()
                             .then_some(Some(AppKind::Clipboard))
                         }
-                        T::Share => nothing::tile(ui, pal, "Send files", size, true, |ui| {
-                            let (dots, alert) = if hovering {
-                                ("DROP", true)
-                            } else {
-                                ("SEND", false)
-                            };
-                            Self::tile_body(
-                                ui,
-                                pal,
-                                Icon::Send,
-                                dots,
-                                alert,
-                                "Send files",
-                                "Drop files anywhere here",
-                            );
-                        })
+                        T::Share => nothing::tile(
+                            ui,
+                            pal,
+                            crate::i18n::tr("home.tile.share.title"),
+                            size,
+                            true,
+                            |ui| {
+                                let (dots, alert) = if hovering {
+                                    ("DROP", true)
+                                } else {
+                                    ("SEND", false)
+                                };
+                                Self::tile_body(
+                                    ui,
+                                    pal,
+                                    Icon::Send,
+                                    dots,
+                                    alert,
+                                    crate::i18n::tr("home.tile.share.title"),
+                                    crate::i18n::tr("home.tile.share.drop"),
+                                );
+                            },
+                        )
                         .clicked()
                         .then_some(Some(AppKind::Clipboard)),
-                        T::Calendar => nothing::tile(ui, pal, "Calendar", size, true, |ui| {
-                            Self::calendar_tile(ui, pal, &events);
-                        })
+                        T::Calendar => nothing::tile(
+                            ui,
+                            pal,
+                            crate::i18n::tr("home.app.calendar"),
+                            size,
+                            true,
+                            |ui| {
+                                Self::calendar_tile(ui, pal, &events);
+                            },
+                        )
                         .clicked()
                         .then_some(Some(AppKind::Agenda)),
                     };
@@ -933,7 +1074,7 @@ impl HomeApp {
                 .take(2)
                 .map(|e| {
                     let when = if e.all_day {
-                        "All day".to_owned()
+                        crate::i18n::tr("home.tile.calendar.all_day").to_owned()
                     } else {
                         localtime::clock_label_local(e.start_ms)
                     };
@@ -963,13 +1104,28 @@ impl HomeApp {
             });
         });
         ui.add_space(S2);
-        ui.add(egui::Label::new(theme::semibold("Calendar", 15.0)).truncate());
+        ui.add(
+            egui::Label::new(theme::semibold(crate::i18n::tr("home.app.calendar"), 15.0))
+                .truncate(),
+        );
         match events {
             None => {
-                ui.add(egui::Label::new(theme::caption(pal, "Needs a linked phone")).truncate());
+                ui.add(
+                    egui::Label::new(theme::caption(
+                        pal,
+                        crate::i18n::tr("home.tile.needs_phone"),
+                    ))
+                    .truncate(),
+                );
             }
             Some(list) if list.is_empty() => {
-                ui.add(egui::Label::new(theme::caption(pal, "Nothing coming up")).truncate());
+                ui.add(
+                    egui::Label::new(theme::caption(
+                        pal,
+                        crate::i18n::tr("home.tile.calendar.none"),
+                    ))
+                    .truncate(),
+                );
             }
             Some(list) => {
                 for (i, (when, title)) in list.iter().enumerate() {
@@ -1028,11 +1184,11 @@ impl HomeApp {
     fn settings_view(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         let ctx = ui.ctx().clone();
         self.header(ui, pal, "SETTINGS");
-        nothing::section(ui, pal, "This computer");
+        nothing::section(ui, pal, crate::i18n::tr("home.section.computer"));
         nothing::card(ui, pal, |ui| self.connections.name_row(ui, pal));
-        nothing::section(ui, pal, "Updates");
+        nothing::section(ui, pal, crate::i18n::tr("home.section.updates"));
         nothing::card(ui, pal, |ui| self.updates.details(ui, pal));
-        nothing::section(ui, pal, "Clipboard");
+        nothing::section(ui, pal, crate::i18n::tr("home.app.clipboard"));
         nothing::card(ui, pal, |ui| {
             sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
         });
@@ -1057,14 +1213,14 @@ impl HomeApp {
                 }
             });
         }
-        nothing::section(ui, pal, "Diagnostics");
+        nothing::section(ui, pal, crate::i18n::tr("home.section.diagnostics"));
         nothing::card(ui, pal, |ui| {
             ui.horizontal_wrapped(|ui| {
                 let busy = self.diagnostics.is_some();
                 let label = if busy {
-                    "Collecting…"
+                    crate::i18n::tr("home.diag.collecting")
                 } else {
-                    "Copy diagnostics"
+                    crate::i18n::tr("home.diag.copy")
                 };
                 if theme::pill_button(ui, pal, label, ButtonKind::Plain, !busy).clicked() {
                     self.diagnostics_for_report = false;
@@ -1072,24 +1228,19 @@ impl HomeApp {
                 }
             });
             ui.add(
-                egui::Label::new(theme::caption(
-                    pal,
-                    "Copies a support report with no names, addresses, keys or content, ready to paste into a bug report.",
-                ))
-                .wrap(),
+                egui::Label::new(theme::caption(pal, crate::i18n::tr("home.diag.caption"))).wrap(),
             );
             ui.add_space(S1);
             ui.add(
                 egui::Label::new(theme::caption(
                     pal,
-                    format!(
-                        "Background service on port {}: {}",
-                        self.api_port,
+                    crate::i18n::tr_args(
                         if self.model.service_reachable() {
-                            "running"
+                            "home.diag.service_running"
                         } else {
-                            "not running (it starts at login; see the user guide)"
-                        }
+                            "home.diag.service_stopped"
+                        },
+                        &[("port", &self.api_port)],
                     ),
                 ))
                 .wrap(),
@@ -1111,7 +1262,7 @@ impl eframe::App for HomeApp {
 impl HomeApp {
     /// One frame of the window. Separate from `eframe::App::update` so tests can drive it.
     pub fn frame(&mut self, ctx: &egui::Context) {
-        crate::a11y::window_title(ctx, "GeekBridge");
+        crate::a11y::window_title(ctx, "GeekBridge"); // i18n-ok: product name
         if let Some(model) = self.poller.latest() {
             self.model = model;
         }
@@ -1131,17 +1282,17 @@ impl HomeApp {
                 }
                 Ok(text) => {
                     ctx.copy_text(text);
-                    Some("Diagnostics copied. Paste them where you ask for help.".to_owned())
+                    Some(crate::i18n::tr("home.diag.copied").to_owned())
                 }
                 // A stopped service is worth reporting too: the report says so.
                 Err(e) if for_report => {
                     self.report = Some(ReportPanel::new(&format!(
-                        "GeekBridge support report (redacted)\nservice not reachable: {}\n",
+                        "GeekBridge support report (redacted)\nservice not reachable: {}\n", // i18n-ok: bug-report text stays English
                         crate::state::display_text(&e)
                     )));
                     None
                 }
-                Err(e) => Some(format!("Could not collect diagnostics: {e}")),
+                Err(e) => Some(crate::i18n::tr_args("home.diag.failed", &[("error", &e)])),
             };
         }
         // A hidden window does no periodic work at all: it wakes only when a worker reports news.
@@ -1216,7 +1367,7 @@ fn startup_whats_new() -> Option<bridge_core::whats_new::Notes> {
 pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("GeekBridge")
+            .with_title("GeekBridge") // i18n-ok: product name
             .with_app_id("dev.geekbridge.GeekBridge")
             .with_inner_size([960.0, 680.0])
             .with_min_inner_size([560.0, 520.0])
@@ -1227,7 +1378,7 @@ pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
     #[cfg(feature = "memstats")]
     crate::memstats::start();
     eframe::run_native(
-        "GeekBridge",
+        "GeekBridge", // i18n-ok: product name
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx, LOOK);

@@ -277,6 +277,7 @@ pub struct NotifySendMirror;
 impl NotifySendMirror {
     pub fn args(b: &MirrorBanner) -> Vec<String> {
         let clean = |s: &str, max: usize| crate::notify_text::plain(s, max);
+        let isolate = |s: &str, max: usize| crate::notify_text::isolate(s, max);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
             "--expire-time=10000".into(),
@@ -308,9 +309,10 @@ impl NotifySendMirror {
         args.push("--".into());
         args.push(clean(&b.app, 48));
         let body = match &b.text {
-            Some(t) if !t.is_empty() => format!("{}: {}", clean(&b.title, 80), clean(t, 160)),
+            // Each phone-chosen piece is isolated so an Arabic or Hebrew title cannot reorder the colon and text.
+            Some(t) if !t.is_empty() => format!("{}: {}", isolate(&b.title, 80), isolate(t, 160)),
             Some(_) => clean(&b.title, 160),
-            None => format!("New notification on {}", clean(&b.device_name, 48)),
+            None => format!("New notification on {}", isolate(&b.device_name, 48)),
         };
         args.push(body);
         args

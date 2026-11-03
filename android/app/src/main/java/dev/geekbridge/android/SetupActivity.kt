@@ -290,7 +290,7 @@ class SetupActivity : Activity() {
             panel.addView(kit.text(getString(R.string.setup_oem_title, oem.label), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
             panel.addView(kit.text(getString(R.string.setup_oem_intro), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
             (OemGuides.stepsRes(oem)?.let { resources.getStringArray(it).toList() } ?: emptyList()).forEachIndexed { i, line ->
-                panel.addView(kit.text("${i + 1}.  $line", 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
+                panel.addView(kit.text(getString(R.string.list_numbered, i + 1, line), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
             }
             kit.button(panel, getString(R.string.setup_oem_open, oem.label.substringBefore(' ')), BtnStyle.Tonal) {
                 if (PowerChecks.openOemSettings(this, oem) == LaunchResult.OpenedFallback && oem.hasExtraSwitch) {

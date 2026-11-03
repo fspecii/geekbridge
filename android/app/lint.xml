@@ -22,6 +22,20 @@
     <!-- "%d x" strings that are not plurals yet are real candidates once a language needs a second form; the check stays
          on as a warning and counts are written as <plurals>. -->
     <issue id="PluralsCandidate" severity="warning" />
+    <!-- Right-to-left (ar-XB pseudo-locale, and real Arabic / Hebrew later): left/right attributes do not mirror,
+         start/end do. The layouts are built in Kotlin with setPaddingRelative / marginStart; these catch the rest. -->
+    <issue id="RtlHardcoded" severity="error" />
+    <issue id="RtlSymmetry" severity="error" />
+    <issue id="RtlEnabled" severity="error" />
+    <!-- Translation completeness. A partial translation is fine (Android falls back to English), so a missing one is a
+         warning; the default language must be complete, and a stale or malformed translation fails the build. -->
+    <issue id="MissingTranslation" severity="warning" />
+    <issue id="MissingDefaultResource" severity="error" />
+    <issue id="ExtraTranslation" severity="error" />
+    <issue id="StringFormatInvalid" severity="error" />
+    <issue id="StringFormatMatches" severity="error" />
+    <issue id="StringFormatCount" severity="error" />
+    <issue id="ImpliedQuantity" severity="error" />
     <!-- DotKit draws a handful of points per frame into two short lists; the allocation is dwarfed by the canvas
          work and the view only redraws on state changes, never in a continuous animation. -->
     <issue id="DrawAllocation">

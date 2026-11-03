@@ -190,6 +190,7 @@ object CallControlRuntime {
             settings = { settings },
             lookup = AndroidContactLookup(a),
             sdk = Build.VERSION.SDK_INT,
+            strings = ResStrings(a.resources),
             prompts = AndroidDialPrompts(a),
         )
     }

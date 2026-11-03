@@ -297,7 +297,7 @@ class HomeActivity : Activity() {
             if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
         })
         for (line in notes.highlights) {
-            card.addView(kit.text("•  $line", 14f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
+            card.addView(kit.text(getString(R.string.list_bullet, line), 14f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
         }
         kit.button(card, getString(R.string.whatsnew_full_notes), BtnStyle.Tonal) {
             val url = WhatsNewModel.releaseUrl(BuildConfig.RELEASE_REPO, notes.version)

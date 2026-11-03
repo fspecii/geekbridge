@@ -40,7 +40,7 @@ object PhoneDataUi {
         fun feature(icon: Int, title: Int, sub: Int, enabled: Boolean, perms: Array<String>, grant: GrantFeature, set: (Boolean) -> Unit) {
             val ok = granted(a, perms)
             kit.row(
-                parent, icon, a.getString(title), a.getString(sub) + "\n" + state(enabled, ok, a.strings),
+                parent, icon, a.getString(title), a.getString(R.string.pd_sub_with_state, a.getString(sub), state(enabled, ok, a.strings)),
                 kit.toggle(enabled) { on ->
                     set(on)
                     GrantsUi.switched(a, grant, on, rerender)
@@ -73,8 +73,11 @@ object PhoneDataUi {
         feature(R.drawable.ic_calendar, R.string.pd_calendar, R.string.pd_calendar_sub, s.calendar, calendarPerms, GrantFeature.Calendar, PhoneDataRuntime::setCalendar)
         if (s.calendar && granted(a, calendarPerms)) {
             val n = s.calendarIds.size
-            kit.button(parent, a.getString(R.string.pd_calendar_pick) + " · " +
-                (if (n == 0) a.getString(R.string.pd_calendar_none) else a.resources.getQuantityString(R.plurals.pd_calendar_shared_count, n, n)), BtnStyle.Tonal) {
+            kit.button(parent, a.getString(
+                R.string.pd_pick_with_state,
+                a.getString(R.string.pd_calendar_pick),
+                if (n == 0) a.getString(R.string.pd_calendar_none) else a.resources.getQuantityString(R.plurals.pd_calendar_shared_count, n, n),
+            ), BtnStyle.Tonal) {
                 pickCalendars(a, rerender)
             }
             separator(kit, parent)
@@ -144,8 +147,11 @@ object PhoneDataUi {
         val n = s.notificationApps.size
         kit.button(
             parent,
-            a.getString(R.string.mirror_pick_apps) + " · " +
-                (if (n == 0) a.getString(R.string.mirror_apps_none) else a.resources.getQuantityString(R.plurals.mirror_apps_count, n, n)),
+            a.getString(
+                R.string.pd_pick_with_state,
+                a.getString(R.string.mirror_pick_apps),
+                if (n == 0) a.getString(R.string.mirror_apps_none) else a.resources.getQuantityString(R.plurals.mirror_apps_count, n, n),
+            ),
             BtnStyle.Tonal,
         ) { pickApps(a, rerender) }
         GrantsUi.add(a, kit, parent, GrantFeature.Notifications, rerender)

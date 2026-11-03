@@ -6,16 +6,9 @@ apps/clipboard.rs 26
 apps/contacts.rs 28
 apps/messages.rs 82
 calendar_model.rs 12
-call_feed.rs 2
 call_ui.rs 22
 clipboard_link.rs 41
-connection.rs 66
-dot_calendar.rs 1
-home_app.rs 68
-identity.rs 6
-nothing.rs 1
+connection.rs 64
 pair_ui.rs 19
-phone_feed.rs 6
-prefill.rs 1
 share_app.rs 72
 state.rs 35

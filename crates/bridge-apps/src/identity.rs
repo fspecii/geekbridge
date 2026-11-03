@@ -25,7 +25,7 @@ pub fn app_id(app: AppKind) -> &'static str {
 }
 
 pub fn window_title(app: AppKind) -> String {
-    format!("GeekBridge {}", app.name())
+    format!("GeekBridge {}", app.name()) // i18n-ok: product name
 }
 
 pub fn initial_size(app: AppKind) -> [f32; 2] {
@@ -63,13 +63,11 @@ pub fn feature_label(app: AppKind) -> Option<&'static str> {
 /// What already works in this app without a phone, shown in the connection details.
 pub fn works_without_phone(app: AppKind) -> &'static str {
     match app {
-        AppKind::Calls => "You can type a number and copy it. Calling needs a connected phone.",
-        AppKind::Messages => "You can write a draft and copy it. Sending needs a connected phone.",
-        AppKind::Agenda => "You can browse dates here. Events need a connected phone.",
-        AppKind::Contacts => "Contacts need a connected phone.",
-        AppKind::Clipboard => {
-            "You can type or paste text and copy it. Sending needs a connected phone."
-        }
+        AppKind::Calls => crate::i18n::tr("identity.offline.calls"),
+        AppKind::Messages => crate::i18n::tr("identity.offline.messages"),
+        AppKind::Agenda => crate::i18n::tr("identity.offline.agenda"),
+        AppKind::Contacts => crate::i18n::tr("identity.offline.contacts"),
+        AppKind::Clipboard => crate::i18n::tr("identity.offline.clipboard"),
     }
 }
 
