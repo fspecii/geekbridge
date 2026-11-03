@@ -219,7 +219,10 @@ notification_case() { # name number action expected-modem-state
 stage_notify() {
   [[ -n "${CI:-}" ]] && { notify-send --version; notify-send --help 2>&1 | grep -i action
     gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
-      --method org.freedesktop.Notifications.GetCapabilities; } >"$RUN/notify-diag.log" 2>&1
+      --method org.freedesktop.Notifications.GetCapabilities
+    : >"$NOTIFY_BUS_LOG"; timeout 4 notify-send --app-name=Diag --wait --action=a=Alpha --action=b=Beta -- "diag title" "diag body"
+    echo "notify-send rc=$?"; sleep 1; tr -s ' \n' ' ' <"$NOTIFY_BUS_LOG" | head -c 900; echo; sway_env makoctl dismiss -a
+    echo "pids: $(pgrep -a 'mako|dunst' | tr '\n' ';')"; } >"$RUN/notify-diag.log" 2>&1
   # Answer/Decline buttons need libnotify's notify-send --action (>= 0.8.4 in practice); Ubuntu 24.04's build (the CI runner) sends the
   # notification without actions, so the action round trip cannot be tested there. Say so instead of failing.
   if [[ -n "${CI:-}" ]] && ! notify-send --help 2>&1 | grep -q -- '--action'; then
