@@ -148,7 +148,6 @@ fn connect(d: &Dispatcher, desk: &Desk) {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn a_blackholed_bound_dial_is_retried_unbound_within_the_budget_and_not_tried_again() {
     let _g = bindhealth::test_lock();
@@ -222,7 +221,6 @@ fn a_blackholed_bound_dial_is_retried_unbound_within_the_budget_and_not_tried_ag
     bindhealth::clear();
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn switched_off_nothing_is_ever_bound() {
     let _g = bindhealth::test_lock();
