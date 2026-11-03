@@ -1125,8 +1125,8 @@ async fn only_negotiated_packets_are_accepted_and_no_content_is_retained() {
     let rig = Rig::start().await;
     // The phone offers far more than the service ever declared.
     let phone = Phone::new(
-        &["kdeconnect.ping", "kdeconnect.notification.request"],
-        &["kdeconnect.ping", "kdeconnect.notification"],
+        &["kdeconnect.ping", "kdeconnect.mpris.request"],
+        &["kdeconnect.ping", "kdeconnect.mpris"],
     );
     let mut phone_link = pair_phone(&rig, &phone).await;
     let status = rig.status().await;
@@ -1282,6 +1282,7 @@ async fn consent_defaults_off_needs_a_pairing_and_ping_needs_no_consent() {
                     | Feature::CalendarAlerts
                     | Feature::Debug
                     | Feature::Battery
+                    | Feature::Notifications
             )));
 
     rig.ok(Request::SetConsent {

@@ -267,11 +267,12 @@ async fn menu_layout_and_clicks() {
     let menu = menu_proxy(&client, &sni.bus_name).await;
 
     let (rev, rows) = layout(&menu).await;
-    assert_eq!(rows.len(), 15);
-    assert_eq!(
-        rows.iter().map(|r| r.id).collect::<Vec<_>>(),
-        (1..=15).collect::<Vec<_>>()
-    );
+    assert_eq!(rows.len(), 16);
+    // The notifications toggle (id 16) sits after "Pause sync" and is hidden until a phone offers mirroring.
+    let mut expected: Vec<i32> = (1..=12).collect();
+    expected.extend([16, 13, 14, 15]);
+    assert_eq!(rows.iter().map(|r| r.id).collect::<Vec<_>>(), expected);
+    assert!(!rows.iter().find(|r| r.id == 16).unwrap().visible);
     let labels: Vec<_> = rows
         .iter()
         .filter(|r| !r.separator && r.visible)

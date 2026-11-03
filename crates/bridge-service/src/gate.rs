@@ -30,6 +30,10 @@ pub use bridge_kde::sms::{
 
 pub use bridge_core::battery_link::{BATTERY, REQUEST as BATTERY_REQUEST};
 
+pub use bridge_core::notification_link::{
+    ACTION as NOTIFICATION_ACTION, NOTIFICATION, REQUEST as NOTIFICATION_REQUEST,
+};
+
 pub use bridge_core::debug_link::{
     LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
 };
@@ -38,9 +42,10 @@ pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 17] = [
+pub const LOCAL_INCOMING: [&str; 18] = [
     PING,
     BATTERY,
+    NOTIFICATION,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_ITEM,
@@ -57,9 +62,11 @@ pub const LOCAL_INCOMING: [&str; 17] = [
     DEBUG_LOG,
     DEBUG_STATE,
 ];
-pub const LOCAL_OUTGOING: [&str; 16] = [
+pub const LOCAL_OUTGOING: [&str; 18] = [
     PING,
     BATTERY_REQUEST,
+    NOTIFICATION_REQUEST,
+    NOTIFICATION_ACTION,
     CLIPBOARD,
     CLIPBOARD_CONNECT,
     CLIPBOARD_PULL,
@@ -142,6 +149,7 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::CalendarAlerts
             | Feature::Debug
             | Feature::Battery
+            | Feature::Notifications
     )
 }
 
@@ -161,6 +169,9 @@ pub enum Incoming {
     /// A `kdeconnect.battery` packet from the phone. Acted on only for a paired device whose `battery`
     /// consent is on; otherwise dropped unread (stock phones send it unasked).
     Battery,
+    /// A `kdeconnect.notification` packet from the phone. Acted on only for a paired device whose
+    /// `notifications` consent is on; otherwise dropped unread (stock phones send it unasked).
+    Notification,
     Reject,
 }
 
@@ -185,6 +196,8 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::PhoneData
     } else if kind == BATTERY && negotiated.iter().any(|k| k == kind) {
         Incoming::Battery
+    } else if kind == NOTIFICATION && negotiated.iter().any(|k| k == kind) {
+        Incoming::Notification
     } else if matches!(kind, DEBUG_LOG | DEBUG_STATE) && negotiated.iter().any(|k| k == kind) {
         Incoming::Debug
     } else {
@@ -237,14 +250,14 @@ mod tests {
     #[test]
     fn only_declared_and_advertised_types_are_negotiated() {
         let p = peer(
-            &["kdeconnect.ping", "kdeconnect.notification.request"],
+            &["kdeconnect.ping", "kdeconnect.mpris.request"],
             &[
                 "kdeconnect.ping",
-                "kdeconnect.notification",
+                "kdeconnect.mpris",
                 "kdeconnect.contacts.response_uids_timestamps",
             ],
         );
-        // Only the intersection with what this build declares: the notification packets are not ours.
+        // Only the intersection with what this build declares: the mpris packets are not ours.
         assert_eq!(
             negotiated_incoming(&p),
             vec![PING.to_string(), CONTACTS_UIDS.to_string()]
@@ -383,6 +396,49 @@ mod tests {
         // Not declared by the phone: neither direction opens.
         assert_eq!(
             classify_incoming(BATTERY, &[PING.to_owned()]),
+            Incoming::Reject
+        );
+    }
+
+    #[test]
+    fn notification_packets_are_negotiated_with_stock_names_and_reply_is_not_offered() {
+        let phone = peer(
+            &[
+                NOTIFICATION_REQUEST,
+                NOTIFICATION_ACTION,
+                "kdeconnect.notification.reply",
+            ],
+            &[NOTIFICATION],
+        );
+        assert_eq!(negotiated_incoming(&phone), [NOTIFICATION]);
+        assert_eq!(
+            negotiated_outgoing(&phone),
+            [NOTIFICATION_REQUEST, NOTIFICATION_ACTION]
+        );
+        assert_eq!(
+            classify_incoming(NOTIFICATION, &negotiated_incoming(&phone)),
+            Incoming::Notification
+        );
+        for k in [NOTIFICATION_REQUEST, NOTIFICATION_ACTION] {
+            assert_eq!(
+                check_outgoing(k, &negotiated_outgoing(&phone), |_| false),
+                Outgoing::ConsentRequired(Feature::Notifications)
+            );
+            assert_eq!(
+                check_outgoing(k, &negotiated_outgoing(&phone), |_| true),
+                Outgoing::Allowed
+            );
+        }
+        assert_eq!(
+            check_outgoing(
+                "kdeconnect.notification.reply",
+                &negotiated_outgoing(&phone),
+                |_| true
+            ),
+            Outgoing::NotNegotiated
+        );
+        assert_eq!(
+            classify_incoming(NOTIFICATION, &[PING.to_owned()]),
             Incoming::Reject
         );
     }

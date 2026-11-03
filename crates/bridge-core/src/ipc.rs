@@ -380,6 +380,24 @@ pub enum Request {
     PhoneDebugState {
         device_id: String,
     },
+    /// Mirrored phone notifications currently held (memory only), newest first. Carries titles and
+    /// texts from the phone, so it is only served on this authenticated control channel.
+    Notifications {
+        #[serde(default)]
+        device_id: Option<String>,
+    },
+    /// Dismiss one mirrored notification: removed here and, when the phone allows it, cancelled there.
+    /// Needs the `notifications` consent.
+    DismissNotification {
+        device_id: String,
+        id: String,
+    },
+    /// Press a button of a mirrored notification on the phone (`action` is one of its listed titles).
+    NotificationAction {
+        device_id: String,
+        id: String,
+        action: String,
+    },
     /// Read-only probe of the host's Bluetooth calling backend (counts only, no numbers).
     CallingStatus,
     /// The merged call view: ringing and live calls with caller, the controls that really exist
@@ -600,6 +618,29 @@ pub struct LinkStatus {
     /// Memory only; gone with the link.
     #[serde(default)]
     pub battery: Option<BatteryStatus>,
+}
+
+/// One mirrored phone notification.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationItem {
+    pub device_id: String,
+    pub device_name: String,
+    pub id: String,
+    pub app: String,
+    pub title: String,
+    pub text: String,
+    pub time_ms: Option<u64>,
+    pub clearable: bool,
+    pub actions: Vec<String>,
+}
+
+/// Answer to [`Request::Notifications`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationsView {
+    /// Newest first.
+    pub items: Vec<NotificationItem>,
+    /// Paired phones whose `notifications` consent is on.
+    pub enabled_devices: Vec<String>,
 }
 
 /// A phone's battery as last reported.
@@ -972,6 +1013,7 @@ pub enum Response {
         text: String,
     },
     Calls(Box<CallsStatus>),
+    Notifications(Box<NotificationsView>),
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
     Share(Box<ShareStatus>),

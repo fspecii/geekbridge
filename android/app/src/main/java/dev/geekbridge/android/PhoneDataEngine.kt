@@ -138,6 +138,8 @@ class PhoneDataEngine(
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
     /** Answers a computer's `kdeconnect.battery.request`; null = the phone has no battery reporting. */
     private val battery: BatteryReporter? = null,
+    /** Answers a computer's notification requests and button presses; null = no mirroring on this phone. */
+    private val mirror: NotificationMirror? = null,
 ) {
     // calendar sync state for the current link
     private var calToken: String? = null
@@ -193,6 +195,16 @@ class PhoneDataEngine(
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
             PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
             PhoneDataKinds.BATTERY_REQ -> if (f.battery) battery?.sendNow(e.connectionId)
+            PhoneDataKinds.NOTIFICATION_REQ -> if (f.notifications) mirror?.let { m ->
+                when (val ask = MirrorRules.parseRequest(e.body)) {
+                    is MirrorRules.Ask.All -> m.sendAll(e.connectionId)
+                    is MirrorRules.Ask.Dismiss -> m.onDismiss(ask.id)
+                    null -> {}
+                }
+            }
+            PhoneDataKinds.NOTIFICATION_ACTION -> if (f.notifications) mirror?.let { m ->
+                MirrorRules.parseAction(e.body)?.let { (id, title) -> m.onAction(id, title) }
+            }
             else -> if (e.kind.startsWith("geekbridge.debug.")) DebugHooks.onDataEvent?.invoke(e)
         }
     }

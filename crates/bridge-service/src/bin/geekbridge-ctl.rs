@@ -27,6 +27,11 @@ Commands:
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
   consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony, debug, battery
+  notifications [DEVICE_ID] [--json]  phone notifications mirrored here (needs `consent ID notifications on`; prints
+                                      personal data; memory only, newest first)
+  notifications dismiss DEVICE_ID ID  dismiss one here and on the phone
+  notifications action DEVICE_ID ID TITLE
+                                      press the phone notification's button titled TITLE
   phone-log DEVICE_ID [-f] [-n N]     last N (default 200) lines of a debug-build phone's log; -f follows
   phone-state DEVICE_ID               ask a debug-build phone for its redacted state dump and print it
   ping DEVICE_ID                      interoperability check on a paired link
@@ -180,6 +185,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "phone-log" {
         return phone_log_command(&args[1..], &state_dir);
+    }
+    if command == "notifications" {
+        return notifications_command(&args[1..], port, &state_dir);
     }
     if command == "phone-state" {
         return phone_state_command(&args[1..], port, &state_dir);
@@ -1156,6 +1164,96 @@ fn phone_log_command(args: &[OsString], state_dir: &std::path::Path) -> Result<(
             pos += chunk.len() as u64;
             let _ = out.write_all(String::from_utf8_lossy(&chunk).as_bytes());
             let _ = out.flush();
+        }
+    }
+}
+
+fn notifications_command(
+    args: &[OsString],
+    port: u16,
+    state_dir: &std::path::Path,
+) -> Result<(), String> {
+    let words: Vec<String> = args
+        .iter()
+        .map(|a| {
+            a.to_str()
+                .map(str::to_owned)
+                .ok_or("arguments must be text")
+        })
+        .collect::<Result<_, _>>()?;
+    let token = load_token(state_dir)?;
+    let send = |request: Request| match ipc::call(port, &token, &request) {
+        Ok(Response::Error(e)) => Err(e.message),
+        Ok(r) => Ok(r),
+        Err(IpcError::Service(e)) => Err(e.message),
+        Err(e) => Err(e.to_string()),
+    };
+    match words.first().map(String::as_str) {
+        Some("dismiss") => {
+            let (Some(device_id), Some(id)) = (words.get(1), words.get(2)) else {
+                return Err("usage: notifications dismiss DEVICE_ID ID".into());
+            };
+            send(Request::DismissNotification {
+                device_id: device_id.clone(),
+                id: id.clone(),
+            })?;
+            println!("dismissed");
+            Ok(())
+        }
+        Some("action") => {
+            let (Some(device_id), Some(id), Some(action)) =
+                (words.get(1), words.get(2), words.get(3))
+            else {
+                return Err("usage: notifications action DEVICE_ID ID TITLE".into());
+            };
+            send(Request::NotificationAction {
+                device_id: device_id.clone(),
+                id: id.clone(),
+                action: action.clone(),
+            })?;
+            println!("sent");
+            Ok(())
+        }
+        _ => {
+            let json = words.iter().any(|w| w == "--json");
+            let device_id = words.iter().find(|w| !w.starts_with("--")).cloned();
+            let Response::Notifications(view) = send(Request::Notifications { device_id })? else {
+                return Err("unexpected reply from the service".into());
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&*view).map_err(|e| e.to_string())?
+                );
+                return Ok(());
+            }
+            if view.enabled_devices.is_empty() {
+                eprintln!(
+                    "mirroring is off for every connected phone: geekbridge-ctl consent DEVICE_ID notifications on"
+                );
+            }
+            for n in &view.items {
+                println!(
+                    "{}  {}  [{}] {}: {}{}",
+                    n.device_id,
+                    n.id,
+                    n.device_name,
+                    n.app,
+                    n.title,
+                    if n.text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" - {}", n.text)
+                    },
+                );
+                if !n.actions.is_empty() {
+                    println!("    buttons: {}", n.actions.join(" | "));
+                }
+            }
+            if view.items.is_empty() {
+                println!("no mirrored notifications");
+            }
+            Ok(())
         }
     }
 }

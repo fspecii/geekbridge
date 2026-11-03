@@ -3,7 +3,7 @@
 //! output bounded, and asserts the property its sanitiser promises (no control characters, no path
 //! separators, ...). A violated property is a panic whose message starts with `ORACLE`.
 
-use bridge_core::{calls_link, clipboard_wire, ipc, phone_link};
+use bridge_core::{calls_link, clipboard_wire, ipc, notification_link, phone_link};
 use bridge_kde::{
     Identity, Packet,
     identity::{self, DeviceId},
@@ -498,6 +498,50 @@ fn calls_wire(input: &[u8]) {
     let _ = calls_link::parse_result(&body);
 }
 
+fn notification_wire(input: &[u8]) {
+    let (_, body) = kind_and_body(
+        input,
+        &[
+            "kdeconnect.notification",
+            "kdeconnect.notification.request",
+            "kdeconnect.notification.action",
+        ],
+    );
+    if let Ok(notification_link::Event::Post(n)) = notification_link::parse(&body) {
+        // Whatever the phone sent, what is kept is bounded and free of control characters.
+        for (s, max) in [
+            (&n.id, notification_link::MAX_ID),
+            (&n.app, notification_link::MAX_APP),
+            (&n.title, notification_link::MAX_TITLE),
+            (&n.text, notification_link::MAX_TEXT),
+        ] {
+            oracle(s.chars().count() <= max, || {
+                "notification text over its cap".into()
+            });
+            oracle(!s.chars().any(char::is_control), || {
+                "control character in notification text".into()
+            });
+        }
+        oracle(n.actions.len() <= notification_link::MAX_ACTIONS, || {
+            "too many notification actions".into()
+        });
+    }
+    let _ = notification_link::parse_request(&body);
+}
+
+fn notification_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"type":"kdeconnect.notification","body":{"id":"0|com.x|1|null|10001","appName":"Chat","title":"Ada","text":"hi","ticker":"Ada: hi","time":"1700000000000","isClearable":true,"silent":false,"onlyOnce":false,"actions":["Mark as read"],"requestReplyId":"r1","payloadHash":"ff"}}"#,
+        r#"{"type":"kdeconnect.notification","body":{"id":"n1","isCancel":true}}"#,
+        r#"{"type":"kdeconnect.notification.request","body":{"request":true}}"#,
+        r#"{"type":"kdeconnect.notification.request","body":{"cancel":"n1"}}"#,
+        r#"{"type":"kdeconnect.notification.action","body":{"key":"n1","action":"Archive"}}"#,
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
 fn clipboard_parse(input: &[u8]) {
     let (kind, body) = kind_and_body(
         input,
@@ -706,6 +750,8 @@ fn hub_phone_data(input: &[u8]) {
         sms_send: true,
         sms_status: true,
         battery_request: true,
+        notification_request: true,
+        notification_action: true,
     };
     let (_rx, gen_) = hub.link_up(
         "0123456789abcdef0123456789abcdef",
@@ -1251,6 +1297,17 @@ pub static TARGETS: &[Target] = &[
         ],
         &["geekbridge.calls"],
         none
+    ),
+    t!(
+        "notification_wire",
+        notification_wire,
+        &[
+            "kdeconnect.notification",
+            "kdeconnect.notification.request",
+            "kdeconnect.notification.action"
+        ],
+        &["kdeconnect.notification"],
+        notification_seeds
     ),
     t!(
         "clipboard",

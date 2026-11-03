@@ -45,6 +45,15 @@ pub fn capabilities_with_battery() -> (Vec<String>, Vec<String>) {
     (i, o)
 }
 
+/// Capabilities of a phone whose user also switched on notification mirroring (stock names, no reply).
+pub fn capabilities_with_notifications() -> (Vec<String>, Vec<String>) {
+    let (mut i, mut o) = capabilities();
+    i.push(bridge_core::notification_link::REQUEST.to_owned());
+    i.push(bridge_core::notification_link::ACTION.to_owned());
+    o.push(bridge_core::notification_link::NOTIFICATION.to_owned());
+    (i, o)
+}
+
 /// Capabilities of a phone whose user did not enable calendar editing (the default in the app).
 pub fn capabilities_read_only() -> (Vec<String>, Vec<String>) {
     let (mut i, mut o) = capabilities();

@@ -61,6 +61,10 @@ pub struct TrayInput {
     pub why: Option<bridge_core::why_disconnected::WhyDisconnected>,
     /// Battery of the first connected phone that reports one (its `battery` consent is on).
     pub battery: Option<bridge_core::ipc::BatteryStatus>,
+    /// A connected phone offers notification mirroring (declared the stock packet), so the toggle can work.
+    pub mirror_available: bool,
+    /// Mirroring is on for at least one connected phone.
+    pub mirror_on: bool,
 }
 
 impl TrayInput {
@@ -156,6 +160,7 @@ pub enum TrayAction {
     Answer,
     Decline,
     TogglePause,
+    ToggleMirror,
     CheckUpdates,
     Quit,
 }
@@ -269,6 +274,17 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
             },
             input.paused || input.can_paste,
             true,
+        ),
+        MenuItem::action(
+            16,
+            TrayAction::ToggleMirror,
+            if input.mirror_on {
+                "Stop showing phone notifications"
+            } else {
+                "Show phone notifications"
+            },
+            input.mirror_on || input.mirror_available,
+            input.mirror_on || input.mirror_available,
         ),
         MenuItem::action(
             13,
@@ -415,7 +431,9 @@ mod tests {
             ..phone()
         });
         assert_eq!(a, b);
-        assert_eq!(a, (1..=15).collect::<Vec<_>>());
+        let mut expected: Vec<i32> = (1..=12).collect();
+        expected.extend([16, 13, 14, 15]);
+        assert_eq!(a, expected);
     }
 
     #[test]
@@ -483,5 +501,23 @@ mod tests {
         i.update = Some("1.4.0".into());
         let m = &menu(&i)[2];
         assert!(m.visible && m.label == "Update 1.4.0 available" && !m.enabled);
+    }
+
+    #[test]
+    fn the_mirror_toggle_follows_what_the_phone_offers_and_never_turns_itself_on() {
+        let mut i = phone();
+        assert_eq!(menu(&i)[12].label, "Show phone notifications");
+        assert_eq!(action_for(&i, 16), None, "the phone did not offer it");
+        i.mirror_available = true;
+        assert_eq!(action_for(&i, 16), Some(TrayAction::ToggleMirror));
+        i.mirror_on = true;
+        i.mirror_available = false; // it can still be turned off
+        assert_eq!(menu(&i)[12].label, "Stop showing phone notifications");
+        assert_eq!(action_for(&i, 16), Some(TrayAction::ToggleMirror));
+        let ids: Vec<i32> = menu(&i).iter().map(|m| m.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len());
     }
 }

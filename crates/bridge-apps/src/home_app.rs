@@ -222,9 +222,13 @@ fn phone_line(state: &crate::connection::ControlState) -> PhoneLine {
     }
 }
 
-/// The connected phone that can report its battery but is not allowed to yet: the Home card then offers a
-/// one-click "Show phone battery". Nothing is switched on without that click (or `geekbridge-ctl consent`).
-fn battery_offer(state: &crate::connection::ControlState) -> Option<(String, String)> {
+/// The connected phone that offers `packet` but is not allowed to use it yet: the Home card then offers a
+/// one-click button. Nothing is switched on without that click (or `geekbridge-ctl consent`).
+fn consent_offer(
+    state: &crate::connection::ControlState,
+    feature: bridge_core::ipc::Feature,
+    packet: &str,
+) -> Option<(String, String)> {
     let status = state.status.as_ref()?;
     status.links.iter().find_map(|l| {
         let off = status
@@ -233,14 +237,30 @@ fn battery_offer(state: &crate::connection::ControlState) -> Option<(String, Str
             .find(|p| p.device_id == l.device_id)?
             .consents
             .iter()
-            .any(|c| c.feature == bridge_core::ipc::Feature::Battery && !c.enabled);
+            .any(|c| c.feature == feature && !c.enabled);
         (l.phase == bridge_core::ipc::LinkPhase::Connected
             && off
-            && l.negotiated
-                .iter()
-                .any(|k| k == bridge_core::battery_link::BATTERY))
+            && l.negotiated.iter().any(|k| k == packet))
         .then(|| (l.device_id.clone(), l.name.clone()))
     })
+}
+
+/// "Show phone battery" is offered for a phone that can report it and has not been allowed yet.
+fn battery_offer(state: &crate::connection::ControlState) -> Option<(String, String)> {
+    consent_offer(
+        state,
+        bridge_core::ipc::Feature::Battery,
+        bridge_core::battery_link::BATTERY,
+    )
+}
+
+/// "Show phone notifications" is offered for a phone that declared the stock notification packet.
+fn notifications_offer(state: &crate::connection::ControlState) -> Option<(String, String)> {
+    consent_offer(
+        state,
+        bridge_core::ipc::Feature::Notifications,
+        bridge_core::notification_link::NOTIFICATION,
+    )
 }
 
 impl HomeApp {
@@ -576,6 +596,34 @@ impl HomeApp {
                     feed.run(Request::SetConsent {
                         device_id,
                         feature: bridge_core::ipc::Feature::Battery,
+                        enabled: true,
+                    });
+                }
+            }
+            if !line.linked
+                && let Some(w) = phone_why(&self.connections.state)
+            {
+                ui.add_space(S2);
+                ui.add(egui::Label::new(theme::caption(pal, crate::why_ui::try_line(w))).wrap());
+                if let Some(heard) = crate::why_ui::last_heard(w) {
+                    ui.add(egui::Label::new(theme::caption(pal, heard)).wrap());
+                }
+            }
+            if let Some((device_id, _)) = notifications_offer(&self.connections.state) {
+                ui.add_space(S2);
+                if theme::pill_button(
+                    ui,
+                    pal,
+                    crate::i18n::tr("home.notifications.allow"),
+                    ButtonKind::Plain,
+                    true,
+                )
+                .clicked()
+                    && let Some(feed) = &self.messages
+                {
+                    feed.run(Request::SetConsent {
+                        device_id,
+                        feature: bridge_core::ipc::Feature::Notifications,
                         enabled: true,
                     });
                 }
@@ -1208,6 +1256,20 @@ mod tests {
         // The phone did not offer battery packets (its switch is off): nothing to ask for.
         let none = linked_state(None, &["kdeconnect.ping"], false);
         assert!(battery_offer(&none).is_none());
+        assert!(notifications_offer(&none).is_none());
+    }
+
+    #[test]
+    fn notification_mirroring_is_offered_only_for_a_phone_that_declared_it() {
+        use bridge_core::ipc::Feature;
+        let mut st = linked_state(None, &["kdeconnect.notification"], false);
+        // The helper builds a Battery consent; point it at notifications for this check.
+        st.status.as_mut().unwrap().paired[0].consents[0].feature = Feature::Notifications;
+        assert_eq!(notifications_offer(&st).unwrap().1, "Pixel");
+        st.status.as_mut().unwrap().paired[0].consents[0].enabled = true;
+        assert!(notifications_offer(&st).is_none(), "already allowed");
+        let no = linked_state(None, &["kdeconnect.battery"], false);
+        assert!(notifications_offer(&no).is_none());
     }
 
     #[test]

@@ -97,6 +97,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "notification_wire"
+path = "fuzz_targets/notification_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "clipboard"
 path = "fuzz_targets/clipboard.rs"
 test = false

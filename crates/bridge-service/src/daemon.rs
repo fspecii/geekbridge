@@ -100,6 +100,9 @@ pub struct DaemonOptions {
     pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
     /// Show message text in new-message notifications. Default off ("hide message content").
     pub sms_show_content: bool,
+    /// Desktop banner (with Dismiss and the phone's buttons) for a mirrored phone notification. `None` shows
+    /// none (tests); the notifications are still listed by `geekbridge-ctl notifications`.
+    pub mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
     /// Where the user-chosen computer name is saved. A saved name wins over `device_name`.
     pub device_name_file: Option<std::path::PathBuf>,
 }
@@ -128,6 +131,7 @@ impl DaemonOptions {
             call_notifier: None,
             sms_notifier: None,
             sms_show_content: false,
+            mirror_notifier: None,
             device_name_file: None,
         }
     }
@@ -204,6 +208,9 @@ pub struct Daemon {
     share: Arc<ShareManager>,
     calls: Arc<CallHub>,
     data: Arc<crate::phone_data::PhoneData>,
+    /// Mirrored phone notifications (memory only, bounded) and the banner for them.
+    mirror: crate::mirror::Mirror,
+    mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
     /// Log lines and state dumps from a debug-build phone (`phone_debug`).
     debug: Arc<crate::phone_debug::PhoneDebug>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
@@ -331,6 +338,9 @@ impl Daemon {
         if let Some(n) = options.sms_notifier.take() {
             data.set_notifier(n);
         }
+        let mirror = crate::mirror::Mirror::default();
+        mirror.set_show_content(options.sms_show_content);
+        let mirror_notifier = options.mirror_notifier.take();
         let daemon = Arc::new(Self {
             endpoint,
             store,
@@ -346,6 +356,8 @@ impl Daemon {
             share,
             calls,
             data,
+            mirror,
+            mirror_notifier,
             debug,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
@@ -365,6 +377,98 @@ impl Daemon {
 
     fn consents(&self) -> MutexGuard<'_, ConsentStore> {
         self.consents.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Ask a connected phone for the notifications it is showing (consent already checked by the caller).
+    fn ask_notifications(&self, device_id: &str) {
+        if self.data.caps(device_id).notification_request {
+            self.data.send_stock(
+                device_id,
+                gate::NOTIFICATION_REQUEST,
+                bridge_core::notification_link::request_body(),
+            );
+        }
+    }
+
+    fn notifications_view(&self, device_id: Option<&str>) -> bridge_core::ipc::NotificationsView {
+        let enabled: Vec<String> = {
+            let c = self.consents();
+            self.core()
+                .links
+                .keys()
+                .filter(|id| c.is_enabled(id, Feature::Notifications))
+                .cloned()
+                .collect()
+        };
+        self.mirror
+            .view(device_id, enabled, std::time::Instant::now())
+    }
+
+    /// Dismiss one mirrored notification: gone here, cancelled on the phone when it lets us.
+    fn dismiss_notification(&self, device_id: &str, id: &str) -> Result<(), ErrorBody> {
+        parse_id(device_id)?;
+        if !self
+            .consents()
+            .is_enabled(device_id, Feature::Notifications)
+        {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "notification mirroring is off for this phone",
+            ));
+        }
+        let Some(n) = self.mirror.get(device_id, id, std::time::Instant::now()) else {
+            return Err(err(ErrorCode::NotFound, "no such notification"));
+        };
+        self.mirror.remove(device_id, id);
+        if n.clearable && self.data.caps(device_id).notification_request {
+            self.data.send_stock(
+                device_id,
+                gate::NOTIFICATION_REQUEST,
+                bridge_core::notification_link::dismiss_body(id),
+            );
+        }
+        Ok(())
+    }
+
+    /// Press one of a mirrored notification's buttons on the phone.
+    fn notification_action(
+        &self,
+        device_id: &str,
+        id: &str,
+        action: &str,
+    ) -> Result<(), ErrorBody> {
+        parse_id(device_id)?;
+        if !self
+            .consents()
+            .is_enabled(device_id, Feature::Notifications)
+        {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "notification mirroring is off for this phone",
+            ));
+        }
+        let Some(n) = self.mirror.get(device_id, id, std::time::Instant::now()) else {
+            return Err(err(ErrorCode::NotFound, "no such notification"));
+        };
+        if !n.actions.iter().any(|a| a == action) {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "the notification has no such button",
+            ));
+        }
+        if !self.data.caps(device_id).notification_action
+            || !self.data.send_stock(
+                device_id,
+                gate::NOTIFICATION_ACTION,
+                bridge_core::notification_link::action_body(id, action),
+            )
+        {
+            return Err(err(
+                ErrorCode::Failed,
+                "the phone cannot take button presses right now",
+            ));
+        }
+        Ok(())
     }
 
     /// The phone-data hub (calendar alert ticker).
@@ -573,6 +677,19 @@ impl Daemon {
                 .phone_debug_state(&device_id)
                 .await
                 .map(|text| Response::PhoneDebugState { text }),
+            Request::Notifications { device_id } => Ok(Response::Notifications(Box::new(
+                self.notifications_view(device_id.as_deref()),
+            ))),
+            Request::DismissNotification { device_id, id } => self
+                .dismiss_notification(&device_id, &id)
+                .map(|()| Response::Ack),
+            Request::NotificationAction {
+                device_id,
+                id,
+                action,
+            } => self
+                .notification_action(&device_id, &id, &action)
+                .map(|()| Response::Ack),
             Request::CallingStatus => self.calling_status().await.map(Response::CallingStatus),
             Request::Calls => Ok(Response::Calls(Box::new(self.calls.status()))),
             Request::CallAction { target, action } => {
@@ -1151,6 +1268,7 @@ impl Daemon {
     }
 
     fn forget_consent(&self, device_id: &str) -> Result<(), ErrorBody> {
+        self.mirror.clear(device_id);
         self.share.forget_device(device_id);
         self.data.forget(device_id);
         if let Some(clip) = &self.clipboard {
@@ -1187,6 +1305,14 @@ impl Daemon {
             self.calls.set_enabled(device_id, enabled);
         }
         self.data.set_enabled(device_id, feature, enabled);
+        if feature == Feature::Notifications {
+            if enabled {
+                self.ask_notifications(device_id);
+            } else {
+                // Withdrawn: everything held is erased at once.
+                self.mirror.clear(device_id);
+            }
+        }
         if feature == Feature::Battery {
             if enabled {
                 self.data.request_battery(device_id);
@@ -1841,6 +1967,13 @@ async fn trusted_loop(
                         }
                         continue;
                     }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Notification {
+                        // An icon payload is never fetched; the packet itself is judged on its body.
+                        if !on_notification_packet(d, id, &packet) && !count_rejected(d, id, attempt) {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
                     if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Debug {
                         let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
                         let verdict = if clean {
@@ -2044,6 +2177,9 @@ fn data_link(
     if battery {
         d.data.request_battery(id);
     }
+    if d.consents().is_enabled(id, Feature::Notifications) {
+        d.ask_notifications(id);
+    }
     d.data.set_enabled(id, Feature::CalendarEdit, edit.0);
     d.data.set_enabled(id, Feature::CalendarAlerts, edit.1);
     (
@@ -2130,6 +2266,59 @@ fn on_battery_packet(d: &Daemon, id: &str, attempt: u64, packet: &kde::Packet) -
     true
 }
 
+/// One `kdeconnect.notification` packet from a negotiated, trusted phone. False only when it is malformed.
+/// Without the `notifications` consent it is dropped unread (stock phones send it unasked). Titles and
+/// texts are never logged.
+fn on_notification_packet(d: &Arc<Daemon>, id: &str, packet: &kde::Packet) -> bool {
+    if !d.consents().is_enabled(id, Feature::Notifications) {
+        return true;
+    }
+    let event = match bridge_core::notification_link::parse(&packet.body) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    let now = std::time::Instant::now();
+    match event {
+        bridge_core::notification_link::Event::Cancel { id: nid } => {
+            d.mirror.remove(id, &nid);
+        }
+        bridge_core::notification_link::Event::Post(n) => {
+            let name = d
+                .core()
+                .links
+                .get(id)
+                .map(|l| l.status.name.clone())
+                .unwrap_or_default();
+            let loud = !n.silent;
+            let only_once = n.only_once;
+            let banner = d.mirror.banner(&name, &n);
+            let nid = n.id.clone();
+            let outcome = d.mirror.post(id, &name, n, now);
+            let alert = loud
+                && !(only_once && outcome == crate::mirror::Posted::Updated)
+                && d.mirror.banner_allowed(now);
+            if alert && let Some(notifier) = d.mirror_notifier.clone() {
+                let (daemon, device) = (d.clone(), id.to_owned());
+                notifier.show(
+                    &banner,
+                    Box::new(move |choice| {
+                        // Best effort: a stale or withdrawn notification is simply refused.
+                        let _ = match choice {
+                            crate::mirror::Choice::Dismiss => {
+                                daemon.dismiss_notification(&device, &nid)
+                            }
+                            crate::mirror::Choice::Action(a) => {
+                                daemon.notification_action(&device, &nid, &a)
+                            }
+                        };
+                    }),
+                );
+            }
+        }
+    }
+    true
+}
+
 /// (calendar editing, calendar alerts) consents of one phone.
 fn c_edit(d: &Arc<Daemon>, id: &str) -> (bool, bool) {
     let c = d.consents();
@@ -2142,8 +2331,11 @@ fn c_edit(d: &Arc<Daemon>, id: &str) -> (bool, bool) {
 struct DataLinkGuard(Option<(Arc<Daemon>, String, u64)>);
 impl Drop for DataLinkGuard {
     fn drop(&mut self) {
-        if let Some((d, id, generation)) = self.0.take() {
-            d.data.link_down(&id, generation);
+        if let Some((d, id, generation)) = self.0.take()
+            && d.data.link_down(&id, generation)
+        {
+            // What was mirrored belongs to that session: gone with the link.
+            d.mirror.clear(&id);
         }
     }
 }
@@ -2288,6 +2480,7 @@ fn on_packet(
         | Incoming::PhoneData
         | Incoming::Debug
         | Incoming::Battery
+        | Incoming::Notification
         | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {

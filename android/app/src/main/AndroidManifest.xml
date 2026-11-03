@@ -57,6 +57,15 @@
          sharing works without it. No storage permission: received files go through MediaStore. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Only so "Show phone notifications" can list launcher apps for the allow-list picker, without the broad
+         package-visibility permission. Nothing else is queried. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+
     <application
         android:name=".GeekBridgeApp"
         android:allowBackup="false"
@@ -117,6 +126,19 @@
             android:name=".LinkService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Optional "Show phone notifications on the computer" (off by default). Android binds this only after the user
+             grants Notification access in system settings; it forwards nothing unless the feature is on, a computer is
+             linked and allowed, and the app is on the user's list (docs/reports/notification-mirroring.md). -->
+        <service
+            android:name=".MirrorListenerService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>

@@ -837,3 +837,171 @@ async fn battery_is_read_only_with_consent_asked_for_and_erased_when_withdrawn()
     sleep(Duration::from_millis(300)).await;
     assert_eq!(battery(&rig).await, None);
 }
+
+fn post(id: &str, title: &str) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::json!({
+        "id": id, "appName": "Chat", "title": title, "text": "hello", "isClearable": true,
+        "actions": ["Archive"], "time": "1700000000000", "payloadHash": "ab",
+    })
+    .as_object()
+    .unwrap()
+    .clone()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn notifications_need_consent_are_bounded_dismissed_and_erased_when_withdrawn() {
+    use bridge_core::notification_link as nl;
+    let rig = Rig::start().await;
+    let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+    let id = creds.device_id().to_string();
+    let link = rig
+        .pair_with(&creds, data::capabilities_with_notifications())
+        .await;
+    let (push, mut seen) = run_phone(link, PhoneScript::empty());
+    let view = async |rig: &Rig| match rig.call(Request::Notifications { device_id: None }).await {
+        Ok(Response::Notifications(v)) => *v,
+        other => panic!("expected notifications, got {other:?}"),
+    };
+
+    // No consent: dropped unread, not counted against the link.
+    push.send((nl::NOTIFICATION, post("n1", "Ada")))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert!(view(&rig).await.items.is_empty());
+    let st = rig.status().await;
+    assert_eq!(
+        st.links
+            .iter()
+            .find(|l| l.device_id == id)
+            .unwrap()
+            .rejected_packets,
+        0
+    );
+    // A button press or dismiss without consent is refused here, before anything leaves.
+    assert!(!matches!(
+        rig.call(Request::DismissNotification {
+            device_id: id.clone(),
+            id: "n1".into()
+        })
+        .await,
+        Ok(Response::Ack)
+    ));
+
+    // Consent on: the computer asks for what is showing; a post is kept (icon payload fields ignored).
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Notifications,
+        enabled: true,
+    })
+    .await;
+    let mut asked = false;
+    for _ in 0..50 {
+        while let Ok(k) = seen.try_recv() {
+            asked |= k == nl::REQUEST;
+        }
+        if asked {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(
+        asked,
+        "the computer should ask for the showing notifications"
+    );
+    push.send((nl::NOTIFICATION, post("n1", "Ada")))
+        .await
+        .unwrap();
+    let got = rig
+        .until("notification", async || {
+            Some(view(&rig).await).filter(|v| !v.items.is_empty())
+        })
+        .await;
+    assert_eq!(got.items[0].app, "Chat");
+    assert_eq!(got.items[0].actions, ["Archive"]);
+    assert_eq!(got.enabled_devices, std::slice::from_ref(&id));
+
+    // Malformed counts against the link; many posts stay within the cap; a cancel from the phone removes one.
+    push.send((nl::NOTIFICATION, serde_json::Map::new()))
+        .await
+        .unwrap();
+    rig.until("rejected", async || {
+        (rig.status()
+            .await
+            .links
+            .iter()
+            .find(|l| l.device_id == id)?
+            .rejected_packets
+            == 1)
+            .then_some(())
+    })
+    .await;
+    for i in 0..(bridge_service::mirror::MAX_PER_DEVICE + 10) {
+        push.send((nl::NOTIFICATION, post(&format!("m{i}"), "t")))
+            .await
+            .unwrap();
+    }
+    let all = rig
+        .until("cap", async || {
+            let v = view(&rig).await;
+            v.items.iter().any(|i| i.id == "m59").then_some(v)
+        })
+        .await;
+    assert_eq!(all.items.len(), bridge_service::mirror::MAX_PER_DEVICE);
+    push.send((nl::NOTIFICATION, nl::cancel_event_body("m59")))
+        .await
+        .unwrap();
+    rig.until("cancelled", async || {
+        (!view(&rig).await.items.iter().any(|i| i.id == "m59")).then_some(())
+    })
+    .await;
+
+    // Dismiss here: gone at once and the phone is told. A button press is checked against the listed titles.
+    while seen.try_recv().is_ok() {}
+    rig.ok(Request::DismissNotification {
+        device_id: id.clone(),
+        id: "m58".into(),
+    })
+    .await;
+    let mut told = false;
+    for _ in 0..50 {
+        while let Ok(k) = seen.try_recv() {
+            told |= k == nl::REQUEST;
+        }
+        if told {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(told, "the phone should be told to cancel it");
+    assert!(!view(&rig).await.items.iter().any(|i| i.id == "m58"));
+    assert!(!matches!(
+        rig.call(Request::NotificationAction {
+            device_id: id.clone(),
+            id: "m57".into(),
+            action: "Delete".into()
+        })
+        .await,
+        Ok(Response::Ack)
+    ));
+    rig.ok(Request::NotificationAction {
+        device_id: id.clone(),
+        id: "m57".into(),
+        action: "Archive".into(),
+    })
+    .await;
+
+    // Withdrawing the consent erases everything at once; later packets are dropped again.
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Notifications,
+        enabled: false,
+    })
+    .await;
+    assert!(view(&rig).await.items.is_empty());
+    push.send((nl::NOTIFICATION, post("late", "x")))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(300)).await;
+    assert!(view(&rig).await.items.is_empty());
+}

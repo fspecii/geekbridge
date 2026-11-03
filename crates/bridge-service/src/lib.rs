@@ -25,6 +25,7 @@ pub mod hotkey_help;
 pub mod hypr_config;
 pub mod lan_select;
 pub mod macos_host;
+pub mod mirror;
 pub mod notify_text;
 pub mod os_notify;
 pub mod phone_data;
@@ -485,6 +486,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         options.share_notifier = Some(Arc::new(share::NotifySend));
         options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
         options.sms_notifier = Some(Arc::new(phone_data::NotifySendSms));
+        options.mirror_notifier = Some(Arc::new(mirror::NotifySendMirror));
         // Message text in notifications is opt-in: `touch <state dir>/sms-notify-content` (or set
         // GEEKBRIDGE_SMS_NOTIFY_CONTENT=show). Without it a notification names the sender only.
         options.sms_show_content = std::env::var("GEEKBRIDGE_SMS_NOTIFY_CONTENT")
@@ -502,7 +504,8 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         let banners = Arc::new(os_notify::BannerNotifier);
         options.share_notifier = Some(banners.clone());
         options.call_notifier = Some(banners.clone());
-        options.sms_notifier = Some(banners);
+        options.sms_notifier = Some(banners.clone());
+        options.mirror_notifier = Some(banners);
     }
     #[cfg(windows)]
     {

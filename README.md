@@ -181,9 +181,9 @@ tools (`geekbridge-pair`, `geekbridge-call-probe`) are described in [docs/call-c
 
 ## Privacy and security in one paragraph
 
-Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, battery level, clipboard,
+Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, battery level, phone notifications (only from apps you pick), clipboard,
 calls (including dialing) and file receiving are each off until you allow them for a specific phone on both sides, and
-nothing from the phone is stored on the computer (battery level is held in memory only). The only internet traffic is
+nothing from the phone is stored on the computer (battery level and mirrored notifications are held in memory only). The only internet traffic is
 the optional update check to GitHub; there are no accounts and no GeekBridge servers. Report vulnerabilities privately as
 described in [SECURITY.md](SECURITY.md).
 

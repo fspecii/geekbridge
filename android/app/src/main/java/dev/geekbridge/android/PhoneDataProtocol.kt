@@ -14,8 +14,10 @@ data class ActiveFeatures(
     val calendarEdit: Boolean = false,
     /** Report the battery level and charging state (no Android permission needed; its own switch only). */
     val battery: Boolean = false,
+    /** Mirror notifications of the chosen apps: its own switch AND Notification access, never without both. */
+    val notifications: Boolean = false,
 ) {
-    val any: Boolean get() = contacts || calendar || sms || battery
+    val any: Boolean get() = contacts || calendar || sms || battery || notifications
 }
 
 /** The user's opt-ins. All off by default; [calendarIds] is the read-only calendar selection (default none). */
@@ -30,6 +32,10 @@ data class PhoneDataSettings(
     val calendarEdit: Boolean = false,
     /** "Share battery level": off by default; which computers get it is the per-computer grant. */
     val battery: Boolean = false,
+    /** "Show phone notifications on the computer": off by default, needs Notification access and chosen apps. */
+    val notifications: Boolean = false,
+    /** Package names whose notifications may be mirrored. Empty by default: nothing leaves until the user picks apps. */
+    val notificationApps: Set<String> = emptySet(),
 )
 
 data class PhoneDataPermissions(
@@ -39,6 +45,8 @@ data class PhoneDataPermissions(
     val sendSms: Boolean = false,
     val receiveSms: Boolean = false,
     val writeCalendar: Boolean = false,
+    /** The user granted Notification access (a special access, not a runtime permission). */
+    val notificationAccess: Boolean = false,
 ) {
     val smsComplete: Boolean get() = readSms && sendSms && receiveSms
 }
@@ -50,6 +58,7 @@ object PhoneDataGate {
         sms = s.sms && p.smsComplete,
         calendarEdit = s.calendarEdit && s.calendar && p.readCalendar && p.writeCalendar,
         battery = s.battery,
+        notifications = s.notifications && p.notificationAccess,
     )
 }
 
@@ -69,6 +78,8 @@ object PhoneDataKinds {
     const val SMS_MESSAGES = "kdeconnect.sms.messages"
     const val SMS_STATUS = "geekbridge.sms.status"
     const val BATTERY_REQ = BatteryRules.REQUEST_KIND
+    const val NOTIFICATION_REQ = MirrorRules.REQUEST_KIND
+    const val NOTIFICATION_ACTION = MirrorRules.ACTION_KIND
 
     val outgoing: Set<String> =
         setOf(CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, CALENDAR_WRITE_RESULT, SMS_MESSAGES, SMS_STATUS)
@@ -124,13 +135,13 @@ object PhoneDataProtocol {
         if (!a.any && !debug) return null
         return JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
             .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
-            .also { if (debug) it.put("debug", true) }
+            .put("notifications", a.notifications).also { if (debug) it.put("debug", true) }
     }
 
     fun configRequest(a: ActiveFeatures): String =
         base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
             .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
-            .also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
+            .put("notifications", a.notifications).also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
 
     fun waitRequest(since: Long, timeoutMs: Long = PhoneDataLimits.WAIT_MS): String =
         base("transport_data_wait").put("since", since)

@@ -583,6 +583,7 @@ object PhoneDataRuntime {
     @Volatile private var engine: PhoneDataEngine? = null
     @Volatile private var declared = ActiveFeatures()
     @Volatile private var battery: BatteryReporter? = null
+    @Volatile private var mirror: NotificationMirror? = null
     private var batteryReceiver: BroadcastReceiver? = null
     private val main = Handler(Looper.getMainLooper())
     private val core: CoreClient by lazy { CoreClient.native() }
@@ -608,7 +609,17 @@ object PhoneDataRuntime {
             calendarEdit = p.getBoolean("calendar_edit", false),
             smsSpecialNumbers = p.getBoolean("sms_special", false),
             battery = p.getBoolean("battery", false),
+            notifications = p.getBoolean("notifications", false),
+            notificationApps = p.getStringSet("notification_apps", emptySet()).orEmpty().toSet(),
         )
+        val mirrorOut = NotificationMirror(
+            port = MirrorAndroid.Port(a),
+            core = { core.dataAction(it) },
+            enabled = { active().notifications && linkRunning },
+            allowedApps = { settings.notificationApps },
+            ownPackage = a.packageName,
+        )
+        mirror = mirrorOut
         val reporter = BatteryReporter(
             read = { currentBattery() },
             core = { core.dataAction(it) },
@@ -639,6 +650,7 @@ object PhoneDataRuntime {
             ) { settings.calendarIds },
             allowSpecialNumbers = { settings.smsSpecialNumbers },
             battery = reporter,
+            mirror = mirrorOut,
             smsLedger = RequestLedger(object : BlobStore {
                 override fun read() = p.getString("sms_requests", "") ?: ""
                 override fun write(text: String) {
@@ -657,6 +669,7 @@ object PhoneDataRuntime {
             sendSms = has(Manifest.permission.SEND_SMS),
             receiveSms = has(Manifest.permission.RECEIVE_SMS),
             writeCalendar = has(Manifest.permission.WRITE_CALENDAR),
+            notificationAccess = MirrorAndroid.accessGranted(ctx),
         )
     }
 
@@ -668,7 +681,7 @@ object PhoneDataRuntime {
     /** Called when the transport is (re)started so the declared capabilities are what [active] says right now. */
     fun startFeatures(): ActiveFeatures = active().also {
         declared = it
-        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms} battery=${it.battery}")
+        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms} battery=${it.battery} notifications=${it.notifications}")
     }
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
@@ -676,6 +689,8 @@ object PhoneDataRuntime {
     fun setCalendarEdit(on: Boolean) = update { it.copy(calendarEdit = on) }
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
     fun setBattery(on: Boolean) = update { it.copy(battery = on) }
+    fun setNotifications(on: Boolean) = update { it.copy(notifications = on) }
+    fun setNotificationApps(apps: Set<String>) = update { it.copy(notificationApps = apps.take(MirrorRules.MAX_APPS).toSet()) }
     fun setSmsSpecialNumbers(on: Boolean) = update { it.copy(smsSpecialNumbers = on) }
     fun setCalendarIds(ids: Set<String>) {
         update { it.copy(calendarIds = ids.take(PhoneDataLimits.MAX_CALENDARS).toSet()) }
@@ -687,7 +702,8 @@ object PhoneDataRuntime {
         prefs?.edit()
             ?.putBoolean("contacts", settings.contacts)?.putBoolean("calendar", settings.calendar)
             ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)
-            ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.putBoolean("battery", settings.battery)?.apply()
+            ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.putBoolean("battery", settings.battery)
+            ?.putBoolean("notifications", settings.notifications)?.putStringSet("notification_apps", settings.notificationApps)?.apply()
         resync()
     }
 
@@ -700,7 +716,7 @@ object PhoneDataRuntime {
         if (CapabilityRedeclare.onChange(declared, now, linkRunning) == CapabilityRedeclare.Action.Reconnect) {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
-            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms} battery=${now.battery}): reconnecting to re-declare")
+            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms} battery=${now.battery} notifications=${now.notifications}): reconnecting to re-declare")
             val controller = LinkRuntime.controller()
             controller.stop(R.string.pd_reconnecting)
             restartAttempt(a, 0)
@@ -723,6 +739,7 @@ object PhoneDataRuntime {
         linkRunning = running
         val e = engine ?: return
         battery?.reset()
+        mirror?.reset()
         if (!running) {
             stopObserving()
             e.cancelInFlight() // a long provider read has nowhere to send its answer any more
@@ -819,6 +836,19 @@ object PhoneDataRuntime {
     /** A computer was allowed (or withdrawn) for the battery: tell the new one the current level at once. */
     fun onBatteryGrantsChanged() {
         worker.execute { battery?.sendNow() }
+    }
+
+    /** Notification access was granted or taken away (the listener connected or disconnected). */
+    fun onListenerChanged() {
+        main.post { resync() }
+    }
+
+    fun onMirrorPosted(n: MirrorInfo) {
+        worker.execute { mirror?.onPosted(n) }
+    }
+
+    fun onMirrorRemoved(key: String) {
+        worker.execute { mirror?.onRemoved(key) }
     }
 
     private fun waitLoop(e: PhoneDataEngine) {

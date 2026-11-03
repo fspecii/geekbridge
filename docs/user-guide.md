@@ -71,6 +71,19 @@ If either side cannot find the other, use **Test connection** (both apps have it
 *Connect by address*. Then finish the setup wizard (notifications, contacts, calendar, phone state and the **battery**
 step so Android keeps the link alive). Details: [pairing.md](pairing.md).
 
+## Phone notifications on the computer
+
+Off by default. On the phone, open Settings and switch on *Show phone notifications on the computer*, then follow the
+three prompts it shows: open the Notification access screen and switch GeekBridge on, choose which apps may be shown
+(none are chosen at first, so nothing is sent), and allow the computer (*Allowed computers...*). On Android 13 and later,
+if GeekBridge was not installed from a store the switch is greyed out: open app settings, tap the three dots, choose
+*Allow restricted settings* (on Samsung: Settings > Apps > GeekBridge > three dots), then try again. On the computer
+switch on *Show phone notifications* (Home or the tray menu, or `geekbridge-ctl consent DEVICE_ID notifications on`). A
+banner names the app; the text is shown only if you enabled message content in notifications. *Dismiss* on the banner
+also clears it on the phone, and the phone's own buttons (never a typed reply) can be pressed. `geekbridge-ctl
+notifications` lists what is held (memory only, at most 50 per phone for 3 hours). Ongoing, call, foreground-service and
+GeekBridge's own notifications are never sent. Checked with automated tests; not yet confirmed on the real phone.
+
 ## Phone battery on the computer
 
 The computer can show the phone's battery level and whether it is charging (tray tooltip, the Home phone card,
@@ -146,10 +159,10 @@ a debug build never updates to a release. Turn checks off under *Settings*, or
 ## Privacy
 
 No accounts, no GeekBridge servers, no analytics. Everything stays on your local network. Contacts, calendar, Messages,
-battery level, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
+battery level, phone notifications, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
 specific phone**, on both the phone and the computer, and can be switched off again at any time. Nothing from the phone is
-written to the computer's disk (contacts, calendar, messages and battery level are held in memory and erased when the
-service stops); received files are the one thing you ask it to keep. Message text is hidden in notifications by default, and
+written to the computer's disk (contacts, calendar, messages, battery level and mirrored notifications are held in memory and erased when the
+service stops); received files are the one thing you ask it to keep. Message text, and the text of mirrored phone notifications, is hidden in desktop banners by default, and
 caller numbers and message text are masked in logs and in the redacted `diagnose` report. The only internet traffic is
 the optional update check to `api.github.com` (turn it off with `geekbridge-ctl update disable`). Reporting problems:
 [SECURITY.md](../SECURITY.md).

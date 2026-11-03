@@ -51,16 +51,20 @@ pub(in crate::transport) enum Feature {
     /// Battery level and charging state (`kdeconnect.battery`, stock KDE Connect). Off until the user allows
     /// at least one computer; the level is only ever sent to computers that were allowed.
     Battery,
+    /// Phone notification mirroring (`kdeconnect.notification*`, stock KDE Connect). Off until the user turns it
+    /// on, gave Notification access and allowed at least one computer; only allowed computers hear anything.
+    Notifications,
 }
 
 impl Feature {
-    const ALL: [Feature; 6] = [
+    const ALL: [Feature; 7] = [
         Feature::Contacts,
         Feature::Calendar,
         Feature::CalendarEdit,
         Feature::Sms,
         Feature::Debug,
         Feature::Battery,
+        Feature::Notifications,
     ];
 
     fn key(self) -> &'static str {
@@ -71,6 +75,7 @@ impl Feature {
             Feature::Sms => "sms",
             Feature::Debug => "debug",
             Feature::Battery => "battery",
+            Feature::Notifications => "notifications",
         }
     }
 
@@ -89,6 +94,10 @@ impl Feature {
             ],
             Feature::Debug => &[bridge_core::debug_link::STATE_REQUEST],
             Feature::Battery => &["kdeconnect.battery.request"],
+            Feature::Notifications => &[
+                bridge_core::notification_link::REQUEST,
+                bridge_core::notification_link::ACTION,
+            ],
         }
     }
 
@@ -103,6 +112,7 @@ impl Feature {
             Feature::Sms => &["kdeconnect.sms.messages", "geekbridge.sms.status"],
             Feature::Debug => &[bridge_core::debug_link::LOG, bridge_core::debug_link::STATE],
             Feature::Battery => &["kdeconnect.battery"],
+            Feature::Notifications => &[bridge_core::notification_link::NOTIFICATION],
         }
     }
 
@@ -124,6 +134,7 @@ pub(in crate::transport) struct Flags {
     pub sms: bool,
     pub debug: bool,
     pub battery: bool,
+    pub notifications: bool,
 }
 
 impl Flags {
@@ -136,6 +147,7 @@ impl Flags {
             Feature::Sms => self.sms,
             Feature::Debug => self.debug,
             Feature::Battery => self.battery,
+            Feature::Notifications => self.notifications,
         }
     }
 }
@@ -298,6 +310,7 @@ impl Hub {
             "sms": g.flags.sms,
             "debug": g.flags.debug,
             "battery": g.flags.battery,
+            "notifications": g.flags.notifications,
         })
     }
 
@@ -438,6 +451,7 @@ mod tests {
             sms: true,
             debug: false,
             battery: false,
+            notifications: false,
         }
     }
 
@@ -584,5 +598,35 @@ mod tests {
         let hub = Hub::default();
         let granted = (0..40).filter(|_| hub.take_token()).count();
         assert!((20..=21).contains(&granted), "{granted}");
+    }
+
+    #[test]
+    fn notifications_are_declared_only_when_on_in_stock_names_and_reply_is_never_offered() {
+        assert!(
+            incoming_types(on())
+                .iter()
+                .chain(outgoing_types(on()).iter())
+                .all(|k| !k.contains("notification"))
+        );
+        let n = Flags {
+            notifications: true,
+            ..Flags::default()
+        };
+        assert_eq!(
+            incoming_types(n),
+            vec![
+                "kdeconnect.notification.request",
+                "kdeconnect.notification.action"
+            ]
+        );
+        assert_eq!(outgoing_types(n), vec!["kdeconnect.notification"]);
+        assert!(!incoming_types(n).iter().any(|k| k.ends_with(".reply")));
+        // A computer's own `kdeconnect.notification` is noise for the phone.
+        assert!(Feature::of_incoming("kdeconnect.notification").is_none());
+        assert_eq!(
+            Feature::of_incoming("kdeconnect.notification.action"),
+            Some(Feature::Notifications)
+        );
+        assert_eq!(Feature::Notifications.key(), "notifications");
     }
 }

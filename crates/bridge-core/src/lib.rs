@@ -13,6 +13,7 @@ pub mod heartbeat;
 pub mod hotkey;
 pub mod ipc;
 pub mod messages;
+pub mod notification_link;
 pub mod pairing_help;
 pub mod phone_link;
 pub mod phone_view;

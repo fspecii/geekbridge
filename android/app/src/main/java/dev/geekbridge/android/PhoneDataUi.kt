@@ -81,6 +81,8 @@ object PhoneDataUi {
         kit.divider(parent)
         feature(R.drawable.ic_battery, R.string.pd_battery, R.string.pd_battery_sub, s.battery, emptyArray(), GrantFeature.Battery, PhoneDataRuntime::setBattery)
         kit.divider(parent)
+        notificationsSection(a, kit, parent, s, rerender)
+        kit.divider(parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, GrantFeature.Sms, PhoneDataRuntime::setSms)
         if (s.sms) {
             kit.row(
@@ -89,6 +91,84 @@ object PhoneDataUi {
             )
         }
         parent.addView(kit.text(a.getString(R.string.pd_sms_honest), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+    }
+
+    /**
+     * "Show phone notifications on the computer": the switch, the exact Notification access screen with the
+     * restricted-settings help for sideloaded installs, the app list (empty until chosen) and who is allowed.
+     */
+    private fun notificationsSection(a: Activity, kit: UiKit, parent: LinearLayout, s: PhoneDataSettings, rerender: () -> Unit) {
+        kit.row(
+            parent, R.drawable.ic_message, a.getString(R.string.pd_notifications), a.getString(R.string.pd_notifications_sub),
+            kit.toggle(s.notifications) { on ->
+                PhoneDataRuntime.setNotifications(on)
+                GrantsUi.switched(a, GrantFeature.Notifications, on, rerender)
+                rerender()
+            },
+        )
+        val granted = MirrorAndroid.accessGranted(a)
+        val installer = try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) a.packageManager.getInstallSourceInfo(a.packageName).installingPackageName else null
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        }
+        val restricted = SmsRestriction.likely(android.os.Build.VERSION.SDK_INT, true, installer)
+        ComputerGrantsRuntime.init(a)
+        val peers = AppState.pairedPeers
+        val allowed = ComputerGrantsRuntime.grants.devicesFor(GrantFeature.Notifications)
+        val step = MirrorReadiness.evaluate(s.notifications, granted, restricted, s.notificationApps.size, peers.size, peers.count { it.first in allowed })
+        parent.addView(
+            kit.text(MirrorReadiness.message(step, a.strings), 13.5f, if (step == MirrorStep.Ready) Tone.Ok else if (s.notifications) Tone.Warn else Tone.Muted)
+                .apply { setPadding(0, kit.dp(6), 0, 0) },
+        )
+        if (!s.notifications) return
+        if (!granted) {
+            kit.button(parent, a.getString(R.string.mirror_open_access), BtnStyle.Tonal) {
+                try {
+                    a.startActivity(MirrorAndroid.accessSettingsIntent(a))
+                } catch (_: RuntimeException) {
+                    PowerChecks.openAppSettings(a)
+                }
+            }
+            if (restricted) {
+                kit.button(parent, a.getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(a) }
+                parent.addView(kit.text(a.getString(R.string.mirror_restricted_help), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
+            }
+        }
+        val n = s.notificationApps.size
+        kit.button(
+            parent,
+            a.getString(R.string.mirror_pick_apps) + " · " +
+                (if (n == 0) a.getString(R.string.mirror_apps_none) else a.resources.getQuantityString(R.plurals.mirror_apps_count, n, n)),
+            BtnStyle.Tonal,
+        ) { pickApps(a, rerender) }
+        GrantsUi.add(a, kit, parent, GrantFeature.Notifications, rerender)
+        parent.addView(kit.text(a.getString(R.string.mirror_honest), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
+    }
+
+    private fun pickApps(a: Activity, rerender: () -> Unit) {
+        Thread {
+            val pm = a.packageManager
+            val launch = android.content.Intent(android.content.Intent.ACTION_MAIN).addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+            val apps = pm.queryIntentActivities(launch, 0)
+                .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                .filter { it.first != a.packageName }
+                .distinctBy { it.first }
+                .sortedBy { it.second.lowercase() }
+            a.runOnUiThread {
+                if (a.isFinishing) return@runOnUiThread
+                val chosen = PhoneDataRuntime.settings.notificationApps.toMutableSet()
+                AlertDialog.Builder(a)
+                    .setTitle(R.string.mirror_pick_apps)
+                    .setMultiChoiceItems(
+                        apps.map { PhoneDataProtocol.clean(it.second, 60).ifEmpty { it.first } }.toTypedArray(),
+                        BooleanArray(apps.size) { apps[it].first in chosen },
+                    ) { _, i, on -> if (on) chosen += apps[i].first else chosen -= apps[i].first }
+                    .setPositiveButton(android.R.string.ok) { _, _ -> PhoneDataRuntime.setNotificationApps(chosen); rerender() }
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .show()
+            }
+        }.apply { isDaemon = true; start() }
     }
 
     private fun pickCalendars(a: Activity, rerender: () -> Unit) {

@@ -17,6 +17,8 @@ enum class GrantFeature(val key: String) {
     Sms("sms"),
     /** Battery level and charging state (`kdeconnect.battery`). Off for every computer until allowed here. */
     Battery("battery"),
+    /** Mirroring notifications of the chosen apps (`kdeconnect.notification*`). Off for every computer until allowed here. */
+    Notifications("notifications"),
 }
 
 /**
@@ -45,7 +47,7 @@ data class ComputerGrants(val byDevice: Map<String, Set<GrantFeature>> = emptyMa
     /** Drops computers that are no longer paired, so a device id cannot come back with old rights. */
     fun keepOnly(paired: Set<String>) = copy(byDevice = byDevice.filterKeys { it in paired })
 
-    /** The `permits` object of `transport_start` / `transport_permits`: all six features, empty = nobody. */
+    /** The `permits` object of `transport_start` / `transport_permits`: all seven features, empty = nobody. */
     fun permitsObject(): JSONObject = JSONObject().also { o ->
         for (f in GrantFeature.entries) {
             // Editing needs reading, whatever a stored or migrated list says (set() only enforces it when reading is withdrawn).

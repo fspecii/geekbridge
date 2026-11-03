@@ -74,7 +74,7 @@ reference sources (kdeconnect-kde `25c0cc7`, kdeconnect-android `4de397e`), not 
 | `kdeconnect.share.request` file, payload socket (TLS, role inversion), both ways | VERIFIED, 300 kB and 200 kB random files byte-identical | S1 |
 | Shipped `geekbridge-service` / `geekbridge-ctl`: connect, pair, approve, ping both ways | VERIFIED | S5; negotiated set is exactly `ping`, `clipboard`, `clipboard.connect`, `share.request` |
 | Daemon plugins GeekBridge activates on a stock desktop | `ping`, `clipboard`, `share` only | daemon log `Loaded plugin` |
-| `kdeconnect.notification*`, `kdeconnect.telephony*` | NOT CLAIMED by GeekBridge (not in the identity); the desktop loads no such plugin for us | nothing to verify |
+| `kdeconnect.notification*`, `kdeconnect.telephony*` | Historical (the 0.1.0 capture): not claimed then. Notification mirroring is now declared when the user switches it on (see "Notification mirroring" below); telephony is still NOT CLAIMED | notifications: SPEC-CHECKED only; telephony: nothing to verify |
 | `kdeconnect.contacts.*`, `kdeconnect.sms.*` requests and responses | SPEC-CHECKED against kdeconnect-android (`ContactsPlugin.kt`, `SMSPlugin.kt`) | a stock *desktop* is the requester, so it cannot answer them; needs a phone. Key names are asserted in `sms_and_contacts_requests_use_the_keys_the_android_plugins_read` |
 | mDNS discovery, reverse connect on failure, IPv6, `share.request.update` / multi-file batches, image clipboard (`clipboard.file`) | NOT tested | |
 
@@ -167,6 +167,56 @@ directions. Stock names and fields only; nothing GeekBridge-specific is on the w
   (`crates/bridge-phone-sim/tests/data_link.rs`); the phone core is `crates/bridge-android/tests/data_transport.rs`,
   and the Kotlin policy is `BatteryReportTest`. **SPEC-CHECKED only** against a live stock desktop or phone: no
   stock daemon capture of battery packets exists yet (next hardware step).
+
+## Notification mirroring (`kdeconnect.notification`, `.request`, `.action`)
+
+Phone notifications on the computer use the stock packets, so a stock KDE Connect peer interoperates in both
+directions. Typed replies (`kdeconnect.notification.reply`) are deliberately not part of this build.
+
+| Packet | Direction | Body (stock field names) |
+| --- | --- | --- |
+| `kdeconnect.notification` | phone to computer | `id`, `appName`, `title`, `text`, `ticker`, `time` (decimal string of ms), `isClearable`, `silent`, `onlyOnce`, `actions` (button titles); a removal is `id` + `isCancel: true` |
+| `kdeconnect.notification.request` | computer to phone | `request: true` (send what is showing) or `cancel: <id>` (dismiss it) |
+| `kdeconnect.notification.action` | computer to phone | `key: <id>`, `action: <button title>` |
+
+* **Consent, default off on both ends.** Phone: a "Show phone notifications on the computer" switch (off), Android's
+  Notification access (a special access, granted in system settings), an app allow-list that starts **empty** (nothing
+  leaves until the user picks apps) and a per-computer allow (`GrantFeature.Notifications`; a computer paired later never
+  inherits it). Computer: `Feature::Notifications` consent per phone (`geekbridge-ctl consent DEVICE_ID notifications on`,
+  the "Show phone notifications" button on Home or the tray item; nothing is switched on without a click).
+* **Capabilities.** The phone declares `kdeconnect.notification` (outgoing) and `.request` + `.action` (incoming) only while
+  the switch is on **and** Notification access is granted (a change reconnects to re-declare). The computer always
+  declares incoming `kdeconnect.notification` and outgoing `.request` + `.action`; negotiation needs the peer's matching
+  declaration. The phone core refuses to send to a computer that is not on the per-computer list.
+* **Filters on the phone.** Only apps on the list; never ongoing, foreground-service, group-summary, call, progress,
+  transport, alarm, "secret" (lock-screen hidden) or GeekBridge's own notifications; empty ones are skipped; an identical
+  re-post is not re-sent. The Android key never leaves the phone: the computer gets an opaque id (`gb<N>`) that the phone
+  maps back, bounded to 128, and a dismiss or button press is honoured only for a notification that was mirrored, is still
+  showing, still from an allowed app, and (dismiss) clearable. Buttons that take typed input are never offered.
+* **Bounds and storage.** Id 128, app 64, title 160, text 600 characters, 3 buttons of 48 characters, control characters
+  stripped (the `notification_wire` fuzz target pins these caps). The computer keeps at most 50 per phone (8 phones) in
+  memory for 3 hours; consent off, link loss or unpairing erases them. Up to 15 are sent per "send what is showing" and a
+  burst of banners is rate limited (6, then one per 2 s); the rest are only listed. Replies to `request` are marked
+  `silent`, so connecting never raises a flood of banners.
+* **Icons.** Stock phones attach an icon as a payload; the computer never fetches it (it ignores the payload and judges the
+  packet by its body), and this phone sends none. So there is no icon byte cap to exceed: size is zero both ways.
+* **Privacy.** Titles and texts are never logged on either end. The desktop banner names the app and the phone; the title
+  and text appear in it only when message content in notifications is enabled (the same switch as texts,
+  `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` or the `sms-notify-content` file). `geekbridge-ctl notifications` is an explicit
+  local query and does print them.
+* **Desktop actions.** On Linux the banner is a `notify-send` with a Dismiss button (sends `.request {cancel}`) and up to 3
+  of the phone's own buttons (`.action`); Windows and macOS show a plain banner and use `geekbridge-ctl notifications
+  dismiss|action`. A cancel from the phone removes the entry here.
+* **Unasked stock packets are dropped, not punished.** Without the consent a `kdeconnect.notification` is dropped unread and
+  does not count toward the rejected-packet budget; a malformed one does.
+* **Interop evidence.** Negotiation against the real stock Android identity capture (it declares `kdeconnect.notification`,
+  `.request`, `.reply`, `.action`) is pinned in `crates/bridge-service/tests/android_negotiation.rs` (we negotiate
+  `kdeconnect.notification` in and `.request` + `.action` out, never `.reply`); `gate.rs` has the unit test for the
+  stock names; the end-to-end flow over pinned TLS is
+  `notifications_need_consent_are_bounded_dismissed_and_erased_when_withdrawn`
+  (`crates/bridge-phone-sim/tests/data_link.rs`); the phone core is `crates/bridge-android/tests/data_transport.rs`;
+  the Kotlin policy is `NotificationMirrorTest`. **SPEC-CHECKED only** against a live stock daemon or a real phone: no
+  stock capture of notification packets exists yet (next hardware step, including the Samsung restricted-settings flow).
 
 ## Not covered / next hardware step
 

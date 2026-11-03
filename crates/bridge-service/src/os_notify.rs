@@ -154,6 +154,21 @@ impl Notifier for BannerNotifier {
     }
 }
 
+impl crate::mirror::MirrorNotifier for BannerNotifier {
+    fn show(
+        &self,
+        b: &crate::mirror::MirrorBanner,
+        _reply: Box<dyn FnOnce(crate::mirror::Choice) + Send>,
+    ) {
+        // No buttons in a plain banner: dismiss and buttons are `geekbridge-ctl notifications`.
+        let body = match &b.text {
+            Some(t) if !t.is_empty() => format!("{}: {t}", b.title),
+            _ => format!("On {}", b.device_name),
+        };
+        show(&b.app, &body);
+    }
+}
+
 impl crate::phone_data::SmsNotifier for BannerNotifier {
     fn received(&self, device: &str, sender: &str) {
         show(

@@ -18,7 +18,7 @@ Priority: P1 high value and feasible soon, P2 worthwhile, P3 later or optional.
 | MMS | Shows attachments | Placeholder row "open it on the phone"; no attachment bytes requested | Gap (P2) |
 | Reply from a notification | Inline reply on mirrored chat notifications | Desktop banner for a new text has a Reply action that opens the thread | Have (text only through the Messages window) |
 | Notification banner behaviour for texts | One entry per conversation | Previously: one banner per burst for the whole phone, so a second sender within 2 s was silently lost; banners stacked | Fixed in this round (see below) |
-| Notification mirroring of other apps, dismiss both ways | Listener service in its own process mirrors every app, actions, dismiss syncs back | Not claimed. No listener, no packet kinds, consent exists but no adapter | Gap (P1 for value, large) |
+| Notification mirroring of other apps, dismiss both ways | Listener service in its own process mirrors every app, actions, dismiss syncs back | Done: see docs/reports/notification-mirroring.md (stock packets, app allow-list, dismiss and buttons, no typed replies, no icons) | Have (replies and icons not done) |
 | Read state | Mark read syncs | Local to the computer only; stock protocol cannot mark read on the phone | By design (limit of the protocol) |
 | Photos and recent media on the PC | Content-change jobs and media permissions, gallery view | Files can be sent either way; no gallery or "recent photos" feed | Gap (P2) |
 | Battery level and charging state of the phone | Shown on the PC | The phone sends nothing; the interop capture pins that no battery packets exist | Done: see docs/reports/battery-status-feature.md |
@@ -36,7 +36,7 @@ Priority: P1 high value and feasible soon, P2 worthwhile, P3 later or optional.
 
 ## Prioritised gap list
 
-1. **Notification mirroring with dismiss (P1, large).** Biggest visible hole. Needs a notification-listener service on
+1. **Notification mirroring with dismiss (P1, large). Done: see docs/reports/notification-mirroring.md.** Biggest visible hole. Needs a notification-listener service on
    the phone, an allow-listed packet pair, a per-app filter (default deny), a consent that already exists
    (`Feature::Notifications`), and dismiss in both directions keyed by an opaque id. Privacy review first: bodies may
    hold codes and secrets, so hidden-by-default like texts. Too large for this round; first step is a design note.

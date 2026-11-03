@@ -23,6 +23,7 @@ fn negotiated_with_stock_android_is_exactly_what_was_verified_live() {
         [
             "kdeconnect.ping",
             "kdeconnect.battery",
+            "kdeconnect.notification",
             "kdeconnect.clipboard",
             "kdeconnect.clipboard.connect",
             "kdeconnect.share.request",
@@ -49,13 +50,9 @@ fn negotiated_with_stock_android_is_exactly_what_was_verified_live() {
 }
 
 #[test]
-fn stock_android_notification_and_telephony_packets_are_dropped() {
+fn stock_android_telephony_packets_are_dropped() {
     let neg = gate::negotiated_incoming(&stock_android());
-    for kind in [
-        "kdeconnect.notification",
-        "kdeconnect.telephony",
-        "kdeconnect.connectivity_report",
-    ] {
+    for kind in ["kdeconnect.telephony", "kdeconnect.connectivity_report"] {
         assert_eq!(
             gate::classify_incoming(kind, &neg),
             Incoming::Reject,
@@ -98,5 +95,32 @@ fn stock_android_battery_is_negotiated_but_only_acted_on_with_consent() {
     assert_eq!(
         gate::classify_incoming("kdeconnect.battery", &["kdeconnect.ping".to_owned()]),
         Incoming::Reject
+    );
+}
+
+#[test]
+fn stock_android_notifications_are_negotiated_without_replies_and_only_acted_on_with_consent() {
+    use bridge_core::ipc::Feature;
+    let p = stock_android();
+    let neg = gate::negotiated_incoming(&p);
+    // Routed to the notification handler, which drops the packet unless the `notifications` consent is on.
+    assert_eq!(
+        gate::classify_incoming("kdeconnect.notification", &neg),
+        Incoming::Notification
+    );
+    assert!(gate::adapter_integrated(Feature::Notifications));
+    // The stock phone accepts the request and action packets; the reply packet it also lists is never offered.
+    let out = gate::negotiated_outgoing(&p);
+    assert!(out.iter().any(|k| k == "kdeconnect.notification.request"));
+    assert!(out.iter().any(|k| k == "kdeconnect.notification.action"));
+    assert!(!out.iter().any(|k| k == "kdeconnect.notification.reply"));
+    assert_eq!(
+        gate::feature_of("kdeconnect.notification.action"),
+        Some(Feature::Notifications)
+    );
+    // Without the consent nothing leaves.
+    assert_eq!(
+        gate::check_outgoing("kdeconnect.notification.request", &out, |_| false),
+        gate::Outgoing::ConsentRequired(Feature::Notifications)
     );
 }

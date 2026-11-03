@@ -35,6 +35,7 @@ deterministic mode, which needs nothing extra.
 | `phone_wire` | `parse_uids`, `parse_vcards`, `parse_calendar_sync`, `parse_write_result`, `parse_sms_status`, `contact_from_vcard` | count caps; output size bounded by input size (amplification) |
 | `vcard` | `contact_from_vcard`, `strip_vcard_blobs`, `contact_revision`, `vcard_rev` | blob stripping never grows text |
 | `calls_wire` | `LinkCallReport::parse`, `parse_request`, `parse_result` | – |
+| `notification_wire` | `notification_link::parse`, `parse_request` | id, app, title and text within their caps and free of control characters; at most 3 action titles |
 | `clipboard` | `clipboard_wire::parse`, `parse_item`, `parse_none`, `parse_pull`, `sniff_image` | – |
 | `messages_wire` | `WireMessage` → `Message::from_wire`, `sms_segments` | – |
 | `ipc` | control API `Request`/`Response`/`Event`, `Token::parse`, `split_frame`, `parse_hello`, `decode_hex`, `format_hello` | request round-trips; a Ready nonce is valid hex; hello is one ASCII line |

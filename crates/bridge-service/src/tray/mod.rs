@@ -171,6 +171,22 @@ pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
             .iter()
             .filter(|l| l.phase == LinkPhase::Connected)
             .find_map(|l| l.battery);
+        for l in s.links.iter().filter(|l| l.phase == LinkPhase::Connected) {
+            if l.negotiated
+                .iter()
+                .any(|k| k == bridge_core::notification_link::NOTIFICATION)
+            {
+                input.mirror_available = true;
+                if s.paired.iter().any(|p| {
+                    p.device_id == l.device_id
+                        && p.consents
+                            .iter()
+                            .any(|c| c.feature == Feature::Notifications && c.enabled)
+                }) {
+                    input.mirror_on = true;
+                }
+            }
+        }
         if input.connected.is_empty() {
             input.why = s.disconnected.first().cloned();
         }
@@ -233,6 +249,7 @@ async fn perform(daemon: &Arc<Daemon>, state_dir: &Path, action: TrayAction) {
             }
         }
         TrayAction::TogglePause => toggle_pause(daemon, state_dir).await,
+        TrayAction::ToggleMirror => toggle_mirror(daemon).await,
         TrayAction::CheckUpdates => {
             let _ = daemon.handle(Request::UpdateCheck).await;
         }
@@ -255,6 +272,40 @@ fn target_for(
 
 fn launch(app: &str) {
     crate::desktop_notify::open_app(&format!("{app}{}", std::env::consts::EXE_SUFFIX));
+}
+
+/// "Show phone notifications": when mirroring is on for a connected phone this switches it off for all of
+/// them; otherwise it switches it on for the connected phones that offer it (the user's click is the consent).
+async fn toggle_mirror(daemon: &Arc<Daemon>) {
+    let Response::Status(status) = daemon.handle(Request::Status).await else {
+        return;
+    };
+    let offers = |l: &bridge_core::ipc::LinkStatus| {
+        l.phase == LinkPhase::Connected
+            && l.negotiated
+                .iter()
+                .any(|k| k == bridge_core::notification_link::NOTIFICATION)
+    };
+    let on = |id: &str| {
+        status.paired.iter().any(|p| {
+            p.device_id == id
+                && p.consents
+                    .iter()
+                    .any(|c| c.feature == Feature::Notifications && c.enabled)
+        })
+    };
+    let any_on = status.links.iter().any(|l| offers(l) && on(&l.device_id));
+    for l in status.links.iter().filter(|l| offers(l)) {
+        if any_on == on(&l.device_id) {
+            let _ = daemon
+                .handle(Request::SetConsent {
+                    device_id: l.device_id.clone(),
+                    feature: Feature::Notifications,
+                    enabled: !any_on,
+                })
+                .await;
+        }
+    }
 }
 
 /// "Pause sync" switches the clipboard feature off for every paired phone that has it on and

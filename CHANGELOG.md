@@ -7,6 +7,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Phone notification mirroring with dismiss and button presses (stock `kdeconnect.notification`, `.request` and `.action`
+  packets, so stock KDE Connect interoperates; typed replies are not offered). Off by default on both ends: a switch,
+  Android's Notification access (with guidance for the restricted-settings case), an app list that starts empty and a
+  per-computer allow on the phone, and a per-phone consent on the computer. Shown as desktop banners with a Dismiss
+  button, `geekbridge-ctl notifications`, a Home button and a tray item; kept in memory only (50 per phone, 3 hours).
+  See docs/reports/notification-mirroring.md.
 - `geekbridge-ctl doctor`: checks the service, the firewall rule for TCP and UDP 1716-1764 (ufw, firewalld), the desktop
   session, paired phones, clipboard, calls and Messages, prints the fix for each problem and exits 1 if a check failed.
 - `geekbridge-ctl call dial NUMBER [--yes]` and a confirmation sheet behind the Calls keypad: the computer asks the phone

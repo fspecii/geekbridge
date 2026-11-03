@@ -466,6 +466,7 @@ fn parse_data_flags(o: &mut Fields) -> Result<engine::DataFlags, ApiError> {
         sms: o.take_opt_bool("sms")?.unwrap_or(false),
         debug: o.take_opt_bool("debug")?.unwrap_or(false),
         battery: o.take_opt_bool("battery")?.unwrap_or(false),
+        notifications: o.take_opt_bool("notifications")?.unwrap_or(false),
     };
     Ok(flags)
 }
@@ -744,6 +745,9 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                 sms: f.take_opt_bool("sms")?.unwrap_or(current.sms),
                 debug: f.take_opt_bool("debug")?.unwrap_or(current.debug),
                 battery: f.take_opt_bool("battery")?.unwrap_or(current.battery),
+                notifications: f
+                    .take_opt_bool("notifications")?
+                    .unwrap_or(current.notifications),
             };
             f.finish()?;
             core.data().set_flags(flags);

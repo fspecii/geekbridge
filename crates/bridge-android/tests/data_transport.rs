@@ -675,6 +675,103 @@ fn battery_goes_only_to_allowed_computers_and_a_request_surfaces_as_an_event() {
     );
 }
 
+fn notification_peer() -> Peer {
+    // A desktop (or stock KDE Connect) that accepts `kdeconnect.notification` and can ask, dismiss and press buttons.
+    Peer::new(
+        &["kdeconnect.ping", "kdeconnect.notification"],
+        &[
+            "kdeconnect.ping",
+            "kdeconnect.notification.request",
+            "kdeconnect.notification.action",
+        ],
+    )
+}
+
+#[test]
+fn notifications_are_declared_only_when_enabled_in_the_stock_names_without_reply() {
+    let off = Phone::start(Some(ALL()));
+    assert!(!off.started.to_string().contains("notification"));
+    let on = Phone::start(Some(json!({"notifications": true})));
+    let caps = on.started["capabilities"].to_string();
+    assert!(caps.contains("\"kdeconnect.notification\""), "{caps}");
+    assert!(
+        caps.contains("\"kdeconnect.notification.request\""),
+        "{caps}"
+    );
+    assert!(
+        caps.contains("\"kdeconnect.notification.action\""),
+        "{caps}"
+    );
+    assert!(!caps.contains("notification.reply"), "{caps}");
+    assert!(!caps.contains("sms") && !caps.contains("contacts"));
+}
+
+#[test]
+fn notifications_go_only_to_allowed_computers_and_requests_surface_as_events() {
+    let phone = Phone::start(Some(json!({"notifications": true})));
+    let mut peer = notification_peer();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"notifications": ["e".repeat(32)]}}),
+    );
+    let post =
+        json!({"id": "n1", "appName": "Chat", "title": "Ada", "text": "hi", "isClearable": true});
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "kdeconnect.notification", "body": post})
+        ),
+        "not_connected"
+    );
+    peer.send(
+        "kdeconnect.notification.request",
+        body(json!({"cancel": "n1"})),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a computer that was not allowed is ignored"
+    );
+
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"notifications": ["d".repeat(32)]}}),
+    );
+    peer.send(
+        "kdeconnect.notification.request",
+        body(json!({"cancel": "n1"})),
+    );
+    peer.send(
+        "kdeconnect.notification.action",
+        body(json!({"key": "n1", "action": "Archive"})),
+    );
+    let first = phone.events(0, 1);
+    assert_eq!(first[0]["kind"], "kdeconnect.notification.request");
+    assert_eq!(first[0]["body"]["cancel"], "n1");
+    let second = phone.events(first[0]["seq"].as_u64().unwrap(), 1);
+    assert_eq!(second[0]["kind"], "kdeconnect.notification.action");
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "kdeconnect.notification", "body": post}),
+    );
+    let p = peer.recv_kind("kdeconnect.notification");
+    assert_eq!(p.body["id"], "n1");
+    assert_eq!(p.body["appName"], "Chat");
+
+    phone.ok("transport_data_config", json!({"notifications": false}));
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "kdeconnect.notification", "body": post})
+        ),
+        "data_disabled"
+    );
+}
+
 /// Against the REAL stock KDE Connect daemon's capabilities (captured fixture): the phone sends it only
 /// the stock packets it declared (SMS answers, battery) and never a GeekBridge extension, even with the
 /// feature on and the computer allowed.

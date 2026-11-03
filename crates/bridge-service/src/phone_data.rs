@@ -82,6 +82,10 @@ pub struct Caps {
     pub sms_status: bool,
     /// The phone accepts `kdeconnect.battery.request`.
     pub battery_request: bool,
+    /// The phone accepts `kdeconnect.notification.request` (dismiss, send-all).
+    pub notification_request: bool,
+    /// The phone accepts `kdeconnect.notification.action` (press a button).
+    pub notification_action: bool,
 }
 impl Caps {
     pub fn from_negotiated(outgoing: &[String], incoming: &[String]) -> Self {
@@ -100,6 +104,8 @@ impl Caps {
             sms_send: out(sms::REQUEST),
             sms_status: inc(wire::SMS_STATUS),
             battery_request: out(bridge_core::battery_link::REQUEST),
+            notification_request: out(bridge_core::notification_link::REQUEST),
+            notification_action: out(bridge_core::notification_link::ACTION),
         }
     }
 }
@@ -906,7 +912,8 @@ impl PhoneData {
         (rx, generation)
     }
 
-    pub fn link_down(&self, id: &str, generation: u64) {
+    /// The link of `generation` ended. True if it was the current one (a newer link may already be up).
+    pub fn link_down(&self, id: &str, generation: u64) -> bool {
         let mut g = self.lock();
         if let Some(d) = g.devices.get_mut(id)
             && d.generation == generation
@@ -914,7 +921,9 @@ impl PhoneData {
             d.tx = None;
             d.ledger.connection_lost(now_ms());
             d.edits.connection_lost(now_ms());
+            return true;
         }
+        false
     }
 
     /// The user changed a consent. Turning one off erases that feature's data at once.
@@ -970,6 +979,25 @@ impl PhoneData {
                 bridge_core::battery_link::request_body(),
             );
         }
+    }
+
+    /// What the connected phone's link negotiated; all false when it is not connected.
+    pub fn caps(&self, id: &str) -> Caps {
+        self.lock()
+            .devices
+            .get(id)
+            .filter(|d| d.connected())
+            .map(|d| d.caps)
+            .unwrap_or_default()
+    }
+
+    /// Queue one stock packet (no data-feature bookkeeping) on a connected phone's link. The caller checked
+    /// the consent and the negotiated capability. False if the phone is not connected or the queue is full.
+    pub fn send_stock(&self, id: &str, kind: &'static str, body: Map<String, Value>) -> bool {
+        self.lock()
+            .devices
+            .get(id)
+            .is_some_and(|d| d.send(kind, body))
     }
 
     /// Unpaired: drop everything held for the device.
@@ -2024,6 +2052,8 @@ mod tests {
             sms_send: true,
             sms_status: true,
             battery_request: true,
+            notification_request: true,
+            notification_action: true,
         }
     }
     const ID: &str = "pppppppppppppppppppppppppppppppp";
