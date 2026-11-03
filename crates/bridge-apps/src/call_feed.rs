@@ -148,7 +148,7 @@ mod tests {
     }
 
     fn wait_until(what: &str, f: impl Fn() -> bool) {
-        let end = std::time::Instant::now() + Duration::from_secs(3);
+        let end = std::time::Instant::now() + Duration::from_secs(30);
         while !f() {
             assert!(std::time::Instant::now() < end, "timed out: {what}");
             std::thread::sleep(Duration::from_millis(5));
@@ -193,7 +193,7 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s = seen.clone();
         let feed = CallFeed::spawn_with(
-            Duration::from_millis(40),
+            Duration::from_millis(1000), // the refusal shows for one cycle; keep it observable
             || Ok(status()),
             move |r| {
                 s.lock().unwrap().push(format!("{r:?}"));

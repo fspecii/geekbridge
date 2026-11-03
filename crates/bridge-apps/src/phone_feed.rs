@@ -210,7 +210,7 @@ mod tests {
     use super::*;
 
     fn wait_until(what: &str, f: impl Fn() -> bool) {
-        let end = std::time::Instant::now() + Duration::from_secs(3);
+        let end = std::time::Instant::now() + Duration::from_secs(30);
         while !f() {
             assert!(std::time::Instant::now() < end, "timed out: {what}");
             std::thread::sleep(Duration::from_millis(5));
@@ -221,6 +221,11 @@ mod tests {
     fn follows_params_shows_action_results_and_reports_a_down_service() {
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let s = seen.clone();
+        // The notice lives for one poll cycle (20 ms here), shorter than a loaded runner can
+        // stall the test thread, so record every state the worker publishes instead of sampling.
+        let shared: Arc<std::sync::OnceLock<Arc<Mutex<FeedState<String>>>>> = Arc::default();
+        let notices = Arc::new(Mutex::new(Vec::<String>::new()));
+        let (sh, nt) = (shared.clone(), notices.clone());
         let feed = Feed::<String>::spawn_with(
             Duration::from_millis(20),
             Request::Status,
@@ -235,8 +240,18 @@ mod tests {
                 Request::Ping { .. } => Ok(Some("pinged".into())),
                 _ => Err("refused".into()),
             },
-            || {},
+            move || {
+                if let Some(state) = sh.get() {
+                    let n = state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .notice
+                        .clone();
+                    nt.lock().unwrap().extend(n);
+                }
+            },
         );
+        let _ = shared.set(feed.state.clone());
         wait_until("down", || feed.state().problem.as_deref() == Some("down"));
         feed.set_params(Request::Events { after: 7 });
         wait_until("view", || feed.state().view.as_deref() == Some("events7"));
@@ -244,7 +259,7 @@ mod tests {
             device_id: "x".into(),
         });
         wait_until("notice", || {
-            feed.state().notice.as_deref() == Some("pinged")
+            notices.lock().unwrap().iter().any(|n| n == "pinged")
         });
         wait_until("notice expires", || feed.state().notice.is_none());
         feed.run(Request::Unpair {

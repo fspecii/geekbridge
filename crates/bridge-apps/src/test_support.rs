@@ -133,7 +133,7 @@ pub fn shapes(out: &egui::FullOutput) -> usize {
 
 /// Polls until `f` holds (feeds fetch on a worker thread).
 pub fn wait_until(what: &str, f: impl Fn() -> bool) {
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + Duration::from_secs(30);
     while !f() {
         assert!(Instant::now() < end, "timed out: {what}");
         std::thread::sleep(Duration::from_millis(5));
