@@ -31,7 +31,7 @@ desktop by default (memory only, dropped on unpair, consent-off, restart).
 | `kdeconnect.sms.request` | desktop -> phone | `{version:2, sendSms:true, addresses:[{address}], messageBody, subID?, requestId}` | stock + `requestId` (stock phones ignore it). One address, no attachments |
 | `kdeconnect.sms.messages` | phone -> desktop | `{version:2, messages:[msg..]}` | stock message shape. A GeekBridge phone may put messages from several threads in one packet (<= 100 messages, <= 900 KiB) |
 | `kdeconnect.sms.messages` extra `sims` | phone -> desktop | `"sims": [{"id", "slot", "label"}]` on any messages packet | GeekBridge extension, <= 4 SIMs. `id` = Android subscription id (the `subID` of a send), `slot` 1-based (0 unknown), `label` <= 24 printable chars. The desktop offers a SIM choice only from this list and refuses any other `subID`; the phone refuses an unlisted `subID` as `unknown_sim` (never a silent fallback to another SIM). Stock phones send none, so only "phone default" is offered |
-| `geekbridge.sms.status` | phone -> desktop | `{requestId, state, reason?}` | GeekBridge extension. `state` = `accepted` (phone handed it to the radio stack), `sent` (Android reports the message left the phone), `delivered` (carrier delivery report), `failed` (`reason` = short code such as `no_permission`, `no_service`, `radio_off`, `generic`, `limit`). Stock phones never send this |
+| `geekbridge.sms.status` | phone -> desktop | `{requestId, state, reason?}` | GeekBridge extension. `state` = `accepted` (phone handed it to the radio stack), `sent` (Android reports the message left the phone), `delivered` (carrier delivery report), `failed` (`reason` = short code: `no_permission`, `no_service`, `radio_off`, `no_sim`, `short_code`, `network`, `fdn`, `emergency`, `cancelled`, `call_active`, `invalid`, `undelivered`, `generic`, `limit`, `recipients`, `blocked_number`, `unknown_sim`). A repeated `requestId` is never sent twice; the phone answers it with the last status it had for that id. Stock phones never send this |
 
 | `geekbridge.photos.request` | desktop -> phone | `{op:"list", limit:1..24}`, `{op:"thumb", id}` or `{op:"get", id}` | GeekBridge extension (recent photos, [design/recent-photos.md](design/recent-photos.md)). `get` makes the phone send that one picture as an ordinary file share |
 | `geekbridge.photos.list` | phone -> desktop | `{items:[{id, name, taken, size, w, h}], partial}` | GeekBridge extension; <= 24 items, unique opaque ids, `partial` = Android shares only the photos the user picked |
@@ -218,7 +218,7 @@ status, notifications of what is shared. Sensitive content (contacts, event text
   to become the default messaging app, which GeekBridge deliberately does not (that would take over the user's
   messaging, MMS and the provider). It is therefore a sideload / F-Droid feature. On Android 13+ a sideloaded app
   may first need "Allow restricted settings" (App info, overflow menu) before the SMS permission can be granted.
-* **Not supported:** MMS attachments (shown as an "Attachment" placeholder: open on the phone), group messages (one
+* **Not supported:** MMS attachments (listed without content as "MMS message — open on phone"; the phone sends only an `attachments` marker, never a caption or part), group messages (one
   recipient per send), RCS (the system messaging app keeps RCS outside the SMS provider), scheduled sends, marking
   read on the phone. Dual SIM works only against a GeekBridge phone that lists its SIMs (needs `READ_PHONE_STATE`).
 * **Delivery receipts** exist only if the carrier sends one and the phone app relays it; "sent" means Android
@@ -254,3 +254,12 @@ status, notifications of what is shared. Sensitive content (contacts, event text
   thread -> desktop send reaches the phone's own status).
 * Emulator: `scripts/e2e-phonedata.sh` (injects contacts, calendar events and SMS with `adb`, drives the real
   Agenda and Messages windows under a private Xvfb, screenshots in `dist/screenshots/phonedata/`).
+
+## Per-computer limits for texts (phone side)
+
+Counted per paired computer (device id from the native core, delivered beside the request as `device`/`computer` in
+the relayed event, never read from the packet body) and kept for the life of the app process, so reconnecting gives no
+new allowance: 10 texts per minute, 60 per hour, and at most 8 different numbers per 10 minutes. Over the limit the
+text is refused (`limit` or `recipients`), not counted, and the owner gets one notice per computer per 10 minutes
+(toast plus a notification on the "Texts held back" channel). Short codes and premium ranges stay refused unless the
+owner allows them.

@@ -97,7 +97,14 @@ object PhoneDataKinds {
 }
 
 /** One desktop request relayed by the native core. */
-data class DataEvent(val seq: Long, val connectionId: Long, val kind: String, val body: JSONObject)
+/**
+ * [device] and [computer] are the paired computer's id and name as the native core knows them ("" if it did not say);
+ * they travel beside [body], which the computer wrote, and are the only source for who asked.
+ */
+data class DataEvent(
+    val seq: Long, val connectionId: Long, val kind: String, val body: JSONObject,
+    val device: String = "", val computer: String = "",
+)
 data class DataWait(val events: List<DataEvent>, val seq: Long, val stopped: Boolean, val truncated: Boolean = false)
 
 object PhoneDataLimits {
@@ -129,8 +136,12 @@ object PhoneDataLimits {
     const val SMS_THREADS_LISTED = MAX_SMS_PER_PACKET * 3
     const val CALENDAR_PUSH_SPACING_MS = 30_000L
     const val WAIT_MS = 25_000L
+    /** Per paired computer, see [SmsGuard]. */
     const val SMS_SENDS_PER_MINUTE = 10
     const val SMS_SENDS_PER_HOUR = 60
+    /** Different numbers one computer may text within [SMS_RECIPIENT_WINDOW_MS]. */
+    const val SMS_RECIPIENTS_PER_WINDOW = 8
+    const val SMS_RECIPIENT_WINDOW_MS = 10 * 60_000L
     const val MAX_SMS_REQUESTS_REMEMBERED = 200
 }
 
@@ -176,7 +187,9 @@ object PhoneDataProtocol {
             val conn = (e.opt("connection_id") as? Number)?.toLong() ?: 0L
             val k = (e.opt("kind") as? String)?.takeIf { kind.matches(it) } ?: continue
             val body = e.optJSONObject("body") ?: JSONObject()
-            out += DataEvent(seq, conn, k, body)
+            val device = (e.opt("device") as? String)?.takeIf { it.length <= 64 && it.all { c -> c.isLetterOrDigit() || c == '-' || c == '_' } }.orEmpty()
+            val computer = clean((e.opt("computer") as? String).orEmpty(), 40)
+            out += DataEvent(seq, conn, k, body, device, computer)
         }
         val seq = (o.opt("seq") as? Number)?.toLong() ?: (o.opt("last_seq") as? Number)?.toLong() ?: 0L
         return DataWait(out, seq, o.optBoolean("stopped", false), truncated)
@@ -319,9 +332,12 @@ object PhoneDataProtocol {
 
     fun smsMessage(r: SmsRow): JSONObject = JSONObject()
         .put("addresses", JSONArray().put(JSONObject().put("address", clean(r.address, 64))))
-        .put("body", clean(r.body, PhoneDataLimits.MAX_SMS_BODY_CHARS, multiline = true))
+        // MMS text parts are not read at all (nothing but "there is a picture message" leaves the phone for it).
+        .put("body", if (r.mms) "" else clean(r.body, PhoneDataLimits.MAX_SMS_BODY_CHARS, multiline = true))
         .put("date", r.date).put("type", r.type).put("read", if (r.read) 1 else 0)
         .put("thread_id", r.threadId).put("_id", r.id).put("sub_id", r.subId).put("event", 1)
+        // The desktop recognises an MMS by this array (KDE Connect's wire format); one marker, content unknown.
+        .also { if (r.mms) it.put("attachments", JSONArray().put(JSONObject().put("mime_type", "application/octet-stream"))) }
 
     /** `{"<thread id>": n}` for threads with unread incoming texts; <= 300 threads, counts <= 10000. */
     fun unreadJson(counts: Map<Long, Int>): JSONObject {
@@ -338,6 +354,13 @@ object PhoneDataProtocol {
             a.put(JSONObject().put("id", s.id).put("slot", s.slot.coerceIn(0, 8)).put("label", clean(s.label, 24)))
         }
         return a
+    }
+
+    /** accepted < sent < delivered/failed; the last two are final and equal. */
+    fun smsStateRank(state: String): Int = when (state) {
+        "accepted" -> 1
+        "sent" -> 2
+        else -> 3
     }
 
     fun smsStatus(requestId: String, state: String, reason: String? = null): JSONObject =
@@ -373,13 +396,22 @@ object PhoneDataProtocol {
         return SmsParse.Ok(rid, address, text, sub)
     }
 
-    /** Android `Telephony.Sms.Sent` result codes -> the short reason vocabulary of the contract. */
+    /**
+     * `SmsManager.RESULT_*` codes (checked against android.jar, API 36) -> the short reason vocabulary of the contract.
+     * Unknown and future codes fall back to "generic", so a newer Android never produces an unexplained word.
+     */
     fun failureReason(resultCode: Int): String = when (resultCode) {
-        // SmsManager.RESULT_ERROR_GENERIC_FAILURE=1, RADIO_OFF=2, NULL_PDU=3, NO_SERVICE=4, LIMIT_EXCEEDED=5 (+ newer 6..)
-        1 -> "generic"
-        2 -> "radio_off"
-        4 -> "no_service"
-        5 -> "limit"
+        2, 9, 100 -> "radio_off"
+        4, 116, 135 -> "no_service"
+        5, 106 -> "limit"
+        7, 8 -> "short_code"
+        120, 128, 129, 130, 134 -> "no_sim"
+        3, 11, 14, 18, 19, 104, 107, 109, 110 -> "invalid"
+        6 -> "fdn"
+        10, 17, 102, 112 -> "network"
+        29 -> "emergency"
+        23, 119, 137 -> "cancelled"
+        121, 123 -> "call_active"
         else -> "generic"
     }
 }
@@ -423,6 +455,8 @@ data class SmsRow(
     val type: Int,
     val read: Boolean,
     val subId: Int,
+    /** A picture message (MMS table). Its parts are never read: the computer shows a placeholder. */
+    val mms: Boolean = false,
 )
 
 /**

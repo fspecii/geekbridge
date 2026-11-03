@@ -136,6 +136,8 @@ const SENDS_PER_MINUTE: usize = 10;
 /// Texts remembered per phone (settled ones beyond this are forgotten, oldest first), so a link that stays
 /// up for months does not grow the send book or the status snapshot without bound.
 const SEND_HISTORY: usize = 200;
+/// Shown where a picture message has no text: MMS is read on the phone only, but never silently missing.
+pub const MMS_PLACEHOLDER: &str = "MMS message \u{2014} open on phone";
 const NOTIFY_MAX_AGE_MS: u64 = 10 * 60 * 1000;
 const NOTIFY_MIN_GAP_MS: u64 = 2_000;
 /// Most distinct senders announced for one packet; the rest are still in the Messages window.
@@ -616,7 +618,8 @@ impl Dev {
         for m in parsed.messages {
             let tid = m.key.thread_id;
             if !self.threads.contains_key(&tid) {
-                if self.threads.len() >= MAX_THREADS {
+                if self.threads.len() >= MAX_THREADS && !self.drop_stalest_thread_before(m.date_ms)
+                {
                     continue;
                 }
                 self.threads.insert(tid, Thread::new(tid));
@@ -683,6 +686,20 @@ impl Dev {
         self.sms_listed = true;
         let notify = self.pick_notifications(notify, now);
         (Disposition::Accepted, notify)
+    }
+
+    /// The list is full: forget the conversation whose newest message is oldest, but only if a message
+    /// from a new conversation is newer than it (a text from the 301st person must not vanish).
+    fn drop_stalest_thread_before(&mut self, date_ms: u64) -> bool {
+        let stalest = self
+            .threads
+            .iter()
+            .map(|(k, t)| (t.conv.newest_date_ms().unwrap_or(0), *k))
+            .min();
+        match stalest {
+            Some((d, k)) if d < date_ms => self.threads.remove(&k).is_some(),
+            _ => false,
+        }
     }
 
     /// One notification per sender per gap, at most [`NOTIFY_MAX_SENDERS`] senders per packet, so a flood
@@ -1634,7 +1651,14 @@ impl PhoneData {
                         title
                     },
                     addresses: addrs,
-                    last_body: truncate(&last.body, 160),
+                    last_body: if last.body.trim().is_empty()
+                        && (last.key.transport == bridge_core::messages::Transport::Mms
+                            || last.attachment_count > 0)
+                    {
+                        MMS_PLACEHOLDER.to_owned()
+                    } else {
+                        truncate(&last.body, 160)
+                    },
                     last_date_ms: last.date_ms,
                     last_outgoing: last.direction() == Direction::Outgoing,
                     unread: t.unread(),
@@ -2955,6 +2979,59 @@ mod tests {
             "title match needs no snippet"
         );
         assert!(find("zzz").is_empty());
+    }
+
+    #[test]
+    fn a_picture_message_is_shown_as_a_placeholder_not_as_an_empty_line() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        let mms = json!({"addresses": [{"address": "+4915112345678"}], "body": "",
+            "date": now - 1000, "type": 1, "read": 0, "thread_id": 5, "_id": 7, "attachments": [{}]});
+        // The same _id in the SMS table is a different message: both are kept.
+        let sms7 = json!({"addresses": [{"address": "+4915112345678"}], "body": "earlier",
+            "date": now - 5000, "type": 1, "read": 1, "thread_id": 5, "_id": 7});
+        feed(&h, vec![sms7, mms]);
+        let v = h.messages_view(Some(ID), Some(5), None).unwrap();
+        assert_eq!(v.conversations[0].last_body, MMS_PLACEHOLDER);
+        assert_eq!(v.conversations[0].message_count, 2);
+        let sel = v.selected.unwrap();
+        assert_eq!(sel.messages.len(), 2);
+        assert!(sel.messages[1].mms && sel.messages[1].body.is_empty());
+        // A picture with a caption keeps the caption in the list.
+        let cap = json!({"addresses": [{"address": "+4915112345678"}], "body": "look!",
+            "date": now, "type": 1, "read": 0, "thread_id": 5, "_id": 8, "attachments": [{}]});
+        feed(&h, vec![cap]);
+        let v = h.messages_view(None, None, None).unwrap();
+        assert_eq!(v.conversations[0].last_body, "look!");
+    }
+
+    #[test]
+    fn a_text_from_a_new_person_is_not_lost_when_the_conversation_list_is_full() {
+        let (h, _rx) = sms_hub();
+        let base = now_ms() - 10_000_000;
+        let first: Vec<Value> = (0..MAX_THREADS as i64)
+            .map(|t| msg(t + 1, 1, 1, "hi", base + t as u64))
+            .collect();
+        for chunk in first.chunks(100) {
+            feed(&h, chunk.to_vec());
+        }
+        assert_eq!(
+            h.messages_view(None, None, None)
+                .unwrap()
+                .conversations_total,
+            MAX_THREADS
+        );
+        // Older than everything held: still left out. Newer: takes the place of the stalest conversation.
+        feed(&h, vec![msg(9000, 1, 1, "ancient", base - 5)]);
+        feed(&h, vec![msg(9001, 1, 1, "fresh", base + 5_000_000)]);
+        let v = h.messages_view(None, None, None).unwrap();
+        assert_eq!(v.conversations_total, MAX_THREADS);
+        assert!(v.conversations.iter().any(|c| c.thread_id == 9001));
+        assert!(!v.conversations.iter().any(|c| c.thread_id == 9000));
+        assert!(
+            !v.conversations.iter().any(|c| c.thread_id == 1),
+            "the stalest one made room"
+        );
     }
 
     #[test]

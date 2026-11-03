@@ -261,7 +261,21 @@ impl Hub {
         self.cv.notify_all();
     }
 
+    #[cfg(test)]
     fn push(&self, feature: Feature, connection_id: u64, kind: &str, body: Map<String, Value>) {
+        self.push_from(feature, connection_id, kind, body, None);
+    }
+
+    /// Queue a request for Kotlin. `who` is the computer's (device id, name) as the core knows it from the
+    /// pairing; it rides beside the body, never inside it, so a computer cannot claim to be another one.
+    fn push_from(
+        &self,
+        feature: Feature,
+        connection_id: u64,
+        kind: &str,
+        body: Map<String, Value>,
+        who: Option<(String, String)>,
+    ) {
         let mut g = self.lock();
         if g.stopped || !g.flags.get(feature) {
             return;
@@ -273,12 +287,19 @@ impl Hub {
         }
         g.events.push_back(Event {
             seq,
-            body: json!({
-                "seq": seq,
-                "connection_id": connection_id,
-                "kind": kind,
-                "body": Value::Object(body),
-            }),
+            body: {
+                let mut ev = json!({
+                    "seq": seq,
+                    "connection_id": connection_id,
+                    "kind": kind,
+                    "body": Value::Object(body),
+                });
+                if let (Some((device, computer)), Some(o)) = (who, ev.as_object_mut()) {
+                    o.insert("device".into(), json!(device));
+                    o.insert("computer".into(), json!(computer));
+                }
+                ev
+            },
             at: Instant::now(),
         });
         drop(g);
@@ -445,8 +466,13 @@ impl Core {
             self.permitted(feature.key(), connection_id)
         };
         if allowed {
+            let who = self
+                .lock()
+                .conns
+                .get(&connection_id)
+                .map(|c| (c.peer_id.to_string(), c.peer_name.clone()));
             self.data
-                .push(feature, connection_id, &p.kind, p.body.clone());
+                .push_from(feature, connection_id, &p.kind, p.body.clone(), who);
         }
         true
     }

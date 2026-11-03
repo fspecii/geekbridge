@@ -79,6 +79,54 @@ object SmsPaging {
     }
 }
 
+/** Combines the SMS and MMS tables of the provider, which number their rows independently. Pure, unit-tested. */
+object SmsMerge {
+    private val newestFirst = compareByDescending<SmsRow> { it.date }.thenByDescending { it.id }.thenBy { it.mms }
+
+    /** Newest message of each thread across both tables, newest thread first, at most [max] threads. */
+    fun latest(sms: List<SmsRow>, mms: List<SmsRow>, max: Int): List<SmsRow> {
+        val best = HashMap<Long, SmsRow>()
+        for (r in sms + mms) {
+            val cur = best[r.threadId]
+            if (cur == null || newestFirst.compare(r, cur) < 0) best[r.threadId] = r
+        }
+        return best.values.sortedWith(newestFirst).take(max)
+    }
+
+    /** One page of a thread: both tables interleaved newest first. */
+    fun thread(sms: List<SmsRow>, mms: List<SmsRow>, limit: Int): List<SmsRow> =
+        (sms + mms).sortedWith(newestFirst).take(limit)
+
+    fun unread(sms: Map<Long, Int>, mms: Map<Long, Int>): Map<Long, Int> {
+        val out = HashMap(sms)
+        for ((t, n) in mms) out.merge(t, n, Int::plus)
+        return out
+    }
+}
+
+/** Pure helpers for reading the provider's MMS table (no content is read, only who/when/which thread). */
+object MmsRows {
+    private const val ADDRESS_FROM = 137
+    private const val ADDRESS_TO = 151
+    private const val TOKEN = "insert-address-token"
+
+    /** The MMS table counts seconds, SMS and the wire milliseconds. Clamped so nothing overflows or goes negative. */
+    fun dateMs(seconds: Long): Long = when {
+        seconds < 0 -> 0
+        seconds > Long.MAX_VALUE / 2000 -> Long.MAX_VALUE / 2
+        else -> seconds * 1000
+    }
+
+    /**
+     * Who the message is with: the sender of an incoming one, the first recipient of an outgoing one. Android stores
+     * the owner's own side as a placeholder token, which is skipped.
+     */
+    fun pickAddress(addrs: List<Pair<String, Int>>, incoming: Boolean): String {
+        val want = if (incoming) ADDRESS_FROM else ADDRESS_TO
+        return addrs.firstOrNull { it.second == want && it.first != TOKEN && it.first.isNotBlank() }?.first.orEmpty()
+    }
+}
+
 /** Raised inside a provider read when the link went away: the answer would have nowhere to go. */
 class QueryCancelled : RuntimeException("cancelled")
 
@@ -135,6 +183,10 @@ class PhoneDataEngine(
     private val calendarWriter: CalendarWriter? = null,
     private val allowSpecialNumbers: () -> Boolean = { false },
     private val smsLedger: RequestLedger = RequestLedger(),
+    /** Per-computer allowance for texts; outlives links on purpose (see [SmsGuard]). */
+    private val smsGuard: SmsGuard = SmsGuard(),
+    /** A computer's text was held back because it sent too many; called at most once per 10 minutes per computer. */
+    private val smsLimited: (computer: String) -> Unit = {},
     private val cancel: QueryCancel = QueryCancel(),
     /** Waits between retries of a rate-limited packet; injected so tests do not sleep. */
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
@@ -155,8 +207,11 @@ class PhoneDataEngine(
     private var calLastPush = Long.MIN_VALUE / 2
 
     private var smsRequested = false
-    private val smsSendTimes = ArrayDeque<Long>()
-    private val smsHourTimes = ArrayDeque<Long>()
+    /** Last status sent per request id, so a repeated request is answered with it (bounded, memory only). */
+    private val smsLast = object : LinkedHashMap<String, Pair<String, String?>>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<String, String?>>?) =
+            size > PhoneDataLimits.MAX_SMS_REQUESTS_REMEMBERED
+    }
     private var backoffUntil = 0L
 
     /**
@@ -181,8 +236,8 @@ class PhoneDataEngine(
         calCounter = 0
         calSent = emptyMap()
         smsRequested = false
-        smsSendTimes.clear()
-        smsHourTimes.clear() // the request-id ledger is kept on purpose: a replay on the next link must not send again
+        // The request-id ledger, the last statuses and the per-computer guard are kept on purpose: a replay or a
+        // reconnect must neither send again nor hand the computer a fresh allowance.
     }
 
     @Synchronized
@@ -208,7 +263,7 @@ class PhoneDataEngine(
                 pushSms(sms.latestPerThread(PhoneDataLimits.SMS_THREADS_LISTED), withUnread = true)
             }
             PhoneDataKinds.SMS_REQ_CONVERSATION -> if (f.sms) smsConversation(e.body)
-            PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body)
+            PhoneDataKinds.SMS_REQUEST -> if (f.sms) smsRequest(e.body, e.device, e.computer)
             PhoneDataKinds.BATTERY_REQ -> if (f.battery) battery?.sendNow(e.connectionId)
             PhoneDataKinds.NOTIFICATION_REQ -> if (f.notifications) mirror?.let { m ->
                 when (val ask = MirrorRules.parseRequest(e.body)) {
@@ -446,32 +501,41 @@ class PhoneDataEngine(
     }
 
     private fun status(requestId: String?, state: String, reason: String? = null) {
-        if (requestId != null) emit(PhoneDataKinds.SMS_STATUS, PhoneDataProtocol.smsStatus(requestId, state, reason))
+        if (requestId == null) return
+        val before = smsLast[requestId]?.first
+        // "sent" can overtake our own "accepted" (separate threads); a status never walks backwards or leaves a final one.
+        if (before != null && PhoneDataProtocol.smsStateRank(state) <= PhoneDataProtocol.smsStateRank(before)) return
+        smsLast[requestId] = state to reason
+        emit(PhoneDataKinds.SMS_STATUS, PhoneDataProtocol.smsStatus(requestId, state, reason))
     }
 
-    private fun smsRequest(body: JSONObject) {
+    private fun smsRequest(body: JSONObject, device: String, computer: String) {
         when (val p = PhoneDataProtocol.parseSmsRequest(body)) {
             is PhoneDataProtocol.SmsParse.Bad -> status(p.requestId, "failed", p.reason)
             is PhoneDataProtocol.SmsParse.Ok -> {
                 // A repeated request id is the same send: never text twice (its first status is already on its way).
-                if (p.requestId != null && !smsLedger.firstTime(p.requestId)) return
+                if (p.requestId != null && !smsLedger.firstTime(p.requestId)) {
+                    // Tell the computer what became of it (it may have lost our answer with its link); never text again.
+                    smsLast[p.requestId]?.let { (state, reason) ->
+                        emit(PhoneDataKinds.SMS_STATUS, PhoneDataProtocol.smsStatus(p.requestId, state, reason))
+                    }
+                    return
+                }
                 val verdict = SmsDestination.check(p.address)
                 // "Allow short codes" never covers a destination that is not a number at all.
                 if (verdict != SmsDestination.Verdict.Ok && (!allowSpecialNumbers() || verdict == SmsDestination.Verdict.Invalid)) {
                     return status(p.requestId, "failed", "blocked_number")
                 }
-                val now = clock()
-                while (smsSendTimes.isNotEmpty() && now - smsSendTimes.first() > 60_000) smsSendTimes.removeFirst()
-                while (smsHourTimes.isNotEmpty() && now - smsHourTimes.first() > 3_600_000) smsHourTimes.removeFirst()
-                if (smsSendTimes.size >= PhoneDataLimits.SMS_SENDS_PER_MINUTE || smsHourTimes.size >= PhoneDataLimits.SMS_SENDS_PER_HOUR) {
-                    return status(p.requestId, "failed", "limit")
-                }
                 // A SIM the phone did not list would silently fall back to another one: refuse instead.
                 if (p.subId != null && sms.subscriptions().none { it.id == p.subId }) {
                     return status(p.requestId, "failed", "unknown_sim")
                 }
-                smsSendTimes.addLast(now)
-                smsHourTimes.addLast(now)
+                val now = clock()
+                val allowance = smsGuard.admit(device, p.address, now)
+                if (allowance != SmsGuard.Verdict.Ok) {
+                    if (smsGuard.noticeDue(device, now)) smsLimited(computer)
+                    return status(p.requestId, "failed", if (allowance == SmsGuard.Verdict.Recipients) "recipients" else "limit")
+                }
                 try {
                     sender.send(p.address, p.text, p.subId, object : SmsStatusListener {
                         override fun onStatus(state: String, reason: String?) {

@@ -1062,6 +1062,15 @@ fn send_phase_text(send: &SendItem, phone_reports: bool) -> (String, bool) {
 }
 
 /// "1 SMS, 12 of 160" / "2 SMS (Unicode: emoji or accents), 38 left" for the compose counter.
+/// What stands in for a picture message: its pictures and sounds are never sent to the computer.
+fn mms_label(attachments: u32) -> String {
+    if attachments > 1 {
+        format!("MMS message ({attachments} attachments) \u{2014} open on phone")
+    } else {
+        "MMS message \u{2014} open on phone".to_owned()
+    }
+}
+
 fn segment_label(text: &str) -> String {
     let info = sms_segments(text);
     if info.segments == 0 {
@@ -1415,27 +1424,15 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                         );
                     }
                     if m.attachments > 0 || m.mms {
-                        let n = m.attachments.max(1);
+                        // MMS is not carried to the computer: say so plainly instead of showing nothing.
                         ui.add(
                             egui::Label::new(
-                                RichText::new(format!(
-                                    "Attachment{}",
-                                    if n > 1 {
-                                        format!(" ({n})")
-                                    } else {
-                                        String::new()
-                                    }
-                                ))
-                                .color(fg)
-                                .size(13.0)
-                                .strong(),
+                                RichText::new(mms_label(m.attachments))
+                                    .color(fg)
+                                    .size(13.0)
+                                    .strong(),
                             )
                             .wrap(),
-                        );
-                        ui.label(
-                            RichText::new("Picture message: open it on the phone")
-                                .color(fg.gamma_multiply(0.75))
-                                .size(12.0),
                         );
                     }
                     ui.label(
@@ -1617,6 +1614,16 @@ mod tests {
             attachments: 0,
             sub_id: None,
         }
+    }
+
+    #[test]
+    fn picture_messages_say_to_open_them_on_the_phone() {
+        assert_eq!(mms_label(0), "MMS message \u{2014} open on phone");
+        assert_eq!(mms_label(1), "MMS message \u{2014} open on phone");
+        assert_eq!(
+            mms_label(3),
+            "MMS message (3 attachments) \u{2014} open on phone"
+        );
     }
 
     #[test]

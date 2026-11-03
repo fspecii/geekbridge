@@ -349,6 +349,28 @@ fn desktop_requests_become_events_and_a_disabled_feature_drops() {
 }
 
 #[test]
+fn events_say_which_computer_asked_and_a_body_cannot_forge_it() {
+    // The phone limits texts per computer (not per connection): it must learn who asked from the core,
+    // never from the packet body the computer controls.
+    let phone = Phone::start(Some(json!({"sms": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    peer.send(
+        "kdeconnect.sms.request",
+        body(json!({
+            "requestId": "r1", "messageBody": "hi", "addresses": [{"address": "+4915112345678"}],
+            "device": "f".repeat(32), "computer": "Someone else",
+        })),
+    );
+    let ev = &phone.events(0, 1)[0];
+    assert_eq!(ev["kind"], "kdeconnect.sms.request");
+    assert_eq!(ev["device"], "d".repeat(32));
+    assert_eq!(ev["computer"], "Desk");
+    // The forged fields stay where the computer put them, inside the body.
+    assert_eq!(ev["body"]["device"], "f".repeat(32));
+}
+
+#[test]
 fn sends_reach_the_peer_and_are_checked() {
     let phone = Phone::start(Some(json!({"contacts": true, "sms": true})));
     let mut peer = Peer::full();

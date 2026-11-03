@@ -286,6 +286,16 @@ pub fn send_reason_text(code: &str) -> &'static str {
         "no_service" => "The phone has no mobile signal.",
         "radio_off" => "The phone's radio is off (airplane mode?).",
         "limit" => "The phone refused: too many texts in a short time.",
+        "recipients" => "The phone refused: texts to too many different numbers in a short time.",
+        "short_code" => "The carrier does not allow texts to this short or premium number.",
+        "no_sim" => "The phone has no usable SIM for this text.",
+        "unknown_sim" => "The chosen SIM is not in the phone any more.",
+        "network" => "The mobile network rejected the text.",
+        "fdn" => "The SIM only allows fixed numbers and this is not one of them.",
+        "emergency" => "Texts are blocked while an emergency call is in progress.",
+        "cancelled" => "The phone cancelled the text.",
+        "call_active" => "The phone is busy with a call; try again after it.",
+        "undelivered" => "The text left the phone but the carrier could not deliver it.",
         "blocked_number" => "GeekBridge does not send to premium or short numbers.",
         "group_unsupported" => "Group messages are not supported; send to one number.",
         "mms_unsupported" => "Picture messages cannot be sent from the computer.",
@@ -332,4 +342,47 @@ pub struct SelectedThread {
     /// The per-thread memory cap was reached: older messages were dropped here (they stay on the phone).
     #[serde(default)]
     pub capped: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::send_reason_text;
+
+    #[test]
+    fn every_reason_the_phone_can_report_has_its_own_plain_sentence() {
+        // The vocabulary of `geekbridge.sms.status` (docs/phone-data-link.md) as the Android app emits it.
+        let codes = [
+            "no_permission",
+            "no_service",
+            "radio_off",
+            "limit",
+            "recipients",
+            "blocked_number",
+            "group_unsupported",
+            "mms_unsupported",
+            "invalid",
+            "short_code",
+            "no_sim",
+            "unknown_sim",
+            "network",
+            "fdn",
+            "emergency",
+            "cancelled",
+            "call_active",
+            "undelivered",
+        ];
+        let generic = send_reason_text("generic");
+        let mut seen = std::collections::HashSet::new();
+        for c in codes {
+            let t = send_reason_text(c);
+            assert_ne!(t, generic, "{c} falls back to the generic sentence");
+            assert!(
+                seen.insert(t),
+                "{c} shares its sentence with another reason"
+            );
+            assert!(t.ends_with('.') && t.len() < 100, "{c}: {t}");
+        }
+        assert_eq!(send_reason_text("something_new"), generic);
+        assert_eq!(send_reason_text(""), generic);
+    }
 }

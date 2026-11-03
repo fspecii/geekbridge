@@ -446,7 +446,54 @@ fn sms_parse(input: &[u8]) {
     }
     let u = sms::parse_unread(&body);
     oracle(u.len() <= input.len() + 1, || "unread amplification".into());
-    let _ = sms::parse_sims(&body);
+    if let Some(sims) = sms::parse_sims(&body) {
+        oracle(sims.len() <= bridge_core::phone_view::MAX_SIMS, || {
+            format!("{} SIMs accepted", sims.len())
+        });
+        for s in &sims {
+            oracle(s.label.chars().count() <= 24, || "SIM label over 24".into());
+            oracle(!s.label.chars().any(char::is_control), || {
+                "control character in a SIM label".into()
+            });
+        }
+    }
+    if let Ok(st) = phone_link::parse_sms_status(&body) {
+        // A phone-chosen word that is shown to the user and kept in state: short, plain, no controls.
+        if let Some(r) = &st.reason {
+            oracle(
+                !r.is_empty()
+                    && r.len() <= 32
+                    && r.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                || format!("reason {r:?} escaped its alphabet"),
+            );
+        }
+        oracle(
+            !st.request_id.is_empty()
+                && st.request_id.len() <= 64
+                && st
+                    .request_id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            || format!("request id {:?} escaped its alphabet", st.request_id),
+        );
+    }
+    // The text the computer would send for arbitrary input is either refused or a valid one-recipient request.
+    let t = text(input);
+    if let Ok(intent) = bridge_core::messages::OutgoingTextIntent::new(
+        &["+4915112345678"],
+        t.as_str(),
+        bridge_core::messages::SimSelection::PhoneDefault,
+    ) {
+        let b = sms::send_request_body(&intent, "fuzz-1");
+        oracle(
+            b.get("addresses").and_then(Value::as_array).map(Vec::len) == Some(1),
+            || "send request lost its single recipient".into(),
+        );
+        oracle(
+            b.get("messageBody").and_then(Value::as_str) == Some(intent.text()),
+            || "send request changed the text".into(),
+        );
+    }
 }
 
 // --------------------------------------------------------------------- bridge-core extension

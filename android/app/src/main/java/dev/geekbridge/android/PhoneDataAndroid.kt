@@ -465,7 +465,77 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         emptyList()
     }
 
-    override fun unreadCounts(): Map<Long, Int> = try {
+    override fun unreadCounts(): Map<Long, Int> = SmsMerge.unread(smsUnread(), mmsUnread())
+
+    /** Unread picture messages per thread; any failure just means "none" so texts are never held back by it. */
+    private fun mmsUnread(): Map<Long, Int> = try {
+        val q = Bundle().apply {
+            putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${Telephony.Mms.READ} = 0 AND ${Telephony.Mms.MESSAGE_BOX} = 1")
+            putInt(ContentResolver.QUERY_ARG_LIMIT, 2000)
+        }
+        val out = HashMap<Long, Int>()
+        resolver.query(Telephony.Mms.CONTENT_URI, arrayOf(Telephony.Mms.THREAD_ID), q, null)?.use { c ->
+            var n = 0
+            while (c.moveToNext() && n++ < 2000) out.merge(c.getLong(0), 1, Int::plus)
+        }
+        out
+    } catch (_: RuntimeException) {
+        emptyMap()
+    }
+
+    /** Picture messages, newest first. Only ids, thread, date, box, read mark and SIM; never a part or a caption. */
+    private fun mmsQuery(selection: String?, args: Array<String>?, limit: Int): List<SmsRow> = try {
+        val q = Bundle().apply {
+            if (selection != null) putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+            if (args != null) putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(Telephony.Mms.DATE, Telephony.Mms._ID))
+            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+            putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
+        }
+        val signal = CancellationSignal()
+        cancel.guard({ signal.cancel() }) {
+            val out = ArrayList<SmsRow>()
+            val cols = arrayOf(
+                Telephony.Mms._ID, Telephony.Mms.THREAD_ID, Telephony.Mms.DATE, Telephony.Mms.MESSAGE_BOX,
+                Telephony.Mms.READ, Telephony.Mms.SUBSCRIPTION_ID,
+            )
+            resolver.query(Telephony.Mms.CONTENT_URI, cols, q, signal)?.use { c ->
+                while (c.moveToNext() && out.size < limit) {
+                    cancel.check()
+                    val box = c.getInt(3)
+                    if (box !in 1..4) continue
+                    out += SmsRow(
+                        id = c.getLong(0), threadId = c.getLong(1), address = "", body = "", date = MmsRows.dateMs(c.getLong(2)),
+                        type = box, read = c.getInt(4) != 0, subId = c.getInt(5), mms = true,
+                    )
+                }
+            }
+            out
+        }
+    } catch (_: SecurityException) {
+        emptyList()
+    } catch (_: android.os.OperationCanceledException) {
+        throw QueryCancelled()
+    } catch (_: RuntimeException) {
+        emptyList() // an OEM provider without one of the columns: texts still work, pictures are missing
+    }
+
+    /** Fills in who an MMS is with (one small query per message shown). */
+    private fun withAddress(r: SmsRow): SmsRow {
+        if (!r.mms) return r
+        return try {
+            val uri = Telephony.Mms.CONTENT_URI.buildUpon().appendPath(r.id.toString()).appendPath("addr").build()
+            val addrs = ArrayList<Pair<String, Int>>()
+            resolver.query(uri, arrayOf("address", "type"), null, null, null)?.use { c ->
+                while (c.moveToNext() && addrs.size < 16) addrs += (c.getString(0).orEmpty() to c.getInt(1))
+            }
+            r.copy(address = MmsRows.pickAddress(addrs, incoming = r.type == 1))
+        } catch (_: RuntimeException) {
+            r
+        }
+    }
+
+    private fun smsUnread(): Map<Long, Int> = try {
         val q = Bundle().apply {
             putString(ContentResolver.QUERY_ARG_SQL_SELECTION, "${Telephony.Sms.READ} = 0 AND ${Telephony.Sms.TYPE} = 1")
             putInt(ContentResolver.QUERY_ARG_LIMIT, 5000)
@@ -490,11 +560,15 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
      * read: a phone with 800 threads and 20 000 texts has recent bursts in a few chatty threads, and the newest 2000
      * rows alone would miss most of the quieter threads.
      */
-    override fun latestPerThread(max: Int): List<SmsRow> = SmsPaging.latestPerThread(max) { date, id, limit ->
-        query(
-            "(${Telephony.Sms.DATE} < ? OR (${Telephony.Sms.DATE} = ? AND ${Telephony.Sms._ID} < ?))",
-            arrayOf(date.toString(), date.toString(), id.toString()), limit,
-        )
+    override fun latestPerThread(max: Int): List<SmsRow> {
+        val texts = SmsPaging.latestPerThread(max) { date, id, limit ->
+            query(
+                "(${Telephony.Sms.DATE} < ? OR (${Telephony.Sms.DATE} = ? AND ${Telephony.Sms._ID} < ?))",
+                arrayOf(date.toString(), date.toString(), id.toString()), limit,
+            )
+        }
+        val pictures = mmsQuery(null, null, MMS_SCAN_ROWS)
+        return SmsMerge.latest(texts, pictures, max).map(::withAddress)
     }
 
     /** Distinct threads in the newest [PhoneDataLimits.SMS_SCAN_ROWS] rows; one narrow column, no bodies. */
@@ -515,9 +589,20 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         throw QueryCancelled()
     }
 
-    override fun thread(threadId: Long, rangeStartMs: Long?, limit: Int): List<SmsRow> =
-        if (rangeStartMs == null) query("${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString()), limit)
-        else query("${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.DATE} <= ?", arrayOf(threadId.toString(), rangeStartMs.toString()), limit)
+    override fun thread(threadId: Long, rangeStartMs: Long?, limit: Int): List<SmsRow> {
+        val texts =
+            if (rangeStartMs == null) query("${Telephony.Sms.THREAD_ID} = ?", arrayOf(threadId.toString()), limit)
+            else query("${Telephony.Sms.THREAD_ID} = ? AND ${Telephony.Sms.DATE} <= ?", arrayOf(threadId.toString(), rangeStartMs.toString()), limit)
+        val pictures =
+            if (rangeStartMs == null) mmsQuery("${Telephony.Mms.THREAD_ID} = ?", arrayOf(threadId.toString()), limit)
+            else mmsQuery("${Telephony.Mms.THREAD_ID} = ? AND ${Telephony.Mms.DATE} <= ?", arrayOf(threadId.toString(), (rangeStartMs / 1000).toString()), limit)
+        return SmsMerge.thread(texts, pictures, limit).map(::withAddress)
+    }
+
+    private companion object {
+        /** Newest picture messages looked at to find each thread's latest one. */
+        const val MMS_SCAN_ROWS = 500
+    }
 
     /** Newest inbox row from [address] with this [body], for linking a just-received broadcast to its provider row. */
     fun findIncoming(address: String, body: String): SmsRow? =
@@ -585,6 +670,53 @@ class AndroidSmsSender(context: Context) : SmsSender {
         }
         manager.sendMultipartTextMessage(address, null, parts, intents(sentAction), intents(deliveredAction))
         listener.onStatus("accepted")
+    }
+}
+
+/**
+ * "A computer sent too many texts, the rest were held back": a heads-up notification plus a toast, so the owner learns
+ * of a runaway or hostile computer even when the screen was off. Needs no SMS right; the notification permission only
+ * decides whether the banner shows (the toast always does). Names are bidi-isolated and clipped.
+ */
+class SmsLimitNotice(private val ctx: Context) {
+    fun show(computer: String) {
+        val name = Bidi.isolate(computer.ifBlank { ctx.getString(R.string.offer_a_computer) })
+        val text = ctx.getString(R.string.sms_limit_text, name)
+        Handler(android.os.Looper.getMainLooper()).post {
+            android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_LONG).show()
+        }
+        try {
+            val nm = ctx.getSystemService(android.app.NotificationManager::class.java) ?: return
+            nm.createNotificationChannel(
+                android.app.NotificationChannel(CHANNEL, ctx.getString(R.string.channel_sms_limit), android.app.NotificationManager.IMPORTANCE_HIGH).apply {
+                    description = ctx.getString(R.string.channel_sms_limit_desc)
+                    setShowBadge(false)
+                },
+            )
+            val open = PendingIntent.getActivity(
+                ctx, 0, Intent(ctx, HomeActivity::class.java), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            nm.notify(
+                NOTICE_ID,
+                android.app.Notification.Builder(ctx, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_stat_link)
+                    .setContentTitle(ctx.getString(R.string.sms_limit_title))
+                    .setContentText(text)
+                    .setStyle(android.app.Notification.BigTextStyle().bigText(text))
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .setCategory(android.app.Notification.CATEGORY_STATUS)
+                    .setTimeoutAfter(60 * 60_000L)
+                    .build(),
+            )
+        } catch (_: SecurityException) {
+            // Notifications not allowed: the toast above is all there is.
+        }
+    }
+
+    private companion object {
+        const val CHANNEL = "geekbridge_sms_limit"
+        const val NOTICE_ID = 0x4000_0100
     }
 }
 
@@ -680,6 +812,7 @@ object PhoneDataRuntime {
                 }),
             ) { settings.calendarIds },
             allowSpecialNumbers = { settings.smsSpecialNumbers },
+            smsLimited = { computer -> SmsLimitNotice(a).show(computer) },
             battery = reporter,
             mirror = mirrorOut,
             photoPort = AndroidPhotoPort(a, main),
@@ -815,6 +948,23 @@ object PhoneDataRuntime {
         } else if (!f.calendar) {
             stopObserver()
         }
+        // A picture message arrives without a broadcast this app may receive (that needs RECEIVE_MMS), so watch the
+        // provider and re-send the conversation list shortly after it changes.
+        if (f.sms && mmsObserver == null) {
+            val o = object : ContentObserver(main) {
+                override fun onChange(selfChange: Boolean) {
+                    main.removeCallbacks(mmsRefresh)
+                    main.postDelayed(mmsRefresh, MMS_REFRESH_DELAY_MS)
+                }
+            }
+            try {
+                a.contentResolver.registerContentObserver(Telephony.Mms.CONTENT_URI, true, o)
+                mmsObserver = o
+            } catch (_: SecurityException) {
+            }
+        } else if (!f.sms) {
+            stopMmsObserver()
+        }
         if (f.battery) startBatteryReceiver(a) else stopBatteryReceiver()
         if (waiter?.isAlive != true) {
             waiter = Thread({ waitLoop(e) }, "geekbridge-data-wait").apply { isDaemon = true; start() }
@@ -829,6 +979,16 @@ object PhoneDataRuntime {
         }, PhoneDataLimits.CALENDAR_PUSH_SPACING_MS + 1000)
     }
 
+    private var mmsObserver: ContentObserver? = null
+    private val mmsRefresh = Runnable { engine?.let { e -> worker.execute { e.refreshConversations() } } }
+    private const val MMS_REFRESH_DELAY_MS = 3_000L
+
+    private fun stopMmsObserver() {
+        main.removeCallbacks(mmsRefresh)
+        mmsObserver?.let { try { app?.contentResolver?.unregisterContentObserver(it) } catch (_: RuntimeException) { } }
+        mmsObserver = null
+    }
+
     private fun stopObserver() {
         observer?.let { try { app?.contentResolver?.unregisterContentObserver(it) } catch (_: RuntimeException) { } }
         observer = null
@@ -837,6 +997,7 @@ object PhoneDataRuntime {
     @Synchronized
     private fun stopObserving() {
         stopObserver()
+        stopMmsObserver()
         stopBatteryReceiver()
     }
 

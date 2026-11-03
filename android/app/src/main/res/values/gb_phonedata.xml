@@ -49,6 +49,10 @@
     <string name="sms_perm_read">read your texts</string>
     <string name="sms_perm_send">send texts</string>
     <string name="sms_perm_receive">see new texts</string>
+    <string name="channel_sms_limit">Texts held back</string>
+    <string name="channel_sms_limit_desc">Tells you when a paired computer asked this phone to send more texts than normal and the rest were held back.</string>
+    <string name="sms_limit_title">Texts held back</string>
+    <string name="sms_limit_text">%1$s asked this phone to send many texts in a short time, or to many different numbers. The rest were not sent. Texts cost money, so check that this was you.</string>
     <string name="sms_state_ready">Ready: an allowed computer can use Messages.</string>
     <string name="sms_state_turn_on">Switched off. No text message leaves this phone. Use the switch above to turn it on.</string>
     <string name="sms_state_allow">Android still needs your OK for SMS. Missing: %1$s. Tap “Allow access” and choose Allow.</string>
