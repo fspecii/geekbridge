@@ -31,7 +31,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 - [Adding a language](translations.md): the short hands-on contributor guide (worked example `eo`), with [Translating](translating.md) as the full rules: file formats, pseudo-locales, glossary, tone
 - [Disk hygiene](disk-hygiene.md): `make disk` / `make clean-dev`, scratch roots, free-space pre-flight
 - [Test coverage](coverage.md): measured line/function/region coverage, targets and how to regenerate
-- [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [CI dry run](ci-dry-run.md)
+- [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [CI dry run](ci-dry-run.md), [emulator end-to-end suites in CI](emulator-ci.md)
 - [Emulated calls](emulated-calls.md) and [updater end to end](updater-e2e.md): development test setups
 - [Platform status](platform-status.md): what is verified on which OS
 
