@@ -18,7 +18,15 @@ import org.json.JSONObject
  */
 
 /** Opt-in: off until the user turns it on in setup. Persisted by [CallControlRuntime]. */
-data class CallLinkSettings(val enabled: Boolean = false)
+data class CallLinkSettings(
+    val enabled: Boolean = false,
+    /**
+     * Ask on the phone before it places a call a computer requested. Off by default: every dial is already
+     * confirmed on the computer, limited to a few per 10 minutes per computer, and announced on the phone;
+     * a second prompt for each call would defeat dialing from the PC. Turn it on to be the final gate.
+     */
+    val confirmDial: Boolean = false,
+)
 
 data class CallPermissions(
     val readPhoneState: Boolean,
@@ -48,6 +56,8 @@ data class CallRequest(
     val action: CallAction,
     /** Only for [CallAction.Dial]: plain digits with an optional leading +. */
     val number: String? = null,
+    /** Only for [CallAction.Dial]: the name the computer gave itself (untrusted text, cleaned before display). */
+    val computer: String? = null,
 ) {
     override fun toString() = "CallRequest($seq, ${action.wire})" // never the number
 }
@@ -71,6 +81,8 @@ enum class CallFailure(val wire: String) {
     PermissionMissing("permission_missing"),
     NoSuchCall("no_such_call"),
     Failed("failed"),
+    RateLimited("rate_limited"),
+    Declined("declined"),
 }
 
 object CallRules {
@@ -91,6 +103,30 @@ object CallRules {
     private val dialNumber = Regex("\\+?[0-9]{1,20}")
 
     fun dialable(raw: String?): Boolean = raw != null && dialNumber.matches(raw)
+
+    /** A computer's self-chosen name, made safe to show: no control or bidi/invisible characters, short. */
+    fun cleanComputer(raw: String?): String {
+        val s = buildString {
+            for (c in raw.orEmpty()) {
+                val t = Character.getType(c)
+                val bad = Character.isISOControl(c) || t == Character.FORMAT.toInt() || t == Character.LINE_SEPARATOR.toInt() ||
+                    t == Character.PARAGRAPH_SEPARATOR.toInt()
+                append(if (bad) ' ' else c)
+            }
+        }.trim().replace(Regex("\\s+"), " ")
+        return if (s.isEmpty()) "a paired computer" else MirrorRules.clip(s, 40)
+    }
+
+    /** What the owner reads when a computer asks the phone to dial. */
+    fun dialNotice(number: String, computer: String?) = "Dialing $number requested by ${cleanComputer(computer)}"
+
+    /** The same checks [handle] makes before a dial, without placing it; null means it could be placed now. */
+    fun dialPreflight(state: CallState?, p: CallPermissions, number: String?): CallFailure? = when {
+        !canDial(p) -> CallFailure.PermissionMissing
+        state != CallState.Idle -> CallFailure.NoSuchCall
+        !dialable(number) -> CallFailure.Failed
+        else -> null
+    }
 
     private val phoneNumber = Regex("[+0-9*#().\\- ]{1,32}")
 
@@ -175,6 +211,21 @@ interface TelecomPort {
     fun placeCall(number: String)
 }
 
+/**
+ * How the owner is told about, and asked about, a dial a computer requested. Implemented with
+ * notifications on a device. Calls may come from any thread.
+ */
+interface DialPrompts {
+    /** "Dialing N requested by C": shown as the call is placed. */
+    fun announce(text: String)
+
+    /** Ask whether to place it; true if the question could be shown (otherwise the dial is declined). */
+    fun ask(requestId: String, text: String): Boolean
+
+    /** The question is no longer pending. */
+    fun withdraw(requestId: String)
+}
+
 /** Resolves a caller's number to a contact name on this phone (needs READ_CONTACTS), or null. */
 fun interface ContactLookup {
     fun nameFor(number: String): String?
@@ -229,7 +280,8 @@ object CallsProtocol {
             if (!idPattern.matches(id)) continue
             val number = e.optString("number", "").takeIf { it.isNotEmpty() }
             if (action == CallAction.Dial && !CallRules.dialable(number)) continue
-            out += CallRequest(seq, conn, id, action, if (action == CallAction.Dial) number else null)
+            val computer = if (action == CallAction.Dial) e.optString("computer", "").takeIf { it.isNotEmpty() } else null
+            out += CallRequest(seq, conn, id, action, if (action == CallAction.Dial) number else null, computer)
         }
         return CallWait(out, o.optLong("last_seq", 0), o.optBoolean("stopped", false), o.optBoolean("enabled", false))
     }
@@ -247,7 +299,15 @@ class CallControlEngine(
     private val lookup: ContactLookup,
     private val sdk: Int,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val prompts: DialPrompts = object : DialPrompts {
+        override fun announce(text: String) {}
+        override fun ask(requestId: String, text: String) = false
+        override fun withdraw(requestId: String) {}
+    },
 ) {
+    private class PendingDial(val request: CallRequest, val atMs: Long)
+
+    private val pendingDials = LinkedHashMap<String, PendingDial>()
     private var state: CallState? = null
     private var number: String? = null
     private var name: String? = null
@@ -329,14 +389,68 @@ class CallControlEngine(
         lastSent = null
         earlyNumber = null
         ringingOverCall = false
+        for (p in pendingDials.values) prompts.withdraw(p.request.requestId)
+        pendingDials.clear()
     }
 
     @Synchronized
     fun onRequests(requests: List<CallRequest>) {
         if (!settings().enabled) return
+        expirePending()
         for (r in requests) {
+            if (r.action == CallAction.Dial) {
+                dial(r)
+                continue
+            }
             val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number)
             core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
+        }
+    }
+
+    private fun answer(r: CallRequest, failure: CallFailure?) {
+        core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
+    }
+
+    /** A computer asked the phone to dial: refuse what cannot work, then ask or announce, then place it. */
+    private fun dial(r: CallRequest) {
+        val number = r.number
+        val early = CallRules.dialPreflight(state, permissions(), number)
+        if (early != null || number == null) return answer(r, early ?: CallFailure.Failed)
+        if (!settings().confirmDial) return place(r, number)
+        if (pendingDials.size >= MAX_PENDING_DIALS) return answer(r, CallFailure.Declined)
+        val asked = prompts.ask(r.requestId, CallRules.dialNotice(number, r.computer))
+        if (!asked) return answer(r, CallFailure.Declined)
+        pendingDials[r.requestId] = PendingDial(r, clock())
+    }
+
+    private fun place(r: CallRequest, number: String) {
+        // Re-checked against the state as it is now; announced only when the phone is really about to dial.
+        if (CallRules.dialPreflight(state, permissions(), number) == null) {
+            prompts.announce(CallRules.dialNotice(number, r.computer))
+        }
+        answer(r, CallRules.handle(CallAction.Dial, state, sdk, permissions(), telecom, number))
+    }
+
+    /** The owner tapped Dial or Deny on the phone's question. Unknown or expired ids do nothing. */
+    @Synchronized
+    fun resolveDial(requestId: String, allow: Boolean) {
+        expirePending()
+        val p = pendingDials.remove(requestId) ?: return
+        prompts.withdraw(requestId)
+        val number = p.request.number
+        if (!allow || number == null || !settings().enabled) return answer(p.request, CallFailure.Declined)
+        place(p.request, number)
+    }
+
+    private fun expirePending() {
+        val now = clock()
+        val it = pendingDials.values.iterator()
+        while (it.hasNext()) {
+            val p = it.next()
+            if (now - p.atMs < DIAL_CONFIRM_MS) continue
+            it.remove()
+            prompts.withdraw(p.request.requestId)
+            answer(p.request, CallFailure.Declined)
         }
     }
 
@@ -366,5 +480,7 @@ class CallControlEngine(
 
     private companion object {
         const val EARLY_NUMBER_MS = 3_000L
+        const val MAX_PENDING_DIALS = 3
+        const val DIAL_CONFIRM_MS = 45_000L
     }
 }

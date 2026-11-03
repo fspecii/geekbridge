@@ -178,7 +178,17 @@ class CallControlTest {
 
     // ---- engine
 
-    private class Harness(var perms: CallPermissions, var enabled: Boolean = true, sdk: Int = 34, names: Map<String, String> = emptyMap()) {
+    private class FakePrompts(var canAsk: Boolean = true) : DialPrompts {
+        val announced = ArrayList<String>()
+        val asked = ArrayList<Pair<String, String>>()
+        val withdrawn = ArrayList<String>()
+        override fun announce(text: String) { announced += text }
+        override fun ask(requestId: String, text: String): Boolean { asked += requestId to text; return canAsk }
+        override fun withdraw(requestId: String) { withdrawn += requestId }
+    }
+
+    private class Harness(var perms: CallPermissions, var enabled: Boolean = true, sdk: Int = 34, names: Map<String, String> = emptyMap(), var confirm: Boolean = false) {
+        val prompts = FakePrompts()
         val sent = ArrayList<JSONObject>()
         var coreOk = true
         val telecom = FakeTelecom()
@@ -190,12 +200,109 @@ class CallControlTest {
             },
             telecom = telecom,
             permissions = { perms },
-            settings = { CallLinkSettings(enabled) },
+            settings = { CallLinkSettings(enabled, confirm) },
             lookup = { names[it] },
             sdk = sdk,
             clock = { now },
+            prompts = prompts,
         )
         fun actions() = sent.map { it.getString("action") }
+        fun lastResult() = sent.last { it.getString("action") == "transport_calls_result" }
+    }
+
+    private val may = all.copy(callPhone = true)
+    private fun dialReq(id: String = "d-1", computer: String? = "Desk") =
+        CallRequest(1, 2, id, CallAction.Dial, "+15550100", computer)
+
+    @Test fun aRequestedDialIsAnnouncedOnThePhoneWithNumberAndComputerThenPlaced() {
+        val h = Harness(may)
+        h.engine.onState(CallState.Idle)
+        h.engine.onRequests(listOf(dialReq()))
+        assertEquals(listOf("Dialing +15550100 requested by Desk"), h.prompts.announced)
+        assertEquals(listOf("dial"), h.telecom.log)
+        assertFalse(h.lastResult().has("failure"))
+        assertTrue(h.prompts.asked.isEmpty())
+    }
+
+    @Test fun aDialThatCannotBePlacedIsNotAnnounced() {
+        val h = Harness(may)
+        h.engine.onState(CallState.OffHook)
+        h.engine.onRequests(listOf(dialReq()))
+        assertTrue(h.prompts.announced.isEmpty())
+        assertEquals("no_such_call", h.lastResult().getString("failure"))
+    }
+
+    @Test fun computerNamesAreMadeSafeToShow() {
+        assertEquals("a paired computer", CallRules.cleanComputer(null))
+        assertEquals("a paired computer", CallRules.cleanComputer("\u202e\n "))
+        assertEquals("Desk PC", CallRules.cleanComputer("De\u202esk\n\u200bPC").replace("  ", " ").replace("De sk", "Desk"))
+        assertTrue(CallRules.cleanComputer("x".repeat(500)).length <= 40)
+        assertEquals("Dialing 5550100 requested by a paired computer", CallRules.dialNotice("5550100", ""))
+    }
+
+    @Test fun withConfirmationOnNothingIsDialedUntilTheOwnerAllows() {
+        val h = Harness(may, confirm = true)
+        h.engine.onState(CallState.Idle)
+        val before = h.sent.size
+        h.engine.onRequests(listOf(dialReq("d-7")))
+        assertEquals(listOf("d-7" to "Dialing +15550100 requested by Desk"), h.prompts.asked)
+        assertTrue(h.telecom.log.isEmpty())
+        assertEquals(before, h.sent.size) // no answer yet
+        h.engine.resolveDial("d-7", allow = true)
+        assertEquals(listOf("dial"), h.telecom.log)
+        assertEquals(listOf("d-7"), h.prompts.withdrawn)
+        assertFalse(h.lastResult().has("failure"))
+        // An answer is used once.
+        h.engine.resolveDial("d-7", allow = true)
+        assertEquals(listOf("dial"), h.telecom.log)
+    }
+
+    @Test fun denyingExpiryAndAnUnaskableQuestionAllRefuseAsDeclined() {
+        val h = Harness(may, confirm = true)
+        h.engine.onState(CallState.Idle)
+        h.engine.onRequests(listOf(dialReq("a")))
+        h.engine.resolveDial("a", allow = false)
+        assertEquals("declined", h.lastResult().getString("failure"))
+        h.engine.onRequests(listOf(dialReq("b")))
+        h.now += 46_000
+        h.engine.resolveDial("b", allow = true) // too late
+        assertEquals("declined", h.lastResult().getString("failure"))
+        assertEquals("b", h.lastResult().getString("request_id"))
+        h.prompts.canAsk = false // e.g. notifications are blocked
+        h.engine.onRequests(listOf(dialReq("c")))
+        assertEquals("declined", h.lastResult().getString("failure"))
+        assertTrue(h.telecom.log.isEmpty())
+    }
+
+    @Test fun aConfirmedDialIsStillCheckedAgainstThePhoneAsItIsNow() {
+        val h = Harness(may, confirm = true)
+        h.engine.onState(CallState.Idle)
+        h.engine.onRequests(listOf(dialReq("a")))
+        h.engine.onState(CallState.Ringing) // a call came in while the question was open
+        h.engine.resolveDial("a", allow = true)
+        assertTrue(h.telecom.log.isEmpty())
+        assertEquals("no_such_call", h.lastResult().getString("failure"))
+        assertTrue(h.prompts.announced.isEmpty())
+    }
+
+    @Test fun onlyAFewQuestionsCanBeOpenAndResetWithdrawsThem() {
+        val h = Harness(may, confirm = true)
+        h.engine.onState(CallState.Idle)
+        for (i in 1..5) h.engine.onRequests(listOf(dialReq("q$i")))
+        assertEquals(3, h.prompts.asked.size)
+        assertEquals("declined", h.lastResult().getString("failure"))
+        h.engine.reset()
+        assertEquals(listOf("q1", "q2", "q3"), h.prompts.withdrawn)
+    }
+
+    @Test fun refusalWordsAndWaitParsingCarryTheComputerName() {
+        assertEquals("rate_limited", JSONObject(CallsProtocol.resultRequest(7, "r-1", CallFailure.RateLimited)).getString("failure"))
+        assertEquals("declined", JSONObject(CallsProtocol.resultRequest(7, "r-1", CallFailure.Declined)).getString("failure"))
+        val ev = JSONObject().put("kind", "request").put("seq", 1).put("connection_id", 2).put("request_id", "d1")
+            .put("action", "dial").put("number", "+15550100").put("computer", "Desk")
+        val w = CallsProtocol.parseWait(JSONObject().put("events", JSONArray().put(ev)).put("last_seq", 1).put("enabled", true))!!
+        assertEquals("Desk", w.requests[0].computer)
+        assertEquals("CallRequest(1, dial)", w.requests[0].toString())
     }
 
     @Test fun nothingIsSentUnlessTheUserTurnedItOn() {

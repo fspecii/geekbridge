@@ -2332,7 +2332,7 @@ fn on_notification_packet(d: &Arc<Daemon>, id: &str, packet: &kde::Packet) -> bo
             let outcome = d.mirror.post(id, &name, n, now);
             let alert = loud
                 && !(only_once && outcome == crate::mirror::Posted::Updated)
-                && d.mirror.banner_allowed(now);
+                && d.mirror.banner_allowed(id, now);
             if alert && let Some(notifier) = d.mirror_notifier.clone() {
                 let (daemon, device) = (d.clone(), id.to_owned());
                 notifier.show(

@@ -503,6 +503,40 @@ fn dial_requests_reach_kotlin_with_a_plain_number_and_can_dial_is_reported() {
     );
 }
 
+#[test]
+fn a_computer_that_dials_too_often_is_refused_on_the_phone_and_told_why() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    let mut since = 0;
+    for i in 0..3 {
+        peer.send(
+            REQUEST,
+            wire::dial_request_body(&format!("d-{i}"), "+15550100"),
+        );
+        let e = phone.events(since, 1);
+        assert!(e[0]["action"] == "dial" && e[0]["computer"] == "Desk");
+        since = e[0]["seq"].as_u64().unwrap();
+    }
+    // The fourth is answered by the phone core itself.
+    peer.send(REQUEST, wire::dial_request_body("d-3", "+15550100"));
+    let p = peer.recv_kind(RESULT);
+    assert_eq!(
+        wire::parse_result(&p.body),
+        Ok(("d-3".to_owned(), Err(LinkFailure::RateLimited)))
+    );
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        phone.wait_events(since, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Other actions are not limited.
+    peer.send(REQUEST, wire::request_body("a-1", LinkAction::Answer));
+    assert_eq!(phone.events(since, 1)[0]["request_id"], "a-1");
+}
+
 /// The REAL stock KDE Connect daemon's identity (captured, not hand-written) declares telephony and
 /// notification packets of its own but nothing of ours. Even with call control on and every computer
 /// allowed, no caller number or call state is queued for it.

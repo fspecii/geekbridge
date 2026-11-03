@@ -349,6 +349,10 @@ pub enum LinkFailure {
     NoSuchCall,
     /// Android refused or the call changed in between.
     Failed,
+    /// The phone limits how often a computer may place calls and this one asked too often.
+    RateLimited,
+    /// The phone's owner did not confirm the call on the phone (or let the question lapse).
+    Declined,
 }
 impl LinkFailure {
     pub fn as_str(self) -> &'static str {
@@ -356,6 +360,8 @@ impl LinkFailure {
             Self::PermissionMissing => "permission_missing",
             Self::NoSuchCall => "no_such_call",
             Self::Failed => "failed",
+            Self::RateLimited => "rate_limited",
+            Self::Declined => "declined",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -363,6 +369,8 @@ impl LinkFailure {
             "permission_missing" => Self::PermissionMissing,
             "no_such_call" => Self::NoSuchCall,
             "failed" => Self::Failed,
+            "rate_limited" => Self::RateLimited,
+            "declined" => Self::Declined,
             _ => return None,
         })
     }
@@ -373,6 +381,10 @@ impl LinkFailure {
             }
             Self::NoSuchCall => "The call had already changed on the phone.",
             Self::Failed => "The phone could not do that.",
+            Self::RateLimited => {
+                "The phone limits how many calls a computer can place; wait a few minutes."
+            }
+            Self::Declined => "The phone's owner did not confirm that call.",
         }
     }
 }
@@ -414,6 +426,18 @@ pub fn parse_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dial_refusals_round_trip_with_their_own_words() {
+        for f in [LinkFailure::RateLimited, LinkFailure::Declined] {
+            assert_eq!(LinkFailure::parse(f.as_str()), Some(f));
+            assert_eq!(
+                parse_result(&result_body("r-9", Err(f))),
+                Ok(("r-9".into(), Err(f)))
+            );
+            assert_ne!(f.message(), LinkFailure::Failed.message());
+        }
+    }
     use crate::calls::CommandRejection;
 
     fn obj(v: Value) -> Map<String, Value> {

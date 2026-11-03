@@ -12,9 +12,9 @@
 //!
 //! Requests received while the feature is off are answered with a failure at once and never reach
 //! Kotlin. Events are bounded; nothing is logged; no number or name is kept after the next report.
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bridge_core::calls_link::{
     self as wire, LinkCallReport, LinkFailure, PhoneState, REQUEST, RESULT, STATE,
@@ -30,6 +30,50 @@ const MAX_WAIT: Duration = Duration::from_secs(55);
 /// A computer's request is meant to act now; one nobody collected within this long is dropped, so a
 /// waiter that restarts later cannot answer a different, newer call with it.
 const REQUEST_TTL: Duration = Duration::from_secs(20);
+
+/// A computer may place at most this many calls through the phone in [`DIAL_WINDOW`]. A person dials a
+/// few numbers; a program trying premium-rate numbers one after another is stopped on the phone no
+/// matter what the computer's own screens do.
+pub(in crate::transport) const MAX_DIALS: usize = 3;
+pub(in crate::transport) const DIAL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Computers remembered by the limiter (more than any phone pairs with).
+const MAX_DIAL_PEERS: usize = 16;
+
+/// Sliding window of recent dial requests per computer. A request counts when it arrives, whether or
+/// not the phone then places it, so refused and failed attempts cannot be used to probe.
+#[derive(Default)]
+pub(in crate::transport) struct DialLimiter {
+    seen: HashMap<String, VecDeque<Instant>>,
+}
+
+impl DialLimiter {
+    /// Record a request from `device`; false if it is over the limit (and then it is not recorded).
+    pub(in crate::transport) fn admit(&mut self, device: &str, now: Instant) -> bool {
+        if !self.seen.contains_key(device) && self.seen.len() >= MAX_DIAL_PEERS {
+            // Forget the computer whose newest request is the oldest.
+            if let Some(old) = self
+                .seen
+                .iter()
+                .min_by_key(|(_, q)| q.back().copied())
+                .map(|(k, _)| k.clone())
+            {
+                self.seen.remove(&old);
+            }
+        }
+        let q = self.seen.entry(device.to_owned()).or_default();
+        while q
+            .front()
+            .is_some_and(|t| now.saturating_duration_since(*t) >= DIAL_WINDOW)
+        {
+            q.pop_front();
+        }
+        if q.len() >= MAX_DIALS {
+            return false;
+        }
+        q.push_back(now);
+        true
+    }
+}
 
 pub(in crate::transport) fn incoming_types() -> Vec<String> {
     vec![REQUEST.to_owned()]
@@ -52,6 +96,7 @@ struct State {
     delivered: u64,
     stopped: bool,
     last: Option<Map<String, Value>>,
+    dials: DialLimiter,
 }
 
 pub(in crate::transport) struct Hub {
@@ -69,6 +114,7 @@ impl Default for Hub {
                 delivered: 0,
                 stopped: false,
                 last: None,
+                dials: DialLimiter::default(),
             }),
             cv: Condvar::new(),
         }
@@ -286,6 +332,25 @@ impl Core {
             return true;
         };
         if self.calls.enabled() && self.permitted("calls", connection_id) {
+            let (device, computer) = {
+                let st = self.lock();
+                st.conns.get(&connection_id).map_or_else(
+                    || (String::new(), String::new()),
+                    |c| (c.peer_id.to_string(), c.peer_name.clone()),
+                )
+            };
+            if action == wire::LinkAction::Dial
+                && !self.calls.lock().dials.admit(&device, Instant::now())
+            {
+                // Over the phone's own limit: refused here, Kotlin never hears of it.
+                for ctl in self.trusted_ctls(Some(connection_id)) {
+                    let _ = ctl.try_send(Ctl::Calls(Out::Result(wire::result_body(
+                        &request_id,
+                        Err(LinkFailure::RateLimited),
+                    ))));
+                }
+                return true;
+            }
             let mut event = json!({
                 "kind": "request",
                 "connection_id": connection_id,
@@ -297,6 +362,8 @@ impl Core {
                 if let (Ok(n), Some(o)) = (wire::parse_dial_number(&p.body), event.as_object_mut())
                 {
                     o.insert("number".into(), json!(n.expose()));
+                    // Shown to the owner on the phone ("requested by <computer>").
+                    o.insert("computer".into(), json!(computer));
                 }
             }
             self.calls.push(event);
@@ -316,6 +383,29 @@ impl Core {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dial_limiter_allows_a_few_per_window_per_computer_and_recovers() {
+        let mut l = DialLimiter::default();
+        let t = Instant::now();
+        for _ in 0..MAX_DIALS {
+            assert!(l.admit("a", t));
+        }
+        assert!(!l.admit("a", t), "over the limit");
+        assert!(!l.admit("a", t + DIAL_WINDOW - Duration::from_secs(1)));
+        assert!(l.admit("b", t), "another computer has its own allowance");
+        assert!(l.admit("a", t + DIAL_WINDOW), "the window slid past");
+    }
+
+    #[test]
+    fn dial_limiter_memory_is_bounded() {
+        let mut l = DialLimiter::default();
+        let t = Instant::now();
+        for i in 0..100 {
+            assert!(l.admit(&format!("d{i}"), t + Duration::from_secs(i)));
+        }
+        assert!(l.seen.len() <= MAX_DIAL_PEERS);
+    }
 
     #[test]
     fn disabled_hub_keeps_nothing_and_waits_return_promptly() {

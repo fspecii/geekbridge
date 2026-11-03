@@ -180,6 +180,7 @@
         </activity>
 
         <receiver android:name=".ShareActionReceiver" android:exported="false" />
+        <receiver android:name=".DialDecisionReceiver" android:exported="false" />
 
         <!-- Incoming texts for the computer's Messages app; inert unless the user enabled and permitted it. -->
         <receiver

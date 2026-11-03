@@ -64,6 +64,14 @@
     <string name="setup_allow">Allow</string>
     <string name="setup_optional_note">Optional: GeekBridge works without it; the related feature stays off.</string>
     <string name="setup_required_note">Recommended. You can pair without it, but alerts and the background connection notice will not show.</string>
+    <string name="channel_dial">Calls requested by a computer</string>
+    <string name="channel_dial_desc">Tells you when a paired computer asks this phone to place a call, and asks first if you chose that.</string>
+    <string name="dial_notice_title">Call placed for a computer</string>
+    <string name="dial_confirm_title">Place this call?</string>
+    <string name="dial_allow">Call</string>
+    <string name="dial_deny">Deny</string>
+    <string name="setup_dial_confirm_toggle">Ask me before placing a call for a computer</string>
+    <string name="setup_dial_confirm_toggle_sub">Always shown on the phone as “Dialing … requested by …”, and a computer can place only a few calls per 10 minutes. Turn this on to also approve each call here.</string>
     <string name="setup_calls_toggle">Share call status with my computer</string>
     <string name="setup_calls_toggle_sub">Paired computers you allow “Calls” for see ringing and in-call, and can answer, decline or end. Off by default.</string>
     <string name="setup_dial_allow">Allow placing calls from my computer</string>

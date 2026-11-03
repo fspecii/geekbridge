@@ -233,6 +233,11 @@ class SetupActivity : Activity() {
         } else {
             kit.button(panel, getString(R.string.setup_dial_allow), BtnStyle.Plain) { request(Manifest.permission.CALL_PHONE) }
         }
+        kit.row(
+            panel, R.drawable.ic_call, getString(R.string.setup_dial_confirm_toggle),
+            getString(R.string.setup_dial_confirm_toggle_sub),
+            kit.toggle(CallControlRuntime.settings.confirmDial) { on -> CallControlRuntime.setConfirmDial(on) },
+        )
         panel.addView(
             kit.text(
                 getString(R.string.setup_calls_audio_note),

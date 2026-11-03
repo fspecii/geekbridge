@@ -43,6 +43,84 @@ class AndroidTelecom(context: Context) : TelecomPort {
     }
 }
 
+/**
+ * The phone's own notice and question for computer-requested dials: a heads-up notification (the text carries the
+ * number and computer, nothing else) plus a toast for the notice. Needs the notification permission to ask.
+ */
+class AndroidDialPrompts(private val ctx: Context) : DialPrompts {
+    private val main = Handler(Looper.getMainLooper())
+
+    private fun manager(): android.app.NotificationManager {
+        val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+        nm.createNotificationChannel(
+            android.app.NotificationChannel(CHANNEL, ctx.getString(R.string.channel_dial), android.app.NotificationManager.IMPORTANCE_HIGH).apply {
+                description = ctx.getString(R.string.channel_dial_desc)
+                setShowBadge(false)
+            },
+        )
+        return nm
+    }
+
+    private fun id(requestId: String) = 0x4000_0000 or (requestId.hashCode() and 0x3fff_ffff)
+
+    override fun announce(text: String) {
+        main.post { android.widget.Toast.makeText(ctx, text, android.widget.Toast.LENGTH_LONG).show() }
+        try {
+            val n = android.app.Notification.Builder(ctx, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_link)
+                .setContentTitle(ctx.getString(R.string.dial_notice_title))
+                .setContentText(text)
+                .setAutoCancel(true)
+                .setCategory(android.app.Notification.CATEGORY_STATUS)
+                .setTimeoutAfter(10 * 60_000L)
+                .build()
+            manager().notify(NOTICE_ID, n)
+        } catch (_: SecurityException) {
+            // Notifications not allowed: the toast above is all there is.
+        }
+    }
+
+    override fun ask(requestId: String, text: String): Boolean {
+        fun action(allow: Boolean, label: Int): android.app.Notification.Action {
+            val i = Intent(ctx, DialDecisionReceiver::class.java)
+                .setAction(if (allow) DialDecisionReceiver.ACTION_ALLOW else DialDecisionReceiver.ACTION_DENY)
+                .putExtra(DialDecisionReceiver.EXTRA_REQUEST, requestId)
+            val pi = android.app.PendingIntent.getBroadcast(
+                ctx, id(requestId) + if (allow) 1 else 2, i,
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            return android.app.Notification.Action.Builder(null, ctx.getString(label), pi).build()
+        }
+        return try {
+            val n = android.app.Notification.Builder(ctx, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_link)
+                .setContentTitle(ctx.getString(R.string.dial_confirm_title))
+                .setContentText(text)
+                .addAction(action(false, R.string.dial_deny))
+                .addAction(action(true, R.string.dial_allow))
+                .setCategory(android.app.Notification.CATEGORY_CALL)
+                .setTimeoutAfter(45_000L)
+                .build()
+            manager().notify(id(requestId), n)
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    override fun withdraw(requestId: String) {
+        try {
+            manager().cancel(id(requestId))
+        } catch (_: SecurityException) {
+        }
+    }
+
+    private companion object {
+        const val CHANNEL = "geekbridge_dial"
+        const val NOTICE_ID = 0x4000_0000
+    }
+}
+
 /** Looks a number up in this phone's contacts. Read on the phone only; the name goes to the paired computer. */
 class AndroidContactLookup(context: Context) : ContactLookup {
     private val resolver = context.applicationContext.contentResolver
@@ -104,7 +182,7 @@ object CallControlRuntime {
         app = a
         val p = a.getSharedPreferences(FILE, Context.MODE_PRIVATE)
         prefs = p
-        settings = CallLinkSettings(enabled = p.getBoolean("enabled", false))
+        settings = CallLinkSettings(enabled = p.getBoolean("enabled", false), confirmDial = p.getBoolean("confirm_dial", false))
         engine = CallControlEngine(
             core = { core.transportAction(it) },
             telecom = AndroidTelecom(a),
@@ -112,7 +190,20 @@ object CallControlRuntime {
             settings = { settings },
             lookup = AndroidContactLookup(a),
             sdk = Build.VERSION.SDK_INT,
+            prompts = AndroidDialPrompts(a),
         )
+    }
+
+    /** The user chose whether the phone asks before placing a call a computer requested. Main thread. */
+    fun setConfirmDial(on: Boolean) {
+        settings = settings.copy(confirmDial = on)
+        prefs?.edit()?.putBoolean("confirm_dial", on)?.apply()
+    }
+
+    /** The owner answered the phone's "place this call?" notification. Any thread. */
+    fun resolveDial(requestId: String, allow: Boolean) {
+        val e = engine ?: return
+        async { e.resolveDial(requestId, allow) }
     }
 
     private fun async(block: () -> Unit) {
@@ -128,7 +219,7 @@ object CallControlRuntime {
     /** The user switched call control on or off. Main thread. */
     fun setEnabled(on: Boolean) {
         val e = engine ?: return
-        settings = CallLinkSettings(enabled = on)
+        settings = settings.copy(enabled = on)
         prefs?.edit()?.putBoolean("enabled", on)?.apply()
         app?.let { WidgetUpdater.refreshAll(it) }
         async { core.transportAction(CallsProtocol.configRequest(on)) }

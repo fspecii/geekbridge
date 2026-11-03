@@ -69,9 +69,17 @@ pub enum Posted {
 #[derive(Default)]
 struct Inner {
     devices: HashMap<String, Dev>,
-    tokens: f64,
-    refilled: Option<Instant>,
+    /// One banner allowance per phone, so a chatty phone cannot use up the banners of the others.
+    buckets: HashMap<String, Bucket>,
 }
+
+struct Bucket {
+    tokens: f64,
+    refilled: Instant,
+}
+
+/// Phones remembered by the banner limiter (the service pairs far fewer).
+const MAX_BUCKETS: usize = 32;
 
 #[derive(Default)]
 pub struct Mirror {
@@ -200,18 +208,30 @@ impl Mirror {
         self.lock().devices.get(device).map_or(0, |d| d.items.len())
     }
 
-    /// May another banner be shown now? A small burst, then one per gap.
-    pub fn banner_allowed(&self, now: Instant) -> bool {
+    /// May another banner of `device` be shown now? A small burst, then one per gap, for each phone separately.
+    pub fn banner_allowed(&self, device: &str, now: Instant) -> bool {
         let mut g = self.lock();
-        let last = g.refilled.unwrap_or(now);
-        if g.refilled.is_none() {
-            g.tokens = BANNER_BURST;
+        if !g.buckets.contains_key(device) && g.buckets.len() >= MAX_BUCKETS {
+            // Forget the phone that was last seen the longest ago.
+            if let Some(old) = g
+                .buckets
+                .iter()
+                .min_by_key(|(_, b)| b.refilled)
+                .map(|(k, _)| k.clone())
+            {
+                g.buckets.remove(&old);
+            }
         }
-        let gained = now.saturating_duration_since(last).as_secs_f64() / BANNER_GAP.as_secs_f64();
-        g.tokens = (g.tokens + gained).min(BANNER_BURST);
-        g.refilled = Some(now);
-        if g.tokens >= 1.0 {
-            g.tokens -= 1.0;
+        let b = g.buckets.entry(device.to_owned()).or_insert(Bucket {
+            tokens: BANNER_BURST,
+            refilled: now,
+        });
+        let gained =
+            now.saturating_duration_since(b.refilled).as_secs_f64() / BANNER_GAP.as_secs_f64();
+        b.tokens = (b.tokens + gained).min(BANNER_BURST);
+        b.refilled = now;
+        if b.tokens >= 1.0 {
+            b.tokens -= 1.0;
             true
         } else {
             false
@@ -468,9 +488,9 @@ mod tests {
             m.banner("dev", "P", &n("2")).slot
         );
         let t = Instant::now();
-        let allowed = (0..20).filter(|_| m.banner_allowed(t)).count();
+        let allowed = (0..20).filter(|_| m.banner_allowed("dev", t)).count();
         assert_eq!(allowed, BANNER_BURST as usize);
-        assert!(m.banner_allowed(t + BANNER_GAP * 2));
+        assert!(m.banner_allowed("dev", t + BANNER_GAP * 2));
     }
 
     #[test]
@@ -550,5 +570,30 @@ mod tests {
             slot: "1".into(),
         };
         assert!(NotifySendMirror::args(&b).contains(&"--action=a0=Action".to_owned()));
+    }
+
+    #[test]
+    fn a_chatty_phone_cannot_use_up_another_phones_banners() {
+        let m = Mirror::default();
+        let t0 = Instant::now();
+        let burst = (0..100).filter(|_| m.banner_allowed("loud", t0)).count();
+        assert!(burst >= 2);
+        assert!(!m.banner_allowed("loud", t0), "the loud phone is out");
+        // The quiet phone still gets its whole burst, and the loud one's refill is its own.
+        assert_eq!(
+            (0..100).filter(|_| m.banner_allowed("quiet", t0)).count(),
+            burst
+        );
+        assert!(!m.banner_allowed("quiet", t0));
+        assert!(m.banner_allowed("loud", t0 + Duration::from_millis(2500)));
+    }
+
+    #[test]
+    fn the_banner_limiter_remembers_a_bounded_number_of_phones() {
+        let m = Mirror::default();
+        let t0 = Instant::now();
+        for i in 0..500u64 {
+            assert!(m.banner_allowed(&format!("phone{i}"), t0 + Duration::from_millis(i)));
+        }
     }
 }
