@@ -50,7 +50,10 @@ class DotText(
     private var scratch = FloatArray(0)
     private var offPts = FloatArray(0)
     private var redPts = FloatArray(0)
-    private var builtFor = ""
+    private var builtPitch = -1f
+    private var builtWidth = -1
+    private var builtDir = -1
+    private var dirty = true
 
     var text: CharSequence = text
         set(v) {
@@ -116,7 +119,7 @@ class DotText(
         val rows = lines.size * DotFont.ROWS + max(0, lines.size - 1) * 2
         val h = ceilPx(max(1, rows) * p)
         setMeasuredDimension(w, h)
-        builtFor = ""
+        dirty = true
     }
 
     private fun ceilPx(f: Float) = (f + 0.999f).toInt()
@@ -141,9 +144,9 @@ class DotText(
     }
 
     private fun build() {
-        val key = "${lines.joinToString("|")}@$pitch@$width@$layoutDirection"
-        if (key == builtFor) return
-        builtFor = key
+        if (!dirty && builtPitch == pitch && builtWidth == width && builtDir == layoutDirection) return
+        dirty = false
+        builtPitch = pitch; builtWidth = width; builtDir = layoutDirection
         val r = pitch * 0.34f
         on.strokeWidth = 2 * r
         off.strokeWidth = 2 * pitch * 0.15f
@@ -157,11 +160,13 @@ class DotText(
         val gridCols = if (grid) max(textCols, (width / pitch).toInt()) else 0
         for ((li, line) in lines.withIndex()) {
             val top = li * (DotFont.ROWS + 2) * pitch
+            val litGrid = DotFont.litGrid(line)
+            val lineCols = litGrid[0].size
             for (row in 0 until DotFont.ROWS) {
                 val cy = top + row * pitch + pitch / 2
-                for (col in 0 until max(DotFont.columns(line), gridCols)) {
+                for (col in 0 until max(lineCols, gridCols)) {
                     val cx = x0 + col * pitch + pitch / 2
-                    if (col < DotFont.columns(line) && DotFont.isLit(line, col, row)) {
+                    if (col < lineCols && litGrid[row][col]) {
                         lit.add(cx); lit.add(cy); cols.add(col)
                     } else if (grid) { dim.add(cx); dim.add(cy) }
                 }
@@ -205,6 +210,8 @@ class DotProgress(context: Context, private val pitchDp: Float = 9f) : View(cont
     private var fraction = 0f
     private var head = true
     private var label = ""
+    private var litBuf = FloatArray(0)
+    private var offBuf = FloatArray(0)
 
     init {
         accessibilityDelegate = object : AccessibilityDelegate() {
@@ -243,19 +250,20 @@ class DotProgress(context: Context, private val pitchDp: Float = 9f) : View(cont
         on.strokeWidth = pitch * 0.62f
         off.strokeWidth = pitch * 0.3f
         red.strokeWidth = pitch * 0.74f
-        val litPts = ArrayList<Float>()
-        val offPts = ArrayList<Float>()
+        val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
+        if (litBuf.size != 2 * n) { litBuf = FloatArray(2 * n); offBuf = FloatArray(2 * n) } // reused across frames
+        val litBuf = litBuf; val offBuf = offBuf
+        var nl = 0; var no = 0
         for (i in 0 until n) {
-            val col = if (layoutDirection == LAYOUT_DIRECTION_RTL) n - 1 - i else i
+            val col = if (rtl) n - 1 - i else i
             val cx = x0 + i * pitch + pitch / 2
-            if (col < lit) { litPts.add(cx); litPts.add(cy) } else { offPts.add(cx); offPts.add(cy) }
+            if (col < lit) { litBuf[nl++] = cx; litBuf[nl++] = cy } else { offBuf[no++] = cx; offBuf[no++] = cy }
         }
-        if (head && lit in 1 until n && litPts.size >= 2) {
-            val hx = litPts[litPts.size - 2]; val hy = litPts[litPts.size - 1]
-            litPts.removeAt(litPts.size - 1); litPts.removeAt(litPts.size - 1)
-            canvas.drawPoint(hx, hy, red)
+        if (head && lit in 1 until n && nl >= 2) {
+            nl -= 2
+            canvas.drawPoint(litBuf[nl], litBuf[nl + 1], red)
         }
-        if (offPts.isNotEmpty()) canvas.drawPoints(offPts.toFloatArray(), off)
-        if (litPts.isNotEmpty()) canvas.drawPoints(litPts.toFloatArray(), on)
+        if (no > 0) canvas.drawPoints(offBuf, 0, no, off)
+        if (nl > 0) canvas.drawPoints(litBuf, 0, nl, on)
     }
 }

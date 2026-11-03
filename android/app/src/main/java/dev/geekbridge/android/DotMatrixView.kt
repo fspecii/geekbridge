@@ -18,7 +18,8 @@ class DotMatrixView(context: Context, private val word: String) : View(context) 
     private val off = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = context.getColor(R.color.gb_dot_off) }
     private val red = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = context.getColor(R.color.gb_red) }
 
-    private val wordCols = DotFont.columns(word.uppercase(java.util.Locale.ROOT))
+    private val grid = DotFont.litGrid(word.uppercase(java.util.Locale.ROOT))
+    private val wordCols = grid[0].size
     private var pitch = 0f
 
     init {
@@ -37,12 +38,11 @@ class DotMatrixView(context: Context, private val word: String) : View(context) 
     override fun onDraw(canvas: Canvas) {
         val cols = (width / pitch).toInt()
         val r = pitch * 0.28f
-        val text = word.uppercase(java.util.Locale.ROOT)
         for (row in 0 until DotFont.ROWS) {
             for (col in 0 until cols) {
                 val cx = col * pitch + pitch / 2
                 val cy = row * pitch + pitch / 2
-                val lit = col < wordCols && DotFont.isLit(text, col, row)
+                val lit = col < wordCols && grid[row][col]
                 canvas.drawCircle(cx, cy, if (lit) r * 1.25f else r * 0.6f, if (lit) on else off)
             }
         }

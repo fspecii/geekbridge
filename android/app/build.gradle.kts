@@ -91,6 +91,12 @@ android {
 
     buildFeatures { buildConfig = true }
 
+    packaging {
+        // Metadata for kotlin-reflect and the Kotlin tooling; nothing in the app loads it (no reflection library),
+        // so it is dead weight in every APK (about 11 KB compressed, 46 KB stored). docs/android-perf.md.
+        resources.excludes += setOf("kotlin/*.kotlin_builtins", "kotlin/**/*.kotlin_builtins", "kotlin-tooling-metadata.json")
+    }
+
     lint {
         abortOnError = true
         warningsAsErrors = false

@@ -90,4 +90,21 @@ object DotFont {
         }
         return false
     }
+
+    /**
+     * The whole lit/dark grid of [s] ([ROWS] rows, [columns] wide), computed once so a view's draw loop reads an array
+     * instead of scanning the string for every dot ([isLit] is O(length) and `glyph` allocates a boxed key).
+     */
+    fun litGrid(s: CharSequence): Array<BooleanArray> {
+        val cols = columns(s)
+        val grid = Array(ROWS) { BooleanArray(cols) }
+        var x = 0
+        for (c in s) {
+            val g = glyph(c)
+            val w = g[0].length
+            for (row in 0 until ROWS) for (i in 0 until w) if (g[row][i] == '1') grid[row][x + i] = true
+            x += w + 1
+        }
+        return grid
+    }
 }

@@ -106,6 +106,26 @@ directory. Tools: `nm -S --size-sort`, `size`, `readelf -S`, `/proc/PID/smaps` (
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
 
+## Android responsiveness round (2026-11-03)
+
+Emulator (AVD clone, Android 16 x86_64, software GPU, host load average 3-13 from other jobs), release build with R8 signed with the
+debug key, `am start -W`, `dumpsys gfxinfo`, `dumpsys meminfo`, debug build for StrictMode. Emulator numbers are a regression
+baseline, not phone numbers. Full write-up: [reports/android-startup-jank.md](reports/android-startup-jank.md).
+
+| Metric | Before | After |
+| --- | --- | --- |
+| Main-thread disk reads at cold start (debug, StrictMode, same state, 3 cold starts) | 2 per start (`DeviceName.current` preference load, `getFilesDir` stat) plus 23-47 ms preference loads in `CallControlRuntime.init` / `AppState.init`; 142-335 ms each | 1 per start (`getFilesDir` stat, a cold-IO artefact); the preference loads are gone |
+| Release APK, phone + emulator ABIs | 6 494 176 B | 6 480 448 B (-13 728 B: Kotlin `.kotlin_builtins` metadata and `kotlin-tooling-metadata.json` no longer packaged) |
+| Dot-matrix wordmark draw (JVM, 25-character word, per frame) | 73 us (per-dot string scan, `uppercase()` per frame) | 2 us (precomputed grid); `DotProgress` and `DotText` no longer allocate boxed lists / a key string per draw |
+| Cold start `am start -W`, release, 7-9 starts | 910-970 ms (quiet host) | not distinguishable under load (see report); process CPU 100-108 -> 94-102 ticks |
+| Scroll jank Home / Setup (`gfxinfo`, 6 / 4 swipe pairs) | 22-27 % / 34-36 % janky, p50 32-36 ms | unchanged (22 % / 34 %, p50 32-36 ms): bound by the emulator's software renderer, not app code |
+| PSS: Home idle / after scrolling / Setup / Diagnostics (unpaired) | 23.5 / 30.7 / 32.3 / 36.5-38.3 MB | unchanged (23.5 / 30.6 / 32.2 / 36.5 MB) |
+
+Findings that were measured and left alone: one process holds UI, service and Rust core (a bare second process measured 7.7 MB PSS, a
+split would cost more than the UI heap it frees); no fonts are bundled (the dot font is code); `Application.onCreate` takes 6-8 ms,
+`HomeActivity.onCreate` 7-11 ms, `onStart` 37-46 ms, a screen build 18-32 ms; the first frame (about +245 ms after process start) is
+followed by a 600 ms main-thread wait inside `HardwareRenderer.setStopped` (the emulator render thread), not app code.
+
 ## What changed
 
 * **Runtime workers** (`bridge-service/src/main.rs`): `#[tokio::main]` started one worker per core
