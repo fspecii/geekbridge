@@ -47,12 +47,11 @@ logcat and status evidence on failure.
 - **call-ui notification stage.** Ubuntu 24.04's libnotify 0.8.8: `notify-send --wait --action=...` against mako prints "Actions are not
   supported by this notifications server" although `GetCapabilities` lists `actions`, and the `Notify` call carries an empty action
   array. The stage probes that and reports SKIP. The Calls window stage (popup, Answer, Hang up, Decline) runs and passes.
-- **e2e-android `file_d2p`** (desktop to phone file, 300 kB): `link_lost` right after Accept, six runs out of six; phone log shows it created
+- **e2e-android `file_d2p`** (desktop to phone file, 300 kB): `link_lost` right after Accept, in every run where the suite ran (five); phone log shows it created
   the pending download file and then deleted it. Passes on the development machine. Not diagnosed; the job is non-blocking. Everything
   else in that suite passes, including `file_p2d`, clipboard both ways (`clip_p2d` failed once, run 41650358489, with the link not up
   yet) and the update check.
-- **pair-background `prehome`** (phone in the background while the pairing code is compared): failed in four of six runs (one of them
-  the first), passes in the others. The 8 s window is the likely culprit on a shared runner. The home, swipe and doze stages always passed. Non-blocking.
+- **pair-background `prehome`** (phone in the background while the pairing code is compared): failed in three of six full runs and passed in the others. The 8 s window is the likely culprit on a shared runner. The home, swipe and doze stages always passed. Non-blocking.
 - No problem with nested virtualisation: KVM was available on every runner.
 - Not attempted: `wayland.sh`, `coexist*.sh`, `pair-lifecycle.sh`, `pair-rename.sh`, `ux-sweep.sh` and the other scripts under
   `scripts/e2e/`. The matrix is a list in the workflow, so they can be added one line each.
