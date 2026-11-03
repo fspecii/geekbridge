@@ -52,6 +52,9 @@ export GB_NDK_BIN
 _gb_flags="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$GB_NDK_BIN/aarch64-linux-android${GB_ANDROID_API}-clang"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$GB_NDK_BIN/x86_64-linux-android${GB_ANDROID_API}-clang"
+# lld identical code folding (docs/reports/android-icf-validation.md): about -100 kB per library. GB_ANDROID_ICF=0
+# turns it off (measuring a baseline, or bisecting a suspected address-identity bug).
+[[ "${GB_ANDROID_ICF:-1}" == 0 ]] || _gb_flags="$_gb_flags -C link-arg=-Wl,--icf=all"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$_gb_flags"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$_gb_flags"
 unset _gb_flags

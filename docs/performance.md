@@ -92,10 +92,16 @@ directory. Tools: `nm -S --size-sort`, `size`, `readelf -S`, `/proc/PID/smaps` (
   ring/rustls/x509 575 kB (P-256 table 152 kB, TLS 1.2 needed by KDE Connect peers), tokio 176 kB, unwind tables
   (`.eh_frame` + `.gcc_except_table` + hdr) ~840 kB which panic = "unwind" requires, std backtrace 129 kB. The APK
   stores the library uncompressed, so APK delta = library delta. Linking with lld `--icf=all` measured -100 448 B
-  (2 848 040 -> 2 747 592 B); `--icf=safe` does nothing because rustc emits no address-significance table. Not applied:
-  folding code is safe in practice but could not be validated on a device in this round. GUI binaries (8 MB) are
+  (2 848 040 -> 2 747 592 B); `--icf=safe` does nothing because rustc emits no address-significance table. Applied
+  afterwards (2026-11-03, validated on the AVD, see the next bullet). GUI binaries (8 MB) are
   1.44 MB AccessKit/zbus, 1.14 MB winit/x11/wayland, 0.75 MB egui; features are already trimmed (no default features),
   AccessKit stays for accessibility. Widget-preview PNGs (64 kB) do not recompress.
+* **lld `--icf=all` for Android (2026-11-03).** `scripts/android-env.sh` adds `-C link-arg=-Wl,--icf=all` to both Android
+  targets (`GB_ANDROID_ICF=0` turns it off). Release APK, unsigned, minified: arm64-only 3 295 347 -> 3 194 339 B (-101 008 B);
+  arm64 + x86_64 6 574 428 -> 6 425 676 B (-148 752 B). Stripped libraries: arm64 2 859 600 -> 2 758 592 B, x86_64
+  3 271 400 -> 3 220 952 B. All LOAD segments stay 0x4000 aligned (`llvm-readelf -lW`), so the 16 KB page-size
+  requirement of Android 15+ still holds. No code compares function addresses; pairing, reconnect, file transfer both ways
+  and the update stage pass on the AVD. Details and caveats: `docs/reports/android-icf-validation.md`.
 
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
