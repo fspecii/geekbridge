@@ -14,6 +14,19 @@ All of these are on the GitHub release page. The installers start the background
 (`geekbridge-service`) at every login: a systemd user unit plus an XDG autostart entry on Linux, a Run key on
 Windows, a LaunchAgent (written the first time the app opens) on macOS. Check with `geekbridge-ctl status`.
 
+**Verified where.** The Linux packages and the Android app are the tested targets; one real phone (Samsung Galaxy Z
+Fold5, SM-F946B) has been paired. The Windows installer and the macOS `.dmg` are built and tested in CI only, have never
+been run on a real PC or Mac, and there are **no prebuilt Windows or macOS binaries yet** (build from source).
+
+**Debug or release APK.** The release APK is signed with the project's release key and is the one to install. A debug
+APK (from `scripts/build-android.sh`) uses a local debug key: it cannot be updated by, or update to, a release build, and
+the app refuses such an update. Uninstall one before installing the other (this removes the phone's pairing; pair
+again).
+
+**Uninstall.** Linux: `./install.sh --uninstall` removes the program but keeps your pairings, identity and settings in
+`~/.local/state/geekbridge`; add `--purge-data` to delete that folder too (`./install.sh --uninstall --purge-data`). The
+package route is `sudo apt remove geekbridge`. Also forget the computer on the phone (Diagnostics & about > Unpair).
+
 ### The tray icon
 
 The service shows a small icon in the notification area (Linux and Windows) so GeekBridge is a quiet background
@@ -57,6 +70,23 @@ setup step. Tap **Pair** on either side; both screens show an 8-character code. 
 If either side cannot find the other, use **Test connection** (both apps have it) or enter the address by hand under
 *Connect by address*. Then finish the setup wizard (notifications, contacts, calendar, phone state and the **battery**
 step so Android keeps the link alive). Details: [pairing.md](pairing.md).
+
+## Phone battery on the computer
+
+The computer can show the phone's battery level and whether it is charging (tray tooltip, the Home phone card,
+`geekbridge-ctl status`, waybar). It is **off by default on both ends**, because it reveals when a phone is idle or away:
+on the phone switch on *Share battery level* in Settings and allow it for that computer; on the computer switch on *Show
+phone battery* (or `geekbridge-ctl consent DEVICE_ID battery on`). The value is kept in memory only. It uses the stock KDE
+Connect battery packets. Checked with automated tests and the emulator; not yet confirmed on the real phone.
+
+## Why is my phone not connected
+
+When a paired phone has no link, Home, the tray tooltip, waybar and `geekbridge-ctl status` / `doctor` give one plain
+sentence and a suggested fix instead of a generic "not reachable". Typical reasons: the computer has no network or is on a
+different network from the phone; the service is not listening; you paused the connection; the pairing was removed on the
+phone; the phone is still reconnecting or gave up after 12 tries; the phone is silent or its link timed out; or the
+firewall blocks 1716-1764 (`geekbridge-ctl` can see this, the apps cannot). The reason is a best guess from what the
+service knows. See [reports/why-disconnected.md](reports/why-disconnected.md).
 
 ## Contacts and Calendar
 
@@ -108,12 +138,25 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 ## Updates
 
 A banner appears when a newer release exists: **Download** (checked against the published SHA-256), **Show file**,
-then install it yourself. Nothing installs automatically. Turn checks off under *Settings*, or
+then install it yourself. Nothing installs automatically. Checks run shortly after the service starts and then daily;
+**Check for updates** forces one. The Android app only accepts an update signed with the same key as the installed one, so
+a debug build never updates to a release. Turn checks off under *Settings*, or
 `geekbridge-ctl update disable`. Details: [updates.md](updates.md).
+
+## Privacy
+
+No accounts, no GeekBridge servers, no analytics. Everything stays on your local network. Contacts, calendar, Messages,
+battery level, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
+specific phone**, on both the phone and the computer, and can be switched off again at any time. Nothing from the phone is
+written to the computer's disk (contacts, calendar, messages and battery level are held in memory and erased when the
+service stops); received files are the one thing you ask it to keep. Message text is hidden in notifications by default, and
+caller numbers and message text are masked in logs and in the redacted `diagnose` report. The only internet traffic is
+the optional update check to `api.github.com` (turn it off with `geekbridge-ctl update disable`). Reporting problems:
+[SECURITY.md](../SECURITY.md).
 
 ## Troubleshooting
 
-Start with `geekbridge-ctl doctor`: it checks the service, the firewall (ufw/firewalld ports 1716-1764), your desktop
+Start with `geekbridge-ctl doctor` (run it as the same user as the service, in your desktop session): it checks the service, the firewall (ufw/firewalld ports 1716-1764), your desktop
 session (Wayland/X11 variables), paired phones, clipboard, calls and Messages, and prints the fix for each problem
 (it exits 1 if a check failed). Then the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
 `geekbridge-ctl diagnose` and, on the phone, **Diagnostics & about > Copy report** (both are redacted and safe to attach
@@ -133,8 +176,14 @@ to a bug report).
 * **No computer listed on the phone:** run `geekbridge-ctl doctor`. Usually the firewall drops UDP 1716 (the broadcast the
   phone listens for) or the service is not running; **Pair with QR code** works even when broadcasts are blocked.
 * **Messages is off:** it is opt-in per phone. Click **Allow** in Messages, or `geekbridge-ctl consent DEVICE_ID sms on`
-  (`doctor` prints the exact line). If it then says the phone does not offer Messages, switch on Messages and allow the
-  SMS permission in the phone app.
+  (`doctor` prints the exact line). If it then says the phone does not offer Messages, do this on the phone: GeekBridge >
+  Share with computer > switch **Messages** on > **Allow access** and accept the SMS permission (it covers read, send and
+  receive together; GeekBridge never needs to be your default messaging app). On an app installed from an APK file,
+  Android 13 and newer may refuse silently with no dialog: open Settings > Apps > GeekBridge, tap the **three-dot menu at
+  the top right**, choose **Allow restricted settings** (it appears only after you have tried **Allow access** once), then
+  Permissions > SMS > Allow. Then reopen GeekBridge; the computer picks up the change by itself. The permission steps are
+  tested on an emulator; Samsung's flow on the real phone has been analysed but not yet confirmed. Details:
+  [phone-data-link.md](phone-data-link.md).
 
 ### Phone not found
 * The computer announces itself every 15 s and listens on UDP 1716. Routers that filter broadcast traffic (guest Wi-Fi,
@@ -146,7 +195,8 @@ to a bug report).
   **Stay connected** on.
 
 ### Firewall, VPN, guest Wi-Fi
-* Allow TCP **and** UDP **1716-1764** from your LAN. ufw: `sudo ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp`
+* Allow TCP **and** UDP **1716-1764** from your LAN (`geekbridge-ctl firewall` prints the commands for your firewall,
+  `geekbridge-ctl doctor` tells you whether they are in place; the checks read ufw and firewalld and say so when they cannot). ufw: `sudo ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp`
   and the same for `udp` (use your own subnet). firewalld: `sudo firewall-cmd --add-port=1716-1764/tcp --add-port=1716-1764/udp --permanent`.
   Windows prompts once for "Private network"; accept it.
 * VPNs that route all traffic (full tunnel) usually block LAN access; use split tunnelling or disconnect.
@@ -184,7 +234,10 @@ to a bug report).
   `geekbridge-ctl call dial +15550100`), confirm it, and the phone places the call. It needs *Allow placing calls from
   my computer* in the phone's Answer calls step. Digits and a leading `+` only.
 * If the computer has **no Bluetooth controller**, `geekbridge-ctl doctor` and the Calls window say so: control works,
-  the audio stays on the phone.
+  the audio stays on the phone (use the phone's speaker, earpiece or its own headset). This is reported as information,
+  not an error. Carrying call audio over Wi-Fi is not possible on a stock Android phone; see
+  [call-audio-options.md](call-audio-options.md) for why and for choosing a USB Bluetooth adapter. Dialing was tested
+  against a stand-in phone only.
 * Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
   controller (`bluetoothctl show` must list one; many desktops have none; a USB adapter works), the phone paired over
   Bluetooth with "Phone calls" enabled, and an HFP-capable PipeWire/WirePlumber stack. `geekbridge-ctl calling` shows
@@ -202,6 +255,12 @@ unrestricted battery*, then the vendor step:
 * **vivo:** Autostart / Background start-up manager: allow; Settings > Battery > Background power consumption: *Allow high background power consumption*.
 * **Nothing OS and stock Android/Pixel:** *Unrestricted* app battery usage is enough.
 Menu names vary by version; the wizard opens the closest screen it can find. Real vendor devices have not been tested.
+
+### Phone battery drain and the screen-off heartbeat
+While the phone's screen is off the app pings the computer every 60 s instead of every 20 s, and it stops broadcasting
+its presence while every paired computer is already linked. The link still survives a locked phone; the computer keeps its
+own 20 s check and never drops a sleeping phone. This was measured by code audit and tests, not by a battery run on a
+real phone ([reports/android-battery-audit-2.md](reports/android-battery-audit-2.md)).
 
 ### Update not offered
 * Checks run about 15 s after the service starts and then daily; press **Check for updates** to force one (desktop

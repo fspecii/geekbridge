@@ -10,8 +10,10 @@ process and desktop identity) on one small background service, written in Rust, 
 shared Rust core. It speaks the KDE Connect transport, and it is styled after Nothing OS: true black, dot-matrix type,
 one red accent.
 
-> **Status: 0.1.0, verified on Linux and an Android emulator. No real phone has been paired yet.** See the feature
-> matrix for exactly what was checked and how.
+> **Status: 0.1.0. Verified on Linux, an Android emulator and one real phone (a Samsung Galaxy Z Fold5, SM-F946B):
+> pairing and the link were exercised on it, and the link-stability fixes came from it. Every other feature below was
+> checked only on the emulator or by automated tests.** Windows and macOS have only been built and tested in CI, and there
+> are no prebuilt Windows or macOS binaries yet. The feature matrix says exactly what was checked and how.
 
 <p align="center">
   <img src="docs/img/nothing-home-dark.png" width="200" alt="Android Home, dark">
@@ -30,7 +32,9 @@ one red accent.
 
 "Emulator" means the debug APK on an Android 16 x86_64 emulator talking to the real desktop service
 (`scripts/e2e-*.sh`, results in [docs/reports/e2e-findings.md](docs/reports/e2e-findings.md)). "Scripted" means automated tests against
-generated peers or a simulated phone/modem on loopback. **No row has been verified on a physical phone.**
+generated peers or a simulated phone/modem on loopback. **Only one physical phone (SM-F946B) has ever been paired, and
+only pairing and link behaviour were exercised on it; the Real phone column says "not yet" for every feature that was not
+individually confirmed there.**
 
 | Feature | What it does | Verified how | Real phone |
 | --- | --- | --- | --- |
@@ -44,13 +48,16 @@ generated peers or a simulated phone/modem on loopback. **No row has been verifi
 | Calendar | Month, week, day, agenda; Google calendars via the phone's own sync; optional two-way editing | Emulator (provider inserts, desktop create/edit/delete) | not yet |
 | Android home-screen widgets | Connection (2x1), Quick actions (2x2), Agenda (4x2) in dot-matrix; light/dark, resizable, no polling | Emulator screenshots, JVM tests for the state/agenda logic | not yet |
 | Updates | GitHub release check, SHA-256 verified download, never auto-installs | Emulator self-update against a mock release server; real GitHub not contacted | not yet |
+| Phone battery on the computer | Level and charging state in the tray, Home and `status`; **off by default** on both ends | Scripted tests and unit tests against stock `kdeconnect.battery` packets | not yet |
+| Dial from the computer | Type a number in Calls (or `geekbridge-ctl call dial`), confirm, the phone places the call; the voice stays on the phone | Scripted tests against a stand-in phone only; nothing was dialed on any network | not yet |
+| "Why is it disconnected" | One plain sentence and a fix for each paired phone without a link (Home, tray, waybar, `status`, `doctor`) | Unit and service tests; wording not yet judged on real failures | not yet |
 | Android service / battery | Foreground link service, boot restart, OEM battery guidance | Emulator reboot and battery dialog; no OEM device | not yet |
 
 | Desktop | Status |
 | --- | --- |
 | **Linux** (X11 and Wayland; Hyprland / Omarchy hotkey, window rules, notifications, waybar) | Built, packaged (`.deb`, installer tarball) and run on Arch/Omarchy; the main supported target |
-| **Windows** | Compiles and type-checks, CI jobs defined, installer script written; **never run on Windows**, unsigned |
-| **macOS** | Compiles and type-checks for both Apple targets, `.dmg` script written; **never run on a Mac**, unsigned |
+| **Windows** | Built and tested in CI only, installer script written; **never run on a real Windows PC**, unsigned, no prebuilt binary yet |
+| **macOS** | Built and tested in CI only, `.dmg` script written; **never run on a Mac**, unsigned, no prebuilt binary yet |
 | **Android** | Android 8+ (min SDK 26), arm64-v8a and x86_64; debug and release-signed builds; tested on an emulator, not yet on a physical phone |
 
 **Release builds: Linux and Android only. Windows and macOS: build from source** (releases are built on a Linux
@@ -71,11 +78,24 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
 4. **Send files.** On the phone: any app > Share > **Send to computer**. On the computer: drop files on the GeekBridge
    window, use **Geekbridge Share**, or `geekbridge-ctl send-file DEVICE FILE`. Receiving is off until you allow it.
 5. **Calls.** On the phone switch on **Answer from computer**; allow Calls for the phone on the computer. An incoming
-   call shows a popup with Answer / Decline / Hang up in `geekbridge-calls`.
+   call shows a popup with Answer / Decline / Hang up in `geekbridge-calls`. To place a call from the computer, type a
+   number there (or `geekbridge-ctl call dial +15550100`) and confirm; this needs *Allow placing calls from my
+   computer* on the phone. Without a Bluetooth controller in the PC, control still works but the voice stays on the
+   phone ([call audio options](docs/call-audio-options.md)).
 6. **Contacts and calendar.** Switch **Share contacts** / **Share calendar** on the phone, then open **Contacts** or
    **Calendar** on the computer. Editing the calendar is a separate opt-in.
 7. **Updates.** A banner "Update available" appears in every app and on Android; downloads are checksum-verified and never
    installed automatically.
+8. **Something wrong?** Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
+   fix for each problem and exits 1 if a check failed). A paired phone without a link gets a plain reason and a
+   suggested fix in Home, the tray, `geekbridge-ctl status` and waybar.
+
+**Android build types.** The GitHub release APK is signed with the release key. A debug APK (what `scripts/build-android.sh`
+makes) is signed with a local debug key: it works for testing, but it can never update to a release build or the other way
+round; uninstall one before installing the other.
+
+**Uninstall (Linux).** `./install.sh --uninstall` removes the program and keeps your pairings and settings;
+`./install.sh --uninstall --purge-data` also deletes them (`~/.local/state/geekbridge`).
 
 ## Requirements
 
@@ -161,9 +181,10 @@ tools (`geekbridge-pair`, `geekbridge-call-probe`) are described in [docs/call-c
 
 ## Privacy and security in one paragraph
 
-Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, clipboard, calls and file
-receiving are each off until you allow them for a specific phone on both sides, and nothing from the phone is stored on
-the computer. The only internet traffic is the optional update check to GitHub. Report vulnerabilities privately as
+Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, battery level, clipboard,
+calls (including dialing) and file receiving are each off until you allow them for a specific phone on both sides, and
+nothing from the phone is stored on the computer (battery level is held in memory only). The only internet traffic is
+the optional update check to GitHub; there are no accounts and no GeekBridge servers. Report vulnerabilities privately as
 described in [SECURITY.md](SECURITY.md).
 
 ## Documentation

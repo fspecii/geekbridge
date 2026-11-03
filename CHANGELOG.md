@@ -7,10 +7,28 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- `geekbridge-ctl doctor`: checks the service, the firewall rule for TCP and UDP 1716-1764 (ufw, firewalld), the desktop
+  session, paired phones, clipboard, calls and Messages, prints the fix for each problem and exits 1 if a check failed.
+- `geekbridge-ctl call dial NUMBER [--yes]` and a confirmation sheet behind the Calls keypad: the computer asks the phone
+  to place a call (digits and a leading `+` only; needs *Allow placing calls from my computer* on the phone). Tested
+  against a stand-in phone only. A PC without a Bluetooth controller is now reported as information: call control works,
+  the voice stays on the phone ([docs/call-audio-options.md](docs/call-audio-options.md)).
+- "Why is it disconnected": a reason code, a plain sentence and a suggested fix for every paired phone without a link, in
+  Home, the tray, waybar, `geekbridge-ctl status` and `doctor`.
+- Messages permission guidance on the phone for sideloaded Android 13+ ("Allow restricted settings") and the computer
+  picking up a permission change without a manual reconnect. Checked on an emulator and by analysis; not yet confirmed on
+  the real phone.
+- `install.sh --uninstall --purge-data` (Linux) deletes the pairing and settings directory; plain `--uninstall` keeps it.
 - Phone battery level and charging state on the computer (stock `kdeconnect.battery` packets, so stock KDE Connect
   interoperates). Off by default on both ends: a "Share battery level" switch plus a per-computer allow on the phone,
   and a per-phone consent on the computer. Shown in the tray tooltip, the Home phone card and
   `geekbridge-ctl status` / `status --waybar`; kept in memory only. See docs/kdeconnect-interop.md.
+
+### Changed
+- While the phone's screen is off its heartbeat is every 60 s (20 s with the screen on) and it stops broadcasting while
+  every paired computer is linked. Code-audited and tested; no battery measurement on a real phone yet.
+- Docs: one real phone (Samsung SM-F946B) has been paired; Windows and macOS are CI-tested only and have no prebuilt
+  binaries. The Android update check never moves a debug build to a release build (uninstall once).
 
 ## [0.1.0] - 2026-11-02
 

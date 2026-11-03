@@ -1,5 +1,9 @@
 # Real-device quickstart (10-15 minutes)
 
+What has and has not been done on hardware: one real phone (Samsung Galaxy Z Fold5, SM-F946B) has been paired, and pairing
+and link stability were exercised on it. Everything else in this checklist (calls, Messages, battery sharing, dialing,
+calendar, contacts, clipboard on a real phone) is still to be confirmed by you. Windows and macOS have only run in CI.
+
 First hour with a real phone, highest value first. The full matrix is [real-device-test-plan.md](real-device-test-plan.md).
 Fill the **Result** column as you go (PASS / FAIL / N/A + a note); on any FAIL run `logs` (step 0) right away,
 Android's log buffer is small.
@@ -123,7 +127,13 @@ table and chain names vary, `sudo nft list ruleset` shows yours), iptables `sudo
 Start with `$S check`: it prints the phone's view (ping, TCP to the service, VPN, Wi-Fi validation, Battery Saver)
 and the PC's view (addresses, the QR contents, firewall) and names the section below for each WARN/FAIL.
 For the computer side alone (service up, ufw rule for 1716-1764, Wayland/X11 variables, paired phones, why Messages or
-clipboard is off) run `geekbridge-ctl doctor`; it prints the fix command under each problem.
+clipboard is off) run `geekbridge-ctl doctor`; it prints the fix command under each problem and exits 1 if a check failed. If a paired phone
+is not connected, `geekbridge-ctl status` prints a "Try: ..." line with the likely reason. Messages on a sideloaded
+APK on Android 13+: Settings > Apps > GeekBridge > top-right menu > **Allow restricted settings** (appears after one
+**Allow access** attempt), then Permissions > SMS > Allow. Also try, if you want: **Share battery level** (off by default, needs
+the allow on both ends) and a dial from the PC (`geekbridge-ctl call dial NUMBER`, needs *Allow placing calls from my
+computer*; it places a real call). A PC with no Bluetooth controller still controls calls; the voice stays on the phone.
+The firewall rule is TCP and UDP 1716-1764 (step 4).
 
 ### T0. The phone does not show up in `adb devices`
 
