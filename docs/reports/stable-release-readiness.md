@@ -67,3 +67,34 @@ deletes it right after signing. Regression test: the release-readiness test sign
 `CHANGELOG.md`, `docs/release-checklist.md`, `docs/reports/stable-release-readiness.md`, `scripts/release-local.sh`,
 `scripts/lib/signpass.sh`, `scripts/tests/release-readiness-test.sh`, `crates/bridge-update/tests/mock_server.rs`,
 `android/app/src/test/java/dev/geekbridge/android/UpdateModelTest.kt`.
+
+## Rehearsal 2 (2026-11-03, main at ed4070a1f)
+
+Clean clone of origin/main under `~/.cache`, throwaway key (`make-keystore.sh`, signer `d52d76f3...e90ba6`, deleted afterwards),
+`GB_RELEASE_REPO=fspecii/geekbridge scripts/release-local.sh v0.1.0 --dry-run`. Nothing tagged, pushed or published.
+
+| Check | Result |
+|---|---|
+| fmt, clippy `-D warnings`, `cargo test --workspace` | Green on the second run. The first run failed once in `bridge-fuzz` `deterministic` (target `share`, 3 findings after 1887 runs, machine load average 17 to 40 from other jobs; the finding text was not kept). The same test passed alone (108 s) and in the full second run. Treated as a load flake, not reproduced; if it recurs, run it with `GEEKBRIDGE_FUZZ_ITERS` and keep the crash dir. |
+| Assets | `geekbridge-linux-x86_64.tar.gz` (9 binaries + README), installer tarball, `.deb` (Depends/Recommends sane, 10 binaries in `/usr/bin`), Arch `.pkg.tar.zst` (0.1.0-1), `geekbridge-android.apk`, `geekbridge-android-arm64.apk`, `SHA256SUMS`: `sha256sum -c` OK for all six. |
+| APK signing | Both APKs: apksigner verifies (v2 + v3), one signer, certificate SHA-256 equals the pin. |
+| versionCode | 10099 (rc.1 was 10051): increasing. |
+| Sizes | arm64-only 3 243 294 B signed (docs/performance.md: 3 194 339 B unsigned, ~3.2 MB); universal 6 507 887 B (6 425 676 B unsigned). Consistent. |
+| `check-release-isolation.sh` | OK on both APKs (no debug diagnostics, receivers, cleartext, debug permissions). |
+| `gen-notices.sh --check`, `add-spdx.sh --check` | Both clean. |
+| `scripts/e2e/install-sandbox.sh` | Run with the binaries from the release tarball and from the `.deb`: 61 passed, 0 failed each (after the fix below). |
+| Dry-run warning | "working tree is not clean": only my `.tools` symlink in the clone; expected. |
+
+### Defect found and fixed
+
+`install-sandbox.sh` failed 6 of 61 checks on a fresh clone: it copies `state-v1` fixtures into the sandbox state dir, git
+stores them as 0644, and the service refuses a state dir with group/world-readable files (so "service starts on old
+state", "pairing still listed", and the updater checks that depend on it failed). It only passed in working trees where the
+files happened to be 0600. The script now chmods the copied files to 0600.
+
+### Owner-only actions still open
+
+Unchanged from the list above: create and back up the real key and pin (1, 2), security contact and private
+vulnerability reporting (3), real-device test (4), Windows/macOS decision (5), name/privacy/support (6), rc.1 Android
+uninstall note (7), the real `--tag --push-tag --publish` run (8). This rehearsal used a throwaway key, so the real run
+still needs the real keystore and pin, and the release-notes signer fingerprint must be checked against it.

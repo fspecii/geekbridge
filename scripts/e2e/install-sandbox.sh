@@ -113,7 +113,7 @@ check install-writes-nothing-in-real-config $([[ "$(find "$REAL_HOME_CFG/systemd
 
 # ---- 5. user data, then upgrade over the top
 FIX="$ROOT/crates/bridge-service/tests/fixtures/state-v1"
-mkdir -p "$STATE"; chmod 700 "$STATE"; cp -a "$FIX"/. "$STATE"/; rm -f "$STATE/README.md"; chmod 700 "$STATE"
+mkdir -p "$STATE"; chmod 700 "$STATE"; cp -a "$FIX"/. "$STATE"/; rm -f "$STATE/README.md"; chmod 700 "$STATE"; find "$STATE" -type f -exec chmod 600 {} +   # git keeps no 0600: a fresh clone has 0644 fixtures
 state_sum() { (cd "$STATE" && find . -type f | sort | xargs sha256sum | sha256sum); }
 s_before="$(state_sum)"
 # mark installed binaries so the upgrade is observable
