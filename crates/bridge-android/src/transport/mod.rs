@@ -248,6 +248,8 @@ impl Host {
             return Err(err("invalid_device_id", "cannot connect to this device"));
         }
         let attempt = core.begin_attempt(&target)?;
+        // The user asked for this computer: its goodbye no longer applies.
+        engine::unsuppress(&target);
         handle.spawn(outbound(
             core.clone(),
             attempt,
@@ -875,6 +877,8 @@ fn capabilities(
     // Lets the computer heartbeat this phone even with every optional feature off (see `heartbeat::MARKER`).
     incoming.push(bridge_core::heartbeat::MARKER.to_owned());
     outgoing.push(bridge_core::heartbeat::MARKER.to_owned());
+    // The computer may tell us it is hanging up on purpose (`goodbye`); only GeekBridge computers send it.
+    incoming.push(bridge_core::goodbye::GOODBYE.to_owned());
     if clipboard {
         incoming.extend(engine::clipboard_incoming_types());
         outgoing.extend(engine::clipboard_outgoing_types());

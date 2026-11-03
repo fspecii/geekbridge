@@ -621,10 +621,14 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     };
     let result = tokio::select! {
         result = serve_api(api, state) => result,
-        result = control::serve_control(control_listener, control) => result,
+        result = control::serve_control(control_listener, control.clone()) => result,
         result = shutdown => result,
         () = tray::quit_requested() => Ok(()),
     };
+    // Tell connected GeekBridge phones we are leaving, so they redial with the normal back-off.
+    if let control::Control::Ready { daemon, .. } = &*control {
+        daemon.goodbye_all().await;
+    }
     if let Some(tray) = tray {
         tray.abort();
     }

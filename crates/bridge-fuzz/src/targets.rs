@@ -221,10 +221,17 @@ fn identity_line(input: &[u8]) {
         oracle(DeviceId::parse(id.device_id.as_str()).is_ok(), || {
             "invalid device id accepted".into()
         });
+        oracle(id.geekbridge_port.is_none_or(|p| p >= 1024), || {
+            format!("unusable listening port accepted: {:?}", id.geekbridge_port)
+        });
         let again = Identity::from_packet(&id.to_packet());
         oracle(again.is_ok(), || {
             "accepted identity does not survive re-encoding".into()
         });
+        oracle(
+            again.is_ok_and(|a| a.geekbridge_port == id.geekbridge_port),
+            || "the listening port hint does not survive re-encoding".into(),
+        );
     }
     let s = text(input);
     if let Some(n) = identity::sanitize_device_name(&s) {
@@ -961,6 +968,46 @@ fn debug_link_parse(input: &[u8]) {
     });
 }
 
+fn goodbye_wire(input: &[u8]) {
+    use bridge_core::goodbye as gb;
+    let (_, body) = kind_and_body(input, &[gb::GOODBYE]);
+    if let Ok(reason) = gb::parse(&body) {
+        oracle(gb::parse(&gb::body(reason)) == Ok(reason), || {
+            "goodbye reason does not round-trip".into()
+        });
+        // Only the three named reasons are ever accepted.
+        oracle(
+            matches!(
+                body.get("reason").and_then(Value::as_str),
+                Some("user_disconnect" | "shutdown" | "unpair")
+            ),
+            || "goodbye accepted an unnamed reason".into(),
+        );
+    }
+    // The same bytes as an identity: a hint is a usable port or nothing, and never fails the identity on its own.
+    if let Ok(p) = Packet::from_line(strip_nl(input))
+        && let Ok(id) = Identity::from_packet(&p)
+    {
+        oracle(id.geekbridge_port.is_none_or(|p| p >= 1024), || {
+            "unusable listening port accepted".into()
+        });
+    }
+}
+
+fn goodbye_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"reason":"user_disconnect"}"#,
+        r#"{"type":"geekbridge.goodbye","body":{"reason":"shutdown","x":[1]}}"#,
+        r#"{"reason":"unpair"}"#,
+        r#"{"reason":"later"}"#,
+        r#"{"id":1,"type":"kdeconnect.identity","body":{"deviceId":"0123456789abcdef0123456789abcdef","deviceName":"Pc","deviceType":"desktop","protocolVersion":8,"geekbridgePort":1730}}"#,
+        r#"{"id":1,"type":"kdeconnect.identity","body":{"deviceId":"0123456789abcdef0123456789abcdef","deviceName":"Pc","protocolVersion":8,"geekbridgePort":-1}}"#,
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
 fn hub_debug(input: &[u8]) {
     use bridge_core::debug_link as dl;
     use bridge_service::phone_debug::{Disposition, PhoneDebug};
@@ -1398,6 +1445,13 @@ pub static TARGETS: &[Target] = &[
         &["geekbridge.debug.log", "geekbridge.debug.state"],
         &["geekbridge.debug"],
         debug_seeds
+    ),
+    t!(
+        "goodbye",
+        goodbye_wire,
+        &["geekbridge.goodbye"],
+        &["geekbridge.goodbye"],
+        goodbye_seeds
     ),
     t!("doctor_ufw", doctor_ufw, &[], &[], ufw_seeds),
     t!("reconnect", reconnect_book, &[], &[], none),

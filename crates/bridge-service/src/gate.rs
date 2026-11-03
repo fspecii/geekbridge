@@ -38,6 +38,8 @@ pub use bridge_core::debug_link::{
     LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
 };
 
+pub use bridge_core::goodbye::GOODBYE;
+
 pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
@@ -62,7 +64,7 @@ pub const LOCAL_INCOMING: [&str; 18] = [
     DEBUG_LOG,
     DEBUG_STATE,
 ];
-pub const LOCAL_OUTGOING: [&str; 18] = [
+pub const LOCAL_OUTGOING: [&str; 19] = [
     PING,
     BATTERY_REQUEST,
     NOTIFICATION_REQUEST,
@@ -81,6 +83,8 @@ pub const LOCAL_OUTGOING: [&str; 18] = [
     SMS_REQUEST_CONVERSATION,
     SMS_REQUEST,
     DEBUG_STATE_REQUEST,
+    // GeekBridge-only: said to a GeekBridge phone that declared it, never to a stock peer.
+    GOODBYE,
 ];
 
 /// Packet types the peer may send us: its outgoing list intersected with what we declared.

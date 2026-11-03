@@ -135,6 +135,19 @@ struct Desk {
 
 impl Desk {
     fn new() -> Desk {
+        Desk::with_caps(vec!["kdeconnect.ping".to_owned()])
+    }
+
+    /// A GeekBridge computer: it declares a `geekbridge.*` capability, so the phone treats its goodbye as real.
+    fn geekbridge() -> Desk {
+        Desk::with_caps(vec![
+            "kdeconnect.ping".to_owned(),
+            bridge_core::heartbeat::MARKER.to_owned(),
+            bridge_core::goodbye::GOODBYE.to_owned(),
+        ])
+    }
+
+    fn with_caps(caps: Vec<String>) -> Desk {
         let id = DeviceId::parse(&"d".repeat(32)).unwrap();
         let creds = DeviceCredentials::generate_with_id(&id).unwrap();
         let config = TransportConfig {
@@ -144,7 +157,6 @@ impl Desk {
             },
             ..TransportConfig::default()
         };
-        let caps = vec!["kdeconnect.ping".to_owned()];
         let ep = Endpoint::new(
             Arc::new(creds),
             "Chaos Desk",
@@ -466,5 +478,192 @@ fn the_phone_redials_after_a_reset_mid_link_and_keeps_a_single_connection() {
     );
     assert_eq!(s["connections"].as_array().unwrap().len(), 1, "{s}");
     links_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// The computer's own listener: every trusted link it accepts is handed to the test, and the address is returned.
+fn desk_listener(desk: &Desk) -> (SocketAddr, std::sync::mpsc::Receiver<TrustedLink>) {
+    let (tx, rx) = std::sync::mpsc::channel::<TrustedLink>();
+    let listener = desk
+        .rt
+        .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ep = desk.ep.clone();
+    desk.rt.spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let (ep, tx) = (ep.clone(), tx.clone());
+            tokio::spawn(async move {
+                if let Ok(Handshake::Trusted(link)) = ep.accept(stream).await {
+                    let _ = tx.send(link);
+                    std::future::pending::<()>().await;
+                }
+            });
+        }
+    });
+    (addr, rx)
+}
+
+fn redials(s: &Value) -> usize {
+    s["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "redial")
+        .count()
+}
+
+fn say_goodbye(desk: &Desk, link: &mut TrustedLink, reason: bridge_core::goodbye::Reason) {
+    let packet = bridge_kde::Packet::new(
+        bridge_core::goodbye::GOODBYE,
+        bridge_core::goodbye::body(reason),
+    );
+    desk.rt.block_on(link.send(&packet)).unwrap();
+}
+
+/// Pair a phone with a GeekBridge desk, then let the phone dial the desk's own listener. Returns the desk's side.
+fn linked(
+    desk: &Desk,
+    phone: &Phone,
+) -> (
+    SocketAddr,
+    std::sync::mpsc::Receiver<TrustedLink>,
+    TrustedLink,
+) {
+    drop(desk.pair(phone, phone.addr));
+    phone.wait("connection gone", Duration::from_secs(15), |s| {
+        s["connections"].as_array().unwrap().is_empty()
+    });
+    let (addr, rx) = desk_listener(desk);
+    connect_by_hand(phone, addr);
+    let link = rx.recv_timeout(Duration::from_secs(15)).unwrap();
+    (addr, rx, link)
+}
+
+fn connect_by_hand(phone: &Phone, addr: SocketAddr) {
+    let v: Value = serde_json::from_str(&phone.d.handle(&req(
+        "transport_connect",
+        json!({ "host": "127.0.0.1", "port": addr.port(), "device_id": "d".repeat(32) }),
+    )))
+    .unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+}
+
+/// The computer hangs up on purpose: the phone leaves it alone (no redial in well over its first back-off of 2 s),
+/// names the close, and the user's own Connect brings the link back at once.
+#[test]
+fn a_goodbye_from_a_user_disconnect_stops_the_redial_until_the_user_connects() {
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(43);
+    let (addr, rx, mut link) = linked(&desk, &phone);
+    let before = redials(&phone.status());
+    say_goodbye(
+        &desk,
+        &mut link,
+        bridge_core::goodbye::Reason::UserDisconnect,
+    );
+    drop(link);
+    let s = phone.wait("the link closed", Duration::from_secs(15), |s| {
+        s["connections"].as_array().unwrap().is_empty()
+            && s["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|e| e["code"] == "peer_goodbye")
+    });
+    assert_eq!(redials(&s), before);
+    std::thread::sleep(Duration::from_secs(5));
+    let s = phone.status();
+    assert_eq!(
+        redials(&s),
+        before,
+        "the phone redialed over a goodbye: {s}"
+    );
+    assert!(s["connections"].as_array().unwrap().is_empty());
+    // The user taps Connect: that ends the request, and a later loss redials normally again.
+    connect_by_hand(&phone, addr);
+    let mut link = rx.recv_timeout(Duration::from_secs(15)).unwrap();
+    phone.wait("linked again", Duration::from_secs(15), |s| {
+        s["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["trusted"] == true)
+    });
+    drop(link.recv());
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// A shutdown is not a request to stay away: the phone redials with its normal back-off.
+#[test]
+fn a_shutdown_goodbye_still_makes_the_phone_redial() {
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(44);
+    let (_addr, rx, mut link) = linked(&desk, &phone);
+    let before = redials(&phone.status());
+    say_goodbye(&desk, &mut link, bridge_core::goodbye::Reason::Shutdown);
+    drop(link);
+    let s = phone.wait("a redial", Duration::from_secs(30), |s| {
+        redials(s) > before
+            && s["connections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["trusted"] == true)
+    });
+    assert!(
+        s["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "peer_shutdown")
+    );
+    rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// A goodbye from a computer that never declared a `geekbridge.*` capability (a stock peer) is not acted on.
+#[test]
+fn a_goodbye_from_a_stock_shaped_peer_is_ignored() {
+    let _g = serial();
+    let desk = Desk::new();
+    let phone = Phone::start(45);
+    let (_addr, rx, mut link) = linked(&desk, &phone);
+    let before = redials(&phone.status());
+    say_goodbye(
+        &desk,
+        &mut link,
+        bridge_core::goodbye::Reason::UserDisconnect,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let s = phone.status();
+    assert!(
+        s["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["trusted"] == true),
+        "{s}"
+    );
+    assert_eq!(redials(&s), before);
+    drop((rx, link));
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// A computer that only ever dialed the phone has no known port; its secure identity says where it listens, so
+/// the phone's redial goes there (and not to 1716, which may be another program).
+#[test]
+fn the_phone_redials_the_port_the_computer_announced_in_its_identity() {
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(46);
+    let (addr, rx) = desk_listener(&desk);
+    desk.ep.set_listen_port(addr.port());
+    // The computer dials the phone (pairing), then drops the link; the phone knows only the computer's address.
+    drop(desk.pair(&phone, phone.addr));
+    let link = rx.recv_timeout(Duration::from_secs(40));
+    assert!(link.is_ok(), "the phone must redial the announced port");
     phone.d.handle(&req("transport_stop", json!({})));
 }

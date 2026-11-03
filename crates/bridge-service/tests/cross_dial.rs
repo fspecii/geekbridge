@@ -23,6 +23,7 @@ fn stand_in_phone(pc_id: &str, above: bool, geekbridge: bool) -> Arc<Phone> {
         let mut caps = vec!["kdeconnect.ping".to_string()];
         if geekbridge {
             caps.push(bridge_core::heartbeat::MARKER.to_string());
+            caps.push(bridge_core::goodbye::GOODBYE.to_string());
         }
         let mut config = kde::TransportConfig::default();
         config.address_policy.loopback = true;
@@ -51,11 +52,32 @@ async fn cross_dial(
     kde::TrustedLink,
     Result<kde::Handshake, kde::KdeError>,
 ) {
+    cross_dial_after(above, geekbridge, false).await
+}
+
+/// `polite`: the link ends with the user's Disconnect (and its goodbye) instead of the phone just dropping it.
+async fn cross_dial_after(
+    above: bool,
+    geekbridge: bool,
+    polite: bool,
+) -> (
+    Rig,
+    Arc<Phone>,
+    kde::TrustedLink,
+    Result<kde::Handshake, kde::KdeError>,
+) {
     let mut rig = Rig::start().await;
     let inbound = rig.listen_inbound().await;
     let pc_id = rig.status().await.device_id;
     let phone = stand_in_phone(&pc_id, above, geekbridge);
-    drop(pair_phone(&rig, &phone).await);
+    let first = pair_phone(&rig, &phone).await;
+    if polite {
+        rig.ok(Request::Disconnect {
+            device_id: phone.id(),
+        })
+        .await;
+    }
+    drop(first);
     rig.wait("link gone", |s| s.links.is_empty()).await;
 
     // A: the computer dials; the phone's listener holds the connection without answering yet.
@@ -166,4 +188,19 @@ async fn a_stock_phone_keeps_the_newest_connection_whatever_the_ids() {
     b.send(&kde::Packet::new("kdeconnect.ping", Default::default()))
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn a_goodbye_does_not_disturb_the_tie_break_when_both_ends_dial_again() {
+    // After the user's disconnect the phone is told to stay away, then the user taps Connect on the phone while
+    // the computer dials as well: exactly one link survives, the same rule for either id order.
+    for above in [true, false] {
+        let (rig, phone, _b, _a) = cross_dial_after(above, true, true).await;
+        let s = rig
+            .wait("one connected link", |s| {
+                link_of(s, &phone.id()).is_some_and(|l| l.phase == LinkPhase::Connected)
+            })
+            .await;
+        assert_eq!(s.links.len(), 1);
+    }
 }

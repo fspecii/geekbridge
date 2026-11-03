@@ -142,6 +142,8 @@ enum LinkCmd {
     Ping,
     Unpair(oneshot::Sender<Result<(), String>>),
     Share(ShareJob),
+    /// Say goodbye on the live link; the answer is true once the packet was written.
+    Goodbye(bridge_core::goodbye::Reason, oneshot::Sender<bool>),
 }
 
 struct LiveLink {
@@ -478,6 +480,8 @@ impl Daemon {
 
     pub fn set_inbound_listener(&self, addr: SocketAddr) {
         *self.inbound.lock().unwrap_or_else(|e| e.into_inner()) = Some(addr);
+        // Phones that only ever heard from us by IP learn the real port from the secure identity.
+        self.endpoint.set_listen_port(addr.port());
     }
 
     // ------------------------------------------------------------------ queries
@@ -1221,15 +1225,63 @@ impl Daemon {
         }
     }
 
+    /// Tell a connected GeekBridge phone why the link is about to close. False when there was nobody to tell (no
+    /// live link, a stock peer that does not declare the type) or the write failed; the caller closes anyway.
+    async fn say_goodbye(&self, device_id: &str, reason: bridge_core::goodbye::Reason) -> bool {
+        let cmd = {
+            let core = self.core();
+            core.links
+                .get(device_id)
+                .filter(|l| {
+                    l.status.phase == LinkPhase::Connected
+                        && l.negotiated_out.iter().any(|k| k == gate::GOODBYE)
+                })
+                .map(|l| l.cmd.clone())
+        };
+        let Some(cmd) = cmd else { return false };
+        let (tx, rx) = oneshot::channel();
+        if cmd.send(LinkCmd::Goodbye(reason, tx)).await.is_err() {
+            return false;
+        }
+        let sent = matches!(timeout(Duration::from_secs(2), rx).await, Ok(Ok(true)));
+        if sent {
+            // Let the packet leave before the socket is torn down (closing with unread input resets it).
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        sent
+    }
+
+    /// The service is stopping: tell every connected GeekBridge phone, so it redials with its normal back-off
+    /// instead of treating the silence as a lost network. Bounded; never blocks the shutdown for long.
+    pub async fn goodbye_all(&self) {
+        let ids: Vec<String> = self.core().links.keys().cloned().collect();
+        let _ = timeout(Duration::from_secs(3), async {
+            for id in &ids {
+                self.say_goodbye(id, bridge_core::goodbye::Reason::Shutdown)
+                    .await;
+            }
+        })
+        .await;
+    }
+
     async fn disconnect(&self, device_id: &str) -> Result<(), ErrorBody> {
         parse_id(device_id)?;
+        let told = self
+            .say_goodbye(device_id, bridge_core::goodbye::Reason::UserDisconnect)
+            .await;
         if !self.take_down(device_id).await {
             return Err(err(ErrorCode::NotFound, "no live link for this device"));
         }
-        self.reconnect
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pause(device_id, Instant::now());
+        {
+            let now = Instant::now();
+            let mut book = self.reconnect.lock().unwrap_or_else(|e| e.into_inner());
+            if told {
+                // The phone stays away for this long; we match it instead of waiting for it to go quiet.
+                book.pause_for(device_id, now, bridge_core::goodbye::SUPPRESS_FOR);
+            } else {
+                book.pause(device_id, now);
+            }
+        }
         self.core().emit(Some(device_id), EventKind::Disconnected);
         Ok(())
     }
@@ -2068,6 +2120,19 @@ async fn trusted_loop(
                     let ping = kde::Packet::new(gate::PING, Map::new());
                     if let Err(e) = link.send(&ping).await {
                         break reason(&e);
+                    }
+                }
+                Some(LinkCmd::Goodbye(why, ack)) => {
+                    let packet =
+                        kde::Packet::new(gate::GOODBYE, bridge_core::goodbye::body(why));
+                    match link.send(&packet).await {
+                        Ok(()) => {
+                            let _ = ack.send(true);
+                        }
+                        Err(e) => {
+                            let _ = ack.send(false);
+                            break reason(&e);
+                        }
                     }
                 }
                 Some(LinkCmd::Unpair(ack)) => {

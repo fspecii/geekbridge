@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- A manual disconnect on the computer is no longer undone by the phone's redial: a GeekBridge-only `geekbridge.goodbye`
+  packet (reasons `user_disconnect`, `shutdown`, `unpair`) makes the phone stay off that computer for 5 minutes or until
+  either side connects; a service shutdown makes it redial with the normal back-off. The computer's secure identity also
+  carries its real listening port (`geekbridgePort`) so a phone that only knows its address no longer guesses 1716.
+  Stock KDE Connect peers see neither. See docs/reports/goodbye-and-port-hint.md.
 - Phone notification mirroring with dismiss and button presses (stock `kdeconnect.notification`, `.request` and `.action`
   packets, so stock KDE Connect interoperates; typed replies are not offered). Off by default on both ends: a switch,
   Android's Notification access (with guidance for the restricted-settings case), an app list that starts empty and a

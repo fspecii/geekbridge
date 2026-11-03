@@ -46,6 +46,7 @@ pub(super) use calls::ReportArgs as CallsReport;
 
 pub(super) use data::Flags as DataFlags;
 pub(super) use permits::{FEATURES as PERMIT_FEATURES, PermitMap};
+pub(crate) use redial::unsuppress;
 
 pub(super) fn data_incoming_types(flags: DataFlags) -> Vec<String> {
     data::incoming_types(flags)
@@ -554,6 +555,30 @@ impl Core {
     }
 
     /// Close a connection without touching trust.
+    /// The computer said goodbye on this connection. Returns the close reason for the event log. A deliberate
+    /// leave keeps this phone off the computer for a while; a shutdown leaves the normal back-off alone.
+    fn peer_goodbye(
+        &self,
+        id: u64,
+        why: bridge_core::goodbye::Reason,
+    ) -> (&'static str, Option<&'static str>) {
+        use bridge_core::goodbye::Reason;
+        let device = self.lock().conns.get(&id).map(|c| c.peer_id.clone());
+        if why.suppresses_redial()
+            && let Some(device) = device
+        {
+            redial::suppress(
+                &device,
+                std::time::Instant::now(),
+                bridge_core::goodbye::SUPPRESS_FOR,
+            );
+        }
+        match why {
+            Reason::Shutdown => ("link_closed", Some("peer_shutdown")),
+            Reason::UserDisconnect | Reason::Unpair => ("link_closed", Some("peer_goodbye")),
+        }
+    }
+
     pub(super) fn disconnect(&self, id: u64) -> Result<Value, ApiError> {
         let mut st = self.lock();
         let c = st
@@ -970,7 +995,8 @@ async fn drive(
     }
     match hs {
         Handshake::Trusted(link) => {
-            core.lock_redial().connected(&device, peer_ip, dialed);
+            core.lock_redial()
+                .connected(&device, peer_ip, dialed, info.peer.geekbridge_port);
             run_trusted(core, id, link, ctl_rx, close).await
         }
         Handshake::Pending(link) => run_pending(core, id, link, origin, ctl_rx, close).await,
@@ -1025,7 +1051,12 @@ async fn run_pending(
             core.lock().event("paired", Some(id), Some(&device), None);
             let ip = core.lock().conns.get(&id).map(|c| c.peer_ip);
             if let Some(ip) = ip {
-                core.lock_redial().connected(&device, ip, None);
+                core.lock_redial().connected(
+                    &device,
+                    ip,
+                    None,
+                    trusted.info().peer.geekbridge_port,
+                );
             }
             run_trusted(core, id, trusted, ctl_rx, close).await;
         }
@@ -1141,6 +1172,12 @@ async fn run_trusted(
                     // Only the advertised types are acted on; ping content is not retained.
                     let is_ping = p.kind == PING;
                     beat.heard(std::time::Instant::now(), is_ping);
+                    if bridge_core::goodbye::is_goodbye_kind(&p.kind) && heartbeat_peer {
+                        // The computer is closing on purpose. A malformed or unknown reason is just ignored.
+                        if let Ok(why) = bridge_core::goodbye::parse(&p.body) {
+                            break Some(core.peer_goodbye(id, why));
+                        }
+                    }
                     let acted = if p.kind == SHARE_REQUEST || p.kind == SHARE_REQUEST_UPDATE {
                         core.incoming_share(id, link.payload_context(), &p)
                     } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
@@ -1248,12 +1285,32 @@ fn spawn_redial(core: &Arc<Core>, device: DeviceId) {
     });
 }
 
+/// The computer asked to be left alone (a goodbye): wait that out. Ends early, with `false`, when the transport
+/// stops or a link comes up (the user's Connect, the computer's own dial), which also ends the request.
+async fn wait_out_goodbye(core: &Arc<Core>, device: &DeviceId) -> bool {
+    loop {
+        let left = redial::suppressed_for(device, std::time::Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        sleep(left.min(Duration::from_secs(1))).await;
+        let st = core.lock();
+        if !st.open || st.conns.values().any(|c| c.peer_id == *device) {
+            return false;
+        }
+    }
+}
+
 async fn redial_loop(core: &Arc<Core>, device: &DeviceId) {
     loop {
         let Some(delay) = core.lock_redial().next_delay(device) else {
             return;
         };
         sleep(delay).await;
+        // A goodbye can arrive while this wait runs (the loop outlives the link that started it).
+        if !wait_out_goodbye(core, device).await {
+            return;
+        }
         let addr = core.lock_redial().addr(device);
         let paired = matches!(core.store.get(device), Ok(Some(_)));
         let Some(addr) = addr.filter(|a| paired && core.policy.check(a.ip()).is_ok()) else {

@@ -11,6 +11,7 @@ pub mod codepages;
 pub mod collate;
 pub mod debug_link;
 pub mod firewall;
+pub mod goodbye;
 pub mod heartbeat;
 pub mod hotkey;
 pub mod ipc;

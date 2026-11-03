@@ -155,6 +155,20 @@ pub struct Identity {
     pub outgoing_capabilities: Vec<String>,
     pub target_device_id: Option<DeviceId>,
     pub target_protocol_version: Option<u32>,
+    /// GeekBridge-only: the TCP port this device accepts connections on, carried in the secure identity so a
+    /// peer that only knows our IP dials the right port. Stock peers ignore the extra body key. Never trusted
+    /// beyond "dial this port on the address the connection came from".
+    pub geekbridge_port: Option<u16>,
+}
+
+/// Body key of [`Identity::geekbridge_port`].
+pub const GEEKBRIDGE_PORT_KEY: &str = "geekbridgePort";
+
+/// A usable listening port from a peer: 1024 and up (no privileged ports, no zero). Anything else is dropped
+/// as if absent; a bad hint must never fail a handshake.
+pub fn usable_port(v: Option<&Value>) -> Option<u16> {
+    let n = v?.as_u64()?;
+    u16::try_from(n).ok().filter(|p| *p >= 1024)
 }
 
 impl Identity {
@@ -187,6 +201,7 @@ impl Identity {
             outgoing_capabilities: outgoing,
             target_device_id: None,
             target_protocol_version: None,
+            geekbridge_port: None,
         })
     }
 
@@ -196,6 +211,8 @@ impl Identity {
         let mut out = self.clone();
         out.target_device_id = Some(target.clone());
         out.target_protocol_version = Some(PROTOCOL_VERSION);
+        // The hint travels only inside TLS.
+        out.geekbridge_port = None;
         out
     }
 
@@ -218,6 +235,9 @@ impl Identity {
         }
         if let Some(v) = self.target_protocol_version {
             body.insert("targetProtocolVersion".into(), Value::from(v));
+        }
+        if let Some(p) = self.geekbridge_port {
+            body.insert(GEEKBRIDGE_PORT_KEY.into(), Value::from(p));
         }
         Packet::new(IDENTITY_TYPE, body)
     }
@@ -277,6 +297,7 @@ impl Identity {
             outgoing_capabilities: capabilities(body, "outgoingCapabilities")?,
             target_device_id,
             target_protocol_version,
+            geekbridge_port: usable_port(body.get(GEEKBRIDGE_PORT_KEY)),
         })
     }
 }
@@ -338,6 +359,67 @@ mod tests {
 
     fn id(c: char) -> String {
         std::iter::repeat_n(c, 32).collect()
+    }
+
+    fn wire(extra: Option<Value>) -> Packet {
+        let mut body = json!({
+            "deviceId": id('a'), "deviceName": "Pc", "deviceType": "desktop", "protocolVersion": 8,
+            "incomingCapabilities": [], "outgoingCapabilities": []
+        });
+        if let Some(v) = extra {
+            body[GEEKBRIDGE_PORT_KEY] = v;
+        }
+        Packet::new(IDENTITY_TYPE, body.as_object().unwrap().clone())
+    }
+
+    #[test]
+    fn the_listening_port_is_geekbridge_only_and_a_bad_hint_never_fails_an_identity() {
+        // Absent (every stock peer): no hint.
+        assert_eq!(
+            Identity::from_packet(&wire(None)).unwrap().geekbridge_port,
+            None
+        );
+        assert_eq!(
+            Identity::from_packet(&wire(Some(json!(1730))))
+                .unwrap()
+                .geekbridge_port,
+            Some(1730)
+        );
+        // Anything that is not a plain unprivileged port is dropped, the identity itself stays valid.
+        for bad in [
+            json!(0),
+            json!(80),
+            json!(1023),
+            json!(65536),
+            json!(-1),
+            json!(1730.5),
+            json!("1730"),
+            json!(null),
+            json!([1730]),
+            json!({"port": 1730}),
+            json!(true),
+            json!(1e30),
+        ] {
+            let got = Identity::from_packet(&wire(Some(bad.clone()))).unwrap();
+            assert_eq!(got.geekbridge_port, None, "{bad}");
+        }
+        assert_eq!(usable_port(Some(&json!(1024))), Some(1024));
+        assert_eq!(usable_port(Some(&json!(65535))), Some(65535));
+    }
+
+    #[test]
+    fn the_port_rides_the_secure_identity_only() {
+        let mut me = Identity::from_packet(&wire(None)).unwrap();
+        me.geekbridge_port = Some(1731);
+        let secure = me.to_packet();
+        assert_eq!(secure.body[GEEKBRIDGE_PORT_KEY], 1731);
+        assert_eq!(Identity::from_packet(&secure).unwrap(), me);
+        let target = DeviceId::parse(&id('b')).unwrap();
+        let plain = me.addressed_to(&target).to_packet();
+        assert!(plain.body.get(GEEKBRIDGE_PORT_KEY).is_none());
+        // Without a port nothing extra is written: byte-identical to what a stock-shaped identity looks like.
+        me.geekbridge_port = None;
+        assert!(me.to_packet().body.get(GEEKBRIDGE_PORT_KEY).is_none());
     }
 
     #[test]

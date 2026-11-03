@@ -20,6 +20,8 @@ struct Entry {
     last_addr: Option<(std::net::IpAddr, u16)>,
     /// The user disconnected this phone by hand: leave it alone until it has been silent and came back.
     paused: bool,
+    /// A bounded pause (the phone was told goodbye and will stay away as long): ends by itself at this time.
+    pause_until: Option<Instant>,
 }
 
 #[derive(Debug, Default)]
@@ -35,7 +37,17 @@ impl Book {
             next_at: now,
             last_addr: None,
             paused: false,
+            pause_until: None,
         });
+        if e.paused && e.pause_until.is_some_and(|u| now >= u) {
+            *e = Entry {
+                tries: 0,
+                next_at: now,
+                last_addr: None,
+                paused: false,
+                pause_until: None,
+            };
+        }
         if e.paused {
             return false;
         }
@@ -70,8 +82,18 @@ impl Book {
                 next_at: now,
                 last_addr: None,
                 paused: true,
+                pause_until: None,
             },
         );
+    }
+
+    /// Like [`Book::pause`] but only for `span`: used for a GeekBridge phone that was sent a goodbye and stays
+    /// off the computer for [`bridge_core::goodbye::SUPPRESS_FOR`], so both ends resume at about the same time.
+    pub fn pause_for(&mut self, id: &str, now: Instant, span: Duration) {
+        self.pause(id, now);
+        if let Some(e) = self.entries.get_mut(id) {
+            e.pause_until = Some(now + span);
+        }
     }
 
     /// Phones that are not announcing any more: drop their history (and a pause).
@@ -160,6 +182,22 @@ mod tests {
         assert!(!b.due("p", addr(5), t + Duration::from_secs(100)));
         b.keep_only(&[]);
         assert!(b.due("p", addr(5), t + Duration::from_secs(100)));
+    }
+
+    #[test]
+    fn a_goodbye_pause_ends_when_the_phone_stops_staying_away() {
+        let mut b = Book::default();
+        let t = Instant::now();
+        let span = bridge_core::goodbye::SUPPRESS_FOR;
+        b.pause_for("p", t, span);
+        assert!(!b.due("p", addr(5), t + span - Duration::from_secs(1)));
+        assert_eq!(b.progress("p"), (0, true));
+        // Same moment as the phone's own redial resumes: dial at once, with a fresh budget.
+        assert!(b.due("p", addr(5), t + span));
+        assert_eq!(b.progress("p"), (1, false));
+        // A plain pause has no end of its own.
+        b.pause("q", t);
+        assert!(!b.due("q", addr(5), t + span * 10));
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bridge_kde::DeviceId;
 
@@ -25,6 +25,42 @@ fn remembered() -> &'static Mutex<HashMap<DeviceId, SocketAddr>> {
     R.get_or_init(Mutex::default)
 }
 
+/// Computers that said goodbye on purpose, and until when this phone stays off them. Process-wide like
+/// [`remembered`]: a network change restarts the transport, which must not undo the computer's goodbye.
+fn suppressed() -> &'static Mutex<HashMap<DeviceId, Instant>> {
+    static S: OnceLock<Mutex<HashMap<DeviceId, Instant>>> = OnceLock::new();
+    S.get_or_init(Mutex::default)
+}
+
+/// The computer asked, politely, to be left alone for `span` (see `bridge_core::goodbye`).
+pub(super) fn suppress(device: &DeviceId, now: Instant, span: Duration) {
+    suppressed()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(device.clone(), now + span);
+}
+
+/// How much longer to stay away from `device`; zero when it did not say goodbye or the time is up.
+pub(super) fn suppressed_for(device: &DeviceId, now: Instant) -> Duration {
+    let mut map = suppressed().lock().unwrap_or_else(PoisonError::into_inner);
+    match map.get(device).copied() {
+        Some(until) if until > now => until - now,
+        Some(_) => {
+            map.remove(device);
+            Duration::ZERO
+        }
+        None => Duration::ZERO,
+    }
+}
+
+/// The user connected by hand, or any link came up: the goodbye no longer applies.
+pub(crate) fn unsuppress(device: &DeviceId) {
+    suppressed()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(device);
+}
+
 #[derive(Debug, Default)]
 struct Entry {
     addr: Option<SocketAddr>,
@@ -40,19 +76,24 @@ pub(super) struct Book {
 
 impl Book {
     /// A connection to `device` was established; `dialed` is the endpoint we dialed, if we did.
-    /// An inbound connection only tells us the computer's IP, so the port we already know (or the
-    /// default) is kept.
+    /// An inbound connection only tells us the computer's IP; its listening port comes from the GeekBridge
+    /// field of its secure identity (`hint`), else the port we already know, else the default.
     pub(super) fn connected(
         &mut self,
         device: &DeviceId,
         peer_ip: std::net::IpAddr,
         dialed: Option<SocketAddr>,
+        hint: Option<u16>,
     ) {
         let e = self.entries.entry(device.clone()).or_default();
         e.tries = 0;
+        unsuppress(device);
         let addr = match dialed {
             Some(a) => a,
-            None => SocketAddr::new(peer_ip, e.addr.map_or(DEFAULT_PORT, |a| a.port())),
+            None => SocketAddr::new(
+                peer_ip,
+                hint.or(e.addr.map(|a| a.port())).unwrap_or(DEFAULT_PORT),
+            ),
         };
         e.addr = Some(addr);
         if !addr.ip().is_loopback() {
@@ -116,6 +157,7 @@ impl Book {
 
     pub(super) fn forget(&mut self, device: &DeviceId) {
         self.entries.remove(device);
+        unsuppress(device);
         remembered()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -137,7 +179,7 @@ mod tests {
     #[test]
     fn delays_double_up_to_the_cap_then_the_budget_ends() {
         let mut b = Book::default();
-        b.connected(&id('a'), ip(150), None);
+        b.connected(&id('a'), ip(150), None, None);
         let got: Vec<u64> = std::iter::from_fn(|| b.next_delay(&id('a')))
             .map(|d| d.as_secs())
             .collect();
@@ -145,7 +187,7 @@ mod tests {
         assert_eq!(&got[..6], &[2, 4, 8, 16, 32, 60]);
         assert!(got[6..].iter().all(|s| *s == 60));
         // Any new connection starts the budget afresh.
-        b.connected(&id('a'), ip(150), None);
+        b.connected(&id('a'), ip(150), None, None);
         assert_eq!(b.next_delay(&id('a')), Some(Duration::from_secs(2)));
     }
 
@@ -153,13 +195,13 @@ mod tests {
     fn an_inbound_connection_keeps_the_known_port_and_follows_the_ip() {
         let mut b = Book::default();
         let dialed: SocketAddr = "192.168.1.150:17400".parse().unwrap();
-        b.connected(&id('a'), ip(150), Some(dialed));
-        b.connected(&id('a'), ip(151), None);
+        b.connected(&id('a'), ip(150), Some(dialed), None);
+        b.connected(&id('a'), ip(151), None, None);
         assert_eq!(
             b.addr(&id('a')),
             Some("192.168.1.151:17400".parse().unwrap())
         );
-        b.connected(&id('b'), ip(7), None);
+        b.connected(&id('b'), ip(7), None, None);
         assert_eq!(b.addr(&id('b')), Some(SocketAddr::new(ip(7), DEFAULT_PORT)));
     }
 
@@ -167,7 +209,7 @@ mod tests {
     fn one_redial_task_per_device_and_nothing_for_strangers() {
         let mut b = Book::default();
         assert!(!b.begin(&id('a')));
-        b.connected(&id('a'), ip(1), None);
+        b.connected(&id('a'), ip(1), None, None);
         assert!(b.begin(&id('a')));
         assert!(!b.begin(&id('a')));
         b.end(&id('a'));
@@ -183,8 +225,9 @@ mod tests {
             &id('x'),
             ip(150),
             Some("192.168.1.150:1716".parse().unwrap()),
+            None,
         );
-        first.connected(&id('y'), std::net::Ipv4Addr::LOCALHOST.into(), None);
+        first.connected(&id('y'), std::net::Ipv4Addr::LOCALHOST.into(), None, None);
         let mut second = Book::default();
         second.carry_over();
         assert_eq!(
@@ -196,5 +239,49 @@ mod tests {
         let mut third = Book::default();
         third.carry_over();
         assert!(third.addr(&id('x')).is_none());
+    }
+
+    #[test]
+    fn the_computers_port_hint_beats_the_guess_but_not_a_dial_we_made() {
+        let mut b = Book::default();
+        // Only ever dialed in: without a hint the default is the guess, with one it is the real port.
+        b.connected(&id('c'), ip(9), None, None);
+        assert_eq!(b.addr(&id('c')), Some(SocketAddr::new(ip(9), DEFAULT_PORT)));
+        b.connected(&id('c'), ip(9), None, Some(1730));
+        assert_eq!(b.addr(&id('c')), Some(SocketAddr::new(ip(9), 1730)));
+        // The computer moved to another port: the newest hint wins over what was remembered.
+        b.connected(&id('c'), ip(9), None, Some(1731));
+        assert_eq!(b.addr(&id('c')), Some(SocketAddr::new(ip(9), 1731)));
+        // A hint never overrides the endpoint we dialed ourselves.
+        let dialed: SocketAddr = "192.168.1.9:1740".parse().unwrap();
+        b.connected(&id('c'), ip(9), Some(dialed), Some(1731));
+        assert_eq!(b.addr(&id('c')), Some(dialed));
+    }
+
+    #[test]
+    fn a_goodbye_suppresses_for_a_bounded_time_and_any_connection_ends_it() {
+        let d = id('s');
+        let t0 = Instant::now();
+        assert_eq!(suppressed_for(&d, t0), Duration::ZERO);
+        suppress(&d, t0, Duration::from_secs(300));
+        assert_eq!(
+            suppressed_for(&d, t0 + Duration::from_secs(100)),
+            Duration::from_secs(200)
+        );
+        assert_eq!(
+            suppressed_for(&d, t0 + Duration::from_secs(301)),
+            Duration::ZERO
+        );
+        // Expired entries are gone.
+        assert_eq!(suppressed_for(&d, t0), Duration::ZERO);
+        // A connection from either side (the user's Connect, the computer's own dial) ends it at once.
+        suppress(&d, t0, Duration::from_secs(300));
+        let mut b = Book::default();
+        b.connected(&d, ip(3), None, None);
+        assert_eq!(suppressed_for(&d, t0), Duration::ZERO);
+        // Unpairing forgets it too.
+        suppress(&d, t0, Duration::from_secs(300));
+        b.forget(&d);
+        assert_eq!(suppressed_for(&d, t0), Duration::ZERO);
     }
 }

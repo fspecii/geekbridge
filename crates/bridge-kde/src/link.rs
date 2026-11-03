@@ -521,6 +521,15 @@ impl Endpoint {
         Ok(name)
     }
 
+    /// The port this endpoint accepts connections on, announced inside the secure identity (GeekBridge-only
+    /// field) so a phone that only knows our address can dial back. Not sent in the plaintext identity.
+    pub fn set_listen_port(&self, port: u16) {
+        self.live
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .geekbridge_port = Some(port);
+    }
+
     pub fn credentials(&self) -> &DeviceCredentials {
         &self.creds
     }

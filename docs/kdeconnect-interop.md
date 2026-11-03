@@ -127,6 +127,39 @@ Note that `kdeconnect.contacts.*` and `kdeconnect.sms.*` are stock types but are
 phone answers*; GeekBridge also adds a `requestId` field to `kdeconnect.sms.request` that stock
 phones ignore (SPEC-CHECKED: `SMSPlugin.kt` reads named keys only).
 
+### Goodbye (`geekbridge.goodbye`) and the listening-port hint
+
+Two GeekBridge-only additions, invisible to a stock peer (`docs/reports/goodbye-and-port-hint.md`).
+
+**Goodbye.** `geekbridge.goodbye`, body `{"reason": "user_disconnect" | "shutdown" | "unpair"}`, computer to phone.
+The phone declares it in its `incomingCapabilities` (with `geekbridge.heartbeat`); the computer lists it in its
+outgoing capabilities and sends it only when the negotiated list contains it, so a stock peer, which cannot
+declare it, never receives one. The computer sends it just before it closes the socket on a user disconnect
+(`geekbridge-ctl disconnect`, the Disconnect button, the tray) and on service shutdown (SIGTERM/Ctrl-C). The phone
+acts on it only from a peer that declared a `geekbridge.*` capability and only for a known reason; anything else is
+counted as an ignored packet.
+
+* `user_disconnect`, `unpair`: the phone does not redial that computer for 5 minutes. A connection from either
+  side (the user's Connect on the phone, the computer's own dial) ends the request at once, as does unpairing.
+  The computer pauses its own automatic redial of that phone for the same 5 minutes, then both resume together.
+  The request survives a transport restart (network change) and outlives a redial wait already in progress.
+* `shutdown`: nothing is suppressed. The phone redials with its normal back-off (2 s, 4 s, ... 60 s, 12 tries) and is
+  back as soon as the service is. The close shows as `link_closed` with code `peer_shutdown`; the other reasons as
+  `peer_goodbye`.
+* An unpair is still announced by the stock `kdeconnect.pair` unpair packet; the `unpair` reason is accepted for
+  completeness and not sent today.
+* A stock computer never sends the type; a stock phone is never sent it. Tests: `crates/bridge-service/tests/goodbye.rs`,
+  `cross_dial.rs`, `crates/bridge-android/tests/chaos.rs`, `bridge_core::goodbye` unit tests, fuzz target `goodbye`.
+
+**Listening port.** The computer's secure identity (inside TLS only; never the plaintext identity line) carries an extra
+body key `geekbridgePort`, the TCP port it accepts connections on. The UDP identity already has `tcpPort`; this lets a
+phone that was only ever dialed by the computer (and so knows just its IP) redial the right port instead of guessing
+1716, which may belong to another program when the service had to move to 1717..1764. Stock peers read named keys
+only and ignore it. The receiver accepts a JSON integer from 1024 to 65535 and silently drops anything else (the
+identity stays valid); a port the phone dialed itself is never replaced by the hint. The phone pairs it with the
+address the connection came from, so it can only point the phone at the peer's own IP. Pinned stock-peer captures
+(`kdeconnect-real/*`, `kdeconnect-android-real/*`) and their tests are unchanged.
+
 ## Battery status (`kdeconnect.battery`)
 
 Phone battery level and charging state use the stock packets, so a stock KDE Connect peer interoperates in both

@@ -91,3 +91,28 @@ fn debug_log_lines_lose_the_deprecated_format_characters() {
         "{\"seq\":1,\"lines\":[\"c\u{206e}d\"]}".as_bytes(),
     );
 }
+
+#[test]
+fn goodbye_and_port_hint_survive_hostile_values() {
+    run("goodbye", br#"{"reason":"user_disconnect"}"#);
+    run("goodbye", br#"{"reason":["shutdown"]}"#);
+    run("goodbye", br#"{"reason":"\u0000"}"#);
+    run("goodbye", br#"{"reason":null}"#);
+    for port in [
+        "0",
+        "80",
+        "65536",
+        "-1",
+        "1730.5",
+        "\"1730\"",
+        "1e308",
+        "18446744073709551616",
+        "null",
+    ] {
+        let line = format!(
+            r#"{{"id":1,"type":"kdeconnect.identity","body":{{"deviceId":"0123456789abcdef0123456789abcdef","deviceName":"Pc","protocolVersion":8,"geekbridgePort":{port}}}}}"#
+        );
+        run("goodbye", line.as_bytes());
+        run("identity_line", line.as_bytes());
+    }
+}

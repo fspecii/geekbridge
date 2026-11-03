@@ -168,6 +168,13 @@ bench = false
 
 
 [[bin]]
+name = "goodbye"
+path = "fuzz_targets/goodbye.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "debug_link"
 path = "fuzz_targets/debug_link.rs"
 test = false

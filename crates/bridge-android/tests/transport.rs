@@ -446,7 +446,10 @@ fn start_reports_identity_listener_and_only_ping() {
         "kdeconnect.share.request",
         "geekbridge.heartbeat",
     ];
-    assert_eq!(hs.info().peer.incoming_capabilities, caps);
+    // The phone also accepts the computer's `geekbridge.goodbye`; it never sends one.
+    let mut incoming = caps.to_vec();
+    incoming.push("geekbridge.goodbye");
+    assert_eq!(hs.info().peer.incoming_capabilities, incoming);
     assert_eq!(hs.info().peer.outgoing_capabilities, caps);
 }
 
@@ -1502,13 +1505,25 @@ fn announce_follows_a_ready_listener_and_is_kde_shaped() {
     assert_eq!(packet.body["deviceId"], phone.id.as_str());
     assert_eq!(packet.body["protocolVersion"], 8);
     assert_eq!(packet.body["deviceType"], "phone");
-    let caps = json!([
-        "kdeconnect.ping",
-        "kdeconnect.share.request",
-        "geekbridge.heartbeat"
-    ]);
-    assert_eq!(packet.body["incomingCapabilities"], caps);
-    assert_eq!(packet.body["outgoingCapabilities"], caps);
+    assert_eq!(
+        packet.body["incomingCapabilities"],
+        json!([
+            "kdeconnect.ping",
+            "kdeconnect.share.request",
+            "geekbridge.heartbeat",
+            "geekbridge.goodbye"
+        ])
+    );
+    assert_eq!(
+        packet.body["outgoingCapabilities"],
+        json!([
+            "kdeconnect.ping",
+            "kdeconnect.share.request",
+            "geekbridge.heartbeat"
+        ])
+    );
+    // The listening port field is the computer's; the phone's announcement carries tcpPort only.
+    assert!(packet.body.get("geekbridgePort").is_none());
     assert!(packet.body.get("targetDeviceId").is_none());
     // After stop nothing more is announced.
     phone.stop();
