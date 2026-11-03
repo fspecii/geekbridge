@@ -217,6 +217,9 @@ notification_case() { # name number action expected-modem-state
   else rec "callui_notify_$name" FAIL "after '$action' the modem state is $(modem_state), expected $want"; fi
 }
 stage_notify() {
+  [[ -n "${CI:-}" ]] && { notify-send --version; notify-send --help 2>&1 | grep -i action
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.GetCapabilities; } >"$RUN/notify-diag.log" 2>&1
   # Answer/Decline buttons need libnotify's notify-send --action (>= 0.8.4 in practice); Ubuntu 24.04's build (the CI runner) sends the
   # notification without actions, so the action round trip cannot be tested there. Say so instead of failing.
   if [[ -n "${CI:-}" ]] && ! notify-send --help 2>&1 | grep -q -- '--action'; then

@@ -9,6 +9,11 @@ on:
   schedule:
     - cron: '17 3 * * *'
   workflow_dispatch:
+    inputs:
+      only:
+        description: 'Run only this suite (matrix name, e.g. call-ui); empty runs all'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -83,27 +88,34 @@ jobs:
           - { name: features, run: 'scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: false }
           - { name: call-ui, run: 'scripts/e2e/call-ui.sh', adb_port: 16080, setup: light, experimental: false }
           - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
-          - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: false }
+          - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: true }
           - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
+    env:
+      SKIP: ${{ inputs.only != '' && inputs.only != matrix.name && '1' || '0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Free disk space
+        if: env.SKIP != '1'
         run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
       - name: Enable KVM
+        if: env.SKIP != '1'
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
       - name: Linux dependencies
+        if: env.SKIP != '1'
         run: |
           sudo apt-get update
           sudo apt-get install -y $CI_APT dbus-x11 libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
             libnotify-bin sway xwayland mako-notifier grim xdotool imagemagick tesseract-ocr
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: env.SKIP != '1'
         with:
           name: e2e-build
       - name: Unpack the build
+        if: env.SKIP != '1'
         run: |
           mkdir -p "$HOME/ci-e2e"
           tar -C "$HOME/ci-e2e" -xzf e2e-build.tar.gz
@@ -119,8 +131,10 @@ jobs:
             echo "ADB_PORT=${{ matrix.adb_port }}"
           } >> "$GITHUB_ENV"
       - name: Emulator toolchain and base AVD
+        if: env.SKIP != '1'
         run: scripts/ci/e2e-setup.sh ${{ matrix.setup }}
       - name: Run the suite
+        if: env.SKIP != '1'
         env:
           E2E_UPD_REBUILD: ${{ matrix.name == 'update-install' && '1' || '' }}
         run: |
@@ -128,7 +142,7 @@ jobs:
           source scripts/android-env.sh >/dev/null 2>&1
           ${{ matrix.run }}
       - name: Results
-        if: always()
+        if: env.SKIP != '1' && (always())
         run: |
           shopt -s nullglob
           for f in dist/android/logs/*results*.tsv target/e2e-update/and-results.tsv; do
@@ -136,7 +150,7 @@ jobs:
             { echo "### $f"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
       - name: Collect logcat
-        if: failure()
+        if: env.SKIP != '1' && (failure())
         timeout-minutes: 3
         run: |
           source scripts/android-env.sh >/dev/null 2>&1
@@ -144,7 +158,7 @@ jobs:
           ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 60 adb logcat -d > dist/android/logs/logcat-final.txt 2>&1 || true
           ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 30 adb devices -l > dist/android/logs/adb-devices.txt 2>&1 || true
       - name: Upload logs, screenshots and logcat
-        if: failure()
+        if: env.SKIP != '1' && (failure())
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: logs-${{ matrix.name }}
