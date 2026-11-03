@@ -674,3 +674,55 @@ fn battery_goes_only_to_allowed_computers_and_a_request_surfaces_as_an_event() {
         "data_disabled"
     );
 }
+
+/// Against the REAL stock KDE Connect daemon's capabilities (captured fixture): the phone sends it only
+/// the stock packets it declared (SMS answers, battery) and never a GeekBridge extension, even with the
+/// feature on and the computer allowed.
+#[test]
+fn a_stock_desktop_gets_stock_packets_only() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../bridge-kde/tests/fixtures/kdeconnect-real/daemon-identity-secure.json"
+    );
+    let line = std::fs::read(path).unwrap();
+    let id =
+        bridge_kde::Identity::from_packet(&Packet::from_line(&line[..line.len() - 1]).unwrap())
+            .unwrap();
+    let incoming: Vec<&str> = id
+        .incoming_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let outgoing: Vec<&str> = id
+        .outgoing_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let phone = Phone::start(Some(
+        json!({"contacts": true, "calendar": true, "sms": true, "debug": true, "battery": true}),
+    ));
+    let mut peer = Peer::new(&incoming, &outgoing);
+    peer.pair(&phone);
+    for kind in [
+        "geekbridge.calendar.sync",
+        "geekbridge.sms.status",
+        "geekbridge.debug.log",
+        "geekbridge.debug.state",
+    ] {
+        assert_eq!(
+            phone.code("transport_data_send", json!({"kind": kind, "body": {}})),
+            "not_connected",
+            "{kind}"
+        );
+    }
+    // The stock names it does declare still flow.
+    let r = phone.ok(
+        "transport_data_send",
+        json!({"kind": "kdeconnect.battery", "body": {"currentCharge": 50, "isCharging": false, "thresholdEvent": 0}}),
+    );
+    assert_eq!(r["queued"], 1);
+    assert_eq!(
+        peer.recv_kind("kdeconnect.battery").body["currentCharge"],
+        50
+    );
+}

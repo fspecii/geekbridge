@@ -22,6 +22,9 @@ pub(super) const MAX_DATAGRAM: usize = 8192;
 const MAX_DISCOVERED: usize = 32;
 const TTL: Duration = Duration::from_secs(120);
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(30);
+/// Least gap between two announcements triggered by newcomers, so a chatty network cannot make us transmit
+/// continuously.
+const WAKE_GAP: Duration = Duration::from_secs(5);
 const MAX_PER_SECOND: u32 = 64;
 /// Ports below this belong to well-known services; a peer advertising one is ignored.
 const MIN_TCP_PORT: u64 = 1024;
@@ -168,19 +171,30 @@ pub(super) async fn listen_loop(core: Arc<Core>, socket: UdpSocket) {
 
 /// Announce now and then every [`ANNOUNCE_EVERY`] for as long as the transport runs. Only started
 /// after the TCP listener is bound, so the port in the datagram is already accepting connections.
-pub(super) async fn announce_loop(
+pub(super) async fn announce_loop<N>(
     socket: UdpSocket,
     target: SocketAddr,
     payload: impl Fn() -> Vec<u8>,
     all_linked: impl Fn() -> bool,
-) {
+    newcomer: impl Fn() -> N,
+) where
+    N: std::future::Future<Output = ()>,
+{
     loop {
         // Every paired computer already has a trusted link: nobody needs the broadcast, and each one is a
         // radio wake-up. A lost link brings the announcements back within one round (the redials run at once).
         if !all_linked() {
             let _ = socket.send_to(&payload(), target).await;
         }
-        sleep(ANNOUNCE_EVERY).await;
+        // An unpaired computer that announces itself is answered even then (it can only find this phone to
+        // pair through an announcement), at most once per `WAKE_GAP`.
+        tokio::select! {
+            () = sleep(ANNOUNCE_EVERY) => {}
+            () = newcomer() => {
+                let _ = socket.send_to(&payload(), target).await;
+                sleep(WAKE_GAP).await;
+            }
+        }
     }
 }
 
@@ -285,6 +299,7 @@ mod tests {
             target,
             || b"hello".to_vec(),
             move || flag.load(Ordering::Relaxed),
+            std::future::pending::<()>,
         ));
         let mut buf = [0u8; 16];
         let quiet = tokio::time::timeout(Duration::from_millis(300), rx.recv_from(&mut buf)).await;
@@ -298,9 +313,37 @@ mod tests {
             target,
             || b"hello".to_vec(),
             move || flag.load(Ordering::Relaxed),
+            std::future::pending::<()>,
         ));
         let got = tokio::time::timeout(Duration::from_secs(2), rx.recv_from(&mut buf)).await;
         assert!(got.is_ok(), "announces at once when not linked");
+        task.abort();
+    }
+    /// A computer that is not paired yet finds this phone only through an announcement: while every paired
+    /// computer is linked the loop is quiet, but a newcomer's announcement is answered at once.
+    #[tokio::test]
+    async fn a_newcomer_is_answered_even_while_every_paired_computer_is_linked() {
+        let rx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target = rx.local_addr().unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let wake = Arc::new(tokio::sync::Notify::new());
+        let w = wake.clone();
+        let task = tokio::spawn(announce_loop(
+            tx,
+            target,
+            || b"hello".to_vec(),
+            || true,
+            move || {
+                let w = w.clone();
+                async move { w.notified().await }
+            },
+        ));
+        let mut buf = [0u8; 16];
+        let quiet = tokio::time::timeout(Duration::from_millis(300), rx.recv_from(&mut buf)).await;
+        assert!(quiet.is_err(), "quiet while linked");
+        wake.notify_one();
+        let got = tokio::time::timeout(Duration::from_secs(2), rx.recv_from(&mut buf)).await;
+        assert!(got.is_ok(), "answers the newcomer");
         task.abort();
     }
 }

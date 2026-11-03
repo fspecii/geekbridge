@@ -374,7 +374,7 @@ impl Core {
         let ctls = if debug {
             self.debug_ctls(only)
         } else {
-            self.permitted_ctls(feature.key(), only)
+            self.permitted_ctls(feature.key(), kind, only)
         };
         if ctls.is_empty() {
             return Err(err("not_connected", "no trusted computer is connected"));

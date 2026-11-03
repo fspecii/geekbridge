@@ -502,3 +502,41 @@ fn dial_requests_reach_kotlin_with_a_plain_number_and_can_dial_is_reported() {
             .is_empty()
     );
 }
+
+/// The REAL stock KDE Connect daemon's identity (captured, not hand-written) declares telephony and
+/// notification packets of its own but nothing of ours. Even with call control on and every computer
+/// allowed, no caller number or call state is queued for it.
+#[test]
+fn a_stock_desktop_never_hears_call_state_even_when_allowed() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../bridge-kde/tests/fixtures/kdeconnect-real/daemon-identity-secure.json"
+    );
+    let line = std::fs::read(path).unwrap();
+    let id =
+        bridge_kde::Identity::from_packet(&Packet::from_line(&line[..line.len() - 1]).unwrap())
+            .unwrap();
+    let incoming: Vec<&str> = id
+        .incoming_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let outgoing: Vec<&str> = id
+        .outgoing_capabilities
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::new(&incoming, &outgoing);
+    peer.pair(&phone);
+    for permits in [json!({}), json!({"calls": ["d".repeat(32)]})] {
+        if permits != json!({}) {
+            phone.ok("transport_permits", json!({"permits": permits}));
+        }
+        let r = phone.ok(
+            "transport_calls_report",
+            json!({"state": "ringing", "number": "+4915112345", "can_answer": true, "can_end": true, "can_dial": true}),
+        );
+        assert_eq!(r["queued"], 0, "{permits}");
+    }
+}

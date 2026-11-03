@@ -240,7 +240,7 @@ impl Core {
         let body = report.body();
         self.calls.lock().last = Some(body.clone());
         let mut queued = 0;
-        for ctl in self.permitted_ctls("calls", None) {
+        for ctl in self.permitted_ctls("calls", bridge_core::calls_link::STATE, None) {
             if ctl.try_send(Ctl::Calls(Out::State(body.clone()))).is_ok() {
                 queued += 1;
             }

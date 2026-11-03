@@ -73,10 +73,12 @@ impl Core {
             .collect()
     }
 
-    /// Control handles of the trusted connections allowed to use `feature` (optionally only one connection).
+    /// Control handles of the trusted connections allowed to use `feature` that also declared they accept
+    /// `kind` (optionally only one connection).
     pub(super) fn permitted_ctls(
         &self,
         feature: &str,
+        kind: &str,
         only: Option<u64>,
     ) -> Vec<tokio::sync::mpsc::Sender<Ctl>> {
         let st = self.lock();
@@ -84,6 +86,7 @@ impl Core {
             .values()
             .filter(|c| c.phase == Phase::Trusted && only.is_none_or(|id| id == c.id))
             .filter(|c| self.permits.allows(feature, c.peer_id.as_str()))
+            .filter(|c| c.peer_accepts.iter().any(|a| a == kind))
             .map(|c| c.ctl.clone())
             .collect()
     }

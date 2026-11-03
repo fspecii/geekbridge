@@ -149,6 +149,10 @@ struct ConnEntry {
     peer_ip: IpAddr,
     /// The computer declared it accepts `geekbridge.debug.log` (see `data::Feature::Debug`).
     peer_debug: bool,
+    /// What the computer declared it accepts. A packet type outside this list is never sent to it: a stock
+    /// KDE Connect computer would at best ignore it, and it must not receive a caller number or a calendar
+    /// it cannot use.
+    peer_accepts: Vec<String>,
     ctl: mpsc::Sender<Ctl>,
     close: Arc<Notify>,
     since: Instant,
@@ -262,6 +266,8 @@ pub(super) struct Core {
     data: data::Hub,
     permits: permits::Permits,
     redial: Mutex<redial::Book>,
+    /// Rung when an unpaired computer announces itself, so the paused announcements answer it at once.
+    announce_wake: tokio::sync::Notify,
 }
 
 pub(super) struct Decision {
@@ -303,6 +309,7 @@ impl Core {
             calls: calls::Hub::default(),
             data: data::Hub::default(),
             permits: permits::Permits::default(),
+            announce_wake: tokio::sync::Notify::new(),
             redial: Mutex::new({
                 let mut book = redial::Book::default();
                 book.carry_over();
@@ -661,6 +668,7 @@ impl Core {
                     .incoming_capabilities
                     .iter()
                     .any(|c| c == bridge_core::debug_link::LOG),
+                peer_accepts: info.peer.incoming_capabilities.clone(),
                 ctl,
                 close,
                 since: Instant::now(),
@@ -732,7 +740,22 @@ impl Core {
         if !st.open {
             return;
         }
+        // A stock computer that is not paired yet lists this phone only from its announcement. While every
+        // paired computer is linked the announcements are paused, so answer a newcomer immediately.
+        let newcomer = self
+            .store
+            .list()
+            .is_ok_and(|paired| !paired.iter().any(|p| p.device_id == d.device_id));
         discovery::upsert(&mut st.discovered, d);
+        drop(st);
+        if newcomer {
+            self.announce_wake.notify_one();
+        }
+    }
+
+    /// Resolves when an unpaired computer has announced itself since the last time.
+    pub(super) async fn newcomer_announced(&self) {
+        self.announce_wake.notified().await;
     }
 
     fn count(&self, f: impl FnOnce(&mut Counters)) {

@@ -1040,6 +1040,13 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
             target,
             move || discovery::encode_announcement(&announcing.endpoint.current_identity(), port),
             move || linked.all_paired_linked(),
+            {
+                let waker = core.clone();
+                move || {
+                    let waker = waker.clone();
+                    async move { waker.newcomer_announced().await }
+                }
+            },
         ));
     }
 
