@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use bridge_kde::tiebreak::prefer_new;
 use bridge_kde::{
     AddressPolicy, ApprovalRequest, Approver, DeviceId, Direction, Endpoint, FileTrustStore,
     Handshake, KdeError, LinkEvent, LinkInfo, Packet, PairMode, PairingFailure, PendingLink, Role,
@@ -894,21 +895,6 @@ impl Core {
             "counters": counters,
         })
     }
-}
-
-/// Which of two live trusted connections to the same device survives. Both ends evaluate this
-/// identically, so a simultaneous cross-dial leaves exactly one connection instead of each side
-/// closing the other's: the connection opened by the lexicographically smaller device id wins; two
-/// connections opened by the same side mean the newest is a reconnect and replaces the older one.
-fn prefer_new(local: &DeviceId, peer: &DeviceId, old: Role, new: Role) -> bool {
-    if old == new {
-        return true;
-    }
-    let (initiator, other) = match new {
-        Role::Initiator => (local, peer),
-        Role::Acceptor => (peer, local),
-    };
-    initiator < other
 }
 
 // ------------------------------------------------------------------------------- tasks

@@ -11,6 +11,7 @@ pub mod call_control;
 pub mod calling;
 pub mod clipboard;
 pub mod coexist;
+pub mod collision;
 pub mod config;
 pub mod control;
 pub mod daemon;

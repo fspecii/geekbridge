@@ -26,6 +26,7 @@ pub mod qrpair;
 pub mod share;
 pub mod sms;
 pub mod store;
+pub mod tiebreak;
 pub mod tls;
 
 pub use cert::{CertInfo, DeviceCredentials};

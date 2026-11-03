@@ -1602,6 +1602,20 @@ impl Daemon {
             }
             _ => {}
         }
+        if trusted
+            && core.links.get(&id).is_some_and(|held| {
+                crate::collision::keep_held(
+                    &self.endpoint.local_identity().device_id,
+                    &info.peer,
+                    &held.status,
+                    info.role,
+                    now_ms(),
+                )
+            })
+        {
+            // Both ends dialed at once and the smaller id's connection is the one both keep: turn this one away.
+            return;
+        }
         let displaced = core.links.remove(&id);
         if let Some(old) = &displaced {
             core.challenges.retain(|_, c| c.attempt != old.attempt);
