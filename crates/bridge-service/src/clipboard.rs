@@ -1598,6 +1598,11 @@ impl ClipboardService {
         // Decide, under the lock, whether this reading is a candidate change.
         let text = {
             let mut g = self.lock();
+            if !g.peers.values().any(|p| p.sync.is_some()) {
+                // The last device was disabled while this read was in flight: the text must not
+                // be remembered (Self::forget_text_if_idle already cleared it).
+                return;
+            }
             match read {
                 Err(BackendError::TooLarge) => {
                     g.problem = None;
@@ -1680,6 +1685,9 @@ impl ClipboardService {
             .unwrap_or(Sensitivity::Unknown);
         let wall = now_ms();
         let mut g = self.lock();
+        if !g.peers.values().any(|p| p.sync.is_some()) {
+            return; // disabled during the sensitivity probe: do not store the text again
+        }
         g.last_text = Some(text.clone());
         g.local_update_ms = wall as i64;
         g.update_known = true;
@@ -2078,7 +2086,74 @@ mod tests {
         settle().await;
         assert!(svc.status(vec![]).watching);
         svc.set_enabled(PHONE, false);
-        settle().await;
+        // Wait (with a deadline) for the watcher to notice and stop instead of a fixed sleep.
+        for _ in 0..250 {
+            if !svc.status(vec![]).watching {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!svc.status(vec![]).watching);
+        assert!(svc.lock().last_text.is_none());
+    }
+
+    /// Memory clipboard whose sensitivity probe parks until released, to hold the watcher
+    /// between "text read" and "text stored" deterministically.
+    struct GatedClipboard {
+        inner: Arc<MemoryClipboard>,
+        entered: Mutex<std::sync::mpsc::Sender<()>>,
+        release: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl ClipboardBackend for GatedClipboard {
+        fn name(&self) -> &'static str {
+            self.inner.name()
+        }
+        fn capabilities(&self) -> ClipboardCapabilities {
+            self.inner.capabilities()
+        }
+        fn read_text(&self, max: usize) -> Result<Option<String>, BackendError> {
+            self.inner.read_text(max)
+        }
+        fn sensitivity(&self) -> Sensitivity {
+            let _ = self.entered.lock().unwrap().send(());
+            let _ = self.release.lock().unwrap().recv();
+            self.inner.sensitivity()
+        }
+        fn write_text(&self, text: &str) -> Result<(), BackendError> {
+            self.inner.write_text(text)
+        }
+    }
+
+    #[tokio::test]
+    async fn disable_while_watcher_is_mid_read_does_not_restore_the_text() {
+        let mem = Arc::new(MemoryClipboard::default());
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let gated = Arc::new(GatedClipboard {
+            inner: mem.clone(),
+            entered: Mutex::new(entered_tx),
+            release: Mutex::new(release_rx),
+        });
+        let svc = ClipboardService::with_poll(gated, "desktop-1", FAST);
+        let _rx = svc.link_up(PHONE, "P", FULL, true);
+        settle().await; // baseline taken (empty clipboard)
+        mem.user_copy("secret", false);
+        // Wait until the watcher has read the text and is parked in the sensitivity probe.
+        tokio::task::spawn_blocking(move || {
+            entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            entered_rx
+        })
+        .await
+        .unwrap();
+        svc.set_enabled(PHONE, false);
+        assert!(svc.lock().last_text.is_none());
+        release_tx.send(()).unwrap();
+        for _ in 0..50 {
+            if !svc.status(vec![]).watching {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert!(!svc.status(vec![]).watching);
         assert!(svc.lock().last_text.is_none());
     }
