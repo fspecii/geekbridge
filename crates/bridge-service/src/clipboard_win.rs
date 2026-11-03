@@ -15,13 +15,13 @@ use crate::clipboard_marks::{
 };
 use bridge_core::clipboard::Sensitivity;
 use windows::Win32::{
-    Foundation::{HANDLE, HGLOBAL},
+    Foundation::{GlobalFree, HANDLE, HGLOBAL},
     System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
             GetClipboardFormatNameW, GetClipboardSequenceNumber, OpenClipboard, SetClipboardData,
         },
-        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalFree, GlobalLock, GlobalSize, GlobalUnlock},
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
     },
     UI::WindowsAndMessaging::GetDesktopWindow,
 };
