@@ -46,7 +46,8 @@ class ShareActivity : Activity() {
         val pad = ui.dp(20)
         box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
         setContentView(ScrollView(this).apply { addView(box) })
-        if (savedInstanceState == null && request !is ShareRequest.Invalid) {
+        // A recreation after process death has saved state but no handed-over hold: it starts the share like a fresh launch.
+        if ((savedInstanceState == null || lastNonConfigurationInstance == null) && request !is ShareRequest.Invalid) {
             coordinator.forgetFinishedSession()
             hold.take()
             startLinkIfNeeded()

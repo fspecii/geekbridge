@@ -142,3 +142,9 @@ class QrPlan(val target: QrTarget, private val dialTimeoutMs: Long = 6_000) {
         return QrStep.Dial(target.addresses[index])
     }
 }
+
+/** Whether a recreated QrPairActivity reads its launch link again. */
+object QrReplay {
+    /** A fresh start always does; a recreation only if the confirmation of the link was still waiting. */
+    fun shouldHandle(hasSavedState: Boolean, wasWaiting: Boolean): Boolean = !hasSavedState || wasWaiting
+}

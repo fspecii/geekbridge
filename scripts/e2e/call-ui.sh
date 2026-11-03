@@ -143,8 +143,19 @@ stage_env() {
 
 # ---------------------------------------------------------------- pairing (QR link opened as the camera app would) and phone prefs
 scan() { $ADB shell am start -W -a android.intent.action.VIEW -d "'$1'" $PKG >/dev/null; }
+# A newly paired computer holds no phone-side grants (android ComputerGrants): allow calls for the desktop's id.
+write_grants_calls() {
+  desk_id
+  $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_grants.xml'" <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="grants">{&quot;migrated&quot;:true,&quot;grants&quot;:{&quot;$DESK_ID&quot;:[&quot;calls&quot;]}}</string>
+</map>
+XML
+}
 write_calls_prefs() {
   $ADB shell am force-stop $PKG; sleep 1
+  write_grants_calls
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_calls.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -165,7 +176,7 @@ stage_pair() {
     local qr; qr="$(ctl pair-qr 2>/dev/null | grep -m1 "^geekbridge://")"; echo "${qr:0:60}..." >"$RUN/qr-prefix.txt"
     [[ "$qr" == geekbridge://* ]] || { rec callui_pair FAIL "pair-qr gave: ${qr:0:120}"; return 1; }
     scan "$qr"
-    ui wait "Pair with E2E-Desktop" 15 >/dev/null || { rec callui_pair FAIL "no pairing page after the link: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
+    ui wait "Connect to a computer" 20 >/dev/null || { rec callui_pair FAIL "no pairing page after the link: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     ui tap Continue >/dev/null
     ui wait "Computer identity" 40 >/dev/null || { rec callui_pair FAIL "no identity step: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     ui tap Pair --exact >/dev/null
@@ -260,7 +271,7 @@ stage_popup() {
   app_shot call-popup-ringing.png
   # White-on-colour button labels defeat OCR, so the buttons are checked by colour at their known positions.
   local dec ans
-  dec="$(px call-popup-ringing.png 40 "$POPUP_BUTTON_Y")"; ans="$(px call-popup-ringing.png 215 "$POPUP_BUTTON_Y")"
+  dec="$(px call-popup-ringing.png 60 "$POPUP_BUTTON_Y")"; ans="$(px call-popup-ringing.png 215 "$POPUP_BUTTON_Y")"
   read -r dr dg db <<<"$dec"; read -r ar ag ab <<<"$ans"
   if ((dr > 180 && dg < 90)) && ((ar > 220 && ag > 220 && ab > 220)); then rec callui_popup_buttons PASS "red Decline button rgb=$dec, off-white Answer button rgb=$ans (sampled off the labels)"
   else rec callui_popup_buttons FAIL "no red/off-white buttons where expected: decline rgb=$dec answer rgb=$ans"; fi

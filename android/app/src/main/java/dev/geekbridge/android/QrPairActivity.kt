@@ -47,6 +47,7 @@ class QrPairActivity : Activity() {
     private var testing = false
     private var linkField: android.widget.EditText? = null
     private var message: String? = null
+    private var linkPending = false
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -63,9 +64,11 @@ class QrPairActivity : Activity() {
         screen = Screen(this, kit).also { it.install() }
         controller = LinkRuntime.controller()
         prompt = PairPromptDialog(this, kit.ui, controller)
-        // A link from outside (camera app, browser, another app) must be confirmed; nothing is stored in
-        // saved state, so a rotation or process death simply returns to the start.
-        if (savedInstanceState == null) handleIntent(intent)
+        // A link from outside (camera app, browser, another app) must be confirmed. The link itself (it holds a
+        // one-time token) is never stored in saved state; only a flag that its confirmation was still waiting. If
+        // the system recreates the activity at that moment (first launch from a cold start, a permission grant, a
+        // theme change), the launch intent still carries the link and is read again, so the confirm page comes back.
+        if (QrReplay.shouldHandle(savedInstanceState?.let { true } ?: false, savedInstanceState?.getBoolean(KEY_WAITING, false) ?: false)) handleIntent(intent)
         render()
     }
 
@@ -76,6 +79,11 @@ class QrPairActivity : Activity() {
         if (mode is Mode.Connecting) return
         handleIntent(intent)
         render()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_WAITING, linkPending || mode is Mode.Confirm)
     }
 
     override fun onStart() {
@@ -91,6 +99,7 @@ class QrPairActivity : Activity() {
 
     private fun handleIntent(i: Intent?) {
         val text = QrProtocol.linkText(i?.dataString) ?: return
+        linkPending = true
         parse(text, confirm = true)
     }
 
@@ -99,6 +108,7 @@ class QrPairActivity : Activity() {
     private fun parse(text: String, confirm: Boolean) {
         message = null
         controller.raw(QrProtocol.parseRequest(text)) { o ->
+            linkPending = false
             when (o) {
                 is CoreOutcome.Ok -> {
                     val t = QrProtocol.parseTarget(o.result)
@@ -326,6 +336,7 @@ class QrPairActivity : Activity() {
     }
 
     private companion object {
+        const val KEY_WAITING = "link_waiting"
         const val REQ_SCAN = 81
         const val REQ_PICK = 82
     }

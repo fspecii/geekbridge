@@ -65,7 +65,7 @@ if ui wait "did not accept the QR code" 40; then shot expired; rec expired PASS 
 fresh_phone
 P1="$(payload)"
 scan "$P1"
-if ui wait "Pair with E2E-Desktop" 15; then shot confirm; else shot confirm-fail; fi
+if ui wait "Connect to a computer" 20; then shot confirm; else shot confirm-fail; fi
 ui tap "Continue" >/dev/null
 if ui wait "Computer identity" 40; then
   shot approve

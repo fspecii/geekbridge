@@ -169,4 +169,10 @@ class PairingHelpTest {
         assertTrue(PairingHelp.explain(TestStrings, "pairing_failed", "clock_skew").headline.contains("clocks"))
         assertTrue(PairingHelp.explain(TestStrings, "x", "unheard-of").headline.contains("did not work"))
     }
+
+    @Test fun recreatedActivityReadsTheLinkOnlyWhileItsConfirmationWasWaiting() {
+        assertTrue(QrReplay.shouldHandle(hasSavedState = false, wasWaiting = false))
+        assertTrue(QrReplay.shouldHandle(hasSavedState = true, wasWaiting = true))
+        assertFalse(QrReplay.shouldHandle(hasSavedState = true, wasWaiting = false))
+    }
 }

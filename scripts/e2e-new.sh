@@ -65,7 +65,7 @@ stage_pairdone() {
   for id in $(paired_ids); do ctl unpair "$id" >/dev/null; done
   $ADB shell pm clear $PKG >/dev/null; wake
   local p; p="$(ctl pair-qr 2>/dev/null)"; scan "$p"
-  ui wait "Pair with E2E-Desktop" 15 >/dev/null; ui tap Continue >/dev/null
+  ui wait "Connect to a computer" 20 >/dev/null; ui tap Continue >/dev/null
   ui wait "Computer identity" 40 >/dev/null; ui tap Pair --exact >/dev/null
   if ui wait "What to do next" 40; then PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     rec pairdone PASS "paired by QR link: $PHONE_ID"
