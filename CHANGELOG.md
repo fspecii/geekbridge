@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Security
+- Recent photos review (docs/reports/security-review-6.md): a photo offer larger than any photo fails the request, a photo
+  claim is atomic, withdrawing photos cancels a download in progress and erases clipboard copies, the scratch folder is
+  re-made private (links replaced) and emptied at start, only picture-named files are listed, clipboard copies are
+  header-checked (type, 250 MP) first, ids are per computer and the phone ignores request floods, and file names lose
+  more bidirectional/line-separator characters.
+
 ### Added
 - Recent phone photos on the computer (gap 6 of the parity list): a *Phone photos* tab in the Share window shows the newest
   24 photos as small previews, with **Save** and **Copy to clipboard**, and `geekbridge-ctl photos`. GeekBridge-only packets

@@ -278,6 +278,19 @@ enum Push {
     Thumb,
     /// A file offer nobody asked for.
     File(&'static str),
+    /// From now on, answer `get` the given way.
+    Answer(Answer),
+}
+
+/// How the phone answers `get`.
+#[derive(Clone, Copy, PartialEq)]
+enum Answer {
+    /// Offer the photo and serve it.
+    Serve,
+    /// Offer the photo but never serve it (a download that hangs).
+    Stall,
+    /// Offer a file of the right name that claims a gigabyte.
+    Huge,
 }
 
 /// The phone: answers photo requests from a fixed set of photos, serves a full picture when asked, and
@@ -293,6 +306,8 @@ fn run_phone(
     let (seen_tx, seen_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut serving = Vec::new();
+        let mut stalls = Vec::new();
+        let mut answer = Answer::Serve;
         loop {
             tokio::select! {
                 ev = link.recv() => match ev {
@@ -317,7 +332,17 @@ fn run_phone(
                             }
                             wire::Ask::Get { id } => {
                                 let n: usize = id[1..].parse().unwrap_or(0);
-                                serving.push(phone_offers(&mut link, &photo(n).name, data(5000 + n)).await);
+                                match answer {
+                                    Answer::Serve => serving.push(phone_offers(&mut link, &photo(n).name, data(5000 + n)).await),
+                                    Answer::Stall | Answer::Huge => {
+                                        let size = if answer == Answer::Huge { 1 << 30 } else { 5000 + n as u64 };
+                                        let ctx = link.payload_context();
+                                        let listener = ctx.listen().await.unwrap();
+                                        let packet = kshare::file_packet(&photo(n).name, size, None, listener.port());
+                                        link.send_with_payload(&packet).await.unwrap();
+                                        stalls.push(listener);
+                                    }
+                                }
                             }
                         }
                         let _ = seen_tx.send(ask);
@@ -336,6 +361,7 @@ fn run_phone(
                     Push::File(name) => {
                         serving.push(phone_offers(&mut link, name, data(300)).await);
                     }
+                    Push::Answer(a) => answer = a,
                 },
             }
         }
@@ -607,5 +633,146 @@ async fn a_picture_for_the_clipboard_goes_to_a_scratch_folder_and_a_withdrawn_re
     assert!(
         v.fetches.is_empty(),
         "nothing is reported for a phone that is off"
+    );
+}
+
+async fn ready_rig(
+    count: usize,
+) -> (
+    Rig,
+    Arc<Phone>,
+    tokio::sync::mpsc::Sender<Push>,
+    tokio::sync::mpsc::UnboundedReceiver<wire::Ask>,
+) {
+    let rig = Rig::start().await;
+    let phone = Phone::photographer();
+    let link = rig.pair(&phone).await;
+    let (push, seen) = run_phone(link, count);
+    rig.consent(&phone, true).await;
+    rig.ok(Request::PhotosRefresh {
+        device_id: phone.id(),
+    })
+    .await;
+    rig.until_photos("a list", |v| v.items.len() == count).await;
+    (rig, phone, push, seen)
+}
+
+#[tokio::test]
+async fn an_offer_bigger_than_any_photo_fails_the_request_instead_of_filling_the_disk() {
+    let (rig, phone, push, _seen) = ready_rig(3).await;
+    push.send(Push::Answer(Answer::Huge)).await.unwrap();
+    rig.ok(Request::PhotoFetch {
+        device_id: phone.id(),
+        id: "p2".into(),
+        mode: FetchMode::Save,
+    })
+    .await;
+    let v = rig
+        .until_photos("the refusal", |v| {
+            v.fetches.iter().any(|f| f.state == FetchState::Failed)
+        })
+        .await;
+    assert_eq!(v.fetches[0].code.as_deref(), Some("too_large"));
+    assert!(
+        rig.share().await.transfers.is_empty(),
+        "no transfer was started"
+    );
+    assert!(std::fs::read_dir(&rig.save_dir).map_or(true, |d| d.count() == 0));
+}
+
+#[tokio::test]
+async fn withdrawing_photos_cancels_a_picture_that_is_still_arriving() {
+    let (rig, phone, push, _seen) = ready_rig(3).await;
+    push.send(Push::Answer(Answer::Stall)).await.unwrap();
+    rig.ok(Request::PhotoFetch {
+        device_id: phone.id(),
+        id: "p2".into(),
+        mode: FetchMode::Save,
+    })
+    .await;
+    rig.until_photos("the download to start", |v| {
+        v.fetches.iter().any(|f| f.state == FetchState::Receiving)
+    })
+    .await;
+    rig.consent(&phone, false).await;
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        let s = rig.share().await;
+        if s.transfers.iter().all(|t| !t.state.is_live()) {
+            assert!(
+                s.transfers
+                    .iter()
+                    .all(|t| t.code.as_deref() == Some("cancelled")),
+                "{:?}",
+                s.transfers
+            );
+            break;
+        }
+        assert!(Instant::now() < end, "the download was left running: {s:?}");
+        sleep(Duration::from_millis(30)).await;
+    }
+    assert!(
+        std::fs::read_dir(&rig.save_dir).map_or(true, |d| d.count() == 0),
+        "no partial file is left"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_planted_link_in_place_of_the_scratch_folder_is_not_followed() {
+    let (rig, phone, _push, _seen) = ready_rig(3).await;
+    let target = rig._tmp.path().join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::create_dir_all(&rig.save_dir).unwrap();
+    std::os::unix::fs::symlink(&target, rig.save_dir.join(bridge_service::share::COPY_DIR))
+        .unwrap();
+    rig.ok(Request::PhotoFetch {
+        device_id: phone.id(),
+        id: "p3".into(),
+        mode: FetchMode::Copy,
+    })
+    .await;
+    let v = rig
+        .until_photos("the copy", |v| {
+            v.fetches.iter().any(|f| f.state == FetchState::Done)
+        })
+        .await;
+    let path = PathBuf::from(v.fetches[0].path.clone().unwrap());
+    let scratch = rig.save_dir.join(bridge_service::share::COPY_DIR);
+    assert_eq!(path.parent().unwrap(), scratch);
+    assert!(
+        !std::fs::symlink_metadata(&scratch)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        std::fs::read_dir(&target).unwrap().count(),
+        0,
+        "nothing went through the link"
+    );
+}
+
+#[tokio::test]
+async fn saving_never_replaces_a_file_that_is_already_there() {
+    let (rig, phone, _push, _seen) = ready_rig(3).await;
+    std::fs::create_dir_all(&rig.save_dir).unwrap();
+    std::fs::write(rig.save_dir.join("IMG_0002.jpg"), b"mine").unwrap();
+    rig.ok(Request::PhotoFetch {
+        device_id: phone.id(),
+        id: "p2".into(),
+        mode: FetchMode::Save,
+    })
+    .await;
+    let v = rig
+        .until_photos("the picture", |v| {
+            v.fetches.iter().any(|f| f.state == FetchState::Done)
+        })
+        .await;
+    let path = PathBuf::from(v.fetches[0].path.clone().unwrap());
+    assert_eq!(path, rig.save_dir.join("IMG_0002 (1).jpg"));
+    assert_eq!(
+        std::fs::read(rig.save_dir.join("IMG_0002.jpg")).unwrap(),
+        b"mine"
     );
 }

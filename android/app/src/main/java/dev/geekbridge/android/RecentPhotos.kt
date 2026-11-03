@@ -90,7 +90,7 @@ object PhotoRules {
         else -> null
     }
 
-    private fun isBidi(c: Char) = c == '‎' || c == '‏' || c in '‪'..'‮' || c in '⁦'..'⁩'
+    private fun isBidi(c: Char) = c == '\u061C' || c == '\u200E' || c == '\u200F' || c == '\u2028' || c == '\u2029' || c in '\u202A'..'\u202E' || c in '\u2066'..'\u2069'
 
     /**
      * Only a picture whose name is plain text of at most [MAX_NAME] characters is listed: the computer matches the file
@@ -131,28 +131,47 @@ object PhotoRules {
     }
 }
 
-/** Opaque ids the computer is given: "p1", "p2", ... never reused, bounded, oldest forgotten first. */
+/**
+ * Opaque ids the computer is given: "p1", "p2", ... never reused, bounded, oldest forgotten first. An id belongs to
+ * the connection it was handed to: another computer (even an allowed one) cannot ask for a picture it was not shown.
+ */
 class PhotoIds(private val max: Int = PhotoRules.MAX_IDS) {
-    private val byId = LinkedHashMap<String, PhotoInfo>()
+    private val byId = LinkedHashMap<String, Pair<Long, PhotoInfo>>()
     private var counter = 0L
 
     @Synchronized
-    fun assign(photos: List<PhotoInfo>): List<Pair<String, PhotoInfo>> {
+    fun assign(photos: List<PhotoInfo>, connectionId: Long = 0): List<Pair<String, PhotoInfo>> {
         val out = photos.map { p -> "p${++counter}" to p }
-        for ((id, p) in out) byId[id] = p
+        for ((id, p) in out) byId[id] = connectionId to p
         while (byId.size > max) byId.remove(byId.keys.first())
         return out
     }
 
-    @Synchronized fun get(id: String): PhotoInfo? = byId[id]
+    @Synchronized fun get(id: String, connectionId: Long = 0): PhotoInfo? = byId[id]?.takeIf { it.first == connectionId }?.second
 
     @Synchronized fun clear() = byId.clear()
+}
+
+/** A token bucket: [burst] at once, then one more every [everyMs]. */
+class Throttle(private val burst: Int, private val everyMs: Long) {
+    private var tokens = burst.toDouble()
+    private var last = Long.MIN_VALUE
+
+    fun allow(nowMs: Long): Boolean {
+        if (last != Long.MIN_VALUE) tokens = minOf(burst.toDouble(), tokens + (nowMs - last).coerceAtLeast(0) / everyMs.toDouble())
+        last = nowMs
+        if (tokens < 1.0) return false
+        tokens -= 1.0
+        return true
+    }
 }
 
 /**
  * Answers a computer's recent-photos requests: a short list of the newest pictures, a small thumbnail per picture
  * when asked, and (only on "get") the whole file over the share channel. Nothing is read unless a computer that the
- * user allowed asked, and only listed ids can be asked for. File names and pictures are never logged.
+ * user allowed asked, and only ids listed to that very computer can be asked for. A computer that asks faster than a
+ * person browsing could (thousands of thumbnails, lists in a loop) is ignored, so it cannot burn the battery or hold
+ * the engine. File names and pictures are never logged.
  *
  * [send] delivers a packet to one computer's connection and tells whether the core took it.
  */
@@ -161,39 +180,67 @@ class RecentPhotos(
     private val send: (kind: String, body: JSONObject, connectionId: Long) -> Boolean,
     private val enabled: () -> Boolean,
     private val ids: PhotoIds = PhotoIds(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
+    private class Limits {
+        val list = Throttle(LIST_BURST, LIST_EVERY_MS)
+        val thumb = Throttle(THUMB_BURST, THUMB_EVERY_MS)
+        val get = Throttle(GET_BURST, GET_EVERY_MS)
+    }
+
+    private val limits = HashMap<Long, Limits>()
+
     @Synchronized
-    fun reset() = ids.clear()
+    fun reset() {
+        ids.clear()
+        limits.clear()
+    }
 
     @Synchronized
     fun onRequest(connectionId: Long, body: JSONObject) {
         if (!enabled()) return
         val access = port.access()
         if (access == PhotoAccess.None) return
-        when (val ask = PhotoRules.parseRequest(body) ?: return) {
-            is PhotoRules.Ask.List -> list(connectionId, ask.limit, access)
-            is PhotoRules.Ask.Thumb -> thumb(connectionId, ask.id)
-            is PhotoRules.Ask.Get -> get(connectionId, ask.id)
+        val ask = PhotoRules.parseRequest(body) ?: return
+        if (limits.size > MAX_TRACKED && connectionId !in limits) limits.clear()
+        val lim = limits.getOrPut(connectionId) { Limits() }
+        val now = clock()
+        when (ask) {
+            is PhotoRules.Ask.List -> if (lim.list.allow(now)) list(connectionId, ask.limit, access)
+            is PhotoRules.Ask.Thumb -> if (lim.thumb.allow(now)) thumb(connectionId, ask.id)
+            is PhotoRules.Ask.Get -> if (lim.get.allow(now)) get(connectionId, ask.id)
         }
     }
 
     private fun list(connectionId: Long, limit: Int, access: PhotoAccess) {
         // A few more are read than asked for: a picture with an odd name is skipped, not replaced by a gap.
         val photos = port.latest(limit * 2).filter(PhotoRules::listable).take(limit)
-        send(PhotoRules.LIST_KIND, PhotoRules.listBody(ids.assign(photos), access == PhotoAccess.Partial), connectionId)
+        send(PhotoRules.LIST_KIND, PhotoRules.listBody(ids.assign(photos, connectionId), access == PhotoAccess.Partial), connectionId)
     }
 
     private fun thumb(connectionId: Long, id: String) {
-        val p = ids.get(id)
+        val p = ids.get(id, connectionId)
         val t = p?.let { port.thumbnail(it) }
         val body = if (t == null || t.jpeg.size > PhotoRules.MAX_THUMB_BYTES || t.width !in 1..256 || t.height !in 1..256) PhotoRules.goneBody(id) else PhotoRules.thumbBody(id, t)
         send(PhotoRules.THUMB_KIND, body, connectionId)
     }
 
     private fun get(connectionId: Long, id: String) {
-        val p = ids.get(id) ?: return
+        val p = ids.get(id, connectionId) ?: return
         if (!port.exists(p)) return
         port.sendFull(p, connectionId)
+    }
+
+    companion object {
+        // A person opening the tab asks for one list and up to 24 thumbnails (the computer itself waits 3 s between
+        // lists). These allow several of those in a row and then slow to a pace no person reaches.
+        const val LIST_BURST = 4
+        const val LIST_EVERY_MS = 2_000L
+        const val THUMB_BURST = 60
+        const val THUMB_EVERY_MS = 125L
+        const val GET_BURST = 3
+        const val GET_EVERY_MS = 5_000L
+        const val MAX_TRACKED = 16
     }
 }
 

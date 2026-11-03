@@ -30,7 +30,8 @@ class RecentPhotosTest {
 
     private class Rig(val port: FakePort = FakePort(), var on: Boolean = true) {
         val sent = ArrayList<Triple<String, JSONObject, Long>>()
-        val photos = RecentPhotos(port, { k, b, c -> sent += Triple(k, b, c); true }, { on })
+        var now = 1_000_000L
+        val photos = RecentPhotos(port, { k, b, c -> sent += Triple(k, b, c); true }, { on }, clock = { now })
         fun ask(conn: Long, body: JSONObject) = photos.onRequest(conn, body)
         fun list(conn: Long = 7, limit: Int = 24) = ask(conn, JSONObject().put("op", "list").put("limit", limit))
         fun ids() = sent.last().second.getJSONArray("items").let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("id") } }
@@ -171,12 +172,19 @@ class RecentPhotosTest {
         r.ask(7, JSONObject().put("op", "get").put("id", "p999"))
         r.ask(7, JSONObject().put("op", "get").put("id", "2"))
         assertTrue(port.fullSends.isEmpty())
-        // A listed id works, for the connection that asked.
+        // Another computer (even an allowed one) cannot ask for an id that was handed to the first.
         r.ask(11, JSONObject().put("op", "get").put("id", ids[1]))
-        assertEquals(listOf(photo(2) to 11L), port.fullSends)
+        r.ask(11, JSONObject().put("op", "thumb").put("id", ids[1]))
+        assertTrue(port.fullSends.isEmpty())
+        assertTrue(r.sent.last().second.getBoolean("gone"))
+        // A listed id works, for the connection it was listed to.
+        r.now += 60_000
+        r.ask(7, JSONObject().put("op", "get").put("id", ids[1]))
+        assertEquals(listOf(photo(2) to 7L), port.fullSends)
         // A picture deleted (or no longer visible after the user narrowed access) since the list is not sent.
         port.present = { false }
-        r.ask(11, JSONObject().put("op", "get").put("id", ids[0]))
+        r.now += 60_000
+        r.ask(7, JSONObject().put("op", "get").put("id", ids[0]))
         assertEquals(1, port.fullSends.size)
     }
 
@@ -213,6 +221,47 @@ class RecentPhotosTest {
         assertNull(ids.get(b[2].first))
         val c = ids.assign(listOf(photo(1)))
         assertTrue("no id from before the reset comes back", c[0].first !in (a + b).map { it.first })
+    }
+
+    @Test fun aComputerThatAsksFasterThanAPersonCouldIsIgnored() {
+        val thumbs = ArrayList<Int>()
+        val port = FakePort(library = (1L..24L).map { photo(it) }, thumb = { thumbs += 1; PhotoThumb(160, 120, byteArrayOf(-1, -40, -1, -32, 1, 2)) })
+        val r = Rig(port)
+        // A person: a list, then its 24 thumbnails, again 3 s later (the computer's own pace), many times over.
+        repeat(20) {
+            r.list()
+            r.ids().forEach { r.ask(7, JSONObject().put("op", "thumb").put("id", it)) }
+            r.now += 3_000
+        }
+        assertEquals(20 * 24, thumbs.size)
+        // A hostile computer: thousands of thumbnails and lists in the same second.
+        thumbs.clear()
+        port.latestCalls = 0
+        r.now += 60_000
+        r.list()
+        val id = r.ids().first()
+        port.latestCalls = 0
+        repeat(5_000) { r.ask(7, JSONObject().put("op", "thumb").put("id", id)) }
+        repeat(5_000) { r.list() }
+        assertTrue("${thumbs.size} thumbnails read", thumbs.size <= RecentPhotos.THUMB_BURST)
+        assertTrue("${port.latestCalls} library reads", port.latestCalls <= RecentPhotos.LIST_BURST)
+        // Full pictures: a few, then slowly.
+        port.present = { true }
+        repeat(100) { r.ask(7, JSONObject().put("op", "get").put("id", id)) }
+        assertTrue(port.fullSends.size <= RecentPhotos.GET_BURST)
+        // It recovers when it stops, and another computer was never affected.
+        r.now += 60_000
+        r.list(conn = 9)
+        assertEquals(9L, r.sent.last().third)
+        val before = r.sent.size
+        r.list()
+        assertEquals(before + 1, r.sent.size)
+    }
+
+    @Test fun namesWithAnArabicLetterMarkOrLineSeparatorAreNotListed() {
+        for (name in listOf("a\u061Cb.jpg", "a\u2028b.jpg", "a\u2029b.jpg", "a\u202Eb.jpg", "a\u2067b.jpg")) {
+            assertFalse(name, PhotoRules.listable(photo(1, name)))
+        }
     }
 
     @Test fun theThumbnailEncoderTriesLowerQualitiesAndGivesUpHonestly() {

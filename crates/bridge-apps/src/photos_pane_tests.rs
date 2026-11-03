@@ -126,6 +126,91 @@ fn only_small_real_jpegs_are_decoded() {
     assert_eq!(decode_thumb(&huge), Err(DecodeError::TooLarge));
 }
 
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut v = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+    v.extend(w.to_be_bytes());
+    v.extend(h.to_be_bytes());
+    v.extend([8, 2, 0, 0, 0, 0, 0, 0, 0]);
+    v
+}
+
+#[test]
+fn a_received_file_is_checked_before_a_clipboard_tool_or_image_decoder_sees_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let put = |name: &str, bytes: &[u8]| {
+        let p = dir.path().join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    };
+    // Real pictures pass (a JPEG with its size behind the metadata, a PNG, a GIF, three WebP kinds).
+    assert_eq!(
+        check_picture(&put("a.jpg", THUMBS[0]), "image/jpeg"),
+        Ok(())
+    );
+    assert_eq!(
+        check_picture(&put("a.png", &png(4032, 3024)), "image/png"),
+        Ok(())
+    );
+    assert_eq!(
+        check_picture(&put("a.gif", b"GIF89a\x40\x01\xf0\0\0\0"), "image/gif"),
+        Ok(())
+    );
+    let mut vp8x = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\0\0\0\0".to_vec();
+    vp8x.extend([0xbf, 0x0f, 0, 0xbf, 0x0b, 0]); // 4032 x 3008
+    assert_eq!(header_size(&vp8x, "image/webp"), Some((4032, 3008)));
+    let mut vp8l = b"RIFF\0\0\0\0WEBPVP8L\0\0\0\0\x2f".to_vec();
+    vp8l.extend([0x3f, 0xc0, 0x0b, 0x00]); // 64 x 48
+    assert_eq!(header_size(&vp8l, "image/webp"), Some((64, 48)));
+    let mut vp8 = b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0\0\0\0\x9d\x01\x2a".to_vec();
+    vp8.extend([0x40, 0x01, 0xf0, 0x00]); // 320 x 240
+    assert_eq!(header_size(&vp8, "image/webp"), Some((320, 240)));
+    // A header that claims a decompression bomb is refused before anything opens it.
+    assert_eq!(
+        check_picture(&put("bomb.png", &png(60_000, 60_000)), "image/png"),
+        Err(Refusal::TooManyPixels)
+    );
+    assert_eq!(
+        check_picture(&put("wide.png", &png(u32::MAX, 1)), "image/png"),
+        Err(Refusal::TooManyPixels)
+    );
+    let mut jpeg = THUMBS[0].to_vec();
+    let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    jpeg[sof + 5..sof + 9].copy_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+    assert_eq!(
+        check_picture(&put("bomb.jpg", &jpeg), "image/jpeg"),
+        Err(Refusal::TooManyPixels)
+    );
+    // Not the type it says, empty, truncated, or a link: refused.
+    assert_eq!(
+        check_picture(&put("t.jpg", b"#!/bin/sh\nrm -rf ~\n"), "image/jpeg"),
+        Err(Refusal::NotThatType)
+    );
+    assert_eq!(
+        check_picture(&put("p.jpg", &png(10, 10)), "image/jpeg"),
+        Err(Refusal::NotThatType)
+    );
+    assert_eq!(
+        check_picture(&put("short.png", &png(1, 1)[..20]), "image/png"),
+        Err(Refusal::NotThatType)
+    );
+    assert_eq!(
+        check_picture(&put("e.jpg", b""), "image/jpeg"),
+        Err(Refusal::File)
+    );
+    assert_eq!(
+        check_picture(&dir.path().join("missing.jpg"), "image/jpeg"),
+        Err(Refusal::File)
+    );
+    #[cfg(unix)]
+    {
+        let real = put("real.jpg", THUMBS[0]);
+        let link = dir.path().join("link.jpg");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert_eq!(check_picture(&link, "image/jpeg"), Err(Refusal::File));
+    }
+    assert_eq!(check_picture(dir.path(), "image/jpeg"), Err(Refusal::File));
+}
+
 #[test]
 fn copy_needs_a_known_picture_type_and_builds_safe_commands() {
     assert_eq!(mime_for("a.JPG"), Some("image/jpeg"));

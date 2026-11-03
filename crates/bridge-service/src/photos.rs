@@ -117,7 +117,11 @@ impl Photos {
     }
 
     /// The phone's list. On `Kept`, the ids whose thumbnails are still needed (ask for them now).
-    pub fn on_list(&self, device: &str, list: List, now: Instant) -> (Heard, Vec<String>) {
+    pub fn on_list(&self, device: &str, mut list: List, now: Instant) -> (Heard, Vec<String>) {
+        // Not a picture by its name (`run.sh`, `x.lnk`): never shown and never fetchable, because Save would put it
+        // in the save folder without a receive prompt.
+        list.items
+            .retain(|p| bridge_core::photos_link::is_image_name(&p.name));
         let mut g = self.lock();
         let Some(d) = g.devices.get_mut(device) else {
             return (Heard::Unsolicited, Vec::new());
@@ -300,6 +304,24 @@ mod tests {
         );
         assert!(s.thumb("a", "p1").is_some());
         assert!(s.thumb("a", "p2").is_none());
+    }
+
+    #[test]
+    fn a_listed_name_that_is_not_a_picture_is_never_kept() {
+        let s = Photos::default();
+        let t0 = Instant::now();
+        s.begin_refresh("a", t0);
+        let mut l = list(2);
+        l.items[0].name = "run.sh".into();
+        l.items.push(Photo {
+            name: "IMG.jpg.desktop".into(),
+            id: "p3".into(),
+            ..photo(3)
+        });
+        let (_, need) = s.on_list("a", l, t0);
+        assert_eq!(need, ["p2"]);
+        assert!(s.photo("a", "p1").is_none() && s.photo("a", "p3").is_none());
+        assert_eq!(s.items("a", t0).len(), 1);
     }
 
     #[test]

@@ -96,16 +96,35 @@ pub fn valid_id(s: &str) -> bool {
 
 /// Characters that reorder surrounding text (bidirectional overrides, embeddings, isolates and marks).
 fn is_bidi_control(c: char) -> bool {
-    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// Control characters become spaces, bidirectional controls are dropped (a file name must not be able to reorder the
-/// text around it), the text is trimmed and cut to `max` characters.
+/// Extensions of the pictures a phone's media library holds. A listed photo with any other name (`run.sh`, `x.lnk`,
+/// `a.desktop`) is not a photo, and Save would put it in the save folder without the usual receive prompt.
+const IMAGE_EXTENSIONS: [&str; 13] = [
+    "jpg", "jpeg", "png", "gif", "webp", "heic", "heif", "avif", "bmp", "dng", "tif", "tiff", "jxl",
+];
+
+/// Does `name` end in a known picture extension?
+pub fn is_image_name(name: &str) -> bool {
+    name.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && IMAGE_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e))
+    })
+}
+
+/// Control characters and line/paragraph separators become spaces, bidirectional controls are dropped (a file name
+/// must not be able to reorder the text around it), the text is trimmed and cut to `max` characters.
 pub fn clean_text(s: &str, max: usize) -> String {
     let replaced: String = s
         .chars()
         .filter(|c| !is_bidi_control(*c))
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     replaced.trim().chars().take(max).collect()
 }
@@ -267,6 +286,45 @@ pub fn thumb_gone_body(id: &str) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_lose_every_text_reordering_or_line_breaking_character() {
+        // U+061C (Arabic letter mark) reorders text like the other marks; U+2028/2029 break a line in a label.
+        assert_eq!(
+            clean_text("a\u{061C}b\u{202E}c\u{2066}d.jpg", 100),
+            "abcd.jpg"
+        );
+        assert_eq!(clean_text("a\u{2028}b\u{2029}c.jpg", 100), "a b c.jpg");
+    }
+
+    #[test]
+    fn only_picture_names_pass_the_image_name_check() {
+        for ok in [
+            "IMG_1.jpg",
+            "a.JPEG",
+            "x.HeIc",
+            "p.webp",
+            "a b.png",
+            "a.b.jpg",
+        ] {
+            assert!(is_image_name(ok), "{ok}");
+        }
+        for bad in [
+            "run.sh",
+            "x.lnk",
+            "a.desktop",
+            "photo",
+            "jpg",
+            ".jpg",
+            "a.jpg.exe",
+            "a.exe",
+            "x.svg",
+            "a.jpg ",
+            "",
+        ] {
+            assert!(!is_image_name(bad), "{bad}");
+        }
+    }
 
     fn obj(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()

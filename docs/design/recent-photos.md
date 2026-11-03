@@ -23,8 +23,8 @@ Photos are about the most private thing a phone holds, so the feature is built s
 | Per computer, not global | Phone: the per-computer grant `GrantFeature.Photos` (`ComputerGrants`); the native core drops requests from, and sends nothing to, a computer that is not on the list (`transport_permits`, key `photos`). A computer paired later gets nothing. |
 | Asked for, never pushed | The phone sends a list only as the answer to `list`, a thumbnail only to `thumb`, a file only to `get`. The computer accepts a list only within 30 s of asking, a thumbnail only for an id it asked for, and a file only for a photo it asked for (see below). There is no background upload, no sync, no schedule, no observer on the media store. |
 | Previews only until asked | The list carries names, sizes and times (no pixels); thumbnails are at most 24 KiB and 256 px. The full file moves only on **Save** / **Copy**. |
-| The computer cannot ask for arbitrary files | Ids are opaque (`p1`, `p2`, ...), made up by the phone per list and never reused. The phone honours only an id it handed out in the last ~four lists and re-checks that the picture still exists and is still visible to the app. No path, content URI or media id crosses the link. |
-| Memory only on the computer | The list and thumbnails live in memory: 24 photos per phone, 8 phones, 2 MiB of thumbnails in all, erased when consent is withdrawn, the link ends, the phone is unpaired or after 30 minutes without a refresh. Nothing is written to disk except a picture the user chose to **Save**. A picture chosen for **Copy** goes to a private (0700) scratch folder inside the save folder that is emptied after ten minutes and at start. |
+| The computer cannot ask for arbitrary files | Ids are opaque (`p1`, `p2`, ...), made up by the phone per list and never reused. The phone honours only an id it handed out, **to that same computer**, in the last ~four lists and re-checks that the picture still exists and is still visible to the app. No path, content URI or media id crosses the link. A computer that asks faster than a person browsing (thumbnails beyond a burst of 60 then 8 a second, lists beyond 4 then one per 2 s, full pictures beyond 3 then one per 5 s) is ignored. |
+| Memory only on the computer | The list and thumbnails live in memory: 24 photos per phone, 8 phones, 2 MiB of thumbnails in all, erased when consent is withdrawn, the link ends, the phone is unpaired or after 30 minutes without a refresh. Nothing is written to disk except a picture the user chose to **Save**. A picture chosen for **Copy** goes to a private (0700) scratch folder inside the save folder (a planted link or a loose-permission folder is replaced or tightened first) that is emptied after ten minutes, completely at start, and for a phone when its consent is withdrawn. Before a clipboard tool or the system image decoder sees the file, its start must match the picture type and its header may not claim more than 250 megapixels (or 100,000 px on a side). |
 | Nothing logged | File names and image bytes are never logged on either side. |
 | No cloud, no account | The only transport is the existing paired, pinned-TLS link on the local network. |
 
@@ -39,7 +39,10 @@ Photos are about the most private thing a phone holds, so the feature is built s
 * **Android 8 to 12 (API 26 to 32):** `READ_EXTERNAL_STORAGE` (declared with `maxSdkVersion="32"`).
 * Never `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO`, `ACCESS_MEDIA_LOCATION`, `MANAGE_EXTERNAL_STORAGE` or "all files access".
   Pictures are read through the media store (`MediaStore.Images`), the only route that honours partial access.
-* Location metadata is not requested; thumbnails are re-encoded JPEGs and carry no EXIF.
+* Location metadata is not requested (`ACCESS_MEDIA_LOCATION` is absent), so on Android 10 and later the media store hands
+  the app, and so the computer, a full picture with its GPS tags redacted. On Android 8 and 9 the system does not redact,
+  and a full picture sent by **Save** or **Copy** carries its original EXIF (a known limit). Thumbnails are re-encoded
+  JPEGs and carry no EXIF on every version.
 * A store build that ships this permission needs the store's photo-permission declaration, which this note does not
   cover; the sideloaded and F-Droid style builds need nothing more.
 

@@ -13,6 +13,7 @@
 //!   offers, offer lifetime, file size, payload idle time.
 
 use bridge_core::ipc::{ErrorBody, ErrorCode, EventKind};
+use bridge_core::photos_link::MAX_PHOTO_BYTES;
 use bridge_core::photos_view::{FetchInfo, FetchMode, FetchState};
 use bridge_core::share::{
     MAX_SEND_PATH_BYTES, MAX_SEND_TEXT_BYTES, ShareDeviceSettings, ShareStatus, ShareTextKind,
@@ -360,17 +361,46 @@ impl Notifier for NotifySend {
 }
 
 /// Create `dir` (and parents) readable by the owner only where the platform has such a thing.
-fn make_private_dir(dir: &Path) {
+/// Makes sure `dir` is a real directory (not a link someone planted) that only this user can enter. False if it
+/// cannot be made so; nothing should then be written there.
+fn make_private_dir(dir: &Path) -> bool {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt as _;
-        let _ = std::fs::DirBuilder::new()
+        use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+        match std::fs::symlink_metadata(dir) {
+            Ok(m) if m.file_type().is_symlink() => {
+                // Remove only the link itself, never what it points at.
+                if std::fs::remove_file(dir).is_err() {
+                    return false;
+                }
+            }
+            Ok(m) if !m.is_dir() => return false,
+            _ => {}
+        }
+        if std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(dir);
+            .create(dir)
+            .is_err()
+        {
+            return false;
+        }
+        match std::fs::symlink_metadata(dir) {
+            Ok(m) if m.is_dir() && !m.file_type().is_symlink() => {
+                m.permissions().mode() & 0o077 == 0
+                    || std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).is_ok()
+            }
+            _ => false,
+        }
     }
     #[cfg(not(unix))]
-    let _ = std::fs::create_dir_all(dir);
+    {
+        // Per-user folder on Windows; refuse a reparse point (link or junction).
+        if std::fs::symlink_metadata(dir).is_ok_and(|m| m.file_type().is_symlink() || !m.is_dir()) {
+            return false;
+        }
+        std::fs::create_dir_all(dir).is_ok()
+    }
 }
 
 pub fn human_size(n: u64) -> String {
@@ -466,7 +496,8 @@ impl ShareManager {
             sink: Mutex::new(None),
             notifier: Mutex::new(Arc::new(NoNotifier)),
         });
-        me.sweep_copy_dir();
+        // Nothing in the scratch folder can be in use at start: whatever a crashed run left goes now.
+        me.sweep_copy_dir_older_than(Duration::ZERO);
         me
     }
 
@@ -700,6 +731,12 @@ impl ShareManager {
 
     /// Delete what is left in the scratch folder from earlier copies (older than ten minutes).
     pub fn sweep_copy_dir(&self) {
+        self.sweep_copy_dir_older_than(COPY_KEEP);
+    }
+
+    /// Delete the scratch folder's files that are at least `min_age` old (zero: all of them). Links are removed as
+    /// links; nothing outside the folder is touched.
+    fn sweep_copy_dir_older_than(&self, min_age: Duration) {
         let dir = self.copy_dir();
         let Ok(entries) = std::fs::read_dir(&dir) else {
             return;
@@ -708,10 +745,10 @@ impl ShareManager {
             let old = e
                 .metadata()
                 .ok()
-                .filter(|m| m.is_file())
+                .filter(|m| m.is_file() || m.file_type().is_symlink())
                 .and_then(|m| m.modified().ok())
                 .and_then(|m| m.elapsed().ok())
-                .is_some_and(|age| age >= COPY_KEEP);
+                .is_some_and(|age| age >= min_age);
             if old {
                 let _ = std::fs::remove_file(e.path());
             }
@@ -780,12 +817,56 @@ impl ShareManager {
         Ok(fetch_id)
     }
 
-    /// Forget every photo still waited for from `device_id` (its consent was withdrawn or the link ended).
-    /// A transfer already receiving is left to finish: the file was offered and accepted before.
+    /// `device_id`'s consent was withdrawn or its link ended: every photo still waited for is forgotten, a photo
+    /// already arriving is cancelled (its partial file is removed), and a finished clipboard copy is erased from the
+    /// scratch folder. Saved photos stay: the user asked for them.
     pub fn drop_expectations(&self, device_id: &str) {
-        self.inner()
-            .fetches
-            .retain(|f| f.info.device_id != device_id || f.info.state != FetchState::Waiting);
+        let mut cancelled = Vec::new();
+        let mut erase = Vec::new();
+        {
+            let mut inner = self.inner();
+            let Inner { items, fetches, .. } = &mut *inner;
+            for f in fetches.iter().filter(|f| f.info.device_id == device_id) {
+                match f.info.state {
+                    FetchState::Receiving => {
+                        if let Some(t) = items.iter_mut().find(|t| {
+                            Some(t.info.transfer_id) == f.transfer_id && t.info.state.is_live()
+                        }) {
+                            t.cancel.cancel();
+                            t.info.state = TransferState::Cancelled;
+                            t.info.code = Some("cancelled".into());
+                            t.offer = None;
+                            t.finished = Some(Instant::now());
+                            cancelled.push(t.info.transfer_id);
+                        }
+                    }
+                    FetchState::Done if f.info.mode == FetchMode::Copy => {
+                        erase.extend(f.info.path.clone());
+                    }
+                    _ => {}
+                }
+            }
+            fetches.retain(|f| {
+                f.info.device_id != device_id
+                    || !matches!(f.info.state, FetchState::Waiting | FetchState::Receiving)
+            });
+        }
+        let scratch = self.copy_dir();
+        for path in erase {
+            let path = PathBuf::from(path);
+            if path.parent() == Some(scratch.as_path()) {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        for transfer_id in cancelled {
+            self.emit(
+                device_id,
+                EventKind::ShareFinished {
+                    transfer_id,
+                    ok: false,
+                },
+            );
+        }
     }
 
     /// The request could not be sent: forget the expectation.
@@ -800,7 +881,7 @@ impl ShareManager {
                 f.info.state = FetchState::Failed;
                 f.info.code = Some("expired".to_owned());
             }
-            if f.info.state == FetchState::Receiving {
+            if f.info.state == FetchState::Receiving && f.transfer_id.is_some() {
                 // The transfer ended some way other than finishing (cancelled, expired, forgotten).
                 let t = items
                     .iter()
@@ -820,21 +901,39 @@ impl ShareManager {
         }
     }
 
-    /// A file offer from `device_id` named `name`: the id of the fetch it answers, once.
-    fn take_expected(&self, device_id: &str, name: &str) -> Option<u64> {
+    /// A file offer from `device_id` named `name` of `size` bytes: claims the fetch it answers and returns its id.
+    /// The claim is made under the same lock that finds it (state `Receiving`), so two offers arriving together
+    /// cannot both be taken for one request. An offer that declares no size, or more than a listed photo can be
+    /// ([`MAX_PHOTO_BYTES`]), fails the request instead of filling the disk.
+    fn claim_expected(&self, device_id: &str, name: &str, size: Option<u64>) -> Option<u64> {
         let name = kshare::sanitize_filename(name);
         let now = Instant::now();
         let mut inner = self.inner();
         Self::lapse_fetches(&mut inner, now);
-        inner
+        let f = inner.fetches.iter_mut().find(|f| {
+            f.info.state == FetchState::Waiting
+                && f.info.device_id == device_id
+                && f.info.name == name
+        })?;
+        if !size.is_some_and(|n| n <= MAX_PHOTO_BYTES) {
+            f.info.state = FetchState::Failed;
+            f.info.code = Some("too_large".to_owned());
+            return None;
+        }
+        f.info.state = FetchState::Receiving;
+        Some(f.info.fetch_id)
+    }
+
+    /// A claimed fetch whose transfer could not be created.
+    fn release_fetch(inner: &mut Inner, fetch: Option<u64>, code: &str) {
+        if let Some(f) = inner
             .fetches
-            .iter()
-            .find(|f| {
-                f.info.state == FetchState::Waiting
-                    && f.info.device_id == device_id
-                    && f.info.name == name
-            })
-            .map(|f| f.info.fetch_id)
+            .iter_mut()
+            .find(|r| Some(r.info.fetch_id) == fetch && r.transfer_id.is_none())
+        {
+            f.info.state = FetchState::Failed;
+            f.info.code = Some(code.to_owned());
+        }
     }
 
     /// Photo requests, newest last (for the control API).
@@ -869,7 +968,7 @@ impl ShareManager {
         // A photo this computer asked the phone for is taken without the general `receive` permission: the
         // user's click on "Save" or "Copy" was the consent. Anything else still needs `receive`.
         if let ShareContent::File(offer) = &content
-            && let Some(fetch) = self.take_expected(device_id, &offer.name)
+            && let Some(fetch) = self.claim_expected(device_id, &offer.name, offer.size)
         {
             let ShareContent::File(offer) = content else {
                 unreachable!()
@@ -955,6 +1054,7 @@ impl ShareManager {
         let (id, name, size) = {
             let mut inner = self.inner();
             if !self.make_room(&mut inner) {
+                Self::release_fetch(&mut inner, fetch, "busy");
                 return Disposition::Rejected;
             }
             let offered = |t: &&Transfer| t.info.state == TransferState::Offered;
@@ -967,6 +1067,7 @@ impl ShareManager {
                     .count()
                     >= MAX_OFFERED_PER_DEVICE
             {
+                Self::release_fetch(&mut inner, fetch, "busy");
                 return Disposition::Rejected;
             }
             inner.next_id += 1;
@@ -1042,7 +1143,7 @@ impl ShareManager {
     /// Accept or decline an offer. Accepting starts the download in the background.
     pub fn decide(self: &Arc<Self>, transfer_id: u64, accept: bool) -> Result<(), ErrorBody> {
         self.expire();
-        let (offer, ctx, bytes, cancel, device_id, copy_only) = {
+        let (offer, ctx, bytes, cancel, device_id, copy_only, is_fetch) = {
             let mut inner = self.inner();
             let idx = inner
                 .items
@@ -1101,17 +1202,35 @@ impl ShareManager {
                     .iter()
                     .any(|r| r.info.fetch_id == f && r.info.mode == FetchMode::Copy)
             });
-            (parts.0, parts.1, parts.2, parts.3, parts.4, copy_only)
+            (
+                parts.0,
+                parts.1,
+                parts.2,
+                parts.3,
+                parts.4,
+                copy_only,
+                fetch.is_some(),
+            )
         };
         let me = self.clone();
         let dir = if copy_only {
             let dir = self.copy_dir();
-            make_private_dir(&dir);
+            if !make_private_dir(&dir) {
+                // A planted link or a folder we cannot make private: nothing is written there.
+                let id = transfer_id;
+                self.finish(id, &device_id, Err("scratch_unsafe"));
+                return Ok(());
+            }
             dir
         } else {
             self.opts.save_dir.clone()
         };
-        let max = self.opts.max_file_bytes;
+        // A requested photo is a photo: never more than a listed one can be, whatever the general limit is.
+        let max = if is_fetch {
+            self.opts.max_file_bytes.min(MAX_PHOTO_BYTES)
+        } else {
+            self.opts.max_file_bytes
+        };
         tokio::spawn(async move {
             let counter = bytes.clone();
             let result = kshare::receive_file(
@@ -1481,6 +1600,111 @@ mod home_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn manager(save: &Path) -> Arc<ShareManager> {
+        ShareManager::new(ShareOptions {
+            save_dir: save.to_path_buf(),
+            max_file_bytes: 8 << 30,
+            settings_path: None,
+            offer_ttl: Duration::from_secs(60),
+            keep_finished: Duration::from_secs(60),
+        })
+    }
+
+    #[test]
+    fn an_expected_offer_is_claimed_once_and_only_when_it_is_the_size_of_a_photo() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = manager(dir.path());
+        let dev = "a".repeat(32);
+        m.expect_photo(&dev, "p1", "IMG_1.jpg", FetchMode::Save)
+            .unwrap();
+        // The claim itself marks the request used: a second offer of the same name (even at the same instant on
+        // another connection) finds nothing.
+        assert!(m.claim_expected(&dev, "IMG_1.jpg", Some(1000)).is_some());
+        assert!(m.claim_expected(&dev, "IMG_1.jpg", Some(1000)).is_none());
+        // Another phone never matches.
+        m.expect_photo(&dev, "p2", "IMG_2.jpg", FetchMode::Save)
+            .unwrap();
+        assert!(
+            m.claim_expected(&"b".repeat(32), "IMG_2.jpg", Some(10))
+                .is_none()
+        );
+        // No declared size, or more than a listed photo can be: the request fails and nothing is claimed.
+        assert!(
+            m.claim_expected(&dev, "IMG_2.jpg", Some(MAX_PHOTO_BYTES + 1))
+                .is_none()
+        );
+        let f = m
+            .fetches()
+            .into_iter()
+            .find(|f| f.photo_id == "p2")
+            .unwrap();
+        assert_eq!(
+            (f.state, f.code.as_deref()),
+            (FetchState::Failed, Some("too_large"))
+        );
+        m.expect_photo(&dev, "p3", "IMG_3.jpg", FetchMode::Save)
+            .unwrap();
+        assert!(m.claim_expected(&dev, "IMG_3.jpg", None).is_none());
+        // A claimed request is not "lost" just because its transfer has not been created yet.
+        let f = m
+            .fetches()
+            .into_iter()
+            .find(|f| f.photo_id == "p1")
+            .unwrap();
+        assert_eq!(f.state, FetchState::Receiving);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_folder_is_a_private_real_folder_never_a_planted_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let scratch = tmp.path().join("scratch");
+        // Left over with open permissions: tightened.
+        std::fs::create_dir(&scratch).unwrap();
+        std::fs::set_permissions(&scratch, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(make_private_dir(&scratch));
+        assert_eq!(
+            std::fs::metadata(&scratch).unwrap().permissions().mode() & 0o077,
+            0
+        );
+        // A link to somewhere else is replaced by a real folder; the target is left alone.
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        assert!(make_private_dir(&link));
+        let m = std::fs::symlink_metadata(&link).unwrap();
+        assert!(m.is_dir() && !m.file_type().is_symlink());
+        assert_eq!(m.permissions().mode() & 0o077, 0);
+        assert_eq!(
+            std::fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        // A plain file where the folder should be: refused.
+        let file = tmp.path().join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!make_private_dir(&file));
+    }
+
+    #[test]
+    fn a_new_manager_empties_what_a_crashed_run_left_in_the_scratch_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = dir.path().join(COPY_DIR);
+        std::fs::create_dir(&scratch).unwrap();
+        std::fs::write(scratch.join("IMG_1.jpg"), b"fresh").unwrap();
+        std::fs::write(dir.path().join("keep.jpg"), b"saved").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("keep.jpg"), scratch.join("l.jpg")).unwrap();
+        let _m = manager(dir.path());
+        assert_eq!(std::fs::read_dir(&scratch).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read(dir.path().join("keep.jpg")).unwrap(),
+            b"saved"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

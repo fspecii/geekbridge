@@ -179,7 +179,20 @@ pub fn sanitize_filename(raw: &str) -> String {
     let cleaned: String = base
         .chars()
         .map(|c| {
-            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') {
+            // Bidirectional controls make `photo\u{202E}gpj.exe` look like `photoexe.jpg`; line separators break labels.
+            if c.is_control()
+                || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+                || matches!(
+                    c,
+                    '\u{061C}'
+                        | '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+            {
                 '_'
             } else {
                 c
@@ -472,6 +485,8 @@ mod tests {
             ("a:b*c?.txt", "a_b_c_.txt"),
             ("tab\there\n.txt", "tab_here_.txt"),
             ("ok name (1).tar.gz", "ok name (1).tar.gz"),
+            ("photo\u{202E}gpj.exe", "photo_gpj.exe"),
+            ("a\u{2066}b\u{200F}c\u{061C}d\u{2028}e.png", "a_b_c_d_e.png"),
         ] {
             assert_eq!(sanitize_filename(raw), want, "{raw:?}");
         }

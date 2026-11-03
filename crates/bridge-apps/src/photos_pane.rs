@@ -106,6 +106,120 @@ pub fn mime_for(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The largest file put on the clipboard, and the largest picture (in pixels) a clipboard tool or the system's image
+/// decoder is asked to open. A 200-megapixel phone photo passes; a header that claims more is refused unread.
+pub const MAX_COPY_BYTES: u64 = 128 * 1024 * 1024;
+const GIF87: &[u8] = b"GIF87a"; // i18n-ok: file signature
+const GIF89: &[u8] = b"GIF89a"; // i18n-ok: file signature
+pub const MAX_COPY_PIXELS: u64 = 250_000_000;
+const MAX_COPY_EDGE: u64 = 100_000;
+
+/// Why a received file is not handed to a clipboard tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// Not a regular file, or too big.
+    File,
+    /// The start of the file is not the picture type its name says.
+    NotThatType,
+    /// The header claims a picture too big to open safely.
+    TooManyPixels,
+}
+
+fn be16(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?])))
+}
+
+fn le16(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from(u16::from_le_bytes([*b.get(i)?, *b.get(i + 1)?])))
+}
+
+fn le24(b: &[u8], i: usize) -> Option<u64> {
+    Some(u64::from(*b.get(i)?) | u64::from(*b.get(i + 1)?) << 8 | u64::from(*b.get(i + 2)?) << 16)
+}
+
+/// Width and height from the first bytes of a picture of type `mime`; `None` if the bytes are not that type
+/// (or too short to say). Nothing is decoded.
+pub fn header_size(head: &[u8], mime: &str) -> Option<(u64, u64)> {
+    match mime {
+        "image/png" => {
+            if !head.starts_with(b"\x89PNG\r\n\x1a\n") || head.get(12..16)? != b"IHDR" {
+                return None;
+            }
+            let w = u64::from(u32::from_be_bytes(head.get(16..20)?.try_into().ok()?));
+            let h = u64::from(u32::from_be_bytes(head.get(20..24)?.try_into().ok()?));
+            Some((w, h))
+        }
+        "image/gif" => {
+            let sig = head.get(..6)?;
+            if sig != GIF87 && sig != GIF89 {
+                return None;
+            }
+            Some((le16(head, 6)?, le16(head, 8)?))
+        }
+        "image/webp" => {
+            if !head.starts_with(b"RIFF") || head.get(8..12)? != b"WEBP" {
+                return None;
+            }
+            match head.get(12..16)? {
+                b"VP8 " => Some((le16(head, 26)? & 0x3fff, le16(head, 28)? & 0x3fff)),
+                b"VP8L" => {
+                    let b = head.get(21..25)?;
+                    let w = 1 + (u64::from(b[0]) | u64::from(b[1] & 0x3f) << 8);
+                    let h = 1
+                        + (u64::from(b[1] >> 6)
+                            | u64::from(b[2]) << 2
+                            | u64::from(b[3] & 0x0f) << 10);
+                    Some((w, h))
+                }
+                b"VP8X" => Some((1 + le24(head, 24)?, 1 + le24(head, 27)?)),
+                _ => None,
+            }
+        }
+        "image/jpeg" => {
+            if !head.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                return None;
+            }
+            let mut i = 2;
+            loop {
+                if *head.get(i)? != 0xFF {
+                    return None;
+                }
+                let marker = *head.get(i + 1)?;
+                match marker {
+                    0xFF => i += 1,
+                    0x01 | 0xD0..=0xD8 => i += 2,
+                    0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
+                        return Some((be16(head, i + 7)?, be16(head, i + 5)?));
+                    }
+                    0xD9 | 0xDA => return None,
+                    _ => i += 2 + usize::try_from(be16(head, i + 2)?).ok()?,
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Is the file at `path` safe to hand to a clipboard tool as `mime`? Regular file (not a link), at most
+/// [`MAX_COPY_BYTES`], starting like that type, and a header that does not claim a decompression bomb.
+pub fn check_picture(path: &Path, mime: &str) -> Result<(), Refusal> {
+    use std::io::Read as _;
+    let meta = std::fs::symlink_metadata(path).map_err(|_| Refusal::File)?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_COPY_BYTES {
+        return Err(Refusal::File);
+    }
+    // A JPEG header can sit behind several 64 KiB metadata segments; a megabyte is far more than any real one.
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(1 << 20).read_to_end(&mut head))
+        .map_err(|_| Refusal::File)?;
+    let (w, h) = header_size(&head, mime).ok_or(Refusal::NotThatType)?;
+    if w == 0 || h == 0 || w > MAX_COPY_EDGE || h > MAX_COPY_EDGE || w * h > MAX_COPY_PIXELS {
+        return Err(Refusal::TooManyPixels);
+    }
+    Ok(())
+}
+
 /// How a program is run to put a picture on the clipboard: its arguments, whether the file is its standard input,
 /// and environment it needs (the file name travels in the environment, never inside script text).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +339,8 @@ type Key = (String, String);
 pub enum CopyOutcome {
     Copied,
     NoTool(String),
+    /// The file did not look like the picture it claimed to be, or was too big to open safely.
+    Refused,
 }
 
 /// Everything the window shows, produced by the worker thread.
@@ -436,9 +552,12 @@ fn cycle(
             && let Some(path) = &f.path
             && handled.insert(f.fetch_id)
         {
-            let outcome = match mime_for(&f.name).map(|m| copy_picture(Path::new(path), m)) {
-                Some(Ok(())) => CopyOutcome::Copied,
-                Some(Err(tools)) => CopyOutcome::NoTool(tools),
+            let outcome = match mime_for(&f.name) {
+                Some(m) if check_picture(Path::new(path), m).is_err() => CopyOutcome::Refused,
+                Some(m) => match copy_picture(Path::new(path), m) {
+                    Ok(()) => CopyOutcome::Copied,
+                    Err(tools) => CopyOutcome::NoTool(tools),
+                },
                 None => CopyOutcome::NoTool(String::new()),
             };
             model.copies.insert(f.fetch_id, outcome);
@@ -835,6 +954,7 @@ impl PhotosPane {
                 Some(CopyOutcome::NoTool(tool)) => {
                     tr_args("photos.fetch.copy_failed", &[("tool", tool)])
                 }
+                Some(CopyOutcome::Refused) => tr("photos.fetch.copy_refused").to_owned(),
                 None => tr("photos.fetch.receiving").to_owned(),
             },
             (FetchState::Failed, _) => tr_args(
@@ -843,6 +963,7 @@ impl PhotosPane {
                     "reason",
                     &match f.code.as_deref() {
                         Some("expired") => tr("photos.fetch.reason.expired"),
+                        Some("too_large") => tr("photos.fetch.reason.too_large"),
                         _ => tr("photos.fetch.reason.other"),
                     },
                 )],
