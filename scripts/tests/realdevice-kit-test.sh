@@ -122,7 +122,7 @@ fi
 mkdir -p "$T/site"; printf 'not really an apk' >"$T/site/app.apk"; echo '<a href="app.apk">download</a>' >"$T/site/index.html"
 port=$((30000 + RANDOM % 20000))
 (cd "$T/site" && exec python3 -I -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1) & srv=$!
-trap 'kill $srv 2>/dev/null; rm -rf -- "$T"' EXIT
+trap 'kill $srv 2>/dev/null || true; rm -rf -- "$T"' EXIT
 sleep 1
 GEEKBRIDGE_BIN_DIR="$STUB" "$src/scripts/realdevice-report.sh" --state-dir "$T/state" --control-port 1 --service-log "$T/svc.log" --out "$T/out2" --no-adb --page "http://127.0.0.1:$port/index.html" >/dev/null 2>&1 || bad "report with --page failed"
 want="$(sha256sum "$T/site/app.apk" | cut -d' ' -f1)"
