@@ -24,6 +24,14 @@ optimisation list, then app settings. `ActivityManager.isBackgroundRestricted` i
 Samsung, Huawei/Honor, OnePlus, OPPO/realme and vivo the page lists the vendor's extra switch in plain steps and tries
 the vendor settings screens in order (`OemIntents`), skipping any that is missing or protected and finally opening app
 settings. Vendor switches cannot be read, so they stay "to do" until the user taps "I've turned it on".
+Detection (`PowerRules.classify`): the user's "Restricted" background mode (`isBackgroundRestricted`) or, for an app that is
+not Doze-exempt, the `RESTRICTED` standby bucket (45; `am set-standby-bucket ... restricted`) counts as
+`BackgroundRestricted`; its step says so and its button opens the app battery screen
+(`android.settings.APP_BATTERY_SETTINGS`, else app settings). Pixel/Google phones get their own short guide (App battery
+usage, Adaptive battery); the Samsung guide names "Never sleeping apps", "Put unused apps to sleep" and Adaptive battery.
+`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` is a restricted permission on Google Play (allowed only for apps whose core function
+breaks without it); the app therefore falls back to the optimisation list, and for a Play listing the exemption request
+should be dropped and the guide kept. Verified by `scripts/e2e/battery-optimisation.sh`.
 If the exemption is later revoked, Home shows "Battery restriction was turned back on" and the service notification
 adds "Battery optimisation is on".
 
@@ -41,7 +49,8 @@ adds "Battery optimisation is on".
 - No polling or timers in the service. It reacts to a default-network change (`registerDefaultNetworkCallback`,
   debounced 3 s, bounded retries) by re-announcing once. Dead peers are detected by kernel TCP keepalive that `bridge-kde` arms on every accepted and dialed socket
   (30 s idle, 10 s interval, 3 probes, `TCP_USER_TIMEOUT` 60 s; Android included), plus a 20 s application
-  heartbeat (ping) in both directions. While the screen is off and nobody uses the link the phone pings every 60 s
+  heartbeat (ping) in both directions. When Doze opens a maintenance window (or ends) the service sends
+  `transport_heartbeat_now`, so the phone pings at once instead of waiting for a timer whose clock stopped with the CPU. While the screen is off and nobody uses the link the phone pings every 60 s
   instead (the computer keeps its own 20 s check, and silence is judged at 70 s), and it skips its UDP announcements
   while every paired computer is already linked; see docs/reports/real-device-link-stability.md and
   docs/reports/android-battery-audit-2.md. A manual Disconnect on the computer makes the phone stay off it for 5 minutes

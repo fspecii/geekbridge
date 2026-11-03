@@ -72,8 +72,9 @@
     </string-array>
     <string-array name="power_steps_samsung">
         <item>Open Settings › Apps › GeekBridge › Battery and choose “Unrestricted”.</item>
-        <item>In Settings › Battery (“Battery and device care” on older One UI) › Background usage limits, remove GeekBridge from “Sleeping apps” and “Deep sleeping apps”.</item>
-        <item>Turn off “Put unused apps to sleep” for GeekBridge if it is listed.</item>
+        <item>In Settings › Battery (“Battery and device care” on older One UI) › Background usage limits, open “Never sleeping apps”, tap + and add GeekBridge. Also remove it from “Sleeping apps” and “Deep sleeping apps”.</item>
+        <item>On the same page switch off “Put unused apps to sleep” (and “Auto-disable unused apps” if it is shown).</item>
+        <item>If it still disconnects, switch off “Adaptive battery” (Settings › Battery › More battery settings).</item>
     </string-array>
     <string-array name="power_steps_huawei">
         <item>Open App launch (Settings › Battery › App launch), set GeekBridge to “Manage manually”.</item>
@@ -92,6 +93,10 @@
     <string-array name="power_steps_vivo">
         <item>Open Autostart / Background start-up manager and allow GeekBridge.</item>
         <item>In Settings › Battery › Background power consumption, set GeekBridge to “Allow high background power consumption”.</item>
+    </string-array>
+    <string-array name="power_steps_pixel">
+        <item>Open Settings › Apps › GeekBridge › App battery usage and choose “Unrestricted”. “Optimized” can still pause the link when the phone sits idle, and “Restricted” stops it.</item>
+        <item>If it still disconnects, switch off “Adaptive battery” (Settings › Battery › Adaptive preferences).</item>
     </string-array>
     <string-array name="power_steps_nothing">
         <item>Open Settings › Apps › GeekBridge › App battery usage and choose “Unrestricted”.</item>

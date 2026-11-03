@@ -100,6 +100,7 @@ class TransportProtocolTest {
         val screen = JSONObject(TransportProtocol.screenRequest(false))
         assertEquals("transport_screen", screen.getString("action"))
         assertEquals(false, screen.getBoolean("on"))
+        assertEquals("transport_heartbeat_now", JSONObject(TransportProtocol.heartbeatNowRequest()).getString("action"))
         assertEquals("transport_disconnect", JSONObject(TransportProtocol.disconnectRequest(3)).getString("action"))
         assertEquals("transport_unpair", JSONObject(TransportProtocol.unpairRequest(ID_PEER)).getString("action"))
         val wait = JSONObject(TransportProtocol.waitRequest(7, Long.MAX_VALUE))

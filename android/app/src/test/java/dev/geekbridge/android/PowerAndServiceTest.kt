@@ -15,7 +15,7 @@ class PowerAndServiceTest {
         assertEquals(Oem.OnePlus, OemDetector.detect("OnePlus", null))
         assertEquals(Oem.Oppo, OemDetector.detect("realme", "realme"))
         assertEquals(Oem.Vivo, OemDetector.detect("vivo", "iQOO"))
-        assertEquals(Oem.Other, OemDetector.detect("Google", "google"))
+        assertEquals(Oem.Pixel, OemDetector.detect("Google", "google"))
         assertEquals(Oem.Other, OemDetector.detect(null, null))
     }
 
@@ -34,6 +34,36 @@ class PowerAndServiceTest {
                 assertTrue(OemIntents.candidates(o).all { it.pkg != null && it.cls != null })
             }
         }
+    }
+
+    @Test fun batteryStateClassification() {
+        val c = PowerRules::classify
+        assertEquals(BatteryState.Unrestricted, c(false, true, 10))
+        assertEquals(BatteryState.Optimised, c(false, false, 10))
+        assertEquals(BatteryState.Optimised, c(false, false, null))
+        // The user's "Restricted" mode wins over everything, even a Doze exemption.
+        assertEquals(BatteryState.BackgroundRestricted, c(true, true, 5))
+        // `am set-standby-bucket restricted` (or Android doing it to a rarely used app) is a restriction ...
+        assertEquals(BatteryState.BackgroundRestricted, c(false, false, PowerRules.BUCKET_RESTRICTED))
+        // ... but a Doze-exempt app is not held back by its bucket, and "rare" is only the ordinary optimisation.
+        assertEquals(BatteryState.Unrestricted, c(false, true, PowerRules.BUCKET_RESTRICTED))
+        assertEquals(BatteryState.Optimised, c(false, false, 40))
+    }
+
+    @Test fun samsungAndPixelGuidesNameTheRealSwitches() {
+        val res = java.io.File("src/main/res/values/gb_help.xml").readText()
+        fun array(name: String) = Regex("<string-array name=\"$name\">(.*?)</string-array>", RegexOption.DOT_MATCHES_ALL).find(res)!!.groupValues[1]
+        val samsung = array("power_steps_samsung")
+        for (word in listOf("Never sleeping apps", "Put unused apps to sleep", "Adaptive battery", "Unrestricted")) assertTrue(word, word in samsung)
+        val pixel = array("power_steps_pixel")
+        for (word in listOf("Unrestricted", "Adaptive battery", "Restricted")) assertTrue(word, word in pixel)
+        assertTrue("Autostart" in array("power_steps_xiaomi"))
+        assertEquals(R.array.power_steps_pixel, OemGuides.stepsRes(Oem.Pixel))
+    }
+
+    @Test fun dozeWindowsAndTheEndOfDozePingAtOnce() {
+        assertTrue(DozeRules.pingNow(idle = false))
+        assertFalse(DozeRules.pingNow(idle = true))
     }
 
     @Test fun launcherStopsAtFirstScreenThatOpens() {

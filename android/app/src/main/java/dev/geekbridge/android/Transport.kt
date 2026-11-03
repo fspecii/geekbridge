@@ -161,6 +161,8 @@ object TransportProtocol {
     fun disconnectRequest(connectionId: Long): String = base("transport_disconnect").put("connection_id", connectionId).toString()
     /** Tells the core whether the screen is on: with it off the heartbeat is sent at the slower idle cadence. */
     fun screenRequest(on: Boolean): String = base("transport_screen").put("on", on).toString()
+    /** Sends the heartbeat ping on every link now: Doze opened a maintenance window or ended. */
+    fun heartbeatNowRequest(): String = base("transport_heartbeat_now").toString()
     fun pingRequest(connectionId: Long): String = base("transport_ping").put("connection_id", connectionId).toString()
 
     // ------------------------------------------------------------------ parsing

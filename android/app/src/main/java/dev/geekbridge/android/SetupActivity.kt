@@ -280,15 +280,15 @@ class SetupActivity : Activity() {
             }
             BatteryState.BackgroundRestricted -> {
                 panel.addView(kit.text(getString(R.string.setup_battery_restricted), 14f, Tone.Muted))
-                kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
+                kit.button(panel, getString(R.string.setup_open_battery_settings), BtnStyle.Primary) { PowerChecks.openBatteryUsage(this) }
             }
             BatteryState.Unrestricted ->
                 panel.addView(kit.text(getString(R.string.setup_battery_ok), 14f, Tone.Ok))
         }
         if (oem != Oem.Other) {
             kit.divider(panel)
-            panel.addView(kit.text(getString(R.string.setup_oem_title, oem.label), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
-            panel.addView(kit.text(getString(R.string.setup_oem_intro), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            panel.addView(kit.text(getString(if (oem.hasExtraSwitch) R.string.setup_oem_title else R.string.setup_oem_title_plain, oem.label), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+            panel.addView(kit.text(getString(if (oem.hasExtraSwitch) R.string.setup_oem_intro else R.string.setup_oem_intro_plain), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
             (OemGuides.stepsRes(oem)?.let { resources.getStringArray(it).toList() } ?: emptyList()).forEachIndexed { i, line ->
                 panel.addView(kit.text(getString(R.string.list_numbered, i + 1, line), 14f).apply { setPadding(0, kit.dp(8), 0, 0) })
             }

@@ -93,10 +93,13 @@
     <string name="setup_calls_audio_note">Call audio does not travel through GeekBridge. It stays on the phone unless your computer is also paired with this phone over Bluetooth as a hands-free device. Needs the Phone state step; declining and ending a call needs Android 9 or newer.</string>
     <string name="setup_battery_optimised">Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.</string>
     <string name="setup_battery_allow">Allow unrestricted battery</string>
-    <string name="setup_battery_restricted">Background use is restricted for GeekBridge. In app settings open Battery and choose “Unrestricted” (or “Allow background usage”).</string>
+    <string name="setup_battery_restricted">Background use is restricted for GeekBridge, so the connection to your computer will not stay up with the screen off. Open the battery settings below and choose “Unrestricted” (or “Allow background usage”).</string>
+    <string name="setup_open_battery_settings">Open battery settings</string>
     <string name="setup_battery_ok">Android will not pause GeekBridge to save battery.</string>
     <string name="setup_oem_title">%1$s: one more step</string>
     <string name="setup_oem_intro">This phone’s maker adds its own switch that Android cannot read, so please check it yourself:</string>
+    <string name="setup_oem_title_plain">%1$s: if it still disconnects</string>
+    <string name="setup_oem_intro_plain">Android’s own battery settings can still pause the connection on this phone. Check these:</string>
     <string name="setup_oem_open">Open %1$s settings</string>
     <string name="setup_oem_fallback">That screen is not on this phone; opened app settings instead.</string>
     <string name="setup_oem_done">I’ve turned it on</string>

@@ -47,6 +47,11 @@ class LinkService : Service() {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> controller.setScreen(false)
                 Intent.ACTION_SCREEN_ON -> controller.setScreen(true)
+                android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
+                    val idle = getSystemService(android.os.PowerManager::class.java)?.isDeviceIdleMode == true
+                    GbLog.i("link", "doze idle=$idle")
+                    if (DozeRules.pingNow(idle)) controller.heartbeatNow()
+                }
             }
         }
     }
@@ -71,6 +76,7 @@ class LinkService : Service() {
         registerReceiver(screenReceiver, android.content.IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
+            addAction(android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
         })
         screenWatched = true
     }

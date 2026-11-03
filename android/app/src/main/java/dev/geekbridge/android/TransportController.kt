@@ -294,6 +294,9 @@ class TransportController(
     /** Fire and forget: a failure only means the heartbeat keeps its normal cadence. */
     fun setScreen(on: Boolean) = run(TransportProtocol.screenRequest(on)) { }
 
+    /** Fire and forget: pings every link now (a Doze maintenance window is open; the timer may not run again soon). */
+    fun heartbeatNow() = run(TransportProtocol.heartbeatNowRequest()) { }
+
     companion object {
         const val MAX_EVENTS = 20
 

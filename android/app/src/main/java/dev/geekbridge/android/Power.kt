@@ -24,17 +24,51 @@ enum class BatteryState {
     BackgroundRestricted,
 }
 
+/** Pure classification of the power state, so every combination is unit-tested. */
+object PowerRules {
+    /** `UsageStatsManager.STANDBY_BUCKET_RESTRICTED`: the bucket Android (or `am set-standby-bucket`) gives an app it throttles hardest. */
+    const val BUCKET_RESTRICTED = 45
+
+    /**
+     * [backgroundRestricted] is the user's "Restricted" background mode (`RUN_ANY_IN_BACKGROUND` denied). A
+     * Doze-exempt app is never held back by its standby bucket, so the bucket only counts for an app that is
+     * not exempt ([standbyBucket] is null when unknown).
+     */
+    fun classify(backgroundRestricted: Boolean, ignoringOptimisations: Boolean, standbyBucket: Int?): BatteryState = when {
+        backgroundRestricted -> BatteryState.BackgroundRestricted
+        ignoringOptimisations -> BatteryState.Unrestricted
+        standbyBucket != null && standbyBucket >= BUCKET_RESTRICTED -> BatteryState.BackgroundRestricted
+        else -> BatteryState.Optimised
+    }
+}
+
+/** Doze: the heartbeat timer's clock stops while the CPU sleeps, so a maintenance window is used to ping at once. */
+object DozeRules {
+    /** [idle] is `PowerManager.isDeviceIdleMode` after a change broadcast: false is a maintenance window or the end of Doze. */
+    fun pingNow(idle: Boolean): Boolean = !idle
+}
+
 object PowerChecks {
     fun batteryState(ctx: Context): BatteryState {
         val am = ctx.getSystemService(ActivityManager::class.java)
-        if (Build.VERSION.SDK_INT >= 28 && am?.isBackgroundRestricted == true) return BatteryState.BackgroundRestricted
+        val restricted = Build.VERSION.SDK_INT >= 28 && am?.isBackgroundRestricted == true
         val pm = ctx.getSystemService(PowerManager::class.java)
-        return if (pm?.isIgnoringBatteryOptimizations(ctx.packageName) == true) {
-            BatteryState.Unrestricted
-        } else {
-            BatteryState.Optimised
-        }
+        val ignoring = pm?.isIgnoringBatteryOptimizations(ctx.packageName) == true
+        val bucket = if (Build.VERSION.SDK_INT >= 28) {
+            try { ctx.getSystemService(android.app.usage.UsageStatsManager::class.java)?.appStandbyBucket } catch (_: RuntimeException) { null }
+        } else null
+        return PowerRules.classify(restricted, ignoring, bucket)
     }
+
+    /**
+     * The per-app battery screen ("Unrestricted / Optimized / Restricted"), where a restriction is lifted. Android 14+
+     * has an intent for it; earlier versions and some ROMs do not, so this ends on the app details page.
+     */
+    fun openBatteryUsage(activity: Activity): LaunchResult = OemLauncher.launch(
+        listOf(IntentSpec("android.settings.APP_BATTERY_SETTINGS", data = "package:${activity.packageName}")),
+        { tryStart(activity, it) },
+        { openAppSettings(activity) },
+    )
 
     /**
      * Asks Android to exclude this app from battery optimisation. Falls back to the list of optimisation
@@ -92,6 +126,9 @@ enum class Oem(val label: String, val hasExtraSwitch: Boolean = true) {
 
     /** Near-stock Android: the system battery exemption is the only switch, so there is no vendor screen to open. */
     Nothing("Nothing / CMF", hasExtraSwitch = false),
+
+    /** Pixel and other Google-built phones: no vendor layer, but the standby bucket and Adaptive Battery apply. */
+    Pixel("Pixel / Google", hasExtraSwitch = false),
     Other("your phone"),
 }
 
@@ -106,6 +143,7 @@ object OemDetector {
             "oppo" in m || "realme" in m -> Oem.Oppo
             "vivo" in m || "iqoo" in m -> Oem.Vivo
             "nothing" in m || "cmf" in m -> Oem.Nothing
+            "google" in m || "pixel" in m -> Oem.Pixel
             else -> Oem.Other
         }
     }
@@ -156,7 +194,7 @@ object OemIntents {
             IntentSpec(pkg = "com.vivo.permissionmanager", cls = "com.vivo.permissionmanager.activity.BgStartUpManagerActivity"),
             IntentSpec(pkg = "com.iqoo.secure", cls = "com.iqoo.secure.ui.phoneoptimize.AddWhiteListActivity"),
         )
-        Oem.Nothing, Oem.Other -> emptyList()
+        Oem.Nothing, Oem.Pixel, Oem.Other -> emptyList()
     }
 }
 
@@ -171,6 +209,7 @@ object OemGuides {
         Oem.Oppo -> R.array.power_steps_oppo
         Oem.Vivo -> R.array.power_steps_vivo
         Oem.Nothing -> R.array.power_steps_nothing
+        Oem.Pixel -> R.array.power_steps_pixel
         Oem.Other -> null
     }
 }
