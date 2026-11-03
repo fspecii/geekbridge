@@ -74,6 +74,15 @@ Final run on a quiet machine, from a clean worktree of `origin/main` plus this c
 | `scripts/golden-desktop.sh --check` (all screens) | 96 screens, 0 failing |
 | `bridge-fuzz` deterministic run (includes `photos_wire`) | passed (part of the workspace test run) |
 
+CI on the pushed commits (`check.yml`, run 41675110777 for tip `41cc886f7`, which contains this change): Android unit tests and lint,
+Linux Rust tests, macOS Rust tests, the Windows and macOS type-check (clippy denied), cargo-deny, the performance budget and coverage
+all green; the Windows job passed formatting, clippy, build, tests and both smoke tests, and was cancelled only at its last step
+("Build desktop executables") because a newer push superseded the run. Three things surfaced on the way and were fixed in follow-up
+commits: the `geekbridge-ctl` size budget (1.318 MB against 1.3 MB; raised to 1.35 MB in `scripts/perf-check.sh` and
+`docs/performance.md`, the new request and response types and the `photos` command being the cause), and two failures that were not
+from this change but blocked the Windows jobs (`chunks_exact(2)` in `clipboard_win.rs`, a `persist` test helper that only a unix test
+uses, and the soak smaps test that reads `/proc`, now Linux-only).
+
 The golden script's default work folder (`~/.cache/gb-golden`) is shared by anyone running it on this machine and is wiped at start;
 the run above used a private `RUN` folder. A concurrent run by someone else produces spurious "service not started" screens.
 
