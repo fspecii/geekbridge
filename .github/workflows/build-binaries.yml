@@ -1,0 +1,127 @@
+name: Build binaries (artifacts only)
+
+# Builds the Windows and macOS desktop binaries and uploads them as WORKFLOW ARTIFACTS ONLY. It never creates a
+# tag or a release, uses no secrets and has only read permission. Run by hand:
+#   gh workflow run build-binaries.yml --ref main
+# Each job smoke-tests the freshly built binaries on their own OS before packaging.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, archive: tar.gz }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, archive: tar.gz }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p bridge-apps -p bridge-service
+      - name: Smoke test (version/help, then ctl doctor against a started service)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -uo pipefail
+          rel="target/$TARGET/release"
+          ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+          fail=0
+          note() { echo "SMOKE: $*"; }
+          # The x86_64 macOS binary is built on an arm64 runner; it only runs under Rosetta.
+          if [[ "$TARGET" == x86_64-apple-darwin ]] && ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            note "no Rosetta on this runner: x86_64 binaries built but NOT executed"; exit 0
+          fi
+          run() { if [[ "$TARGET" == x86_64-apple-darwin ]]; then arch -x86_64 "$@"; else "$@"; fi; }
+          run "$rel/geekbridge-ctl$ext" --version || fail=1
+          run "$rel/geekbridge-ctl$ext" --help | head -n 3 || fail=1
+          run "$rel/geekbridge-service$ext" --help | head -n 3 || fail=1
+          # The GUI binaries are windowed programs: only --help (prints and exits) is safe on a headless runner.
+          # On Windows they are GUI-subsystem and print nothing to a console, so only the exit code counts.
+          for b in geekbridge geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
+            if run "$rel/$b$ext" --help >/tmp/help.out 2>&1 || [[ -s /tmp/help.out ]]; then note "$b --help ok (exit $?)"; else note "$b --help produced nothing"; fi
+            head -n 2 /tmp/help.out
+          done
+          state="$(mktemp -d)"
+          run "$rel/geekbridge-service$ext" --state-dir "$state" --no-tray --no-announce --no-listen-inbound \
+            --api-port 18380 --control-port 18381 --discovery-port 18382 >"$RUNNER_TEMP/service.log" 2>&1 &
+          svc=$!
+          ok=0
+          for _ in $(seq 1 30); do
+            if run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 status >"$RUNNER_TEMP/status.out" 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          echo "--- ctl status"; cat "$RUNNER_TEMP/status.out"
+          if [[ $ok != 1 ]]; then note "service never answered ctl status"; fail=1; fi
+          run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 doctor >"$RUNNER_TEMP/doctor.out" 2>&1
+          rc=$?
+          echo "--- ctl doctor (exit $rc)"; cat "$RUNNER_TEMP/doctor.out"
+          note "doctor exit code $rc (non-zero only reports an environment problem, e.g. firewall; not a build failure)"
+          kill "$svc" 2>/dev/null || true
+          echo "--- service log"; cat "$RUNNER_TEMP/service.log"
+          { echo "### Smoke ${{ matrix.name }}"; echo '```'; cat "$RUNNER_TEMP/status.out"; echo "doctor exit $rc"; cat "$RUNNER_TEMP/doctor.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $fail
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="stage/geekbridge-${{ matrix.name }}"
+          mkdir -p "$out" dist
+          ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
+          for bin in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
+            cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
+          done
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$out/"
+          name="geekbridge-${{ matrix.name }}.${{ matrix.archive }}"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            pwsh -Command "Compress-Archive -Path 'stage/geekbridge-${{ matrix.name }}' -DestinationPath 'dist/$name'"
+          else
+            tar -czf "dist/$name" -C stage "geekbridge-${{ matrix.name }}"
+          fi
+          cd dist
+          if command -v sha256sum >/dev/null; then sha256sum "$name" > "SHA256SUMS-${{ matrix.name }}"; else shasum -a 256 "$name" > "SHA256SUMS-${{ matrix.name }}"; fi
+          ls -l; cat "SHA256SUMS-${{ matrix.name }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  sums:
+    name: SHA256SUMS
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Combine
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat SHA256SUMS-* | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          rm SHA256SUMS-*
+          ls -l
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: SHA256SUMS
+          path: artifacts/SHA256SUMS
+          retention-days: 14
