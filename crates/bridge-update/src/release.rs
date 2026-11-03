@@ -107,6 +107,23 @@ fn ext_rank(os: &str, lower: &str) -> Option<usize> {
 /// and a known archive/installer extension. Android packages, checksum files and anything for
 /// another platform are never chosen.
 pub fn select_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset> {
+    pick_asset(assets, platform).or_else(|| {
+        // Windows on ARM runs x64 programs under emulation: a release without a native
+        // `geekbridge-windows-aarch64` archive still updates such a machine with the x86_64 one.
+        // Never the other way round, and never across operating systems.
+        (platform.os == "windows" && platform.arch == "aarch64").then(|| {
+            pick_asset(
+                assets,
+                &Platform {
+                    os: "windows".into(),
+                    arch: "x86_64".into(),
+                },
+            )
+        })?
+    })
+}
+
+fn pick_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset> {
     let os = os_words(&platform.os);
     let arch = arch_words(&platform.arch);
     assets
@@ -256,7 +273,11 @@ mod tests {
             pick("macos", "aarch64").as_deref(),
             Some("geekbridge-macos-aarch64.zip")
         );
-        assert_eq!(pick("windows", "aarch64"), None);
+        // No native archive in this set: Windows on ARM takes the x64 one (emulated).
+        assert_eq!(
+            pick("windows", "aarch64").as_deref(),
+            Some("geekbridge-windows-x86_64.zip")
+        );
         assert_eq!(pick("freebsd", "x86_64"), None);
     }
 
@@ -291,6 +312,37 @@ mod tests {
             select_asset(&list, &p).unwrap().name,
             "geekbridge-macos-arm64.dmg"
         );
+    }
+
+    #[test]
+    fn windows_arm64_prefers_its_native_archive_and_x64_never_takes_it() {
+        let set = vec![
+            asset("geekbridge-windows-x86_64.zip", 5),
+            asset("geekbridge-windows-aarch64.zip", 5),
+            asset("geekbridge-macos-aarch64.zip", 5),
+        ];
+        let p = |arch: &str| Platform {
+            os: "windows".into(),
+            arch: arch.into(),
+        };
+        assert_eq!(
+            select_asset(&set, &p("aarch64")).unwrap().name,
+            "geekbridge-windows-aarch64.zip"
+        );
+        assert_eq!(
+            select_asset(&set, &p("x86_64")).unwrap().name,
+            "geekbridge-windows-x86_64.zip"
+        );
+        // Only an ARM archive exists: an x64 machine gets nothing.
+        let only_arm = vec![asset("geekbridge-windows-arm64.zip", 5)];
+        assert!(select_asset(&only_arm, &p("x86_64")).is_none());
+        assert_eq!(
+            select_asset(&only_arm, &p("aarch64")).unwrap().name,
+            "geekbridge-windows-arm64.zip"
+        );
+        // The fallback stays on Windows: no Windows asset at all is no asset.
+        let mac_only = vec![asset("geekbridge-macos-x86_64.zip", 5)];
+        assert!(select_asset(&mac_only, &p("aarch64")).is_none());
     }
 
     #[test]

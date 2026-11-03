@@ -332,15 +332,80 @@ pub fn open_in_browser(url: &str) -> bool {
     true
 }
 
+/// Standard base64 (RFC 4648, padded) of `bytes`.
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// PowerShell that sets the clipboard from base64-encoded UTF-8 on stdin. `clip.exe` decodes its
+/// input by the OEM code page and garbles every non-ASCII character; base64 is plain ASCII, so no
+/// console code page can alter it, and `Set-Clipboard` stores real Unicode text.
+#[cfg_attr(not(windows), allow(dead_code))]
+const WINDOWS_COPY_SCRIPT: &str = "$s=[Console]::In.ReadToEnd().Trim();\
+     Set-Clipboard -Value ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s)))";
+
+/// What [`WINDOWS_COPY_SCRIPT`] reads from stdin for `text`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_copy_stdin(text: &str) -> String {
+    base64(text.as_bytes())
+}
+
+#[cfg(windows)]
+fn copy_windows(text: &str) -> bool {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            WINDOWS_COPY_SCRIPT,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .is_some_and(|mut i| i.write_all(windows_copy_stdin(text).as_bytes()).is_ok());
+    // Waits: this is a one-shot CLI call, not a poll.
+    wrote && child.wait().is_ok_and(|s| s.success())
+}
+
 /// Best-effort clipboard copy through the platform tool (for the CLI; the app uses egui's).
 pub fn copy_to_clipboard(text: &str) -> bool {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    #[cfg(windows)]
+    if copy_windows(text) {
+        return true;
+    }
     let tools: &[(&str, &[&str])] = &[
         ("wl-copy", &[]),
         ("xclip", &["-selection", "clipboard", "-i"]),
         ("xsel", &["--clipboard", "--input"]),
         ("pbcopy", &[]),
+        // Last resort on Windows only if PowerShell is missing: ASCII-safe, garbles other text.
         ("clip", &[]),
     ];
     for (program, args) in tools {
@@ -408,6 +473,48 @@ mod tests {
                 .trim_start()
                 .starts_with("textarea")
         );
+    }
+
+    #[test]
+    fn base64_matches_rfc_4648_vectors() {
+        for (i, o) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(i.as_bytes()), o);
+        }
+    }
+
+    #[test]
+    fn windows_copy_stdin_is_ascii_and_carries_non_ascii_text_exactly() {
+        let text = "Zażółć gęślą jaźń, café, 日本語, 👍";
+        let wire = windows_copy_stdin(text);
+        assert!(wire.is_ascii(), "no code page can alter ASCII: {wire}");
+        // UTF-8 bytes of "é" are C3 A9, the base64 of those two bytes is "w6k=".
+        assert_eq!(windows_copy_stdin("é"), "w6k=");
+        // Decode with an independent loop to prove the text survives the trip.
+        let mut bits = 0u32;
+        let mut n = 0;
+        let mut bytes = Vec::new();
+        for ch in wire.trim_end_matches('=').chars() {
+            let v = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                .find(ch)
+                .unwrap() as u32;
+            bits = (bits << 6) | v;
+            n += 6;
+            if n >= 8 {
+                n -= 8;
+                bytes.push((bits >> n) as u8);
+                bits &= (1 << n) - 1;
+            }
+        }
+        assert_eq!(String::from_utf8(bytes).unwrap(), text);
+        assert!(WINDOWS_COPY_SCRIPT.contains("FromBase64String"));
     }
 
     #[test]

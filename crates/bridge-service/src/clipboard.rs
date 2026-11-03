@@ -21,9 +21,11 @@
 //!   stops. Nothing is persisted or logged; the status carries counters, never content. Only the
 //!   freshness window, hotkey and image limit are stored.
 //! * **Platform.** Linux uses `wl-clipboard` (Wayland, needs the compositor's data-control protocol) or
-//!   `xclip` (X11); macOS uses `pbpaste`/`pbcopy`; Windows uses PowerShell. Wayland uses
-//!   `wl-paste --watch` and X11 uses `clipnotify` when installed as change events (a slow safety
-//!   poll remains); everything else is polled every 1.5 s. Images and HTML need `wl-clipboard`/`xclip`. See
+//!   `xclip` (X11); macOS uses `pbpaste`/`pbcopy` (and `NSPasteboard` for the change counter and the
+//!   concealment types); Windows uses the Win32 clipboard API (`CF_UNICODETEXT`, sequence number, no
+//!   process). Wayland uses `wl-paste --watch` and X11 uses `clipnotify` when installed as change
+//!   events (a slow safety poll remains); Windows and macOS watch the OS change counter (a cheap call
+//!   every 250 ms) and read only when it moved; anything else is polled every 1.5 s. Images and HTML need `wl-clipboard`/`xclip`. See
 //!   `docs/clipboard-sync.md`.
 use crate::{now_ms, private::random_id};
 use bridge_core::{
@@ -47,7 +49,11 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
-    sync::{Arc, Mutex, MutexGuard, mpsc as std_mpsc},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+        mpsc as std_mpsc,
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
@@ -131,11 +137,18 @@ pub trait ClipboardBackend: Send + Sync {
     }
 }
 
-/// A running event source: one message per clipboard change. Dropping it stops the helper process.
+/// A running event source: one message per clipboard change. Dropping it stops the helper.
 pub struct ChangeStream {
     rx: mpsc::Receiver<()>,
-    child: std::process::Child,
+    source: Source,
 }
+enum Source {
+    Process(std::process::Child),
+    Counter(Arc<AtomicBool>),
+}
+/// How often the OS change counter is read (a plain function call, no process).
+#[cfg(any(windows, target_os = "macos"))]
+const COUNTER_INTERVAL: Duration = Duration::from_millis(250);
 impl ChangeStream {
     /// Run `program args...` and treat each line of its stdout as one change.
     fn spawn(program: &str, args: &[&str]) -> Option<Self> {
@@ -160,7 +173,38 @@ impl ChangeStream {
                 }
             }
         });
-        Some(Self { rx, child })
+        Some(Self {
+            rx,
+            source: Source::Process(child),
+        })
+    }
+    /// Watch an OS change counter (`GetClipboardSequenceNumber`, `NSPasteboard.changeCount`): one
+    /// message whenever `read` returns a different value. `None` from `read` is "no reading".
+    #[cfg_attr(not(any(windows, target_os = "macos", test)), allow(dead_code))]
+    fn from_counter(
+        interval: Duration,
+        mut read: impl FnMut() -> Option<u64> + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel(1);
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
+        std::thread::spawn(move || {
+            let mut last = read();
+            while !flag.load(Ordering::Relaxed) {
+                std::thread::sleep(interval);
+                let now = read();
+                if now.is_some() && now != last {
+                    last = now;
+                    if let Err(mpsc::error::TrySendError::Closed(_)) = tx.try_send(()) {
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            rx,
+            source: Source::Counter(stop),
+        }
     }
     /// Wait for the next change; `None` when the helper exited.
     async fn changed(&mut self) -> Option<()> {
@@ -169,8 +213,13 @@ impl ChangeStream {
 }
 impl Drop for ChangeStream {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        match &mut self.source {
+            Source::Process(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            Source::Counter(stop) => stop.store(true, Ordering::Relaxed),
+        }
     }
 }
 
@@ -295,7 +344,7 @@ enum Tools {
     WlClipboard,
     Xclip,
     MacOs,
-    PowerShell,
+    Windows,
 }
 
 /// Password managers mark secrets with this target/type (KeePassXC, Bitwarden, Plasma's Klipper).
@@ -413,7 +462,7 @@ impl ToolClipboard {
                 None,
                 4096,
             ),
-            Tools::MacOs | Tools::PowerShell => return None,
+            Tools::MacOs | Tools::Windows => return None,
         };
         c.ok().filter(|c| c.ok).map(|c| c.bytes)
     }
@@ -429,7 +478,7 @@ impl ToolClipboard {
                 None,
                 max,
             ),
-            Tools::MacOs | Tools::PowerShell => Err(BackendError::Unsupported),
+            Tools::MacOs | Tools::Windows => Err(BackendError::Unsupported),
         }
     }
 }
@@ -440,7 +489,7 @@ impl ToolClipboard {
             Tools::WlClipboard => true,
             // `clipnotify` blocks on XFixes selection notify; no XFixes binding is linked here.
             Tools::Xclip => on_path("clipnotify"),
-            _ => false,
+            Tools::MacOs | Tools::Windows => true,
         }
     }
 }
@@ -454,6 +503,14 @@ impl ClipboardBackend for ToolClipboard {
                 // clipnotify exits after one change; loop it in a shell so one process serves all.
                 ChangeStream::spawn("sh", &["-c", "while clipnotify; do echo; done"])
             }
+            #[cfg(windows)]
+            Tools::Windows => Some(ChangeStream::from_counter(COUNTER_INTERVAL, || {
+                Some(u64::from(crate::clipboard_win::sequence()))
+            })),
+            #[cfg(target_os = "macos")]
+            Tools::MacOs => Some(ChangeStream::from_counter(COUNTER_INTERVAL, || {
+                Some(crate::clipboard_mac::change_count() as u64)
+            })),
             _ => None,
         }
     }
@@ -462,7 +519,7 @@ impl ClipboardBackend for ToolClipboard {
             Tools::WlClipboard => "wl-clipboard",
             Tools::Xclip => "xclip",
             Tools::MacOs => "pbpaste/pbcopy",
-            Tools::PowerShell => "PowerShell",
+            Tools::Windows => "Windows clipboard",
         }
     }
     fn capabilities(&self) -> ClipboardCapabilities {
@@ -474,7 +531,7 @@ impl ClipboardBackend for ToolClipboard {
             } else {
                 ObserveMode::Polling
             },
-            reports_sensitivity: matches!(self.tools, Tools::WlClipboard | Tools::Xclip),
+            reports_sensitivity: true,
             can_mark_written_sensitive: false,
         }
     }
@@ -496,21 +553,21 @@ impl ClipboardBackend for ToolClipboard {
                 Ok(None)
             }
             Tools::MacOs => utf8(run_tool("pbpaste", &[], None, max_bytes)?),
-            Tools::PowerShell => utf8(run_tool(
-                "powershell",
-                &[
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[Console]::OutputEncoding=[Text.Encoding]::UTF8;\
-                     $t=Get-Clipboard -Raw; if($t){[Console]::Out.Write($t)}",
-                ],
-                None,
-                max_bytes,
-            )?),
+            #[cfg(windows)]
+            Tools::Windows => crate::clipboard_win::read_text(max_bytes),
+            #[cfg(not(windows))]
+            Tools::Windows => Err(BackendError::Unavailable),
         }
     }
     fn sensitivity(&self) -> Sensitivity {
+        #[cfg(windows)]
+        if self.tools == Tools::Windows {
+            return crate::clipboard_win::sensitivity();
+        }
+        #[cfg(target_os = "macos")]
+        if self.tools == Tools::MacOs {
+            return crate::clipboard_mac::sensitivity();
+        }
         match self.list_types() {
             Some(t) if lists(&t, PASSWORD_HINT) => Sensitivity::Sensitive,
             Some(_) => Sensitivity::Normal,
@@ -534,18 +591,10 @@ impl ClipboardBackend for ToolClipboard {
                 16,
             )?),
             Tools::MacOs => ok(run_tool("pbcopy", &[], Some(text.as_bytes()), 16)?),
-            Tools::PowerShell => ok(run_tool(
-                "powershell",
-                &[
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "[Console]::InputEncoding=[Text.Encoding]::UTF8;\
-                     Set-Clipboard -Value ([Console]::In.ReadToEnd())",
-                ],
-                Some(text.as_bytes()),
-                16,
-            )?),
+            #[cfg(windows)]
+            Tools::Windows => crate::clipboard_win::write_text(text),
+            #[cfg(not(windows))]
+            Tools::Windows => Err(BackendError::Unavailable),
         }
     }
     fn read_html(&self, max_bytes: usize) -> Result<Option<String>, BackendError> {
@@ -597,7 +646,7 @@ impl ClipboardBackend for ToolClipboard {
                 Some(&image.bytes),
                 16,
             )?),
-            Tools::MacOs | Tools::PowerShell => Err(BackendError::Unsupported),
+            Tools::MacOs | Tools::Windows => Err(BackendError::Unsupported),
         }
     }
 }
@@ -624,7 +673,7 @@ pub fn detect_backend() -> Option<Arc<dyn ClipboardBackend>> {
     let tools = if cfg!(target_os = "macos") {
         Tools::MacOs
     } else if cfg!(target_os = "windows") {
-        Tools::PowerShell
+        Tools::Windows
     } else if env_set("WAYLAND_DISPLAY") && on_path("wl-paste") && on_path("wl-copy") {
         Tools::WlClipboard
     } else if env_set("DISPLAY") && on_path("xclip") {
@@ -1838,6 +1887,39 @@ mod platform_tool_tests {
         assert_eq!(super::tool_lang("pbcopy"), Some("UTF-8"));
         assert_eq!(super::tool_lang("wl-copy"), None);
         assert_eq!(super::tool_lang("powershell"), None);
+    }
+
+    #[test]
+    fn counter_stream_fires_once_per_change() {
+        use super::{Arc, Duration, Ordering};
+        use std::sync::atomic::AtomicU64;
+        let n = Arc::new(AtomicU64::new(1));
+        let c = n.clone();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut s = super::ChangeStream::from_counter(Duration::from_millis(5), move || {
+                Some(c.load(Ordering::Relaxed))
+            });
+            // Unchanged counter: no event.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(60), s.changed())
+                    .await
+                    .is_err()
+            );
+            n.store(2, Ordering::Relaxed);
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(2), s.changed()).await,
+                Ok(Some(()))
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(60), s.changed())
+                    .await
+                    .is_err()
+            );
+        });
     }
 }
 

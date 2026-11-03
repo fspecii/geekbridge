@@ -10,6 +10,11 @@ pub mod call_cli;
 pub mod call_control;
 pub mod calling;
 pub mod clipboard;
+#[cfg(target_os = "macos")]
+mod clipboard_mac;
+pub mod clipboard_marks;
+#[cfg(windows)]
+mod clipboard_win;
 pub mod coexist;
 pub mod collision;
 pub mod config;
