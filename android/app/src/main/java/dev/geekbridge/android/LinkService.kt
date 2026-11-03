@@ -39,7 +39,7 @@ class LinkService : Service() {
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var lastNetwork: Long? = null
     private var lastV4: Set<String>? = null
-    private val restart = Runnable { restartLink(0) }
+    private val restart = Runnable { restartGen++; restartLink(0, restartGen) }
     private lateinit var wifi: WifiLinkLock
     private var wasConnected = false
     private var lostAt: Long? = null
@@ -216,28 +216,32 @@ class LinkService : Service() {
         super.onTaskRemoved(rootIntent)
     }
 
+    // Identifies the restart chain. A newer network change, or a service stop, supersedes the retries a chain has queued.
+    private var restartGen = 0
+
     private fun scheduleRestart() {
         main.removeCallbacks(restart)
         main.postDelayed(restart, ServicePolicy.RESTART_DEBOUNCE_MS)
     }
 
     /** Re-announce on the new network: stop, then start again once the native side reports stopped. Bounded. */
-    private fun restartLink(attempt: Int) {
-        if (!isRunning) return
+    private fun restartLink(attempt: Int, gen: Int) {
+        if (!isRunning || gen != restartGen) return
         if (!AppState.wantService()) return stopSelf()
-        when (controller.phase) {
-            LinkPhase.Running -> {
+        when (ServicePolicy.restartStep(attempt, controller.phase)) {
+            ServicePolicy.RestartStep.Stop -> {
                 GbLog.i("link", "closing the link to re-announce on the new network")
                 controller.stop(R.string.link_stop_network)
-                retryStart(attempt)
+                retryStart(attempt, gen)
             }
-            LinkPhase.Stopped -> controller.start(serviceOptions())
-            else -> retryStart(attempt)
+            ServicePolicy.RestartStep.Start -> controller.start(serviceOptions())
+            ServicePolicy.RestartStep.Wait -> retryStart(attempt, gen)
+            ServicePolicy.RestartStep.Done -> Unit
         }
     }
 
-    private fun retryStart(attempt: Int) {
-        if (attempt < MAX_RESTART_ATTEMPTS) main.postDelayed({ restartLink(attempt + 1) }, 500)
+    private fun retryStart(attempt: Int, gen: Int) {
+        if (attempt < MAX_RESTART_ATTEMPTS) main.postDelayed({ restartLink(attempt + 1, gen) }, 500)
     }
 
     private fun promote() {

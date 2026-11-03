@@ -1322,13 +1322,13 @@ fn spawn_redial(core: &Arc<Core>, device: DeviceId) {
 
 /// `now`: dial at once instead of waiting out the first back-off (the app just nudged us).
 fn spawn_redial_now(core: &Arc<Core>, device: DeviceId, now: bool) {
-    if !core.lock_redial().begin(&device) {
+    let Some(token) = core.lock_redial().begin(&device) else {
         return;
-    }
+    };
     let core = core.clone();
     tokio::spawn(async move {
-        redial_loop(&core, &device, now).await;
-        core.lock_redial().end(&device);
+        redial_loop(&core, &device, token, now).await;
+        core.lock_redial().end(&device, token);
     });
 }
 
@@ -1378,7 +1378,9 @@ async fn wait_out_goodbye(core: &Arc<Core>, device: &DeviceId) -> bool {
     }
 }
 
-async fn redial_loop(core: &Arc<Core>, device: &DeviceId, mut now: bool) {
+/// `token` is the claim taken when this task was spawned: once the device was forgotten (unpaired) the task is stale,
+/// even if the same computer is paired again before its back-off ends, and stops without touching anything.
+async fn redial_loop(core: &Arc<Core>, device: &DeviceId, token: u64, mut now: bool) {
     let mut nudge = super::heartbeat_now_receiver();
     nudge.borrow_and_update();
     loop {
@@ -1396,6 +1398,9 @@ async fn redial_loop(core: &Arc<Core>, device: &DeviceId, mut now: bool) {
         // A goodbye can arrive while this wait runs (the loop outlives the link that started it).
         if !wait_out_goodbye(core, device).await {
             return;
+        }
+        if !core.lock_redial().owns(device, token) {
+            return; // unpaired (and maybe paired again) while waiting: a newer pairing owns the redial
         }
         let addr = core.lock_redial().addr(device);
         let paired = matches!(core.store.get(device), Ok(Some(_)));

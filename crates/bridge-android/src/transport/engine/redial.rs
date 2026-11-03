@@ -89,13 +89,16 @@ fn random_unit() -> f64 {
 struct Entry {
     addr: Option<SocketAddr>,
     tries: u32,
-    /// A redial task is running for this device.
-    active: bool,
+    /// The token of the redial task running for this device, if any. A task acts only while it still holds the
+    /// token: an unpair (`forget`) drops the entry, so a task that outlived it can neither keep dialing nor
+    /// release the claim of a newer task for a later pairing of the same computer.
+    active: Option<u64>,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct Book {
     entries: HashMap<DeviceId, Entry>,
+    next_token: u64,
 }
 
 impl Book {
@@ -149,20 +152,33 @@ impl Book {
         self.entries.get(device).and_then(|e| e.addr)
     }
 
-    /// Claim the single redial task for `device`; false if one already runs or there is nowhere to dial.
-    pub(super) fn begin(&mut self, device: &DeviceId) -> bool {
+    /// Claim the single redial task for `device`; `None` if one already runs or there is nowhere to dial. The
+    /// token identifies this task from now on (see [`Book::owns`]).
+    pub(super) fn begin(&mut self, device: &DeviceId) -> Option<u64> {
+        self.next_token += 1;
+        let token = self.next_token;
         match self.entries.get_mut(device) {
-            Some(e) if !e.active && e.addr.is_some() => {
-                e.active = true;
-                true
+            Some(e) if e.active.is_none() && e.addr.is_some() => {
+                e.active = Some(token);
+                Some(token)
             }
-            _ => false,
+            _ => None,
         }
     }
 
-    pub(super) fn end(&mut self, device: &DeviceId) {
-        if let Some(e) = self.entries.get_mut(device) {
-            e.active = false;
+    /// Is the task holding `token` still the one for `device`? False once the device was forgotten (unpaired).
+    pub(super) fn owns(&self, device: &DeviceId, token: u64) -> bool {
+        self.entries
+            .get(device)
+            .is_some_and(|e| e.active == Some(token))
+    }
+
+    /// Release the claim, but only if `token` still holds it.
+    pub(super) fn end(&mut self, device: &DeviceId, token: u64) {
+        if let Some(e) = self.entries.get_mut(device)
+            && e.active == Some(token)
+        {
+            e.active = None;
         }
     }
 
@@ -292,14 +308,33 @@ mod tests {
     }
 
     #[test]
+    fn a_redial_task_that_outlived_an_unpair_cannot_release_or_steer_the_newer_one() {
+        let mut b = Book::default();
+        b.connected(&id('a'), ip(150), None, None);
+        // Task 1 starts for the first pairing; the user unpairs and pairs again within its back-off sleep.
+        let t1 = b.begin(&id('a')).unwrap();
+        b.forget(&id('a'));
+        b.connected(&id('a'), ip(150), None, None);
+        // The new pairing's link is lost: task 2 starts.
+        let t2 = b.begin(&id('a')).unwrap();
+        // Task 1 wakes up: it finds out it is stale, and ending it does not free task 2's claim.
+        assert!(!b.owns(&id('a'), t1) && b.owns(&id('a'), t2));
+        b.end(&id('a'), t1);
+        assert!(
+            b.begin(&id('a')).is_none(),
+            "task 2 still runs: the stale end() freed its claim"
+        );
+    }
+
+    #[test]
     fn one_redial_task_per_device_and_nothing_for_strangers() {
         let mut b = Book::default();
-        assert!(!b.begin(&id('a')));
+        assert!(b.begin(&id('a')).is_none());
         b.connected(&id('a'), ip(1), None, None);
-        assert!(b.begin(&id('a')));
-        assert!(!b.begin(&id('a')));
-        b.end(&id('a'));
-        assert!(b.begin(&id('a')));
+        let t = b.begin(&id('a')).unwrap();
+        assert!(b.begin(&id('a')).is_none());
+        b.end(&id('a'), t);
+        assert!(b.begin(&id('a')).is_some());
         b.forget(&id('a'));
         assert!(b.addr(&id('a')).is_none() && b.next_delay(&id('a')).is_none());
     }

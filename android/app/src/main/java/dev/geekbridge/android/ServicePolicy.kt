@@ -42,6 +42,19 @@ object ServicePolicy {
 
     const val RESTART_DEBOUNCE_MS = 3_000L
 
+    enum class RestartStep { Stop, Start, Wait, Done }
+
+    /**
+     * One step of the re-announce restart chain. Only the first step may stop a running link (the old one, on the
+     * old network). On a retry a Running link was started by someone else after the chain's own stop, already on the
+     * new network: leave it alone.
+     */
+    fun restartStep(attempt: Int, phase: LinkPhase): RestartStep = when (phase) {
+        LinkPhase.Running -> if (attempt == 0) RestartStep.Stop else RestartStep.Done
+        LinkPhase.Stopped -> RestartStep.Start
+        else -> RestartStep.Wait
+    }
+
     /** When to look again at an unfinished pairing's grace: just after it ends; null when nothing is waiting on it. */
     fun graceCheckDelayMs(pairedCount: Int, graceLeftMs: Long): Long? =
         if (pairedCount == 0 && graceLeftMs > 0) graceLeftMs + 500 else null

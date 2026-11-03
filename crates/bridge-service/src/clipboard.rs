@@ -794,6 +794,9 @@ struct PendingPull {
 #[derive(Clone, Debug)]
 pub struct ImageTicket {
     pub device_id: String,
+    /// The link session (see `Peer::generation`) the image was announced on, captured when the transfer was
+    /// scheduled: a result that arrives after that session ended belongs to nobody.
+    generation: u64,
     pub request_id: Option<String>,
     pub mime: &'static str,
     pub size: u64,
@@ -1280,6 +1283,7 @@ impl ClipboardService {
         payload_port: Option<u16>,
     ) -> Next {
         let limits = self.limits();
+        let generation;
         let Ok(parsed) = clipboard_wire::parse_item(body, &limits) else {
             let mut g = self.lock();
             if let Some(st) = g.stats.get_mut(device_id) {
@@ -1294,6 +1298,7 @@ impl ClipboardService {
             if !enabled {
                 return Next::Nothing;
             }
+            generation = g.peers.get(device_id).map_or(0, |p| p.generation);
             if let Some(req) = &parsed.request_id {
                 // A response must answer one of our own requests, from the device we asked.
                 let ours = g.pulls.get(req).is_some_and(|p| p.device_id == device_id);
@@ -1329,6 +1334,7 @@ impl ClipboardService {
                 let _ = port;
                 Next::ReceiveImage(ImageTicket {
                     device_id: device_id.to_owned(),
+                    generation,
                     request_id: parsed.request_id,
                     mime,
                     size,
@@ -1338,8 +1344,24 @@ impl ClipboardService {
         }
     }
 
+    /// Is the link session `ticket` was issued on still the phone's current, sharing session? A transfer can
+    /// outlive its link (up to 120 s); its result must not reach the clipboard or the status of a newer session,
+    /// nor after the user switched sharing off or unpaired the phone.
+    fn current(g: &Inner, ticket: &ImageTicket) -> bool {
+        g.peers
+            .get(&ticket.device_id)
+            .is_some_and(|p| p.generation == ticket.generation && p.sync.is_some())
+    }
+
+    fn ticket_is_current(&self, ticket: &ImageTicket) -> bool {
+        Self::current(&self.lock(), ticket)
+    }
+
     /// The daemon received the image bytes of `ticket`.
     pub fn image_received(self: &Arc<Self>, ticket: &ImageTicket, bytes: Vec<u8>) {
+        if !self.ticket_is_current(ticket) {
+            return;
+        }
         let valid = clipboard_wire::sniff_image(&bytes) == Some(ticket.mime)
             && bytes.len() as u64 == ticket.size;
         let wall = now_ms();
@@ -1385,6 +1407,9 @@ impl ClipboardService {
     /// The payload transfer failed or was refused.
     pub fn image_failed(&self, ticket: &ImageTicket, reason: &'static str) {
         let mut g = self.lock();
+        if !Self::current(&g, ticket) {
+            return;
+        }
         let st = g.stats.entry(ticket.device_id.clone()).or_default();
         st.skipped += 1;
         st.last_skip = Some(reason);
@@ -2416,6 +2441,31 @@ mod tests {
             (lp.state.as_str(), lp.kind.as_deref()),
             ("delivered", Some("image"))
         );
+    }
+
+    #[tokio::test]
+    async fn an_image_from_a_session_that_ended_cannot_touch_the_newer_one() {
+        let (mem, svc) = rig();
+        let (mut rx, old_gen) = svc.link_up_generation(PHONE, "P", FULL, true);
+        svc.pull(None).unwrap();
+        let req = request_id_of(&mut rx);
+        let body = clipboard_wire::image_item_body("image/png", PNG.len() as u64, Some(&req), 100);
+        let Next::ReceiveImage(old) = svc.on_packet(PHONE, ITEM, &body, Some(1740)) else {
+            panic!("expected ticket")
+        };
+        // The link ends mid-transfer and the phone is back at once; the user asks again.
+        svc.link_down_generation(PHONE, old_gen);
+        let mut rx2 = svc.link_up(PHONE, "P", FULL, true);
+        svc.pull(None).unwrap();
+        let _ = request_id_of(&mut rx2);
+        assert_eq!(svc.status(vec![]).last_pull.unwrap().state, "waiting");
+        // The old transfer's late failure or bytes are nobody's now.
+        svc.image_failed(&old, "failed");
+        assert_eq!(svc.status(vec![]).last_pull.unwrap().state, "waiting");
+        svc.image_received(&old, PNG.to_vec());
+        settle().await;
+        assert!(mem.image().is_none(), "an old session wrote the clipboard");
+        assert_eq!(svc.status(vec![]).last_pull.unwrap().state, "waiting");
     }
 
     #[tokio::test]
