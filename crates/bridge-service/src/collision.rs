@@ -9,7 +9,7 @@ use bridge_core::ipc::{LinkPhase, LinkRole, LinkStatus};
 use bridge_kde::{DeviceId, Identity, Role};
 
 /// How long a connection counts as "just made" for the purpose of telling a cross-dial from a reconnect.
-pub const WINDOW_MS: u64 = 5_000;
+pub const WINDOW_MS: u64 = bridge_kde::tiebreak::CROSS_DIAL_WINDOW.as_millis() as u64;
 
 /// An authenticated connection from `peer` just arrived while `held` is the link we have for it. True when
 /// the arrival must be turned away and `held` kept.

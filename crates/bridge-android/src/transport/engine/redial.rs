@@ -61,6 +61,30 @@ pub(crate) fn unsuppress(device: &DeviceId) {
         .remove(device);
 }
 
+/// The back-off before try number `tries` (0-based): 2 s doubling to 60 s.
+fn nominal_delay(tries: u32) -> Duration {
+    FIRST_DELAY
+        .saturating_mul(1u32 << tries.min(10))
+        .min(MAX_DELAY)
+}
+
+/// Jitter: `delay` scaled into 0.8..1.2 by `unit` (0..1). The computer redials on its own schedule too, and both ends
+/// noticing the same loss at the same instant would otherwise dial each other at the same instants at every step (each
+/// such cross-dial costs a TLS handshake that the tie-break then throws away); with several phones behind one computer
+/// restarting (a router reboot), it also keeps them from arriving in lockstep.
+pub(super) fn spread(delay: Duration, unit: f64) -> Duration {
+    delay.mul_f64(0.8 + 0.4 * unit.clamp(0.0, 1.0))
+}
+
+/// A cheap uniform-ish number in 0..1, different on every call; std's per-process random hash keys are the source.
+fn random_unit() -> f64 {
+    use std::hash::{BuildHasher, Hasher};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u64(COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    (h.finish() >> 11) as f64 / (1u64 << 53) as f64
+}
+
 #[derive(Debug, Default)]
 struct Entry {
     addr: Option<SocketAddr>,
@@ -142,17 +166,26 @@ impl Book {
         }
     }
 
-    /// Wait before the next try, or `None` once the budget is spent.
+    /// Wait before the next try, or `None` once the budget is spent. Spread by +-20 % (see [`spread`]).
     pub(super) fn next_delay(&mut self, device: &DeviceId) -> Option<Duration> {
         let e = self.entries.get_mut(device)?;
         if e.tries >= MAX_TRIES {
             return None;
         }
-        let delay = FIRST_DELAY
-            .saturating_mul(1u32 << e.tries.min(10))
-            .min(MAX_DELAY);
+        let delay = nominal_delay(e.tries);
         e.tries += 1;
-        Some(delay)
+        Some(spread(delay, random_unit()))
+    }
+
+    /// A spent budget gets one more try (the app nudged us: screen on, Doze window). True if it was spent.
+    pub(super) fn grant_one(&mut self, device: &DeviceId) -> bool {
+        match self.entries.get_mut(device) {
+            Some(e) if e.tries >= MAX_TRIES => {
+                e.tries = MAX_TRIES - 1;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn forget(&mut self, device: &DeviceId) {
@@ -180,15 +213,68 @@ mod tests {
     fn delays_double_up_to_the_cap_then_the_budget_ends() {
         let mut b = Book::default();
         b.connected(&id('a'), ip(150), None, None);
-        let got: Vec<u64> = std::iter::from_fn(|| b.next_delay(&id('a')))
-            .map(|d| d.as_secs())
-            .collect();
+        let got: Vec<Duration> = std::iter::from_fn(|| b.next_delay(&id('a'))).collect();
         assert_eq!(got.len(), MAX_TRIES as usize);
-        assert_eq!(&got[..6], &[2, 4, 8, 16, 32, 60]);
-        assert!(got[6..].iter().all(|s| *s == 60));
+        let nominal: Vec<u64> = (0..MAX_TRIES).map(|n| nominal_delay(n).as_secs()).collect();
+        assert_eq!(&nominal[..6], &[2, 4, 8, 16, 32, 60]);
+        assert!(nominal[6..].iter().all(|s| *s == 60));
+        for (d, n) in got.iter().zip(&nominal) {
+            let n = Duration::from_secs(*n);
+            assert!(
+                *d >= n.mul_f64(0.8) && *d <= n.mul_f64(1.2),
+                "{d:?} vs {n:?}"
+            );
+        }
         // Any new connection starts the budget afresh.
         b.connected(&id('a'), ip(150), None, None);
-        assert_eq!(b.next_delay(&id('a')), Some(Duration::from_secs(2)));
+        let first = b.next_delay(&id('a')).unwrap();
+        assert!(first >= Duration::from_millis(1600) && first <= Duration::from_millis(2400));
+    }
+
+    #[test]
+    fn jitter_stays_in_its_band_and_actually_spreads() {
+        let d = Duration::from_secs(10);
+        assert_eq!(spread(d, 0.0), Duration::from_secs(8));
+        assert_eq!(spread(d, 1.0), Duration::from_secs(12));
+        assert_eq!(spread(d, 7.0), Duration::from_secs(12));
+        assert_eq!(spread(d, -1.0), Duration::from_secs(8));
+        let draws: Vec<f64> = (0..200).map(|_| random_unit()).collect();
+        assert!(draws.iter().all(|u| (0.0..1.0).contains(u)));
+        assert!(draws.iter().any(|u| *u < 0.3) && draws.iter().any(|u| *u > 0.7));
+        // Two phones that lost the same computer at the same instant do not keep redialing in lockstep.
+        let schedule = |b: &mut Book| -> Vec<Duration> {
+            b.connected(&id('a'), ip(1), None, None);
+            let mut at = Duration::ZERO;
+            std::iter::from_fn(|| b.next_delay(&id('a')))
+                .map(|d| {
+                    at += d;
+                    at
+                })
+                .collect()
+        };
+        let (x, y) = (
+            schedule(&mut Book::default()),
+            schedule(&mut Book::default()),
+        );
+        assert!(
+            x.iter()
+                .zip(&y)
+                .filter(|(a, b)| a.abs_diff(**b) < Duration::from_millis(50))
+                .count()
+                < 3
+        );
+    }
+
+    #[test]
+    fn a_nudge_buys_exactly_one_more_try_once_the_budget_is_spent() {
+        let mut b = Book::default();
+        b.connected(&id('a'), ip(150), None, None);
+        assert!(!b.grant_one(&id('a')), "budget not spent: nothing to grant");
+        while b.next_delay(&id('a')).is_some() {}
+        assert!(b.grant_one(&id('a')));
+        assert!(b.next_delay(&id('a')).is_some());
+        assert!(b.next_delay(&id('a')).is_none());
+        assert!(!b.grant_one(&id('z')), "nothing for a stranger");
     }
 
     #[test]

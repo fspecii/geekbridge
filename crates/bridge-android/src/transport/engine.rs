@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use bridge_kde::tiebreak::prefer_new;
+use bridge_kde::tiebreak::{CROSS_DIAL_WINDOW, prefer_new};
 use bridge_kde::{
     AddressPolicy, ApprovalRequest, Approver, DeviceId, Direction, Endpoint, FileTrustStore,
     Handshake, KdeError, LinkEvent, LinkInfo, Packet, PairMode, PairingFailure, PendingLink, Role,
@@ -586,6 +586,15 @@ impl Core {
             .get(&id)
             .ok_or_else(|| err("unknown_connection", "no such connection"))?;
         c.close.notify_one();
+        // The user's own disconnect: no redial and no nudge-driven dial to this computer for a while (as after the
+        // computer's goodbye); the user's Connect or the computer's own dial ends it.
+        if c.phase == Phase::Trusted {
+            redial::suppress(
+                &c.peer_id,
+                std::time::Instant::now(),
+                bridge_core::goodbye::SUPPRESS_FOR,
+            );
+        }
         st.drop_connection(id);
         Ok(json!({ "disconnected": true }))
     }
@@ -657,13 +666,17 @@ impl Core {
             .conns
             .values()
             .find(|c| c.peer_id == info.peer.device_id)
-            .map(|c| (c.id, c.phase, c.role));
-        if let Some((old_id, old_phase, old_role)) = existing {
+            .map(|c| (c.id, c.phase, c.role, c.since));
+        if let Some((old_id, old_phase, old_role, old_since)) = existing {
             let replace = match (phase == Phase::Trusted, old_phase == Phase::Trusted) {
                 (true, false) => true,
                 (false, _) => false,
+                // A cross-dial only while the held connection is brand new; an older one meeting a new trusted
+                // connection is a zombie (the computer gave up on it and its close never arrived): newest wins, as
+                // on the computer (`bridge_service::collision`).
                 (true, true) => {
-                    prefer_new(self.local_id(), &info.peer.device_id, old_role, info.role)
+                    old_since.elapsed() >= CROSS_DIAL_WINDOW
+                        || prefer_new(self.local_id(), &info.peer.device_id, old_role, info.role)
                 }
             };
             if !replace {
@@ -779,9 +792,26 @@ impl Core {
         }
     }
 
-    /// Resolves when an unpaired computer has announced itself since the last time.
+    /// Resolves when an unpaired computer has announced itself since the last time, or when the app nudged the core
+    /// (screen on, Doze window, network back) while some paired computer is not linked: the 30 s announcement timer
+    /// runs on the monotonic clock, which stands still while the phone sleeps, and the computer only redials a phone it
+    /// has heard recently.
     pub(super) async fn newcomer_announced(&self) {
-        self.announce_wake.notified().await;
+        let mut nudge = super::heartbeat_now_receiver();
+        nudge.borrow_and_update();
+        loop {
+            tokio::select! {
+                () = self.announce_wake.notified() => return,
+                changed = nudge.changed() => {
+                    if changed.is_err() {
+                        return std::future::pending().await;
+                    }
+                    if !self.all_paired_linked() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     fn count(&self, f: impl FnOnce(&mut Counters)) {
@@ -1287,14 +1317,49 @@ pub(super) fn redial_remembered(core: &Arc<Core>, handle: &tokio::runtime::Handl
 }
 
 fn spawn_redial(core: &Arc<Core>, device: DeviceId) {
+    spawn_redial_now(core, device, false);
+}
+
+/// `now`: dial at once instead of waiting out the first back-off (the app just nudged us).
+fn spawn_redial_now(core: &Arc<Core>, device: DeviceId, now: bool) {
     if !core.lock_redial().begin(&device) {
         return;
     }
     let core = core.clone();
     tokio::spawn(async move {
-        redial_loop(&core, &device).await;
+        redial_loop(&core, &device, now).await;
         core.lock_redial().end(&device);
     });
+}
+
+/// The app nudged the core (screen on, Doze maintenance window or its end, see `transport_heartbeat_now`). A redial
+/// already sleeping in its back-off wakes by itself; this covers the paired computers with no link and no redial
+/// running, typically because the budget ran out while the phone was asleep: each nudge buys one more try. Nudges come
+/// from user and OS events, not timers, so this cannot turn into a storm.
+pub(super) async fn redial_on_nudge(core: Arc<Core>) {
+    let mut nudge = super::heartbeat_now_receiver();
+    nudge.borrow_and_update();
+    while nudge.changed().await.is_ok() {
+        if !core.lock().open {
+            return;
+        }
+        let devices = core.lock_redial().dialable();
+        for device in devices {
+            let linked = core
+                .lock()
+                .conns
+                .values()
+                .any(|c| c.peer_id == device && c.phase == Phase::Trusted);
+            if linked || !matches!(core.store.get(&device), Ok(Some(_))) {
+                continue;
+            }
+            if !redial::suppressed_for(&device, std::time::Instant::now()).is_zero() {
+                continue;
+            }
+            core.lock_redial().grant_one(&device);
+            spawn_redial_now(&core, device, true);
+        }
+    }
 }
 
 /// The computer asked to be left alone (a goodbye): wait that out. Ends early, with `false`, when the transport
@@ -1313,12 +1378,21 @@ async fn wait_out_goodbye(core: &Arc<Core>, device: &DeviceId) -> bool {
     }
 }
 
-async fn redial_loop(core: &Arc<Core>, device: &DeviceId) {
+async fn redial_loop(core: &Arc<Core>, device: &DeviceId, mut now: bool) {
+    let mut nudge = super::heartbeat_now_receiver();
+    nudge.borrow_and_update();
     loop {
         let Some(delay) = core.lock_redial().next_delay(device) else {
             return;
         };
-        sleep(delay).await;
+        // The back-off runs on the monotonic clock, which stands still while the phone sleeps: a 60 s wait can last
+        // hours with the screen locked. A nudge from the app (screen on, Doze window) cuts it short.
+        if !std::mem::take(&mut now) {
+            tokio::select! {
+                () = sleep(delay) => {}
+                _ = nudge.changed() => {}
+            }
+        }
         // A goodbye can arrive while this wait runs (the loop outlives the link that started it).
         if !wait_out_goodbye(core, device).await {
             return;
@@ -1376,6 +1450,12 @@ pub(super) fn kde_code(e: &KdeError) -> &'static str {
             std::io::ErrorKind::BrokenPipe => "broken_pipe",
             std::io::ErrorKind::ConnectionAborted => "conn_aborted",
             std::io::ErrorKind::TimedOut => "tcp_timeout",
+            // A redial that fails tells apart "the computer's service is not listening" from "no route to it" (the
+            // phone is on another network, or the default network is mobile data and the LAN is not routed).
+            std::io::ErrorKind::ConnectionRefused => "conn_refused",
+            std::io::ErrorKind::HostUnreachable | std::io::ErrorKind::NetworkUnreachable => {
+                "unreachable"
+            }
             _ => "io_error",
         },
         KdeError::Timeout(_) => "timeout",
@@ -1442,6 +1522,9 @@ mod tests {
         assert_eq!(code(ErrorKind::ConnectionReset), "conn_reset");
         assert_eq!(code(ErrorKind::BrokenPipe), "broken_pipe");
         assert_eq!(code(ErrorKind::TimedOut), "tcp_timeout");
+        assert_eq!(code(ErrorKind::ConnectionRefused), "conn_refused");
+        assert_eq!(code(ErrorKind::HostUnreachable), "unreachable");
+        assert_eq!(code(ErrorKind::NetworkUnreachable), "unreachable");
         assert_eq!(code(ErrorKind::PermissionDenied), "io_error");
     }
 

@@ -43,6 +43,11 @@ object PowerRules {
 }
 
 /** Doze: the heartbeat timer's clock stops while the CPU sleeps, so a maintenance window is used to ping at once. */
+object ScreenRules {
+    /** Screen on: ping every link and wake a sleeping redial or announcement (`transport_heartbeat_now`). */
+    const val nudgeOnScreenOn = true
+}
+
 object DozeRules {
     /** [idle] is `PowerManager.isDeviceIdleMode` after a change broadcast: false is a maintenance window or the end of Doze. */
     fun pingNow(idle: Boolean): Boolean = !idle

@@ -19,6 +19,21 @@ object ServicePolicy {
         previousNetworkId != null && previousNetworkId != newNetworkId
 
     /**
+     * What a Wi-Fi network becoming available means for the link. The service watches the Wi-Fi network itself, not the
+     * default network: One UI moves the default between Wi-Fi and mobile data on its own ("Switch to mobile data", Wi-Fi
+     * re-validation), the Wi-Fi link to the computer survives that (an existing socket stays on the network it was made
+     * on), and restarting the transport for it closed a healthy link on purpose and then redialed over mobile data,
+     * where the computer is not reachable. Another Wi-Fi network (a new association: other access point, other SSID,
+     * Wi-Fi back after a loss) restarts; the first one seen since the service started only nudges (announce and redial
+     * now: the phone may have been off Wi-Fi with every redial spent).
+     */
+    fun onWifiAvailable(previousWifiId: Long?, newWifiId: Long): NetworkAction = when {
+        shouldRestartOnNetwork(previousWifiId, newWifiId) -> NetworkAction.Restart
+        previousWifiId == null -> NetworkAction.Nudge
+        else -> NetworkAction.None
+    }
+
+    /**
      * The same network can change address without a new Network object (DHCP renewal, Wi-Fi roam to an AP on another
      * subnet, VPN toggle). Compared on IPv4 only: IPv6 privacy addresses rotate on their own and must not restart the link.
      * [previous] null means this is the first report for the network, which is never a change.
@@ -44,3 +59,6 @@ object ServicePolicy {
         false
     }
 }
+
+/** See [ServicePolicy.onWifiAvailable]. */
+enum class NetworkAction { None, Nudge, Restart }

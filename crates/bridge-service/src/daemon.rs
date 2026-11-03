@@ -219,6 +219,8 @@ pub struct Daemon {
     debug: Arc<crate::phone_debug::PhoneDebug>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
     reconnect: Mutex<crate::reconnect::Book>,
+    /// Dial-back after a silent loss, for phones whose announcements do not reach us (see `reconnect::Fallback`).
+    fallback: Mutex<crate::reconnect::Fallback>,
     /// When and where each paired phone last announced itself (see `why`).
     sightings: Mutex<crate::why::Sightings>,
 }
@@ -228,6 +230,11 @@ fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
         code,
         message: message.into(),
     }
+}
+
+/// The loss reason a clean close from the peer produces.
+fn reason_of_clean_close() -> String {
+    reason(&kde::KdeError::UnexpectedEof)
 }
 
 /// Short, single-line, printable description of a failure for the event log.
@@ -365,6 +372,7 @@ impl Daemon {
             photos: crate::photos::Photos::default(),
             debug,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
+            fallback: Mutex::new(crate::reconnect::Fallback::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
         });
         let weak = Arc::downgrade(&daemon);
@@ -678,11 +686,17 @@ impl Daemon {
             challenges,
             event_seq: core.next_seq,
             inbound_listener: *self.inbound.lock().unwrap_or_else(|e| e.into_inner()),
-            reconnecting: self
-                .reconnect
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .trying(),
+            reconnecting: {
+                let mut v = self
+                    .reconnect
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .trying();
+                v.extend(self.lock_fallback().pending());
+                v.sort();
+                v.dedup();
+                v
+            },
             disconnected,
         })
     }
@@ -1171,6 +1185,9 @@ impl Daemon {
             }
         };
         self.check_endpoint(ip, port)?;
+        if matches!(self.store.get(&target), Ok(Some(_))) {
+            self.lock_fallback().learn(device_id, ip, port);
+        }
         let addr = SocketAddr::new(ip, port);
         let mut core = self.core();
         if core.links.contains_key(device_id) {
@@ -1345,7 +1362,20 @@ impl Daemon {
             .filter(|d| now_unix.saturating_sub(d.last_seen_unix_ms) < FRESH_MS)
             .map(|d| (d.id.clone(), d.address, d.tcp_port))
             .collect();
-        let ids: Vec<&str> = seen.iter().map(|s| s.0.as_str()).collect();
+        // A phone counts as gone (its redial history and a manual-disconnect pause are dropped) only once it has
+        // been silent for as long as discovery keeps it. Using the 20 s dial freshness here dropped the history in
+        // every gap between two of the phone's 30 s announcements: a manual disconnect lasted one announcement and
+        // the back-off restarted with each one.
+        let recent: Vec<String> = self
+            .discovery
+            .read()
+            .await
+            .devices
+            .iter()
+            .filter(|d| now_unix.saturating_sub(d.last_seen_unix_ms) < crate::DEVICE_TTL_MS)
+            .map(|d| d.id.clone())
+            .collect();
+        let ids: Vec<&str> = recent.iter().map(String::as_str).collect();
         let now = Instant::now();
         self.reconnect
             .lock()
@@ -1355,6 +1385,12 @@ impl Daemon {
             let Ok(target) = parse_id(id) else { continue };
             if !matches!(self.store.get(&target), Ok(Some(_))) {
                 continue;
+            }
+            {
+                // Announcing: the normal redial below takes over from a dial-back.
+                let mut fb = self.lock_fallback();
+                fb.learn(id, *ip, *port);
+                fb.settled(id);
             }
             let (linked, connected) = {
                 let core = self.core();
@@ -1386,6 +1422,46 @@ impl Daemon {
                 )
                 .await;
         }
+        self.dial_back_tick(now).await;
+    }
+
+    /// Dial back paired phones whose link was lost silently and that are not announcing: a sleeping phone's timers
+    /// stand still (no redial, no announcement), and an incoming connection is what wakes it.
+    async fn dial_back_tick(self: &Arc<Self>, now: Instant) {
+        let pending = self.lock_fallback().pending();
+        for id in pending {
+            let paired = parse_id(&id).is_ok_and(|t| matches!(self.store.get(&t), Ok(Some(_))));
+            let (linked, connected) = {
+                let core = self.core();
+                let link = core.links.get(&id);
+                (
+                    link.is_some(),
+                    link.is_some_and(|l| l.status.phase == LinkPhase::Connected),
+                )
+            };
+            let paused = self
+                .reconnect
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .progress(&id)
+                .1;
+            if !paired || connected || paused {
+                self.lock_fallback().settled(&id);
+                continue;
+            }
+            if linked {
+                continue; // a dial or an inbound handshake is in progress
+            }
+            let due = self.lock_fallback().due(&id, now);
+            let Some((address, port)) = due else {
+                continue;
+            };
+            let _ = self.connect(&id, Some(Endpoint { address, port })).await;
+        }
+    }
+
+    fn lock_fallback(&self) -> std::sync::MutexGuard<'_, crate::reconnect::Fallback> {
+        self.fallback.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Tell a connected GeekBridge phone why the link is about to close. False when there was nobody to tell (no
@@ -1432,7 +1508,9 @@ impl Daemon {
         let told = self
             .say_goodbye(device_id, bridge_core::goodbye::Reason::UserDisconnect)
             .await;
-        if !self.take_down(device_id).await {
+        let had_link = self.take_down(device_id).await;
+        self.lock_fallback().settled(device_id);
+        if !had_link {
             return Err(err(ErrorCode::NotFound, "no live link for this device"));
         }
         {
@@ -1451,6 +1529,7 @@ impl Daemon {
 
     async fn unpair(self: &Arc<Self>, device_id: &str) -> Result<(), ErrorBody> {
         let id = parse_id(device_id)?;
+        self.lock_fallback().forget(device_id);
         let connected = {
             let core = self.core();
             core.links
@@ -1871,6 +1950,10 @@ impl Daemon {
         let (status, out) = describe(&info, trusted);
         self.install(&mut core, status, out, Entry::Ready(Box::new(handshake)));
         drop(core);
+        // A phone that dialed in tells us where it listens: that is where a dial-back goes.
+        if let (true, Some(port)) = (trusted, info.peer.geekbridge_port) {
+            self.lock_fallback().learn(&id, info.peer_ip, port);
+        }
         // Aborted only after the lock is released: dropping the task runs guards that take it.
         for old in displaced.into_iter().chain(evicted) {
             old.task.abort();
@@ -1904,9 +1987,17 @@ impl Daemon {
     fn finish(&self, id: &str, attempt: u64, kind: EventKind) {
         let mut core = self.core();
         if core.links.get(id).is_some_and(|l| l.attempt == attempt) {
-            core.links.remove(id);
+            let removed = core.links.remove(id);
             core.challenges.retain(|_, c| c.attempt != attempt);
+            // A trusted link that ended without a clean close (reset, timeout): dial the phone back if it does not
+            // come back by itself. A clean close is the phone's own doing (its restart, its user's disconnect).
+            let silent = removed.is_some_and(|l| l.status.phase == LinkPhase::Connected)
+                && matches!(&kind, EventKind::LinkLost { reason } if *reason != reason_of_clean_close());
             core.emit(Some(id), kind);
+            drop(core);
+            if silent {
+                self.lock_fallback().lost(id, Instant::now());
+            }
         }
     }
 

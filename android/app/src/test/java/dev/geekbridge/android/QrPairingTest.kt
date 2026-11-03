@@ -168,6 +168,15 @@ class PairingHelpTest {
         assertTrue(PairingHelp.explain(TestStrings, null, "qr_certificate_mismatch", viaQr = true).headline.contains("not the computer"))
         assertTrue(PairingHelp.explain(TestStrings, "pairing_failed", "clock_skew").headline.contains("clocks"))
         assertTrue(PairingHelp.explain(TestStrings, "x", "unheard-of").headline.contains("did not work"))
+        // The named dial failures keep the plain words their old `io_error` had, or the other-network advice.
+        assertEquals(
+            PairingHelp.explain(TestStrings, "connect_failed", "io_error"),
+            PairingHelp.explain(TestStrings, "connect_failed", "conn_refused"),
+        )
+        assertEquals(
+            PairingHelp.explain(TestStrings, "connect_failed", "network_unreachable"),
+            PairingHelp.explain(TestStrings, "connect_failed", "unreachable"),
+        )
     }
 
     @Test fun recreatedActivityReadsTheLinkOnlyWhileItsConfirmationWasWaiting() {

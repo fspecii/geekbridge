@@ -667,3 +667,253 @@ fn the_phone_redials_the_port_the_computer_announced_in_its_identity() {
     assert!(link.is_ok(), "the phone must redial the announced port");
     phone.d.handle(&req("transport_stop", json!({})));
 }
+
+// ---- link-stability-review-2: half-open flows, zombies, and waking a sleeping redial
+
+/// A GeekBridge computer whose id sorts above any generated phone id, so a cross-dial tie-break always favours the
+/// connection the phone opened.
+fn high_desk() -> Desk {
+    let caps = vec![
+        "kdeconnect.ping".to_owned(),
+        bridge_core::heartbeat::MARKER.to_owned(),
+        bridge_core::goodbye::GOODBYE.to_owned(),
+    ];
+    let id = DeviceId::parse(&"z".repeat(32)).unwrap();
+    let creds = DeviceCredentials::generate_with_id(&id).unwrap();
+    let config = TransportConfig {
+        address_policy: AddressPolicy {
+            local_networks: true,
+            loopback: true,
+        },
+        ..TransportConfig::default()
+    };
+    let ep = Endpoint::new(
+        Arc::new(creds),
+        "Chaos Desk",
+        DeviceType::Desktop,
+        caps.clone(),
+        caps,
+        Arc::new(MemoryTrustStore::new()),
+        config,
+    )
+    .unwrap();
+    Desk {
+        rt: tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap(),
+        ep: Arc::new(ep),
+    }
+}
+
+fn trusted(s: &Value) -> Vec<Value> {
+    s["connections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["trusted"] == true)
+        .cloned()
+        .collect()
+}
+
+/// Half-open flow: the computer gave up on the link (its kernel saw no ACKs and closed it) but its FIN never reached
+/// the phone, so the phone still holds the dead connection. The computer's reconnect must get in. Before the fix the
+/// phone applied the cross-dial tie-break to a connection that was minutes old, kept the zombie (it was opened by the
+/// smaller id) and turned every reconnect of the computer away as `duplicate_connection` until its own silence rule
+/// fired, 70 s of awake time later (much longer with the screen off).
+#[test]
+fn a_reconnect_replaces_a_half_open_connection_the_phone_still_holds() {
+    let _g = serial();
+    let desk = high_desk();
+    let phone = Phone::start(47);
+    assert!(phone.id.as_str() < "z".repeat(32).as_str());
+    let (desk_addr, rx) = desk_listener(&desk);
+    let proxy = desk.proxy(desk_addr, Faults::default(), 11);
+    // The phone learns the proxy as the computer's listening port, pairs, then redials through the proxy by itself.
+    desk.ep.set_listen_port(proxy.port());
+    drop(desk.pair(&phone, phone.addr));
+    let held = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("phone redial");
+    let s = phone.wait("the phone's own link", Duration::from_secs(15), |s| {
+        trusted(s).len() == 1
+    });
+    assert_eq!(trusted(&s)[0]["role"], "initiator", "{s}");
+    // Silence the path, then the computer drops its side: the close is swallowed, the phone sees nothing.
+    proxy.blackhole(true);
+    drop(held);
+    std::thread::sleep(Duration::from_secs(6));
+    assert_eq!(
+        trusted(&phone.status()).len(),
+        1,
+        "phone still holds the zombie"
+    );
+    // The computer reconnects directly.
+    let Some(Handshake::Trusted(mut fresh)) =
+        desk.dial(phone.addr, &phone.id, Duration::from_secs(15))
+    else {
+        panic!("expected a trusted handshake");
+    };
+    let s = phone.wait("the reconnect kept", Duration::from_secs(10), |s| {
+        let t = trusted(s);
+        t.len() == 1 && t[0]["role"] == "acceptor"
+    });
+    assert_eq!(s["counters"]["rejected_duplicates"], 0, "{s}");
+    // And the link really works: a ping from the computer arrives.
+    desk.rt
+        .block_on(fresh.send(&bridge_kde::Packet::new(
+            "kdeconnect.ping",
+            serde_json::Map::new(),
+        )))
+        .unwrap();
+    phone.wait("ping over the new link", Duration::from_secs(10), |s| {
+        trusted(s).first().is_some_and(|c| c["pings_received"] == 1)
+    });
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// A redial sleeping in its back-off wakes at once when the app nudges the core (screen on, Doze maintenance window,
+/// network back): the timer behind the back-off is the monotonic clock, which stands still while the phone sleeps, so
+/// without the nudge a link lost with the screen locked is only redialed once the CPU has been awake long enough.
+#[test]
+fn a_nudge_wakes_a_redial_that_is_sleeping_in_its_back_off() {
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(48);
+    let (desk_addr, rx) = desk_listener(&desk);
+    let proxy = desk.proxy(desk_addr, Faults::default(), 12);
+    desk.ep.set_listen_port(proxy.port());
+    drop(desk.pair(&phone, phone.addr));
+    let link = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("phone redial");
+    // The computer goes away: its port refuses from now on, the link resets.
+    let port = proxy.port();
+    drop(proxy);
+    drop(link);
+    let base = redials(&phone.status());
+    phone.wait("two failed redials", Duration::from_secs(30), |s| {
+        redials(s) >= base + 2
+    });
+    // The third try is several seconds away (back-off); a nudge brings it forward.
+    let before = redials(&phone.status());
+    let t = Instant::now();
+    let v: Value =
+        serde_json::from_str(&phone.d.handle(&req("transport_heartbeat_now", json!({})))).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    phone.wait(
+        "a redial right after the nudge",
+        Duration::from_secs(2),
+        |s| redials(s) > before,
+    );
+    assert!(t.elapsed() < Duration::from_secs(2));
+    // The computer is back on the same port: the next try (or the next nudge) links. Rebinding a port that just
+    // carried connections is only reliable where the listener gets SO_REUSEADDR (tokio does that on Unix).
+    if !cfg!(unix) {
+        phone.d.handle(&req("transport_stop", json!({})));
+        return;
+    }
+    let listener = desk
+        .rt
+        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)))
+        .unwrap();
+    let ep = desk.ep.clone();
+    let (tx, back) = std::sync::mpsc::channel();
+    desk.rt.spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            if let Ok(Handshake::Trusted(link)) = ep.accept(stream).await {
+                let _ = tx.send(link);
+                std::future::pending::<()>().await;
+            }
+        }
+    });
+    phone.d.handle(&req("transport_heartbeat_now", json!({})));
+    back.recv_timeout(Duration::from_secs(5))
+        .expect("linked after the nudge");
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// Half-open with the computer heartbeating: the path goes silent (blackhole: the proxy ACKs everything at TCP level,
+/// so no kernel timer on the phone ever fires; this is what a frozen or vanished computer behind a stateful middlebox
+/// looks like). The phone's silence rule must close the link within its bound (70 s after the last packet, checked on
+/// a 20 s tick) and redial. Takes about two minutes of real time: runs with `GEEKBRIDGE_CHAOS=soak` only.
+#[test]
+fn a_silent_half_open_link_is_closed_by_the_heartbeat_rule_within_its_bound() {
+    if !soak() {
+        return;
+    }
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(49);
+    let (desk_addr, rx) = desk_listener(&desk);
+    let proxy = desk.proxy(desk_addr, Faults::default(), 13);
+    desk.ep.set_listen_port(proxy.port());
+    drop(desk.pair(&phone, phone.addr));
+    let mut link = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("phone redial");
+    // Two pings a heartbeat apart: the phone now judges this computer's silence.
+    let ping = || bridge_kde::Packet::new("kdeconnect.ping", serde_json::Map::new());
+    desk.rt.block_on(link.send(&ping())).unwrap();
+    std::thread::sleep(Duration::from_secs(20));
+    desk.rt.block_on(link.send(&ping())).unwrap();
+    phone.wait("two pings", Duration::from_secs(5), |s| {
+        trusted(s).first().is_some_and(|c| c["pings_received"] == 2)
+    });
+    let silent_from = Instant::now();
+    proxy.blackhole(true);
+    let s = phone.wait("ping_timeout", Duration::from_secs(120), |s| {
+        s["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["code"] == "ping_timeout")
+    });
+    let took = silent_from.elapsed();
+    assert!(
+        took >= bridge_core::heartbeat::PEER_SILENCE_LIMIT
+            && took
+                <= bridge_core::heartbeat::PEER_SILENCE_LIMIT
+                    + bridge_core::heartbeat::EVERY
+                    + Duration::from_secs(5),
+        "closed after {took:?}: {s}"
+    );
+    // And the phone redials (the old path is still swallowed; the redial goes to the same proxy port, which now
+    // forwards again).
+    proxy.blackhole(false);
+    rx.recv_timeout(Duration::from_secs(30))
+        .expect("redial after the timeout");
+    drop(link);
+    phone.d.handle(&req("transport_stop", json!({})));
+}
+
+/// The phone's user disconnected this computer: a nudge (screen on, Doze window) must not dial it again.
+#[test]
+fn a_nudge_does_not_undo_the_phone_users_disconnect() {
+    let _g = serial();
+    let desk = Desk::geekbridge();
+    let phone = Phone::start(50);
+    let (desk_addr, rx) = desk_listener(&desk);
+    desk.ep.set_listen_port(desk_addr.port());
+    drop(desk.pair(&phone, phone.addr));
+    let _link = rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("phone redial");
+    let s = phone.wait("linked", Duration::from_secs(10), |s| trusted(s).len() == 1);
+    let conn = trusted(&s)[0]["connection_id"].clone();
+    let v: Value = serde_json::from_str(&phone.d.handle(&req(
+        "transport_disconnect",
+        json!({ "connection_id": conn }),
+    )))
+    .unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    let before = redials(&phone.status());
+    phone.d.handle(&req("transport_heartbeat_now", json!({})));
+    std::thread::sleep(Duration::from_secs(3));
+    let s = phone.status();
+    assert_eq!(redials(&s), before, "{s}");
+    assert!(trusted(&s).is_empty(), "{s}");
+    assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+    phone.d.handle(&req("transport_stop", json!({})));
+}

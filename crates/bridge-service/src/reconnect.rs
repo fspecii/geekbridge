@@ -122,6 +122,84 @@ impl Book {
     }
 }
 
+/// Wait after a silent loss before the computer dials a phone it has not heard announcing. The phone's own redial
+/// (2 s, jittered) normally lands first; this one is for when the phone cannot: its timers stand still while it
+/// sleeps (screen locked), so neither its redial nor its announcement goes out, and an incoming dial is what wakes it.
+pub const FALLBACK_GRACE: Duration = Duration::from_secs(4);
+/// Most phones a computer remembers a dial-back address for (paired phones only, so this is a safety cap).
+const FALLBACK_KNOWN_MAX: usize = 64;
+
+#[derive(Debug)]
+struct FallbackEntry {
+    tries: u32,
+    next_at: Instant,
+}
+
+/// Dial-back without an announcement: after a paired phone's link is lost *silently* (reset, timeout; not a clean
+/// close, a goodbye, a disconnect or an unpair), dial the address it was last reached on, with the same doubling
+/// back-off and budget as [`Book`]. An announcing phone is left to [`Book`].
+#[derive(Debug, Default)]
+pub struct Fallback {
+    known: HashMap<String, (std::net::IpAddr, u16)>,
+    lost: HashMap<String, FallbackEntry>,
+}
+
+impl Fallback {
+    /// Where `id` can be dialed: its announcement, the endpoint we dialed, or its address plus the port its secure
+    /// identity declared.
+    pub fn learn(&mut self, id: &str, ip: std::net::IpAddr, port: u16) {
+        if self.known.len() < FALLBACK_KNOWN_MAX || self.known.contains_key(id) {
+            self.known.insert(id.to_owned(), (ip, port));
+        }
+    }
+
+    /// The link to `id` was lost without a goodbye or a clean close: start dialing it back after [`FALLBACK_GRACE`].
+    pub fn lost(&mut self, id: &str, now: Instant) {
+        if self.known.contains_key(id) {
+            self.lost.insert(
+                id.to_owned(),
+                FallbackEntry {
+                    tries: 0,
+                    next_at: now + FALLBACK_GRACE,
+                },
+            );
+        }
+    }
+
+    /// Linked again, announcing (the normal redial takes over), disconnected or unpaired: stop dialing back.
+    pub fn settled(&mut self, id: &str) {
+        self.lost.remove(id);
+    }
+
+    /// Unpaired: forget the address as well.
+    pub fn forget(&mut self, id: &str) {
+        self.lost.remove(id);
+        self.known.remove(id);
+    }
+
+    /// Phones with a dial-back in progress.
+    pub fn pending(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.lost.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// The endpoint to dial now, if a dial-back try is due. Records the try.
+    pub fn due(&mut self, id: &str, now: Instant) -> Option<(std::net::IpAddr, u16)> {
+        let addr = *self.known.get(id)?;
+        let e = self.lost.get_mut(id)?;
+        if e.tries >= MAX_TRIES || now < e.next_at {
+            return None;
+        }
+        e.next_at = now
+            + FALLBACK_GRACE
+                .saturating_mul(1u32 << e.tries.min(10))
+                .min(MAX_DELAY);
+        e.tries += 1;
+        Some(addr)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +276,70 @@ mod tests {
         // A plain pause has no end of its own.
         b.pause("q", t);
         assert!(!b.due("q", addr(5), t + span * 10));
+    }
+
+    #[test]
+    fn a_silent_loss_is_dialed_back_after_a_grace_with_back_off_and_a_budget() {
+        let mut f = Fallback::default();
+        let t0 = Instant::now();
+        f.lost("p", t0);
+        assert!(f.pending().is_empty(), "no address known: nothing to do");
+        f.learn("p", addr(5).0, 1716);
+        f.lost("p", t0);
+        assert_eq!(f.due("p", t0), None, "the phone's own redial goes first");
+        assert_eq!(f.due("p", t0 + FALLBACK_GRACE), Some(addr(5)));
+        assert_eq!(f.due("p", t0 + FALLBACK_GRACE), None);
+        let mut t = t0 + FALLBACK_GRACE;
+        let mut dials = 1;
+        for _ in 0..10_000 {
+            t += Duration::from_secs(1);
+            if f.due("p", t).is_some() {
+                dials += 1;
+            }
+        }
+        assert_eq!(
+            dials, MAX_TRIES,
+            "bounded: a phone that is gone is not dialed forever"
+        );
+        // Linked again: a later loss starts afresh.
+        f.settled("p");
+        assert_eq!(f.due("p", t), None);
+        f.lost("p", t);
+        assert!(f.due("p", t + FALLBACK_GRACE).is_some());
+        // Unpaired: the address goes too.
+        f.forget("p");
+        f.lost("p", t);
+        assert!(f.pending().is_empty());
+    }
+
+    #[test]
+    fn dial_back_gaps_double_from_the_grace_up_to_a_minute() {
+        let mut f = Fallback::default();
+        f.learn("p", addr(5).0, 1716);
+        let t0 = Instant::now();
+        f.lost("p", t0);
+        let mut t = t0;
+        let mut at = vec![];
+        while at.len() < 8 {
+            t += Duration::from_millis(500);
+            if f.due("p", t).is_some() {
+                at.push(t.duration_since(t0).as_secs());
+            }
+        }
+        let gaps: Vec<u64> = at.windows(2).map(|w| w[1] - w[0]).collect();
+        assert_eq!(at[0], 4);
+        assert_eq!(gaps, vec![4, 8, 16, 32, 60, 60, 60]);
+    }
+
+    #[test]
+    fn the_address_book_is_capped() {
+        let mut f = Fallback::default();
+        for n in 0..1000 {
+            f.learn(&format!("p{n}"), addr(5).0, 1716);
+        }
+        assert_eq!(f.known.len(), FALLBACK_KNOWN_MAX);
+        f.learn("p0", addr(6).0, 1717); // known phones keep updating
+        assert_eq!(f.known["p0"], (addr(6).0, 1717));
     }
 
     #[test]

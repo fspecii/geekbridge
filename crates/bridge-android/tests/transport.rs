@@ -1401,11 +1401,13 @@ fn connect_failures_are_reported_as_static_codes() {
         !Phone::events(s, "connect_failed").is_empty()
     });
     let e = Phone::events(&s, "connect_failed")[0].clone();
-    assert_eq!(e["code"], "io_error");
+    // Named, so a redial log tells "the computer is not listening" from "no route to it".
+    assert_eq!(e["code"], "conn_refused");
     assert_eq!(e["device_id"], "d".repeat(32).as_str());
     assert!(Phone::array(&s, "attempts").is_empty());
     let text = s.to_string();
-    assert!(!text.contains("refused") && !text.contains("os error"));
+    // The OS message never leaks, only the static code.
+    assert!(!text.contains("Connection refused") && !text.contains("os error"));
     // `since` filters events.
     let seq = e["seq"].as_u64().unwrap();
     let v = phone.act("transport_status", json!({"since": seq}));

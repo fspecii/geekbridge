@@ -1036,6 +1036,11 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         discovery: status,
     };
     let announce_port = announce.as_ref().map(|(_, _, port)| *port);
+    // Our listening port rides in the secure identity, so a computer that only ever saw us dial in can dial back
+    // (its fallback redial when our announcements do not reach it).
+    if let Some(addr) = listen_addr {
+        endpoint.set_listen_port(addr.port());
+    }
     let core = Arc::new(Core::new(endpoint, store, policy, info, requests));
     if let Some((enabled, max_image)) = args.clipboard {
         core.clip()
@@ -1078,6 +1083,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
 
     // A restart (network change) must not leave the computer waiting for the next announcement.
     engine::redial_remembered(&core, rt.handle());
+    rt.spawn(engine::redial_on_nudge(core.clone()));
 
     let result = json!({
         "state": "running",

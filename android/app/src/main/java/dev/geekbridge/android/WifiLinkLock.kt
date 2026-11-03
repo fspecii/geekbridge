@@ -20,7 +20,11 @@ object WifiLockPolicy {
     fun wanted(paired: Int, connected: Boolean, msSinceLoss: Long?): Boolean =
         paired > 0 && (connected || (msSinceLoss != null && msSinceLoss in 0 until LINGER_MS))
 
-    /** Low latency from Android 10; the older high-performance mode before. */
+    /**
+     * Low latency from Android 10; the older high-performance mode before. Android applies low-latency mode only while
+     * the screen is on and the holder is in the foreground, so with the screen locked this lock does not keep the radio
+     * out of power save (docs/reports/link-stability-review-2.md, F-7): the link must survive power save on its own.
+     */
     @Suppress("DEPRECATION")
     fun mode(sdk: Int): Int =
         if (sdk >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF

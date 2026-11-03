@@ -46,8 +46,13 @@ adds "Battery optimisation is on".
 - Notification: channel "Background connection", `IMPORTANCE_LOW`, ongoing, silent, with a Stop action.
 - Holds one TCP listener and sends UDP announcements; it does not listen for discovery, so there is **no multicast
   lock**, and there are **no wake locks** in the new code. (Share transfers by the sharing code keep their own holds.)
-- No polling or timers in the service. It reacts to a default-network change (`registerDefaultNetworkCallback`,
-  debounced 3 s, bounded retries) by re-announcing once. Dead peers are detected by kernel TCP keepalive that `bridge-kde` arms on every accepted and dialed socket
+- No polling or timers in the service. It watches the **Wi-Fi network** (`registerNetworkCallback` with
+  `TRANSPORT_WIFI`; not the default network, which One UI moves between Wi-Fi and mobile data on its own while the Wi-Fi
+  link stays fine) and restarts the transport (debounced 3 s, bounded retries) only for another Wi-Fi network or a
+  changed IPv4 address; the first Wi-Fi network seen only nudges the core. Screen on also nudges the core
+  (`transport_heartbeat_now`): every link pings at once, and a redial or announcement whose timer stood still while the
+  CPU slept goes out now (a spent redial budget gets one more try per nudge). See
+  docs/reports/link-stability-review-2.md. Dead peers are detected by kernel TCP keepalive that `bridge-kde` arms on every accepted and dialed socket
   (30 s idle, 10 s interval, 3 probes, `TCP_USER_TIMEOUT` 60 s; Android included), plus a 20 s application
   heartbeat (ping) in both directions. When Doze opens a maintenance window (or ends) the service sends
   `transport_heartbeat_now`, so the phone pings at once instead of waiting for a timer whose clock stopped with the CPU. While the screen is off and nobody uses the link the phone pings every 60 s

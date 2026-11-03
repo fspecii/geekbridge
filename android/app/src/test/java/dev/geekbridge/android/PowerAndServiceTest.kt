@@ -98,6 +98,13 @@ class PowerAndServiceTest {
         assertFalse(ServicePolicy.shouldRun(1, false, pairing = false))
     }
 
+    @Test fun wifiTrackingRestartsOnlyForAnotherWifiNetworkAndNudgesOnTheFirst() {
+        assertEquals(NetworkAction.Nudge, ServicePolicy.onWifiAvailable(null, 5))
+        assertEquals(NetworkAction.None, ServicePolicy.onWifiAvailable(5, 5))
+        assertEquals(NetworkAction.Restart, ServicePolicy.onWifiAvailable(5, 6))
+        assertTrue(ScreenRules.nudgeOnScreenOn)
+    }
+
     @Test fun networkRestartIgnoresFirstCallbackAndSameNetwork() {
         assertFalse(ServicePolicy.shouldRestartOnNetwork(null, 5))
         assertFalse(ServicePolicy.shouldRestartOnNetwork(5, 5))

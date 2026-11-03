@@ -29,9 +29,10 @@ object PairingHelp {
             code == "pairing_timeout" -> e(R.string.help_pair_timeout_h, R.string.help_pair_timeout_a)
             code == "timeout" || code == "connect_timeout" || kind == "connect_failed" && code == null ->
                 e(R.string.help_no_answer_h, R.string.help_no_answer_a)
-            code == "address_rejected" || code == "network_unreachable" ->
+            code == "address_rejected" || code == "network_unreachable" || code == "unreachable" ->
                 e(R.string.help_other_network_h, R.string.help_other_network_a)
-            code == "link_closed" || code == "peer_closed" || code == "park_timeout" || code == "io_error" ->
+            code == "link_closed" || code == "peer_closed" || code == "park_timeout" || code == "io_error" ||
+                code == "conn_refused" ->
                 e(R.string.help_closed_h, R.string.help_closed_a)
             code == "tls_failed" -> e(R.string.help_tls_h, R.string.help_tls_a)
             else -> e(R.string.help_default_h, R.string.help_default_a)

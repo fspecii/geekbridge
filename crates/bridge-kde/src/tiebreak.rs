@@ -8,6 +8,12 @@
 //! redial. The rule below picks the same connection on both ends.
 use crate::{DeviceId, Role};
 
+/// How long a held connection counts as "just made". Only inside this window are two connections a cross-dial
+/// decided by [`prefer_new`]; a held connection older than this that meets a new one is a reconnect after a loss the
+/// holder has not noticed yet (a half-open flow: the peer's FIN or RST never arrived), and the newest must win on both
+/// ends, or the peer could not get back in until the holder's own dead-link detection fired.
+pub const CROSS_DIAL_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Two trusted connections to `peer`: the one held now (opened with `old`) and one that just arrived
 /// (opened with `new`, from the point of view of `local`). True if the new one replaces the old.
 ///

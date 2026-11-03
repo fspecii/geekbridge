@@ -12,6 +12,8 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.LinkProperties
 import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -24,8 +26,10 @@ import java.net.Inet4Address
  * Lightweight by design: it only runs while at least one computer is paired and the user has not turned
  * "Stay connected" off; it holds one TCP listener and one UDP announce (no multicast lock, no wake lock;
  * a Wi-Fi lock only while linked, see [WifiLockPolicy]),
- * has no timers or polling loops, and reacts only to events: a default-network change re-announces the phone
- * once (debounced); dead peers are detected by kernel TCP keepalive in the Rust transport. It is a
+ * has no timers or polling loops, and reacts only to events: a change of Wi-Fi network re-announces the phone
+ * once (debounced; a default-network flip between Wi-Fi and mobile data is ignored, see [ServicePolicy.onWifiAvailable]),
+ * and screen on / Doze windows nudge the core (ping now, wake a sleeping redial); dead peers are detected by the
+ * heartbeat and kernel TCP keepalive in the Rust transport. It is a
  * `connectedDevice` foreground service because it keeps a connection to a device on the local network;
  * that type may be started from BOOT_COMPLETED on Android 14+ (dataSync may not).
  */
@@ -46,7 +50,12 @@ class LinkService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 Intent.ACTION_SCREEN_OFF -> controller.setScreen(false)
-                Intent.ACTION_SCREEN_ON -> controller.setScreen(true)
+                Intent.ACTION_SCREEN_ON -> {
+                    controller.setScreen(true)
+                    // The user is back: ping now so a dead link shows itself at once, and wake a redial or an
+                    // announcement whose timer stood still while the CPU slept.
+                    if (ScreenRules.nudgeOnScreenOn) controller.heartbeatNow()
+                }
                 android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
                     val idle = getSystemService(android.os.PowerManager::class.java)?.isDeviceIdleMode == true
                     GbLog.i("link", "doze idle=$idle")
@@ -146,21 +155,26 @@ class LinkService : Service() {
         announce = true,
     )
 
+    /** Watches the Wi-Fi network (not the default network, see [ServicePolicy.onWifiAvailable]). */
     private fun watchNetwork() {
         if (callback != null) return
         val cm = getSystemService(ConnectivityManager::class.java) ?: return
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 val id = network.networkHandle
-                val change = ServicePolicy.shouldRestartOnNetwork(lastNetwork, id)
+                val action = ServicePolicy.onWifiAvailable(lastNetwork, id)
                 if (id != lastNetwork) lastV4 = null // addresses of the new network arrive in onLinkPropertiesChanged
                 lastNetwork = id
-                GbLog.i("link", "default network available (changed=$change)")
-                if (change) scheduleRestart()
+                GbLog.i("link", "wifi network available (action=$action)")
+                when (action) {
+                    NetworkAction.Restart -> scheduleRestart()
+                    NetworkAction.Nudge -> controller.heartbeatNow()
+                    NetworkAction.None -> Unit
+                }
             }
 
             override fun onLost(network: Network) {
-                GbLog.i("link", "default network lost")
+                GbLog.i("link", "wifi network lost")
             }
 
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
@@ -174,8 +188,13 @@ class LinkService : Service() {
                 }
             }
         }
+        // Any Wi-Fi network, with or without internet access: a LAN-only access point is a fine place for the link.
+        val wifi = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .build()
         try {
-            cm.registerDefaultNetworkCallback(cb, main)
+            cm.registerNetworkCallback(wifi, cb, main)
             callback = cb
         } catch (_: RuntimeException) {
             // Too many callbacks or missing permission: the link still works, it just will not re-announce.
