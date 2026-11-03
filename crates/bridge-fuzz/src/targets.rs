@@ -1020,7 +1020,22 @@ fn doctor_ufw(input: &[u8]) {
             ufw_enabled: enabled,
             ufw_rules: Some(s.clone()),
             firewalld_active: false,
+            windows: None,
+            mac: None,
         };
+        let native = bridge_core::firewall::Firewall {
+            windows: Some(bridge_core::firewall::WindowsFw {
+                state: s.clone(),
+                rules: s.clone(),
+                exe: "C:\\gb\\geekbridge-service.exe".into(),
+            }),
+            ..Default::default()
+        };
+        let _ = bridge_core::firewall::verdict(&native);
+        let _ = (
+            bridge_core::firewall::parse_mac_state(&s),
+            bridge_core::firewall::parse_mac_app(&s),
+        );
         let checks = doctor::run(&doctor::Inputs {
             status: Err(s.chars().take(200).collect()),
             clipboard: None,
@@ -1067,22 +1082,7 @@ fn reconnect_book(input: &[u8]) {
                     // Address flips grant two more tries each time the cap was reached, so a long run needs
                     // time to have passed: at most 60 s between tries once the back-off has saturated.
                     let elapsed = now.duration_since(t0);
-            windows: None,
-            mac: None,
                     oracle(
-        let native = bridge_core::firewall::Firewall {
-            windows: Some(bridge_core::firewall::WindowsFw {
-                state: s.clone(),
-                rules: s.clone(),
-                exe: "C:\\gb\\geekbridge-service.exe".into(),
-            }),
-            ..Default::default()
-        };
-        let _ = bridge_core::firewall::verdict(&native);
-        let _ = (
-            bridge_core::firewall::parse_mac_state(&s),
-            bridge_core::firewall::parse_mac_app(&s),
-        );
                         u64::from(*n) <= u64::from(MAX_TRIES) + elapsed.as_secs() / 2 + 1,
                         || format!("{n} dials in {elapsed:?}"),
                     );
