@@ -283,5 +283,5 @@ a few KB of code and vector line icons.
   dark/light follow the system, RTL aligns dot text to the start edge, decorative dot art is hidden from TalkBack.
 * **Design gallery (debug builds only).** `DesignGalleryActivity` shows every component with synthetic data:
   `adb shell am start -n dev.geekbridge.android/.DesignGalleryActivity --es page status|calendar|controls`.
-* **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/nothing-*.png`
-  (`nothing-home-dark`, `nothing-setup-light`, `nothing-status-tiles-dark`, `nothing-calendar-dark`).
+* **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/android-*.png`
+  (`android-status-dark`, `android-setup-light`, `android-share-dark`, `android-calendar-dark`), reduced from `tests/golden/android/`.
