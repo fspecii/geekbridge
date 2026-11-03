@@ -105,6 +105,9 @@ class TransportProtocolTest {
         assertEquals("transport_wifi_bind", bind.getString("action"))
         assertEquals("192.168.1.20", bind.getString("ip"))
         assertFalse(JSONObject(TransportProtocol.wifiBindRequest(null)).has("ip")) // absent clears it
+        val enabled = JSONObject(TransportProtocol.wifiBindEnabledRequest(false))
+        assertEquals("transport_wifi_bind_enabled", enabled.getString("action"))
+        assertEquals(false, enabled.getBoolean("enabled"))
         assertEquals("transport_disconnect", JSONObject(TransportProtocol.disconnectRequest(3)).getString("action"))
         assertEquals("transport_unpair", JSONObject(TransportProtocol.unpairRequest(ID_PEER)).getString("action"))
         val wait = JSONObject(TransportProtocol.waitRequest(7, Long.MAX_VALUE))

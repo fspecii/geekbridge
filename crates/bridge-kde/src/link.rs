@@ -561,6 +561,27 @@ impl Endpoint {
             .map(|h| h.with_local_ip(local))
     }
 
+    /// Like [`Endpoint::connect_from`], but only from `source`: no plain fallback, so the caller sees what the
+    /// bound path does (and decides, with its own deadline over connect and handshake together, what to do about
+    /// it). A source of the other address family dials plainly.
+    pub async fn connect_bound(
+        &self,
+        addr: SocketAddr,
+        target: &DeviceId,
+        source: IpAddr,
+    ) -> Result<Handshake> {
+        let stream = if source.is_ipv4() == addr.is_ipv4() {
+            dial_bound(addr, source, self.config.timeouts.connect.min(BOUND_TRIAL)).await?
+        } else {
+            dial_tcp(addr, None, self.config.timeouts.connect).await?
+        };
+        configure_tcp(&stream)?;
+        let local = stream.local_addr().ok().map(|a| a.ip());
+        self.initiate(stream, addr.ip(), target)
+            .await
+            .map(|h| h.with_local_ip(local))
+    }
+
     /// Handle an accepted TCP connection as TLS client. The address policy is
     /// applied before a single byte is read.
     pub async fn accept(&self, stream: TcpStream) -> Result<Handshake> {
@@ -853,6 +874,17 @@ pub(crate) async fn dial_tcp(
         return plain(budget).await;
     };
     let trial = budget.min(BOUND_TRIAL);
+    match dial_bound(addr, ip, trial).await {
+        Ok(stream) => Ok(stream),
+        Err(KdeError::Io(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            Err(KdeError::Io(e))
+        }
+        _ => plain(budget.saturating_sub(trial).max(Duration::from_secs(1))).await,
+    }
+}
+
+/// TCP connect from `ip` only, within `trial`.
+async fn dial_bound(addr: SocketAddr, ip: IpAddr, trial: Duration) -> Result<TcpStream> {
     let bound = async {
         let socket = if addr.is_ipv4() {
             tokio::net::TcpSocket::new_v4()?
@@ -862,11 +894,10 @@ pub(crate) async fn dial_tcp(
         socket.bind(SocketAddr::new(ip, 0))?;
         socket.connect(addr).await
     };
-    match timeout(trial, bound).await {
-        Ok(Ok(stream)) => Ok(stream),
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Err(e.into()),
-        _ => plain(budget.saturating_sub(trial).max(Duration::from_secs(1))).await,
-    }
+    timeout(trial, bound)
+        .await
+        .map_err(|_| KdeError::Timeout("TCP connect"))?
+        .map_err(KdeError::from)
 }
 
 #[cfg(test)]

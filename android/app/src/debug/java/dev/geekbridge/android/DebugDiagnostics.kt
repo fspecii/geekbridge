@@ -69,6 +69,8 @@ object DebugDiagnostics {
     private var lastCapabilities = ""
     private var lastDrop: DropNote? = null
     private var drops = 0
+    private var lastBind: BindNote? = null
+    private var bindFallbacks = 0
 
     /** Process start (ContentProvider.onCreate): start reading the log; hook the UI once the Application is up. */
     @Synchronized
@@ -154,6 +156,11 @@ object DebugDiagnostics {
             val net = app?.let { DebugStateCollector.network(it) } ?: "unknown"
             val quiet = e.quietMs?.let { "; silent for ${it / 1000} s" }.orEmpty()
             linkHistory.add("event ${e.kind}: $who; reason: $why$quiet; network: $net")
+            if (e.kind == "wifi_bind_fallback") {
+                bindFallbacks++
+                lastBind = BindNote(System.currentTimeMillis(), why)
+                GbLog.i("link", "wifi bind fallback: reason=$why") // reason code only
+            }
             if (e.kind == "link_closed") {
                 drops++
                 lastDrop = DropNote(System.currentTimeMillis(), why, net, e.quietMs)
@@ -228,7 +235,7 @@ object DebugDiagnostics {
     }
 
     @Synchronized
-    private fun linkHealth(): List<String> = LinkHealthText.render(lastDrop, drops, System.currentTimeMillis())
+    private fun linkHealth(): List<String> = LinkHealthText.render(lastDrop, drops, System.currentTimeMillis(), AppState.bindWifi, lastBind, bindFallbacks)
 
     fun stateText(): String {
         val ctx = app ?: return "not started"
@@ -287,7 +294,16 @@ object DebugDiagnostics {
         )
         val sw = ui.check(card, "Send debug log to computer", DebugHooks.streaming)
         sw.setOnCheckedChangeListener { _, on -> setStreaming(activity, on) }
+        val bind = ui.check(card, "Bind to the Wi-Fi address (bind_wifi)", AppState.bindWifi)
+        bind.setOnCheckedChangeListener { _, on -> setBindWifi(on) }
         ui.button(card, "Debug state") { showState(activity) }
+    }
+
+    /** The persistent kill switch for the Wi-Fi bind; also pushed to the running core. */
+    fun setBindWifi(on: Boolean) {
+        AppState.bindWifi = on
+        LinkRuntime.controller().setWifiBindEnabled(on)
+        GbLog.i("debug", "bind_wifi=$on")
     }
 
     private fun showState(activity: Activity) {

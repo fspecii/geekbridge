@@ -404,6 +404,19 @@ fn wifi_bind_takes_a_unicast_ipv4_address_or_nothing() {
     assert_eq!(ok(&v)["bound"], false, "no address clears it");
     let v = parse(&d.handle(&request("transport_wifi_bind", json!({ "x": 1 })).to_string()));
     assert_eq!(v["ok"], false);
+    // The kill switch: a bool, nothing else.
+    let v = parse(
+        &d.handle(&request("transport_wifi_bind_enabled", json!({"enabled": true})).to_string()),
+    );
+    assert_eq!(ok(&v)["enabled"], true);
+    for bad in [
+        json!({}),
+        json!({"enabled": "no"}),
+        json!({"enabled": true, "x": 1}),
+    ] {
+        let v = parse(&d.handle(&request("transport_wifi_bind_enabled", bad).to_string()));
+        assert_eq!(v["ok"], false);
+    }
 }
 
 #[test]

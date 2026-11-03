@@ -177,9 +177,31 @@ data class StateModel(
 /** The last time a link closed: why (the core's reason code), on which network, and how long the computer had been silent. */
 data class DropNote(val atMs: Long, val code: String, val network: String, val quietMs: Long?)
 
+/** The last time the core fell back from the Wi-Fi-bound path to the plain route: when and why (its reason code). */
+data class BindNote(val atMs: Long, val code: String)
+
 /** The "link health" lines of the dump. Pure. Only structured facts, never an address. */
 object LinkHealthText {
-    fun render(last: DropNote?, drops: Int, nowMs: Long): List<String> = buildList {
+    /** How long the core keeps dialing unbound after a fallback (mirrors the core's `UNHEALTHY_FOR`). */
+    const val UNHEALTHY_MS = 10 * 60 * 1000L
+
+    fun render(
+        last: DropNote?,
+        drops: Int,
+        nowMs: Long,
+        bindEnabled: Boolean = true,
+        bindFallback: BindNote? = null,
+        bindFallbacks: Int = 0,
+    ): List<String> = buildList {
+        add("Wi-Fi binding (bind_wifi): ${if (bindEnabled) "on" else "OFF (kill switch)"}")
+        if (bindFallback == null) {
+            add("Wi-Fi bind fallbacks since the app started: none")
+        } else {
+            val ago = ((nowMs - bindFallback.atMs).coerceAtLeast(0)) / 1000
+            val left = ((UNHEALTHY_MS - (nowMs - bindFallback.atMs)) / 1000).coerceAtLeast(0)
+            add("Wi-Fi bind fallbacks since the app started: $bindFallbacks; last ${span(ago)} ago, reason ${bindFallback.code}")
+            add(if (left > 0) "dials and announcements stay unbound for about ${span(left)} more" else "bound dials are tried again")
+        }
         if (last == null) {
             add("no link has closed since the app started")
         } else {

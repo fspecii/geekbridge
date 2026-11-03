@@ -268,7 +268,15 @@ progress, or a trusted link). Result `{disconnected:true}`; `unknown_connection`
   data the default network while Wi-Fi is still up, and an unbound socket follows the default network. It is process
   wide like `transport_screen`, needs no running transport and survives a restart. Established connections are not
   touched. A `link_closed` event also carries `quiet_ms`: how long nothing had been heard from the computer when the
-  link closed (debug diagnostics print it).
+  link closed (debug diagnostics print it). Safety net (docs/reports/wifi-binding-safety.md): a bound dial must finish
+  its TLS/identity handshake within 6 s, and a bound link that dies within 10 s without the computer ever being heard
+  counts too; either marks that Wi-Fi address unhealthy for 10 minutes (memory only), after which dials and
+  announcements leave unbound, and a `wifi_bind_fallback` event (code `bound_stalled`, `bound_io` or
+  `bound_early_death`) is emitted.
+
+* `transport_wifi_bind_enabled {enabled}`: the `bind_wifi` preference (default on). Off: no dial and no announcement
+  is bound. `GB_BIND_WIFI=0` in the core's environment is the same switch for host tests. Process wide, no running
+  transport needed.
 
 ### `version`
 

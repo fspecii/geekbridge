@@ -165,6 +165,8 @@ object TransportProtocol {
     fun heartbeatNowRequest(): String = base("transport_heartbeat_now").toString()
     /** The phone's Wi-Fi IPv4 address for dials and announcements; no [ip] clears it (no Wi-Fi, or ambiguous). */
     fun wifiBindRequest(ip: String?): String = base("transport_wifi_bind").also { if (ip != null) it.put("ip", ip) }.toString()
+    /** The `bind_wifi` preference for the core (default on): off, every dial and announcement leaves unbound. */
+    fun wifiBindEnabledRequest(on: Boolean): String = base("transport_wifi_bind_enabled").put("enabled", on).toString()
     fun pingRequest(connectionId: Long): String = base("transport_ping").put("connection_id", connectionId).toString()
 
     // ------------------------------------------------------------------ parsing

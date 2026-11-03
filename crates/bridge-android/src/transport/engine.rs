@@ -14,7 +14,7 @@
 //!   connection that can pair or be closed;
 //! * state is per [`Core`]; `transport_stop` drops it and the runtime, so nothing survives a restart.
 use std::collections::{BTreeMap, VecDeque};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -67,6 +67,7 @@ pub(super) fn clipboard_outgoing_types() -> Vec<String> {
     clipboard::outgoing_types()
 }
 
+use super::bindhealth;
 use super::discovery::{self, Discovered};
 use crate::dispatch::{ApiError, err};
 
@@ -732,6 +733,13 @@ impl Core {
         Ok(())
     }
 
+    /// The bound path failed for `src`: remember it (unbound dials for a while) and tell the app, reason code only.
+    fn bind_fallback(&self, src: Ipv4Addr, reason: &'static str, device: &DeviceId) {
+        bindhealth::mark_unhealthy(src);
+        self.lock()
+            .event("wifi_bind_fallback", None, Some(device), Some(reason));
+    }
+
     fn remove_conn(&self, id: u64, event: Option<(&'static str, Option<&'static str>)>) {
         self.remove_conn_quiet(id, event, None);
     }
@@ -1007,20 +1015,64 @@ async fn inbound(core: Arc<Core>, stream: TcpStream, permit: tokio::sync::OwnedS
     let result = timeout(HANDSHAKE_DEADLINE, core.endpoint.accept(stream)).await;
     drop(permit);
     match result {
-        Ok(Ok(hs)) => drive(core, hs, Origin::Inbound, None, None).await,
+        Ok(Ok(hs)) => drive(core, hs, Origin::Inbound, None, None, None).await,
         _ => core.count(|c| c.inbound_failed += 1),
     }
 }
 
 pub(super) async fn outbound(core: Arc<Core>, attempt: u64, addr: SocketAddr, target: DeviceId) {
-    match timeout(
-        HANDSHAKE_DEADLINE,
-        core.endpoint
-            .connect_from(addr, &target, super::dial_source(addr.ip())),
-    )
-    .await
-    {
-        Ok(Ok(hs)) => drive(core, hs, Origin::Outbound, Some(attempt), Some(addr)).await,
+    // How a bound dial went wrong, and whether the unbound retry must succeed before the bound path is blamed.
+    let mut blame: Option<(Ipv4Addr, &'static str, bool)> = None;
+    if let Some(IpAddr::V4(src)) = super::dial_source(addr.ip(), core.policy.loopback) {
+        // One budget over connect and handshake: a bound socket that connects and then goes quiet (E2E-14) must
+        // not hold the redial for the full handshake deadline.
+        match timeout(
+            bindhealth::BOUND_BUDGET,
+            core.endpoint.connect_bound(addr, &target, IpAddr::V4(src)),
+        )
+        .await
+        {
+            Ok(Ok(hs)) => {
+                drive(
+                    core,
+                    hs,
+                    Origin::Outbound,
+                    Some(attempt),
+                    Some(addr),
+                    Some(src),
+                )
+                .await;
+                return;
+            }
+            Ok(Err(KdeError::Io(e))) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                // The plain route would say the same.
+                core.attempt_failed(attempt, &target, "conn_refused");
+                return;
+            }
+            Ok(Err(KdeError::Timeout(_))) | Err(_) => {
+                blame = Some((src, bindhealth::REASON_STALLED, false));
+            }
+            Ok(Err(KdeError::Io(_) | KdeError::UnexpectedEof)) => {
+                blame = Some((src, bindhealth::REASON_IO, true));
+            }
+            // Trust and protocol errors are not the bind's fault.
+            Ok(Err(e)) => {
+                core.attempt_failed(attempt, &target, kde_code(&e));
+                return;
+            }
+        }
+        if let Some((src, reason, false)) = blame {
+            core.bind_fallback(src, reason, &target);
+        }
+    }
+    match timeout(HANDSHAKE_DEADLINE, core.endpoint.connect(addr, &target)).await {
+        Ok(Ok(hs)) => {
+            if let Some((src, reason, true)) = blame {
+                // The plain route works where the bound one failed: the bind is the culprit.
+                core.bind_fallback(src, reason, &target);
+            }
+            drive(core, hs, Origin::Outbound, Some(attempt), Some(addr), None).await;
+        }
         Ok(Err(e)) => core.attempt_failed(attempt, &target, kde_code(&e)),
         Err(_) => core.attempt_failed(attempt, &target, "timeout"),
     }
@@ -1032,6 +1084,7 @@ async fn drive(
     origin: Origin,
     attempt: Option<u64>,
     dialed: Option<SocketAddr>,
+    bound: Option<Ipv4Addr>,
 ) {
     let info = hs.info().clone();
     let id = info.connection_id.0;
@@ -1059,7 +1112,7 @@ async fn drive(
         Handshake::Trusted(link) => {
             core.lock_redial()
                 .connected(&device, peer_ip, dialed, info.peer.geekbridge_port);
-            run_trusted(core, id, link, ctl_rx, close).await
+            run_trusted(core, id, link, ctl_rx, close, bound).await
         }
         Handshake::Pending(link) => run_pending(core, id, link, origin, ctl_rx, close).await,
     }
@@ -1120,7 +1173,7 @@ async fn run_pending(
                     trusted.info().peer.geekbridge_port,
                 );
             }
-            run_trusted(core, id, trusted, ctl_rx, close).await;
+            run_trusted(core, id, trusted, ctl_rx, close, None).await;
         }
         Some(Err(e)) => {
             let code = kde_code(&e);
@@ -1167,7 +1220,9 @@ async fn run_trusted(
     mut link: TrustedLink,
     mut ctl_rx: mpsc::Receiver<Ctl>,
     close: Arc<Notify>,
+    bound: Option<Ipv4Addr>,
 ) {
+    let started = std::time::Instant::now();
     // A computer that connects while a call is already ringing must hear about it.
     if let Some(body) = core
         .calls()
@@ -1330,6 +1385,18 @@ async fn run_trusted(
     let device = core.lock().conns.get(&id).map(|c| c.peer_id.clone());
     let quiet = u64::try_from(beat.silent_for(std::time::Instant::now()).as_millis()).ok();
     core.remove_conn_quiet(id, exit, quiet);
+    // A link from the Wi-Fi-bound socket that dies young without the computer ever having been heard: the bound
+    // path is suspect. The redial below then leaves unbound.
+    if let Some(src) = bound
+        && bindhealth::early_death(
+            started.elapsed(),
+            beat.silent_for(std::time::Instant::now()),
+            exit.and_then(|(_, code)| code),
+        )
+        && let Some(device) = &device
+    {
+        core.bind_fallback(src, bindhealth::REASON_EARLY_DEATH, device);
+    }
     if redial && let Some(device) = device {
         spawn_redial(&core, device);
     }

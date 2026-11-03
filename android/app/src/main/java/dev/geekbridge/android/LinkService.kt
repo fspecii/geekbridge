@@ -214,6 +214,7 @@ class LinkService : Service() {
     private fun pushWifiBind() {
         val ip = WifiBindPolicy.choose(wifiAddresses.values)
         if (!WifiBindPolicy.shouldPush(!bindPushed, pushedBind, ip)) return
+        if (!bindPushed) controller.setWifiBindEnabled(AppState.bindWifi) // the core's switch outlives the service
         bindPushed = true
         pushedBind = ip
         GbLog.i("link", "wifi bind ${if (ip != null) "set" else "cleared"}")

@@ -391,7 +391,7 @@ fn version_result() -> Value {
         "request_versions": [REQUEST_VERSION],
         "actions": ACTIONS,
         // Stateful actions that do nothing until `transport_start`; see docs/android-transport.md.
-        "transport_actions": transport::ACTIONS,
+        "transport_actions": &transport::ACTIONS[..],
         "limits": {
             "max_request_bytes": MAX_REQUEST_BYTES,
             "max_transport_request_bytes": MAX_TRANSPORT_REQUEST_BYTES,

@@ -297,6 +297,9 @@ class TransportController(
     /** Fire and forget: pings every link now (a Doze maintenance window is open; the timer may not run again soon). */
     fun heartbeatNow() = run(TransportProtocol.heartbeatNowRequest()) { }
 
+    /** Fire and forget: the `bind_wifi` kill switch ([AppState.bindWifi]); the core also marks a bad bind itself. */
+    fun setWifiBindEnabled(on: Boolean) = run(TransportProtocol.wifiBindEnabledRequest(on)) { }
+
     /** Fire and forget: dials and announcements leave from this Wi-Fi address (null: unbound). See [WifiBindPolicy]. */
     fun setWifiBind(ip: String?) = run(TransportProtocol.wifiBindRequest(ip)) { }
 

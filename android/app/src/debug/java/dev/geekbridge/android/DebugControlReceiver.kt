@@ -9,7 +9,7 @@ import android.content.Intent
  * Debug builds only: flips the phone's opt-in switches without driving the UI, for scripts/e2e-debug-diag.sh.
  *
  *   adb shell am broadcast -n dev.geekbridge.android/.DebugControlReceiver -a dev.geekbridge.debug.SET \
- *       --es what sms|contacts|calendar|calendar_edit|calls|stream --ez on true
+ *       --es what sms|contacts|calendar|calendar_edit|calls|stream|bind_wifi --ez on true
  *   adb shell am broadcast ... --es what grant --es computer DEVICE_ID --es feature sms --ez on true
  *
  * `grant` is the per-computer switch (ComputerGrantsRuntime); the others are the app-wide switches.
@@ -27,6 +27,7 @@ class DebugControlReceiver : BroadcastReceiver() {
             "calendar_edit" -> PhoneDataRuntime.setCalendarEdit(on)
             "calls" -> CallControlRuntime.setEnabled(on)
             "stream" -> DebugDiagnostics.setStreaming(context, on)
+            "bind_wifi" -> DebugDiagnostics.setBindWifi(on)
             "grant" -> {
                 val computer = intent.getStringExtra("computer") ?: return
                 val feature = GrantFeature.entries.firstOrNull { it.key == intent.getStringExtra("feature") } ?: return

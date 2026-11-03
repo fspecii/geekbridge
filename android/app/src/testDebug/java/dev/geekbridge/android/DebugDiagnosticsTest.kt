@@ -363,10 +363,23 @@ class DebugDiagnosticsTest {
         val text = lines.joinToString("\n")
         for (needle in listOf("5 min ago", "reason ping_timeout", "network then: wifi", "for 74 s before it closed", "closes since the app started: 3"))
             assertTrue("missing '$needle' in:\n$text", needle in text)
-        assertTrue(LinkHealthText.render(null, 0, 5).single().contains("no link has closed"))
+        assertTrue(LinkHealthText.render(null, 0, 5).any { it.contains("no link has closed") })
         assertTrue("unknown time" in LinkHealthText.render(drop.copy(quietMs = null), 1, 2_000_000).joinToString())
         val dump = DebugStateText.render(model(emptyList(), emptyList()).copy(linkHealth = lines))
         assertTrue("== Link health ==" in dump && "reason ping_timeout" in dump)
+    }
+
+    @Test fun linkHealthShowsTheWifiBindSwitchAndFallback() {
+        val none = LinkHealthText.render(null, 0, 5).joinToString("\n")
+        assertTrue("Wi-Fi binding (bind_wifi): on" in none && "fallbacks since the app started: none" in none)
+        assertTrue("OFF (kill switch)" in LinkHealthText.render(null, 0, 5, bindEnabled = false).joinToString())
+        val note = BindNote(atMs = 1_000_000, code = "bound_stalled")
+        val soon = LinkHealthText.render(null, 0, 1_000_000 + 120_000, true, note, 2).joinToString("\n")
+        for (needle in listOf("fallbacks since the app started: 2", "last 2 min ago", "reason bound_stalled", "stay unbound for about 8 min more"))
+            assertTrue("missing '$needle' in:\n$soon", needle in soon)
+        val later = LinkHealthText.render(null, 0, 1_000_000 + LinkHealthText.UNHEALTHY_MS + 1, true, note, 2).joinToString("\n")
+        assertTrue("bound dials are tried again" in later)
+        assertFalse(listOf(soon, later).any { Regex("""\d+\.\d+\.\d+\.\d+""").containsMatchIn(it) })
     }
 
     @Test fun stateDumpNeverContainsSeededPersonalData() {

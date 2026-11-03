@@ -42,6 +42,15 @@ object AppState {
         get() = p()?.getBoolean("keep_connected", true) ?: true
         set(v) { p()?.edit()?.putBoolean("keep_connected", v)?.apply() }
 
+    /**
+     * Kill switch for binding the core's dials and announcements to the Wi-Fi address (default on, see
+     * [WifiBindPolicy]). Only the debug build can change it (adb broadcast or the debug card); the core reads it from
+     * the app on every service start.
+     */
+    var bindWifi: Boolean
+        get() = p()?.getBoolean("bind_wifi", true) ?: true
+        set(v) { p()?.edit()?.putBoolean("bind_wifi", v)?.apply() }
+
     @Volatile private var pairingUntil = 0L
 
     /** True while a pairing started in the last few minutes may keep the background link alive (not persisted). */

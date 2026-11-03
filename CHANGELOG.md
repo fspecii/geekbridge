@@ -12,6 +12,10 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   to the plain route. Wi-Fi lock claims corrected (it does not keep the radio awake with the screen off on Android 14+),
   and the debug state shows a link-health section (last close reason, network then, silence before it).
   See docs/reports/wifi-binding.md.
+- Safety net for that binding (docs/reports/wifi-binding-safety.md): a bound dial whose handshake does not finish in 6 s,
+  or a bound link that dies within 10 s without the computer being heard, makes the core dial unbound at once and for
+  10 minutes; a `bind_wifi` preference (default on, debug builds can flip it) and `GB_BIND_WIFI=0` switch binding off;
+  the debug Link health section shows the switch and the last fallback reason.
 
 ### Fixed
 - Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state

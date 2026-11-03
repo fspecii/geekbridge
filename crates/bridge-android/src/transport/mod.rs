@@ -9,6 +9,9 @@
 //! every socket and ends the runtime before returning, so a later start sees no old state.
 //!
 //! Schema, limits and the Kotlin integration checklist: `docs/android-transport.md`.
+#[cfg(test)]
+mod bind_tests;
+mod bindhealth;
 mod discovery;
 mod engine;
 
@@ -31,7 +34,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 32] = [
+pub(crate) const ACTIONS: [&str; 33] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -64,6 +67,7 @@ pub(crate) const ACTIONS: [&str; 32] = [
     "transport_screen",
     "transport_heartbeat_now",
     "transport_wifi_bind",
+    "transport_wifi_bind_enabled",
 ];
 
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
@@ -550,14 +554,29 @@ fn set_wifi_bind(ip: Option<Ipv4Addr>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = ip;
 }
 
-/// Source address for a dial to `target`: the Wi-Fi address, only for an IPv4 LAN target (never loopback).
-pub(crate) fn dial_source(target: IpAddr) -> Option<IpAddr> {
-    dial_source_with(wifi_bind(), target)
+/// The Wi-Fi address to actually leave from: none while binding is switched off (the `bind_wifi` preference or
+/// `GB_BIND_WIFI=0`) or while the bound path is marked unhealthy for that address ([`bindhealth`]).
+pub(crate) fn effective_bind() -> Option<Ipv4Addr> {
+    effective_bind_of(wifi_bind())
 }
 
-fn dial_source_with(bind: Option<Ipv4Addr>, target: IpAddr) -> Option<IpAddr> {
+fn effective_bind_of(ip: Option<Ipv4Addr>) -> Option<Ipv4Addr> {
+    ip.filter(|ip| bindhealth::enabled() && !bindhealth::is_unhealthy(*ip))
+}
+
+/// Source address for a dial to `target`: the Wi-Fi address, only for an IPv4 LAN target (loopback only when the
+/// core was started with `allow_loopback`, which is how the host tests exercise the bound path).
+pub(crate) fn dial_source(target: IpAddr, allow_loopback: bool) -> Option<IpAddr> {
+    dial_source_with(effective_bind(), target, allow_loopback)
+}
+
+fn dial_source_with(
+    bind: Option<Ipv4Addr>,
+    target: IpAddr,
+    allow_loopback: bool,
+) -> Option<IpAddr> {
     match (bind, target) {
-        (Some(ip), IpAddr::V4(t)) if !t.is_loopback() => Some(IpAddr::V4(ip)),
+        (Some(ip), IpAddr::V4(t)) if allow_loopback || !t.is_loopback() => Some(IpAddr::V4(ip)),
         _ => None,
     }
 }
@@ -592,6 +611,13 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             f.finish()?;
             set_wifi_bind(ip);
             Ok(json!({ "bound": ip.is_some() }))
+        }
+        "transport_wifi_bind_enabled" => {
+            // The `bind_wifi` preference (default on). Off: every dial and announcement is unbound.
+            let on = f.take_bool("enabled")?;
+            f.finish()?;
+            bindhealth::set_enabled(on);
+            Ok(json!({ "enabled": on }))
         }
         "transport_heartbeat_now" => {
             f.finish()?;
@@ -1033,7 +1059,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         None
     };
     let udp_announce = if announce_to.is_some() {
-        Some(discovery::bind_announce(wifi_bind()))
+        Some(discovery::bind_announce(effective_bind()))
     } else {
         None
     };
@@ -1115,8 +1141,8 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         rt.spawn(discovery::announce_loop(
             socket,
             target,
-            wifi_bind(),
-            wifi_bind,
+            effective_bind(),
+            effective_bind,
             move || discovery::encode_announcement(&announcing.endpoint.current_identity(), port),
             move || linked.all_paired_linked(),
             {
@@ -1196,19 +1222,48 @@ mod coexist_tests {
         let ip = Ipv4Addr::new(192, 168, 1, 20);
         let wifi = Some(ip);
         let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5));
-        assert_eq!(dial_source_with(wifi, lan), Some(IpAddr::V4(ip)));
+        assert_eq!(dial_source_with(wifi, lan, false), Some(IpAddr::V4(ip)));
         assert_eq!(
-            dial_source_with(None, lan),
+            dial_source_with(None, lan, false),
             None,
             "no Wi-Fi address: unbound"
         );
-        assert_eq!(dial_source_with(wifi, LO), None, "loopback is never bound");
+        assert_eq!(
+            dial_source_with(wifi, LO, false),
+            None,
+            "loopback is never bound"
+        );
+        assert_eq!(
+            dial_source_with(wifi, LO, true),
+            Some(IpAddr::V4(ip)),
+            "unless the core was started for loopback tests"
+        );
         let v6: IpAddr = "fe80::1".parse().unwrap();
         assert_eq!(
-            dial_source_with(wifi, v6),
+            dial_source_with(wifi, v6, false),
             None,
             "IPv6 targets are not bound"
         );
+    }
+
+    #[test]
+    fn the_effective_address_follows_the_switch_and_the_health_mark() {
+        let _g = bindhealth::test_lock();
+        let ip = Ipv4Addr::new(192, 168, 5, 5);
+        bindhealth::clear();
+        bindhealth::set_enabled(true);
+        assert_eq!(effective_bind_of(Some(ip)), Some(ip));
+        bindhealth::mark_unhealthy(ip);
+        assert_eq!(effective_bind_of(Some(ip)), None, "unhealthy: unbound");
+        assert_eq!(
+            effective_bind_of(Some(Ipv4Addr::new(10, 0, 0, 9))),
+            Some(Ipv4Addr::new(10, 0, 0, 9)),
+            "another address is unaffected"
+        );
+        bindhealth::clear();
+        bindhealth::set_enabled(false);
+        assert_eq!(effective_bind_of(Some(ip)), None, "switched off");
+        bindhealth::set_enabled(true);
     }
 
     #[test]
@@ -1231,6 +1286,7 @@ mod coexist_tests {
 
     #[test]
     fn the_wifi_address_is_set_and_cleared_process_wide() {
+        let _g = bindhealth::test_lock();
         let before = wifi_bind();
         set_wifi_bind(Some(Ipv4Addr::new(192, 168, 9, 9)));
         assert_eq!(wifi_bind(), Some(Ipv4Addr::new(192, 168, 9, 9)));
