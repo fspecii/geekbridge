@@ -793,8 +793,9 @@ fn a_nudge_wakes_a_redial_that_is_sleeping_in_its_back_off() {
     drop(proxy);
     drop(link);
     let base = redials(&phone.status());
+    // Wait until the second try has failed and the loop sleeps (a refused connect takes about 2 s on Windows).
     phone.wait("two failed redials", Duration::from_secs(30), |s| {
-        redials(s) >= base + 2
+        redials(s) >= base + 2 && s["attempts"].as_array().unwrap().is_empty()
     });
     // The third try is several seconds away (back-off); a nudge brings it forward.
     let before = redials(&phone.status());
