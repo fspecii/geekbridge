@@ -217,16 +217,12 @@ notification_case() { # name number action expected-modem-state
   else rec "callui_notify_$name" FAIL "after '$action' the modem state is $(modem_state), expected $want"; fi
 }
 stage_notify() {
-  [[ -n "${CI:-}" ]] && { notify-send --version; notify-send --help 2>&1 | grep -i action
-    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
-      --method org.freedesktop.Notifications.GetCapabilities
-    : >"$NOTIFY_BUS_LOG"; timeout 4 notify-send --app-name=Diag --wait --action=a=Alpha --action=b=Beta -- "diag title" "diag body"
-    echo "notify-send rc=$?"; sleep 1; tr -s ' \n' ' ' <"$NOTIFY_BUS_LOG" | head -c 900; echo; sway_env makoctl dismiss -a
-    echo "pids: $(pgrep -a 'mako|dunst' | tr '\n' ';')"; } >"$RUN/notify-diag.log" 2>&1
-  # Answer/Decline buttons need libnotify's notify-send --action (>= 0.8.4 in practice); Ubuntu 24.04's build (the CI runner) sends the
-  # notification without actions, so the action round trip cannot be tested there. Say so instead of failing.
-  if [[ -n "${CI:-}" ]] && ! notify-send --help 2>&1 | grep -q -- '--action'; then
-    rec callui_notify_answer SKIP "this notify-send ($(notify-send --version 2>&1 | head -1)) has no --action: nothing to invoke"
+  # Answer/Decline buttons need a notify-send that sends actions. Ubuntu 24.04's libnotify 0.8.8 (the CI runner) prints
+  # "Actions are not supported by this notifications server" against mako and sends the notification without actions (the
+  # server does list the capability), so the action round trip cannot be tested there. Say so instead of failing.
+  if [[ -n "${CI:-}" ]] && timeout 5 notify-send --app-name=Probe --action=a=A -- probe x 2>&1 | grep -q "Actions are not supported"; then
+    sway_env makoctl dismiss -a >/dev/null 2>&1
+    rec callui_notify_answer SKIP "notify-send $(notify-send --version 2>&1 | head -1): 'Actions are not supported by this notifications server' (mako), nothing to invoke"
     rec callui_notify_decline SKIP "same reason"; return 0
   fi
   notification_case answer "$NUMBER_A" answer 2
