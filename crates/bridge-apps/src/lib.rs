@@ -22,6 +22,7 @@ pub mod localtime;
 pub mod memstats;
 pub mod memtrim;
 pub mod nothing;
+pub mod onboarding;
 pub mod pace;
 pub mod phone_feed;
 pub mod phone_ui;

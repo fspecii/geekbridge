@@ -12,6 +12,7 @@ use crate::{
     icons::{self, Icon},
     identity, localtime,
     nothing::{self, PITCH_LABEL, PITCH_TITLE, S1, S2, S3, S4, S5},
+    onboarding::{self, CopyKind},
     phone_feed::{self, Feed},
     poller::Poller,
     report_ui::{self, ReportPanel},
@@ -111,6 +112,27 @@ pub struct HomeApp {
     messages: Option<Feed<MessagesView>>,
     /// The one-time "what's new" card after an update (until dismissed).
     whats_new: Option<bridge_core::whats_new::Notes>,
+    /// Firewall and start-at-login, re-read every few seconds (small file reads) for the first-run guide.
+    guide_env: GuideEnv,
+    /// The first-run guide's Copy button that was last clicked, and when (it reads "Copied" for a moment).
+    copied: Option<(CopyKind, std::time::Instant)>,
+}
+
+struct GuideEnv {
+    read_at: std::time::Instant,
+    firewall: bridge_core::firewall::Verdict,
+    autostart: onboarding::Autostart,
+}
+
+impl GuideEnv {
+    const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+    fn read() -> Self {
+        Self {
+            read_at: std::time::Instant::now(),
+            firewall: onboarding::firewall_now(),
+            autostart: onboarding::autostart_now(),
+        }
+    }
 }
 
 fn now_ms() -> i64 {
@@ -286,6 +308,8 @@ impl HomeApp {
             agenda_day: String::new(),
             messages: None,
             whats_new: startup_whats_new(),
+            guide_env: GuideEnv::read(),
+            copied: None,
         };
         // Screenshots and tests: open Settings with the "Report a problem" preview already built.
         if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
@@ -304,6 +328,64 @@ impl HomeApp {
 
     /// The card shown once after an update. "Dismiss" remembers the version; the link opens the release
     /// page in the browser and leaves the card up.
+    /// What the first-run guide shows, or `None` when it should not be on screen (a phone is paired, or the
+    /// first answer from the service is still pending).
+    fn onboarding_facts(&mut self) -> Option<onboarding::Facts> {
+        let state = &self.connections.state;
+        let service = match (&state.status, &state.error) {
+            (Some(_), _) => onboarding::Service::Up,
+            (None, Some(_)) => onboarding::Service::Down,
+            (None, None) => onboarding::Service::Checking,
+        };
+        let paired = state.status.as_ref().map_or(0, |s| s.paired.len());
+        if !onboarding::visible(service, paired) {
+            return None;
+        }
+        let computer_name = state
+            .status
+            .as_ref()
+            .map(|s| crate::state::display_text(&s.device_name));
+        if self.guide_env.read_at.elapsed() >= GuideEnv::EVERY {
+            self.guide_env = GuideEnv::read();
+        }
+        let copied = self
+            .copied
+            .filter(|(_, at)| at.elapsed() < std::time::Duration::from_secs(3))
+            .map(|(k, _)| k);
+        Some(onboarding::Facts {
+            service,
+            computer_name,
+            nearby: onboarding::nearby_phones(&self.model),
+            firewall: self.guide_env.firewall,
+            autostart: self.guide_env.autostart,
+            update: self.updates.summary(),
+            copied,
+        })
+    }
+
+    fn onboarding_card(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        let Some(facts) = self.onboarding_facts() else {
+            return;
+        };
+        match onboarding::card(ui, pal, &facts) {
+            Some(onboarding::Action::OpenReleases) => ui
+                .ctx()
+                .open_url(egui::OpenUrl::new_tab(onboarding::RELEASES_URL)),
+            Some(onboarding::Action::PairView) => self.view = View::Pair,
+            Some(onboarding::Action::SettingsView) => self.view = View::Settings,
+            Some(onboarding::Action::Copy(kind)) => {
+                ui.ctx().copy_text(onboarding::copy_text(kind, &facts));
+                self.copied = Some((kind, std::time::Instant::now()));
+            }
+            None => {}
+        }
+        if self.copied.is_some() {
+            // Let "Copied" revert without waiting for other input.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(3));
+        }
+    }
+
     fn whats_new_card(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         let Some(notes) = self.whats_new.clone() else {
             return;
@@ -626,15 +708,6 @@ impl HomeApp {
                         feature: bridge_core::ipc::Feature::Notifications,
                         enabled: true,
                     });
-                }
-            }
-            if !line.linked
-                && let Some(w) = phone_why(&self.connections.state)
-            {
-                ui.add_space(S2);
-                ui.add(egui::Label::new(theme::caption(pal, crate::why_ui::try_line(w))).wrap());
-                if let Some(heard) = crate::why_ui::last_heard(w) {
-                    ui.add(egui::Label::new(theme::caption(pal, heard)).wrap());
                 }
             }
             // Only when the listener moved off 1716 (another program, usually KDE Connect, has it).
@@ -1108,6 +1181,7 @@ impl HomeApp {
                             View::Home => {
                                 self.header(ui, &pal, "HOME");
                                 self.whats_new_card(ui, &pal);
+                                self.onboarding_card(ui, &pal);
                                 self.tile_grid(ui, &pal, hovering);
                             }
                             View::Pair => self.pair_view(ui, &pal),
@@ -1271,6 +1345,52 @@ mod tests {
         assert!(notifications_offer(&st).is_none(), "already allowed");
         let no = linked_state(None, &["kdeconnect.battery"], false);
         assert!(notifications_offer(&no).is_none());
+    }
+
+    fn fresh_state() -> crate::connection::ControlState {
+        let mut s = linked_state(None, &[], false);
+        let status = s.status.as_mut().unwrap();
+        status.paired.clear();
+        status.links.clear();
+        s
+    }
+
+    #[test]
+    fn home_builds_the_first_run_guide_only_for_an_unpaired_or_stopped_service() {
+        let ctx = egui::Context::default();
+        let mut app = HomeApp::new(1, &ctx);
+        // Nothing answered yet: no flash of guide.
+        app.connections.state = Default::default();
+        assert!(app.onboarding_facts().is_none());
+        // No phone paired: the guide, with this computer's name from the service.
+        app.connections.state = fresh_state();
+        let f = app.onboarding_facts().unwrap();
+        assert_eq!(f.service, onboarding::Service::Up);
+        assert_eq!(f.computer_name.as_deref(), Some("Desk"));
+        // A paired phone: the Home tiles take over.
+        app.connections.state = linked_state(None, &[], false);
+        assert!(app.onboarding_facts().is_none());
+        // Service down: the guide leads with the start command.
+        app.connections.state = Default::default();
+        app.connections.state.error = Some("not reachable".into());
+        let f = app.onboarding_facts().unwrap();
+        assert_eq!(f.service, onboarding::Service::Down);
+        assert!(f.computer_name.is_none());
+    }
+
+    #[test]
+    fn a_copy_click_marks_the_button_for_a_few_seconds() {
+        let ctx = egui::Context::default();
+        let mut app = HomeApp::new(1, &ctx);
+        app.connections.state = fresh_state();
+        assert!(app.onboarding_facts().unwrap().copied.is_none());
+        app.copied = Some((CopyKind::Link, std::time::Instant::now()));
+        assert_eq!(app.onboarding_facts().unwrap().copied, Some(CopyKind::Link));
+        app.copied = Some((
+            CopyKind::Link,
+            std::time::Instant::now() - std::time::Duration::from_secs(10),
+        ));
+        assert!(app.onboarding_facts().unwrap().copied.is_none());
     }
 
     #[test]

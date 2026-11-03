@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 
 #[path = "pair_ui.rs"]
 mod pair_ui;
-pub use pair_ui::{NextStep, Problem};
+pub use pair_ui::{NextStep, Problem, draw_qr, qr_modules};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControlState {

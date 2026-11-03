@@ -254,6 +254,12 @@ impl Updates {
         }
     }
 
+    /// One line about the version and update state, once the service has answered.
+    pub fn summary(&mut self) -> Option<String> {
+        self.poll();
+        self.status.as_ref().map(summary_line)
+    }
+
     /// Details-panel section: manual check and the automatic-check switch.
     pub fn details(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         self.poll();

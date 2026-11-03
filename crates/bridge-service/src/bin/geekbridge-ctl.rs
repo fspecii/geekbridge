@@ -891,15 +891,7 @@ fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
 
 /// What can be read about the firewall without root.
 fn read_firewall() -> bridge_service::doctor::Firewall {
-    let read_or_none = |p: &str| std::fs::read_to_string(p).ok();
-    bridge_service::doctor::Firewall {
-        ufw_enabled: read_or_none("/etc/ufw/ufw.conf").map(|c| {
-            c.lines()
-                .any(|l| l.trim().eq_ignore_ascii_case("ENABLED=yes"))
-        }),
-        ufw_rules: read_or_none("/etc/ufw/user.rules"),
-        firewalld_active: std::path::Path::new("/run/firewalld").exists(),
-    }
+    bridge_core::firewall::read()
 }
 
 /// `doctor`: run every check, print what to do about each problem, fail if one check failed.

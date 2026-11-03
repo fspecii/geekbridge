@@ -61,8 +61,8 @@ pub fn qr_modules(text: &str) -> Option<(Vec<bool>, usize)> {
     Some((dark, width))
 }
 
-fn draw_qr(ui: &mut egui::Ui, modules: &[bool], width: usize, side: f32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+pub fn draw_qr(ui: &mut egui::Ui, modules: &[bool], width: usize, side: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     // Always dark on white, with a quiet zone: scanners need the contrast in both themes.
     painter.rect_filled(rect, 8.0, egui::Color32::WHITE);
@@ -79,6 +79,7 @@ fn draw_qr(ui: &mut egui::Ui, modules: &[bool], width: usize, side: f32) {
             );
         }
     }
+    response
 }
 
 fn test_view(ui: &mut egui::Ui, pal: &Palette, test: &ConnectionTest) {

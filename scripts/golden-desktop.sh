@@ -22,6 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"; cd "$ROOT"
 MODE=check
 case "${1:-}" in --update) MODE=update ;; --check|"") ;; *) echo "usage: $0 [--update|--check]"; exit 2 ;; esac
 source scripts/android-env.sh >/dev/null 2>&1
+unset CARGO_TARGET_DIR   # android-env points it at target/android; the build below must land in target/debug, which the run uses
 python3 -I -c 'import PIL' 2>/dev/null || { echo "golden-desktop: needs python3 with Pillow (pacman -S python-pillow)"; exit 2; }
 for tool in Xvfb xdotool import cc; do command -v $tool >/dev/null || { echo "golden-desktop: needs $tool"; exit 2; }; done
 
@@ -54,6 +55,9 @@ free_tcp() { python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",
 free_udp() { python3 -I -c 'import socket;s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
 AP=$(free_tcp); CP=$(free_tcp); DP=$(free_udp)
 while [ "$CP" = "$AP" ]; do CP=$(free_tcp); done
+FAP=$(free_tcp); FCP=$(free_tcp); FDP=$(free_udp)   # the "fresh" service (no phone ever paired): the first-run guide
+while [ "$FAP" = "$AP" ] || [ "$FAP" = "$CP" ]; do FAP=$(free_tcp); done
+while [ "$FCP" = "$AP" ] || [ "$FCP" = "$CP" ] || [ "$FCP" = "$FAP" ]; do FCP=$(free_tcp); done
 
 # Mock GitHub release (newer than this build) for the update banner: binds port 0 and reports it. Loopback only.
 cat >"$RUN/mock.py" <<'PY'
@@ -74,6 +78,7 @@ MOCKP=$(cat "$RUN/mock.port")
 
 export GOLDEN_NOW=1781524800   # 2026-06-15 12:00:00 UTC, a Monday
 DET=(TZ=UTC LANG=en_US.UTF-8 LC_ALL= LANGUAGE= GEEKBRIDGE_CLOCK=24 GEEKBRIDGE_BUNDLED_FONTS_ONLY=1 GEEKBRIDGE_NO_TRAY=1 GEEKBRIDGE_FIXED_CALL_SECONDS=83
+     GEEKBRIDGE_FIREWALL_FIXTURE=none GEEKBRIDGE_AUTOSTART_FIXTURE=on   # the first-run guide reads this computer's firewall and autostart: pinned
      GEEKBRIDGE_NO_UPDATE_CHECK=1 GEEKBRIDGE_UPDATE_BASE_URL=http://127.0.0.1:$MOCKP GOLDEN_NOW=$GOLDEN_NOW LD_PRELOAD="$RUN/fakeclock.so"
      XDG_CONFIG_HOME="$RUN/xdg" XDG_DATA_HOME="$RUN/xdg-data" HOME=/tmp/gb-golden-home)
 
@@ -96,7 +101,17 @@ up=0; for _ in $(seq 150); do
   timeout 5 $T/geekbridge-ctl --state-dir "$RUN/state" --control-port $CP status >/dev/null 2>&1 && { up=1; break; }; sleep 0.2
 done
 [ $up = 1 ] || { tail_log "$RUN/service.log"; die "service did not come up"; }
-helpers_alive() { for p in $SVC $SIM $MOCK; do kill -0 $p 2>/dev/null || { echo "golden-desktop: a helper process died"; tail_log "$RUN/service.log"; tail_log "$RUN/sim.log"; return 1; }; done; }
+# A second, never-paired service for the first-run screens (Home with no phone). Its own state, ports and token.
+mkdir -p "$RUN/fresh"; chmod 700 "$RUN/fresh"
+env -u WAYLAND_DISPLAY "${DET[@]}" DISPLAY="${DISPS[0]}" $T/geekbridge-service --state-dir "$RUN/fresh" \
+  --api-port $FAP --control-port $FCP --discovery-port $FDP --no-listen-inbound --no-announce --dev-loopback --no-calling-probe >"$RUN/fresh.log" 2>&1 &
+FRESH=$!
+up=0; for _ in $(seq 150); do
+  kill -0 $FRESH 2>/dev/null || { tail_log "$RUN/fresh.log"; die "fresh service died during start"; }
+  timeout 5 $T/geekbridge-ctl --state-dir "$RUN/fresh" --control-port $FCP status >/dev/null 2>&1 && { up=1; break; }; sleep 0.2
+done
+[ $up = 1 ] || { tail_log "$RUN/fresh.log"; die "fresh service did not come up"; }
+helpers_alive() { for p in $SVC $FRESH $SIM $MOCK; do kill -0 $p 2>/dev/null || { echo "golden-desktop: a helper process died"; tail_log "$RUN/service.log"; tail_log "$RUN/sim.log"; return 1; }; done; }
 env "${DET[@]}" $T/examples/data_sim "$RUN/state" $CP >"$RUN/sim.log" 2>&1 &
 SIM=$!
 for _ in $(seq 150); do
@@ -133,9 +148,10 @@ grab() { # display wid out [stable frames, default 3]
 }
 shot_once() { # display app theme name keys [ENV=VAL...]   keys is an xdotool key sequence or "-"; returns 1 if no window appeared
   local disp="$1" app="$2" theme="$3" name="$4" keys="$5"; shift 5
-  local pid wid="" i floor=3
+  local pid wid="" i floor=3 apport=$AP e
+  for e in "$@"; do case $e in GOLDEN_API_PORT=*) apport=${e#*=} ;; esac; done   # a screen backed by the fresh service
   env -u WAYLAND_DISPLAY "${DET[@]}" DISPLAY=$disp GEEKBRIDGE_STATE_DIR="$RUN/state" GEEKBRIDGE_CONTROL_PORT=$CP "$@" \
-    timeout 90 $T/$app $([ "$app" = geekbridge-share ] || echo "--api-port $AP") --theme "$theme" >"$RUN/app.$name-$theme.log" 2>&1 &
+    timeout 90 $T/$app $([ "$app" = geekbridge-share ] || echo "--api-port $apport") --theme "$theme" >"$RUN/app.$name-$theme.log" 2>&1 &
   pid=$!
   for i in $(seq 100); do   # up to 30 s for the window
     wid=$(DISPLAY=$disp xdotool search --onlyvisible --pid $pid 2>/dev/null | head -1)
@@ -188,7 +204,10 @@ tasks_home() { # theme: screens of the home window; they show the unread count, 
   echo "geekbridge|$t|pair|ctrl+2|"
   echo "geekbridge|$t|settings|ctrl+3|"
   echo "geekbridge|$t|diagnostics|-|GEEKBRIDGE_OPEN_REPORT=1"
-  echo "geekbridge|$t|home-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"   # first-run empty state: no service token to read
+  echo "geekbridge|$t|home-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate GEEKBRIDGE_AUTOSTART_FIXTURE=off"   # first-run empty state: no service token to read; the guide leads with the start command
+  # First run with the service up and no phone paired: the three-step guide; then with a firewall that blocks phones.
+  echo "geekbridge|$t|home-first-run|-|GEEKBRIDGE_STATE_DIR=$RUN/fresh GEEKBRIDGE_CONTROL_PORT=$FCP GOLDEN_API_PORT=$FAP"
+  echo "geekbridge|$t|home-first-run-firewall|-|GEEKBRIDGE_STATE_DIR=$RUN/fresh GEEKBRIDGE_CONTROL_PORT=$FCP GOLDEN_API_PORT=$FAP GEEKBRIDGE_FIREWALL_FIXTURE=ufw-blocking GEEKBRIDGE_AUTOSTART_FIXTURE=off"
 }
 tasks_rest() { # theme
   local t=$1

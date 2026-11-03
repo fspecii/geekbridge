@@ -49,15 +49,7 @@ pub struct SessionEnv {
     pub desktop: String,
 }
 
-/// What could be read about the firewall without root.
-#[derive(Clone, Debug, Default)]
-pub struct Firewall {
-    /// `Some(true)` when ufw is switched on (`/etc/ufw/ufw.conf`).
-    pub ufw_enabled: Option<bool>,
-    /// Contents of `/etc/ufw/user.rules`; `None` when it cannot be read (it is root-only on many systems).
-    pub ufw_rules: Option<String>,
-    pub firewalld_active: bool,
-}
+pub use bridge_core::firewall::{Firewall, firewall_blocks, ufw_allows};
 
 pub struct Inputs {
     /// `Err` carries the text of the failed call.
@@ -70,32 +62,6 @@ pub struct Inputs {
     pub firewall: Firewall,
     /// A service-less `doctor` still says how to start it; `true` when a unit file is installed.
     pub systemd_unit: bool,
-}
-
-/// Do these `ufw` rules (the `user.rules` text) accept `proto` on the whole GeekBridge range?
-pub fn ufw_allows(rules: &str, proto: &str) -> bool {
-    rules.lines().any(|line| {
-        let line = line.trim();
-        if !line.starts_with("-A ufw-user-input") || !line.ends_with("-j ACCEPT") {
-            return false;
-        }
-        let words: Vec<&str> = line.split_whitespace().collect();
-        let word_after = |flag: &str| {
-            words
-                .iter()
-                .position(|w| *w == flag)
-                .and_then(|i| words.get(i + 1))
-                .copied()
-        };
-        if word_after("-p") != Some(proto) {
-            return false;
-        }
-        let Some(ports) = word_after("--dport") else {
-            return false;
-        };
-        let (lo, hi) = ports.split_once(':').unwrap_or((ports, ports));
-        matches!((lo.parse::<u16>(), hi.parse::<u16>()), (Ok(lo), Ok(hi)) if lo <= PORT_LO && hi >= PORT_HI)
-    })
 }
 
 fn firewall_check(fw: &Firewall) -> Check {
@@ -224,15 +190,6 @@ fn service_down(err: &str, systemd_unit: bool) -> Check {
         ),
         Some(fix),
     )
-}
-
-/// Is a readable firewall known to block the GeekBridge ports? (Unreadable rules are not a "yes".)
-pub fn firewall_blocks(fw: &Firewall) -> bool {
-    fw.ufw_enabled == Some(true)
-        && fw
-            .ufw_rules
-            .as_ref()
-            .is_some_and(|r| !(ufw_allows(r, "tcp") && ufw_allows(r, "udp")))
 }
 
 /// The service's reason for a phone without a link, with the firewall fact only the ctl can add.

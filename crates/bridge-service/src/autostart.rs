@@ -354,5 +354,12 @@ mod tests {
         for os in [Os::Windows, Os::MacOs, Os::Linux] {
             assert!(firewall_help_for(os, &exe).contains("1716"));
         }
+        // The desktop Home "Copy command" button offers these lines; the ctl text must say the same.
+        let linux = firewall_help_for(Os::Linux, &exe);
+        for line in bridge_core::firewall::commands(bridge_core::firewall::Tool::Ufw).lines() {
+            assert!(linux.contains(line.trim()), "{line}");
+        }
+        let fwd = bridge_core::firewall::commands(bridge_core::firewall::Tool::Firewalld);
+        assert!(linux.contains(&fwd.replace('\n', " && ")), "{fwd}");
     }
 }
