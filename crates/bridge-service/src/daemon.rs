@@ -2113,29 +2113,21 @@ fn on_battery_packet(d: &Daemon, id: &str, attempt: u64, packet: &kde::Packet) -
     let Ok(reading) = bridge_core::battery_link::parse(&packet.body) else {
         return false;
     };
-    d.update(id, attempt, |link, _| {
-        link.status.battery = shown_battery(reading);
-    });
-    true
-}
-
-/// What to show for a reading. A phone that no longer knows its level (stock sends -1) must not leave the
-/// last number on screen as if it were current.
-fn shown_battery(
-    reading: bridge_core::battery_link::Reading,
-) -> Option<bridge_core::ipc::BatteryStatus> {
-    match reading {
-        bridge_core::battery_link::Reading::Level {
-            percent,
-            charging,
-            low,
-        } => Some(bridge_core::ipc::BatteryStatus {
-            percent,
-            charging,
-            low,
-        }),
-        bridge_core::battery_link::Reading::Unknown => None,
+    if let bridge_core::battery_link::Reading::Level {
+        percent,
+        charging,
+        low,
+    } = reading
+    {
+        d.update(id, attempt, |link, _| {
+            link.status.battery = Some(bridge_core::ipc::BatteryStatus {
+                percent,
+                charging,
+                low,
+            });
+        });
     }
+    true
 }
 
 /// (calendar editing, calendar alerts) consents of one phone.
@@ -2379,22 +2371,5 @@ impl kde::Approver for ChallengeApprover {
             challenge_id,
         };
         rx.await.unwrap_or(false)
-    }
-}
-
-#[cfg(test)]
-mod battery_tests {
-    use super::*;
-    use bridge_core::battery_link::Reading;
-
-    #[test]
-    fn an_unknown_level_clears_what_was_shown() {
-        let level = shown_battery(Reading::Level {
-            percent: 80,
-            charging: true,
-            low: false,
-        });
-        assert_eq!(level.map(|b| b.percent), Some(80));
-        assert!(shown_battery(Reading::Unknown).is_none());
     }
 }

@@ -15,14 +15,17 @@ Kotlin QrPairActivity, BatteryReport, SmsReadiness, dial, LinkService screen rec
    `transport::coexist_tests::a_phone_with_everything_off_still_identifies_as_a_geekbridge_peer` (failed first).
    Fix: the phone always declares the packet-less marker `geekbridge.heartbeat` (`heartbeat::MARKER`) in both
    directions. Stock KDE Connect ignores unknown capabilities; two transport tests that pinned the exact list were updated.
-2. **Stale battery level.** A stock phone that reports `currentCharge: -1` (level unknown) left the previous
-   percentage on screen as current. `shown_battery` now maps `Unknown` to nothing.
-
-3. **`install.sh --purge-data` did not delete pairings.** It removed `$XDG_STATE_HOME/geekbridge`, which holds only
+2. **`install.sh --purge-data` did not delete pairings.** It removed `$XDG_STATE_HOME/geekbridge`, which holds only
    updater notes; the service keeps pairings, identity and settings in `$XDG_DATA_HOME/geekbridge/service`
    (`ipc::default_state_dir`). The message claimed otherwise, and so did the Arch `post_remove` text and the sandbox
    e2e (which tested the wrong directory). Fixed: purge removes both directories, messages and e2e name the data
    directory (verified in a throw-away HOME; the full sandbox e2e needs release binaries and was not run).
+
+## Judgement call, not changed
+
+* A battery packet with `currentCharge: -1` (unknown level) keeps the previously shown level. This is pinned by
+  `battery_is_read_only_with_consent_asked_for_and_erased_when_withdrawn` ("an unknown level changes nothing"), so it
+  is deliberate; the value is cleared on link loss and on consent withdrawal.
 
 ## Checked, no bug
 
