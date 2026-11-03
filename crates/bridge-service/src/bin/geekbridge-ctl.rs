@@ -36,6 +36,8 @@ Commands:
   photos [DEVICE_ID] [--json]         the phone's recent photos held here (needs `consent ID photos on`; names only,
                                       memory only, newest first)
   photos refresh DEVICE_ID            ask the phone for its newest photos (at most 24, thumbnails follow)
+  photos thumb DEVICE_ID PHOTO_ID FILE
+                                      write the held thumbnail (a small JPEG) to FILE
   photos save DEVICE_ID PHOTO_ID      ask the phone to send that photo in full to the save folder
   photos copy DEVICE_ID PHOTO_ID      same, to a scratch file that is emptied soon (for the clipboard)
   phone-log DEVICE_ID [-f] [-n N]     last N (default 200) lines of a debug-build phone's log; -f follows
@@ -1285,6 +1287,27 @@ fn photos_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> 
                 device_id: device_id.clone(),
             })?;
             println!("asked; run `geekbridge-ctl photos` in a moment");
+            Ok(())
+        }
+        Some("thumb") => {
+            use base64::Engine as _;
+            let (Some(device_id), Some(id), Some(file)) =
+                (words.get(1), words.get(2), words.get(3))
+            else {
+                return Err("usage: photos thumb DEVICE_ID PHOTO_ID FILE".into());
+            };
+            let Response::PhotoThumb(t) = send(Request::PhotoThumb {
+                device_id: device_id.clone(),
+                id: id.clone(),
+            })?
+            else {
+                return Err("unexpected reply from the service".into());
+            };
+            let jpeg = base64::engine::general_purpose::STANDARD
+                .decode(t.jpeg_base64)
+                .map_err(|e| e.to_string())?;
+            std::fs::write(file, &jpeg).map_err(|e| format!("cannot write {file}: {e}"))?;
+            println!("{}x{} JPEG, {} bytes", t.width, t.height, jpeg.len());
             Ok(())
         }
         Some(mode @ ("save" | "copy")) => {

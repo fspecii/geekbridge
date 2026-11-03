@@ -25,7 +25,7 @@ concurrency:
 env:
   CI_APT: >-
     pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
-    xvfb xclip rsync python3 jq
+    xvfb xclip rsync python3 python3-pil jq
 
 jobs:
   build:
@@ -88,6 +88,7 @@ jobs:
           - { name: features, run: 'scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: false }
           - { name: call-ui, run: 'scripts/e2e/call-ui.sh', adb_port: 16080, setup: light, experimental: false }
           - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
+          - { name: photos, run: 'scripts/e2e/photos.sh', adb_port: 16170, setup: light, experimental: true }
           - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: true }
           - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
     env:
@@ -170,6 +171,7 @@ jobs:
             target/e2e-update/**/*.tsv
             ~/.cache/gb-battery/run/**/*.log
             ~/.cache/gb-tmp/feat-e2e/run/**/*.log
+            ~/.cache/gb-tmp/photos-e2e/run/**/*.log
             .tools/gbcall/*.log
           retention-days: 7
           if-no-files-found: ignore
