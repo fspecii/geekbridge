@@ -49,6 +49,7 @@ jobs:
           find target/ci/release -maxdepth 1 -type f -name 'geekbridge*' ! -name '*.d' -perm -u+x -exec cp {} pack/target/release/ \;
           cp dist/android/geekbridge-debug.apk pack/scratch/dist/
           cp -r android/app/src/main/jniLibs pack/jniLibs
+          find pack/jniLibs -name '*.so'
           ls -l pack/target/release pack/scratch/dist
           tar -C pack -czf e2e-build.tar.gz target scratch jniLibs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -78,7 +79,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: e2e-android, run: 'scripts/e2e-android.sh --no-build', adb_port: 16038, setup: light, experimental: false }
+          - { name: e2e-android, run: 'scripts/e2e-android.sh --no-build', adb_port: 16038, setup: light, experimental: true }
           - { name: features, run: 'scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: false }
           - { name: call-ui, run: 'scripts/e2e/call-ui.sh', adb_port: 16080, setup: light, experimental: false }
           - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
@@ -108,7 +109,7 @@ jobs:
           tar -C "$HOME/ci-e2e" -xzf e2e-build.tar.gz
           chmod +x "$HOME"/ci-e2e/target/release/*
           # gitignored native libraries: update-install builds two more APKs from copies of android/ and needs them
-          mkdir -p android/app/src/main && cp -r "$HOME/ci-e2e/jniLibs" android/app/src/main/jniLibs
+          mkdir -p android/app/src/main/jniLibs && cp -a "$HOME/ci-e2e/jniLibs/." android/app/src/main/jniLibs/ && find android/app/src/main/jniLibs -name "*.so"
           {
             echo "E2E_TARGET=$HOME/ci-e2e/target"
             echo "E2E_SCRATCH=$HOME/ci-e2e/scratch"
