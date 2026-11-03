@@ -1447,23 +1447,43 @@ impl ShareManager {
     /// for a phone that never connected would hold its port, file handle and transfer slot for the
     /// whole accept timeout (120 s); after a short grace period for the phone to reconnect to the
     /// payload port, give those up. Transfers that have started streaming are left to finish.
+    ///
+    /// Only the transfers that exist when the link ends are candidates: the set is fixed here, not
+    /// after the grace period. A file offered over a newer link to the same phone (disconnect, redial,
+    /// send within the grace period) belongs to that link and must not be failed by this one's end.
     pub fn link_lost(self: &Arc<Self>, device_id: &str) {
+        self.link_lost_after(device_id, LINK_LOST_GRACE);
+    }
+
+    fn link_lost_after(self: &Arc<Self>, device_id: &str, grace: Duration) {
         let (me, device) = (self.clone(), device_id.to_owned());
+        let doomed: Vec<u64> = self
+            .inner()
+            .items
+            .iter()
+            .filter(|t| {
+                t.info.device_id == device
+                    && t.info.direction == TransferDirection::Outgoing
+                    && t.info.state.is_live()
+                    && t.bytes.load(Ordering::Relaxed) == 0
+            })
+            .map(|t| t.info.transfer_id)
+            .collect();
+        if doomed.is_empty() {
+            return;
+        }
         tokio::spawn(async move {
-            tokio::time::sleep(LINK_LOST_GRACE).await;
-            let ids: Vec<u64> = me
-                .inner()
-                .items
-                .iter()
-                .filter(|t| {
-                    t.info.device_id == device
-                        && t.info.direction == TransferDirection::Outgoing
+            tokio::time::sleep(grace).await;
+            for id in doomed {
+                // Still waiting for the phone (streaming or finished transfers are left alone).
+                let waiting = me.inner().items.iter().any(|t| {
+                    t.info.transfer_id == id
                         && t.info.state.is_live()
                         && t.bytes.load(Ordering::Relaxed) == 0
-                })
-                .map(|t| t.info.transfer_id)
-                .collect();
-            for id in ids {
+                });
+                if !waiting {
+                    continue;
+                }
                 if let Some(t) = me.inner().items.iter().find(|t| t.info.transfer_id == id) {
                     t.cancel.cancel();
                 }
@@ -1833,6 +1853,31 @@ mod tests {
             m.store_text("d", "Phone", TransferKind::Text, text),
             Disposition::Handled
         ));
+    }
+
+    #[tokio::test]
+    async fn a_file_offered_on_a_newer_link_survives_the_old_links_grace_period() {
+        // Regression (emulator CI file_d2p): disconnect, redial, send; the old link's grace timer then
+        // failed the new transfer with link_lost while the phone was accepting it.
+        let m = ShareManager::new(ShareOptions::default());
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.txt");
+        std::fs::write(&f, b"hi").unwrap();
+        let path = f.display().to_string();
+        let old = m.begin_send_file("d", "Phone", &path).unwrap();
+        m.link_lost_after("d", Duration::from_millis(80));
+        let new = m.begin_send_file("d", "Phone", &path).unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let st = m.status(&["d".to_owned()]);
+        let state = |id| {
+            st.transfers
+                .iter()
+                .find(|t| t.transfer_id == id)
+                .unwrap()
+                .state
+        };
+        assert_eq!(state(old), TransferState::Failed);
+        assert_eq!(state(new), TransferState::Waiting);
     }
 
     #[test]

@@ -48,13 +48,12 @@ Measured on the runs in [reports/emulator-ci.md](reports/emulator-ci.md).
 
 - **KVM works.** GitHub-hosted Linux runners expose `/dev/kvm` once the udev rule in the workflow is applied; no nested-virtualisation
   problem was met. The emulator runs headless with `-gpu swiftshader_indirect`, as locally.
-- **`e2e-android` / `file_d2p` fails every time** (desktop to phone file: `Failed 0/300000 bytes (link_lost)`; the phone starts the
-  download, the control link then drops). All other stages pass, and it passes on the development machine. The failure evidence
-  (`e2e-file_d2p-logcat.txt`, `e2e-file_d2p-status.txt`) is in the artifact. Cause not found; marked non-blocking until it is.
-  `clip_p2d` failed once on the first run and passed afterwards (timing on a cold runner).
-- **`pair-background` / `prehome` is timing-sensitive** (the phone must keep the link while it sits in the background for 8 s during
-  pairing); it failed on some runs and passed on others, the other three stages always pass. Non-blocking until the check is made
-  deterministic.
+- **`e2e-android` / `file_d2p` was a product bug, fixed** (desktop to phone file: `Failed 0/300000 bytes (link_lost)` right after Accept).
+  The previous link's 10 s grace timer failed a transfer that belonged to the newer link. Details and the regression test:
+  docs/reports/file-d2p-ci.md. The job stays non-blocking until a dispatched run confirms it.
+- **`pair-background` / `prehome`** now makes up to three attempts (re-dialling a phone whose listener is a moment behind) and keeps the
+  desktop status/events and the phone log of every failed attempt (`pb-prehome-attempt-*.txt`); the PASS line says which attempt passed.
+  It stays non-blocking until a few nightly runs show attempt 1 passing.
 - **`call-ui` notification stage (`callui_notify_answer` / `_decline`) is skipped.** Ubuntu 24.04's libnotify 0.8.8 `notify-send`
   prints "Actions are not supported by this notifications server" against mako (although mako lists the capability) and sends
   the notification without Answer/Decline, so there is nothing to invoke. The check is a probe, so it runs again wherever the pair works.
