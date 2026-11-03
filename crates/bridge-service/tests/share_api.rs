@@ -84,6 +84,10 @@ impl Rig {
         }
     }
 
+    fn state_dir(&self) -> PathBuf {
+        self._tmp.path().join("state")
+    }
+
     async fn call(&self, request: Request) -> Result<Response, IpcError> {
         let (port, token) = (self.port, self.token.clone());
         tokio::task::spawn_blocking(move || ipc::call(port, &token, &request))
@@ -792,4 +796,73 @@ async fn unpairing_forgets_share_permissions() {
     let _link = rig.pair(&phone.reinstalled()).await;
     let s = rig.share().await;
     assert!(!s.devices[0].receive && !s.devices[0].auto_accept);
+}
+
+/// The service runs two async workers. Writes to the share settings and the consent file take a file lock and
+/// fsync; on a busy disk those take seconds (soak-2h-after-stall-fix.md). Two such requests at once must not
+/// park both workers: `status` keeps answering while they wait.
+#[tokio::test]
+async fn slow_settings_and_consent_writes_do_not_stall_status() {
+    let rig = Rig::start().await;
+    let (a, b) = (Phone::sharing(), Phone::sharing());
+    let _la = rig.pair(&a).await;
+    let _lb = rig.pair(&b).await;
+    let share_lock = bridge_kde::fsutil::lock_exclusive(&bridge_core::statefile::lock_path(
+        &rig.state_dir().join(bridge_service::share::SETTINGS_FILE),
+    ))
+    .unwrap();
+    let consent_lock = bridge_kde::fsutil::lock_exclusive(&bridge_core::statefile::lock_path(
+        &rig.state_dir().join("consent.json"),
+    ))
+    .unwrap();
+
+    // Phase 1: two share-settings writes wait for the file lock.
+    let rig = Arc::new(rig);
+    let writers: Vec<_> = [a.id(), b.id()]
+        .into_iter()
+        .map(|id| {
+            let rig = rig.clone();
+            tokio::spawn(async move {
+                rig.call(Request::ShareSettings {
+                    device_id: id,
+                    receive: Some(true),
+                    auto_accept: None,
+                })
+                .await
+            })
+        })
+        .collect();
+    sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    rig.status().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "status waited {:?} behind two share-settings writes",
+        started.elapsed()
+    );
+    drop(share_lock);
+    for w in writers {
+        assert!(matches!(w.await.unwrap(), Ok(Response::Ack)));
+    }
+
+    // Phase 2: two unpairs forget their consent records, which waits for the consent lock.
+    let unpairs: Vec<_> = [a.id(), b.id()]
+        .into_iter()
+        .map(|id| {
+            let rig = rig.clone();
+            tokio::spawn(async move { rig.call(Request::Unpair { device_id: id }).await })
+        })
+        .collect();
+    sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    rig.status().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "status waited {:?} behind two unpairs",
+        started.elapsed()
+    );
+    drop(consent_lock);
+    for u in unpairs {
+        u.await.unwrap().unwrap();
+    }
 }

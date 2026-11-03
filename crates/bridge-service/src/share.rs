@@ -156,7 +156,7 @@ fn validate_settings(body: &serde_json::Map<String, serde_json::Value>) -> Resul
 }
 
 struct Settings {
-    file: Option<fsutil::PrivateStateFile>,
+    file: Option<Arc<fsutil::PrivateStateFile>>,
     devices: BTreeMap<String, Perm>,
     /// Format of a newer build's file, which must not be rewritten.
     newer: Option<u32>,
@@ -165,8 +165,13 @@ struct Settings {
 impl Settings {
     fn open(path: Option<PathBuf>) -> Self {
         use bridge_core::statefile::Status;
-        let file =
-            path.map(|p| fsutil::PrivateStateFile::new(fsutil::PrivateIo, p, &SETTINGS_SPEC));
+        let file = path.map(|p| {
+            Arc::new(fsutil::PrivateStateFile::new(
+                fsutil::PrivateIo,
+                p,
+                &SETTINGS_SPEC,
+            ))
+        });
         let mut devices = BTreeMap::new();
         let mut newer = None;
         if let Some(f) = &file {
@@ -194,6 +199,27 @@ impl Settings {
         }
     }
 
+    /// A handle that can write the file without holding the `Settings` mutex (file lock + fsync can take
+    /// seconds on a busy disk, and `status` reads the settings).
+    fn writer(&self) -> SettingsWriter {
+        SettingsWriter {
+            file: self.file.clone(),
+            newer: self.newer,
+        }
+    }
+
+    #[cfg(test)]
+    fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
+        self.writer().persist(next)
+    }
+}
+
+struct SettingsWriter {
+    file: Option<Arc<fsutil::PrivateStateFile>>,
+    newer: Option<u32>,
+}
+
+impl SettingsWriter {
     fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
         let Some(file) = &self.file else {
             return Ok(());
@@ -359,6 +385,8 @@ pub struct ShareManager {
     opts: ShareOptions,
     inner: Mutex<Inner>,
     settings: Mutex<Settings>,
+    /// Serialises settings writers; held across the file lock and fsync, never by readers.
+    settings_writer: Mutex<()>,
     sink: Mutex<Option<EventSink>>,
     notifier: Mutex<Arc<dyn Notifier>>,
 }
@@ -399,6 +427,7 @@ impl ShareManager {
             opts,
             inner: Mutex::new(Inner::default()),
             settings: Mutex::new(settings),
+            settings_writer: Mutex::new(()),
             sink: Mutex::new(None),
             notifier: Mutex::new(Arc::new(NoNotifier)),
         })
@@ -447,8 +476,14 @@ impl ShareManager {
         receive: Option<bool>,
         auto_accept: Option<bool>,
     ) -> Result<(), ErrorBody> {
-        let mut s = self.settings();
-        let mut next = s.devices.clone();
+        let _writer = self
+            .settings_writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (mut next, io) = {
+            let s = self.settings();
+            (s.devices.clone(), s.writer())
+        };
         let p = next.entry(device_id.to_owned()).or_default();
         if let Some(r) = receive {
             p.receive = r;
@@ -469,10 +504,9 @@ impl ShareManager {
         if next.len() > MAX_SETTINGS_DEVICES {
             return Err(err(ErrorCode::TooMany, "too many devices"));
         }
-        s.persist(&next)
+        io.persist(&next)
             .map_err(|_| err(ErrorCode::Failed, "settings could not be saved"))?;
-        s.devices = next;
-        drop(s);
+        self.settings().devices = next;
         if receive == Some(false) {
             self.decline_offers_of(device_id);
         }
@@ -481,15 +515,25 @@ impl ShareManager {
 
     /// The device was unpaired: forget its permissions and stop its transfers.
     pub fn forget_device(&self, device_id: &str) {
-        let mut s = self.settings();
-        if s.devices.contains_key(device_id) {
-            let mut next = s.devices.clone();
+        let _writer = self
+            .settings_writer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let (known, mut next, io) = {
+            let s = self.settings();
+            (
+                s.devices.contains_key(device_id),
+                s.devices.clone(),
+                s.writer(),
+            )
+        };
+        if known {
             next.remove(device_id);
-            if s.persist(&next).is_ok() {
-                s.devices = next;
+            if io.persist(&next).is_ok() {
+                self.settings().devices = next;
             }
         }
-        drop(s);
+        drop(_writer);
         let now = Instant::now();
         for t in self.inner().items.iter_mut() {
             if t.info.device_id == device_id && t.info.state.is_live() {

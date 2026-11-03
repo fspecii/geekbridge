@@ -331,6 +331,82 @@ fn proc_field(pid: u32, file: &str, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// `Pss`, `Private_Dirty` and `Anonymous` (KiB) from `/proc/PID/smaps_rollup`: the heap-and-stack series that
+/// code-page refaults (memtrim) do not move.
+fn smaps_rollup(pid: u32) -> (u64, u64, u64) {
+    (
+        proc_field(pid, "smaps_rollup", "Pss:"),
+        proc_field(pid, "smaps_rollup", "Private_Dirty:"),
+        proc_field(pid, "smaps_rollup", "Anonymous:"),
+    )
+}
+
+fn read_trim(path: &str) -> String {
+    std::fs::read_to_string(path).map_or_else(|e| format!("<{e}>"), |s| s.trim().to_owned())
+}
+
+/// What the service (and this driver) were doing when a control-API call timed out: host load average, the
+/// service's process state and `wchan`, every thread's state / wchan / CPU ticks, the busiest threads, and the
+/// same for the driver process. One multi-line block per timeout, appended to `poll-diag.log`.
+fn stall_diagnostics(pid: u32) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "loadavg: {}", read_trim("/proc/loadavg"));
+    let _ = writeln!(
+        out,
+        "pressure: cpu[{}] io[{}]",
+        read_trim("/proc/pressure/cpu").replace('\n', " | "),
+        read_trim("/proc/pressure/io").replace('\n', " | ")
+    );
+    for (label, p) in [("service", pid), ("driver", std::process::id())] {
+        let proc_state = std::fs::read_to_string(format!("/proc/{p}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit(") ")
+                    .next()
+                    .and_then(|t| t.split_whitespace().next().map(str::to_owned))
+            })
+            .unwrap_or_else(|| "?".into());
+        let _ = writeln!(
+            out,
+            "{label} pid {p}: state {proc_state} wchan {}",
+            read_trim(&format!("/proc/{p}/wchan"))
+        );
+        let mut threads: Vec<(u64, String)> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(format!("/proc/{p}/task")) {
+            for t in rd.flatten() {
+                let tid = t.file_name().to_string_lossy().into_owned();
+                let base = format!("/proc/{p}/task/{tid}");
+                let stat = std::fs::read_to_string(format!("{base}/stat")).unwrap_or_default();
+                let name = stat
+                    .find('(')
+                    .zip(stat.rfind(')'))
+                    .map_or("?", |(a, b)| &stat[a + 1..b])
+                    .to_owned();
+                let f: Vec<&str> = stat
+                    .rsplit(") ")
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .collect();
+                let state = f.first().copied().unwrap_or("?");
+                let ticks = f.get(11).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)
+                    + f.get(12).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+                let wchan = read_trim(&format!("{base}/wchan"));
+                threads.push((
+                    ticks,
+                    format!("  tid {tid} {name} state {state} wchan {wchan} cpu_ticks {ticks}"),
+                ));
+            }
+        }
+        threads.sort_by_key(|a| std::cmp::Reverse(a.0));
+        let _ = writeln!(out, "{label} threads ({}), busiest first:", threads.len());
+        for (_, l) in threads.iter().take(12) {
+            let _ = writeln!(out, "{l}");
+        }
+    }
+    out
+}
+
 fn count_dir(pid: u32, sub: &str) -> u64 {
     std::fs::read_dir(format!("/proc/{pid}/{sub}")).map_or(0, |d| d.count() as u64)
 }
@@ -375,7 +451,7 @@ struct Sampler {
     csv: std::fs::File,
 }
 
-const HEADER: &str = "t_s,rss_kib,hwm_kib,threads,fds,ctx_vol,ctx_invol,cpu_ticks,state_bytes,state_files,log_bytes,saves_bytes,saves_files,transfers,events,notifications,links,paired,challenges,reconnect_ok,reconnect_fail,pairs,pair_fail,unpairs,files_up,files_down,file_fail,pkts_sent,pkts_recv,polls,poll_fail,bytes_moved,driver_fds,driver_threads,tag";
+const HEADER: &str = "t_s,rss_kib,hwm_kib,threads,fds,ctx_vol,ctx_invol,cpu_ticks,state_bytes,state_files,log_bytes,saves_bytes,saves_files,transfers,events,notifications,links,paired,challenges,reconnect_ok,reconnect_fail,pairs,pair_fail,unpairs,files_up,files_down,file_fail,pkts_sent,pkts_recv,polls,poll_fail,bytes_moved,driver_fds,driver_threads,pss_kib,priv_dirty_kib,anon_kib,tag";
 
 impl Sampler {
     async fn sample(&mut self, ctl: &Ctl, stats: &Stats, tag: &str) {
@@ -422,10 +498,11 @@ impl Sampler {
             paired,
             challenges,
         );
+        let smaps = smaps_rollup(pid);
         let g = |a: &AtomicU64| a.load(Relaxed);
         let _ = write!(
             row,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             g(&stats.reconnect_ok),
             g(&stats.reconnect_fail),
             g(&stats.pairs),
@@ -441,6 +518,9 @@ impl Sampler {
             g(&stats.bytes_moved),
             fd_count(),
             thread_count(),
+            smaps.0,
+            smaps.1,
+            smaps.2,
             tag,
         );
         let _ = writeln!(self.csv, "{row}");
@@ -641,6 +721,7 @@ async fn soak_real_service() {
     // Status polling task (the tray / Home / ctl all poll like this).
     let poll = {
         let (ctl, stats, poll_log) = (ctl.clone(), stats.clone(), out.join("poll-errors.log"));
+        let diag_log = out.join("poll-diag.log");
         tokio::spawn(async move {
             let mut i = 0u64;
             loop {
@@ -652,9 +733,47 @@ async fn soak_real_service() {
                     _ => Request::Status,
                 };
                 let started = Instant::now();
-                let result = ctl.call(request).await;
+                // A call still pending after 2 s gets a snapshot while it is stuck (the evidence), another one
+                // if it ends in an error; a slow call that still succeeds is logged too.
+                let call = ctl.call(request);
+                tokio::pin!(call);
+                let mut mid = None;
+                let result = tokio::select! {
+                    r = &mut call => r,
+                    () = sleep(Duration::from_secs(2)) => {
+                        mid = Some((t0.elapsed().as_secs_f64(), stall_diagnostics(pid)));
+                        (&mut call).await
+                    }
+                };
                 let ok = result.is_ok();
+                if let Some((at, diag)) = &mid {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&diag_log)
+                        .and_then(|mut d| {
+                            writeln!(
+                                d,
+                                "=== {at:.1}s after start: call pending after 2 s (ends {}, took {:?})\n{diag}",
+                                if ok { "ok" } else { "in error" },
+                                started.elapsed()
+                            )
+                        });
+                }
                 if let Err(e) = &result {
+                    let diag = stall_diagnostics(pid);
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&diag_log)
+                        .and_then(|mut d| {
+                            writeln!(
+                                d,
+                                "=== {:.1}s after start: {e:?} (took {:?})\n{diag}",
+                                t0.elapsed().as_secs_f64(),
+                                started.elapsed()
+                            )
+                        });
                     let mut f = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
@@ -975,4 +1094,16 @@ fn unsafe_term(pid: u32) -> std::io::Result<()> {
         .arg(pid.to_string())
         .status()
         .map(|_| ())
+}
+
+#[test]
+fn stall_diagnostics_and_smaps_are_readable() {
+    let pid = std::process::id();
+    let d = stall_diagnostics(pid);
+    assert!(d.contains("loadavg: "), "{d}");
+    assert!(d.contains(&format!("service pid {pid}: state ")), "{d}");
+    assert!(d.contains("driver threads ("), "{d}");
+    assert!(d.contains("wchan"), "{d}");
+    let (pss, dirty, anon) = smaps_rollup(pid);
+    assert!(pss > 0 && dirty > 0 && anon > 0, "{pss} {dirty} {anon}");
 }

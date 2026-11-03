@@ -25,7 +25,7 @@ trap '((KEEP)) || rm -rf "$OUT"; echo "df after:"; df -h "$GB_TMP" | tail -1' EX
 GEEKBRIDGE_SOAK_OUT="$OUT" GEEKBRIDGE_SOAK_SECS="$SECS" \
     cargo test --release --locked -p bridge-service --test soak_real -- --ignored --nocapture
 rc=$?
-cp "$OUT"/samples.csv "$OUT"/events.tsv "$OUT"/service.log "$OUT"/poll-errors.log "$DIST"/ 2>/dev/null
+cp "$OUT"/samples.csv "$OUT"/events.tsv "$OUT"/service.log "$OUT"/poll-errors.log "$OUT"/poll-diag.log "$DIST"/ 2>/dev/null
 python3 -I scripts/soak-fit.py "$DIST/samples.csv" --events "$DIST/events.tsv" --poll-errors "$DIST/poll-errors.log" | tee "$DIST/verdict.md"
 fit=${PIPESTATUS[0]}
 echo "driver exit $rc, verdict exit $fit; results in $DIST"

@@ -123,11 +123,15 @@ def main(argv):
     L("| series | start | min | median | max | end | OLS slope /h | Theil-Sen /h | drift over window | 2nd-half /h | tau | budget | verdict |")
     L("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for key in ["rss_kib", "threads", "fds", "state_bytes", "state_files", "log_bytes", "saves_bytes",
-                "transfers", "events", "notifications", "driver_fds", "driver_threads"]:
+                "transfers", "events", "notifications", "driver_fds", "driver_threads",
+                "pss_kib", "priv_dirty_kib", "anon_kib"]:
+        if key not in run[0]:  # older samples.csv without the smaps_rollup columns
+            continue
         ys_all = [num(r[key]) for r in run]
         xs = [ts[i] for i in sel]
         ys = [ys_all[i] for i in sel]
-        if key in ("rss_kib", "threads", "fds", "state_bytes", "state_files", "driver_fds", "driver_threads"):
+        if key in ("rss_kib", "threads", "fds", "state_bytes", "state_files", "driver_fds", "driver_threads",
+                   "pss_kib", "priv_dirty_kib", "anon_kib"):
             fx, fy = floor_series(xs, ys, 300.0)
         else:
             fx, fy = xs, ys

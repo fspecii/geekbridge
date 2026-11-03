@@ -763,9 +763,16 @@ impl Daemon {
                 device_id,
                 receive,
                 auto_accept,
-            } => self
-                .share_settings(&device_id, receive, auto_accept)
-                .map(|()| Response::Ack),
+            } => {
+                // File lock + fsync inside: off the async workers.
+                let d = self.clone();
+                tokio::task::spawn_blocking(move || {
+                    d.share_settings(&device_id, receive, auto_accept)
+                })
+                .await
+                .unwrap_or_else(|_| Err(err(ErrorCode::Failed, "the change was interrupted")))
+                .map(|()| Response::Ack)
+            }
             Request::AgendaView {
                 query,
                 day,
@@ -1286,7 +1293,7 @@ impl Daemon {
         Ok(())
     }
 
-    async fn unpair(&self, device_id: &str) -> Result<(), ErrorBody> {
+    async fn unpair(self: &Arc<Self>, device_id: &str) -> Result<(), ErrorBody> {
         let id = parse_id(device_id)?;
         let connected = {
             let core = self.core();
@@ -1301,7 +1308,7 @@ impl Daemon {
             if cmd.send(LinkCmd::Unpair(tx)).await.is_ok() {
                 match timeout(Duration::from_secs(2), rx).await {
                     Ok(Ok(Ok(()))) => {
-                        self.forget_consent(device_id)?;
+                        self.forget_consent_off_worker(device_id).await?;
                         return Ok(());
                     }
                     Ok(Ok(Err(e))) => return Err(err(ErrorCode::Failed, e)),
@@ -1311,16 +1318,28 @@ impl Daemon {
         }
         // No trusted session (or it vanished): stop whatever is attached, then forget locally.
         self.take_down(device_id).await;
-        let removed = self
-            .store
-            .remove(&id)
-            .map_err(|e| err(ErrorCode::Failed, reason(&e)))?;
-        self.forget_consent(device_id)?;
+        // File lock + fsync: off the async workers.
+        let removed = {
+            let d = self.clone();
+            tokio::task::spawn_blocking(move || d.store.remove(&id))
+                .await
+                .map_err(|_| err(ErrorCode::Failed, "the change was interrupted"))?
+                .map_err(|e| err(ErrorCode::Failed, reason(&e)))?
+        };
+        self.forget_consent_off_worker(device_id).await?;
         if !removed {
             return Err(err(ErrorCode::NotFound, "device is not paired"));
         }
         self.core().emit(Some(device_id), EventKind::Unpaired);
         Ok(())
+    }
+
+    /// `forget_consent` takes file locks and fsyncs (share settings, consent file): never on an async worker.
+    async fn forget_consent_off_worker(self: &Arc<Self>, device_id: &str) -> Result<(), ErrorBody> {
+        let (d, id) = (self.clone(), device_id.to_owned());
+        tokio::task::spawn_blocking(move || d.forget_consent(&id))
+            .await
+            .unwrap_or_else(|_| Err(err(ErrorCode::Failed, "the change was interrupted")))
     }
 
     fn forget_consent(&self, device_id: &str) -> Result<(), ErrorBody> {
@@ -2066,7 +2085,7 @@ async fn trusted_loop(
                 }
                 Ok(kde::LinkEvent::PeerUnpaired) => {
                     // bridge-kde already deleted the trust record.
-                    let _ = d.forget_consent(id);
+                    let _ = d.forget_consent_off_worker(id).await;
                     d.finish(id, attempt, EventKind::PeerUnpaired);
                     return None;
                 }
