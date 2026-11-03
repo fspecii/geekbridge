@@ -218,7 +218,7 @@ impl Settings {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
         self.writer().persist(next)
     }
