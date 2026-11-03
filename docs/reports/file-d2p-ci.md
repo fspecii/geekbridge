@@ -50,3 +50,9 @@ The first (CI) failure is not root-caused; the desktop log was not saved. Change
 times per attempt), the 8 s window measured by the clock, the PASS line names the attempt, and every failed attempt saves
 desktop status and events plus the phone's `GB` log (`pb-prehome-attempt-N*.txt` in the artifact). The `e2e-file_d2p-status.txt` evidence now also holds the desktop events.
 Both jobs stay non-blocking until nightly runs confirm them.
+
+## CI confirmation
+
+Dispatched with `only=e2e-android`; the whole matrix ran.
+Run 41705804875 (commit a526050a2): e2e-android success (`file_d2p` PASS), features, call-ui, battery-optimisation,
+update-install, photos, pair-background all success (prehome passed). e2e-android stays non-blocking until a few more nightly runs agree.
