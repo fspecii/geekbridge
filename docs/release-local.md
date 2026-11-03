@@ -18,6 +18,7 @@ signing steps and draft-then-publish order, so the in-app updaters cannot tell t
 | `geekbridge-<ver>-1-x86_64.pkg.tar.zst` (Arch) | yes (`packaging/arch/build-local.sh`), `--skip-arch` to omit |
 | `geekbridge-android.apk` (arm64-v8a + x86_64, R8, release-signed; what the Android updater reads) | yes |
 | `geekbridge-android-arm64.apk` (phone only, about half the size) | yes |
+| `geekbridge-sbom.cdx.json` (CycloneDX 1.5 SBOM: Rust workspace + Android build dependencies; `scripts/gen-sbom.sh`) | yes, deterministic; covered by `SHA256SUMS` |
 | `SHA256SUMS` | yes, same `sha256sum -- geekbridge-* geekbridge_*` as `release.yml` |
 | `geekbridge-windows-x86_64.zip`, `geekbridge-macos-*.zip`, `.dmg`, Inno Setup installer | **no** |
 | `geekbridge-windows-x86_64-gnu-experimental.zip` | only with `--with-windows`; see below |

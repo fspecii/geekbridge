@@ -81,6 +81,9 @@ jobs:
         # so one platform-specific surprise does not hide the results of the other checks.
         continue-on-error: ${{ runner.os != 'Linux' }}
         run: scripts/smoke-binaries.sh --live
+      - name: SBOM generator (CycloneDX shape, completeness against Cargo.lock and Gradle verification, determinism)
+        if: runner.os == 'Linux'
+        run: scripts/tests/sbom-test.sh
       - name: Real-device kit (report redaction canaries, link-watch transitions; stub ctl, no phone)
         if: runner.os == 'Linux'
         run: scripts/tests/realdevice-kit-test.sh

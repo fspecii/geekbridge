@@ -4,6 +4,8 @@ Snapshot of the first-release audit (2026-11-02) and how to repeat it. GeekBridg
 
 ## Running the audits
 
+The SBOM release asset (`scripts/gen-sbom.sh`) and the reproducibility audit are in [reproducible-builds.md](reproducible-builds.md).
+
 ```sh
 # 1. Licence notices (deterministic; commit the result; CI-friendly)
 scripts/gen-notices.sh            # rewrite THIRD_PARTY_NOTICES.md

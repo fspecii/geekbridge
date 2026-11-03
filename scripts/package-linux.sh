@@ -9,6 +9,7 @@
 #   geekbridge_<version>_amd64.deb                       system install; postinst enables the service for every user
 # --bin-dir defaults to target/release (needs geekbridge, geekbridge-service, geekbridge-ctl and the
 # five app executables). Icons are rendered from assets/icon.svg with rsvg-convert.
+# With SOURCE_DATE_EPOCH set the outputs are byte-for-byte reproducible from the same binaries and sources.
 # Uses only ar/tar/gzip/xz/rsvg-convert, no dpkg tooling, so it runs on any Linux CI runner.
 # The tarball name deliberately differs from geekbridge-linux-x86_64.tar.gz, which the in-app
 # update checker reads.
@@ -33,6 +34,7 @@ for b in "${bins[@]}"; do [[ -x "$bindir/$b" ]] || { echo "missing binary: $bind
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)" >&2; exit 69; }
 
 source "$ROOT/scripts/lib-tmp.sh"
+source "$ROOT/scripts/lib/repro.sh"
 work="$(gb_mktemp package -d)"; trap 'rm -rf "$work"' EXIT
 pk="$ROOT/packaging/linux"
 desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
@@ -54,7 +56,11 @@ mkdir -p "$out"
 t="$work/geekbridge-$version"; mkdir -p "$t"
 cp -a "$pay/." "$t/"; install -m 0755 "$pk/install.sh" "$t/install.sh"
 for doc in README.md LICENSE THIRD_PARTY_NOTICES.md; do cp "$ROOT/$doc" "$t/"; done   # GPL-3.0-or-later: the licence text travels with the binaries
-tar --owner=0 --group=0 --numeric-owner -czf "$out/geekbridge-$version-linux-x86_64-installer.tar.gz" -C "$work" "geekbridge-$version"
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then   # reproducible: sorted entries, fixed mtime, no gzip header time (docs/reproducible-builds.md)
+  gb_repro_tar_gz "$out/geekbridge-$version-linux-x86_64-installer.tar.gz" "$work" "geekbridge-$version"
+else
+  tar --owner=0 --group=0 --numeric-owner -czf "$out/geekbridge-$version-linux-x86_64-installer.tar.gz" -C "$work" "geekbridge-$version"
+fi
 
 # ---- .deb (data laid out for /usr)
 root="$work/deb"; mkdir -p "$root/usr/bin" "$root/usr/share" "$root/usr/lib/systemd/user" "$root/etc/xdg/autostart" "$root/usr/share/doc/geekbridge"
@@ -119,10 +125,11 @@ chmod 0755 "$ctl/postinst" "$ctl/prerm"
 (cd "$root" && find . -type f -exec md5sum {} + | sed 's| \./| |' | sort -k2) > "$ctl/md5sums"
 echo 2.0 > "$work/debian-binary"
 tar_opts=(--owner=0 --group=0 --numeric-owner --sort=name)
+[[ -z "${SOURCE_DATE_EPOCH:-}" ]] || tar_opts+=(--format=gnu "--mtime=@$SOURCE_DATE_EPOCH")
 (cd "$ctl" && tar "${tar_opts[@]}" -cJf "$work/control.tar.xz" ./control ./md5sums ./postinst ./prerm)
 (cd "$root" && tar "${tar_opts[@]}" -cJf "$work/data.tar.xz" .)
 deb="$out/geekbridge_${debversion}_amd64.deb"
 rm -f "$deb"
-(cd "$work" && ar rc "$deb" debian-binary control.tar.xz data.tar.xz)
+(cd "$work" && ar rcD "$deb" debian-binary control.tar.xz data.tar.xz)
 echo "==> $out/geekbridge-$version-linux-x86_64-installer.tar.gz"
 echo "==> $deb"

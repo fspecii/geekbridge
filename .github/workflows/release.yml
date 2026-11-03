@@ -5,7 +5,7 @@ name: Release
 # runs when started by hand (Actions tab > Run workflow, choosing the tag as the ref); pushing a tag does not
 # start it. The tag must equal [workspace.package] version in Cargo.toml (the single version source).
 # Artifact names are what the in-app update checkers look for:
-#   geekbridge-<linux|windows|macos>-<x86_64|aarch64>.<tar.gz|zip>, geekbridge-android.apk, SHA256SUMS
+#   geekbridge-<linux|windows|macos>-<x86_64|aarch64>.<tar.gz|zip>, geekbridge-android.apk, geekbridge-sbom.cdx.json (CycloneDX SBOM), SHA256SUMS
 #
 # Where the release is published: by default this repository. Set the repository variable RELEASE_REPO
 # (owner/name) and the secret RELEASES_TOKEN (fine-grained token, Contents: read/write on that repo only) to
@@ -94,7 +94,9 @@ jobs:
               (cd stage && zip -r -q "../dist/$name" "geekbridge-${{ matrix.name }}")
             fi
           else
-            tar -czf "dist/$name" -C stage "geekbridge-${{ matrix.name }}"
+            # Sorted entries, fixed mtime (commit time), no gzip header time: docs/reproducible-builds.md
+            SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" bash -c 'source scripts/lib/repro.sh; gb_repro_tar_gz "$1" "$2" "$3"' _ \
+              "dist/$name" stage "geekbridge-${{ matrix.name }}"
           fi
           ls -l dist
       # Installers (additive: the archives above are what the in-app update checkers read).
@@ -268,10 +270,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch head; the SHA pins the action, `toolchain` picks the compiler)
+        with:
+          toolchain: stable
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: SBOM (CycloneDX 1.5; timestamp = commit time, so it is reproducible)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" scripts/gen-sbom.sh --out artifacts/geekbridge-sbom.cdx.json
       - name: SHA256SUMS
         shell: bash
         run: |
@@ -279,7 +290,7 @@ jobs:
           cd artifacts
           ls -l
           for f in geekbridge-linux-x86_64.tar.gz geekbridge-windows-x86_64.zip geekbridge-macos-aarch64.zip \
-                   geekbridge-macos-x86_64.zip geekbridge-android.apk; do
+                   geekbridge-macos-x86_64.zip geekbridge-android.apk geekbridge-sbom.cdx.json; do
             [[ -s "$f" ]] || { echo "missing or empty artifact: $f"; exit 1; }
           done
           sha256sum -- geekbridge-* $(compgen -G "geekbridge_*" || true) | tee SHA256SUMS

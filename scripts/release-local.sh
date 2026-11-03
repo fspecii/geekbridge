@@ -47,6 +47,7 @@ fi
 ROOT="$(cd "$(dirname "$GB_RL_SELF")/.." && pwd -P)"
 cd "$ROOT"
 source "$ROOT/scripts/lib/signpass.sh"
+source "$ROOT/scripts/lib/repro.sh"
 
 log()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
@@ -124,6 +125,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
     soft "working tree is not clean ($(git status --porcelain | wc -l) changed paths); commit them first"
 fi
 HEAD_SHA="$(git rev-parse HEAD)"
+# Timestamps in every artefact (tar mtimes, SBOM) come from the commit, not the clock: docs/reproducible-builds.md.
+export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct HEAD)}"
 cargo_ver="$(cargo_version "$ROOT")"
 [[ -n "$cargo_ver" ]] || die "no [workspace.package] version in Cargo.toml"
 if [[ "$cargo_ver" != "$VERSION" ]]; then
@@ -266,18 +269,22 @@ if (( TESTS )); then step checks check_all; else warn "--skip-tests: fmt/clippy/
 DESK_TARGET="$WORK/target-desktop"
 build_desktop() {
     cd "$SRC"
-    CARGO_TARGET_DIR="$DESK_TARGET" cargo build --release --locked -p bridge-apps -p bridge-service
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$(gb_repro_rustflags "$SRC")" \
+        CARGO_TARGET_DIR="$DESK_TARGET" cargo build --release --locked -p bridge-apps -p bridge-service
 }
 package_linux_archives() {
     local dir="$WORK/stage/geekbridge-linux-x86_64" b
     rm -rf "$dir"; mkdir -p "$dir"
     for b in "${BINS[@]}"; do cp "$DESK_TARGET/release/$b" "$dir/"; done
     cp "$SRC/README.md" "$dir/" || true
-    tar --owner=0 --group=0 --numeric-owner -czf "$OUT/geekbridge-linux-x86_64.tar.gz" -C "$WORK/stage" geekbridge-linux-x86_64
+    gb_repro_tar_gz "$OUT/geekbridge-linux-x86_64.tar.gz" "$WORK/stage" geekbridge-linux-x86_64
     "$SRC/scripts/package-linux.sh" --bin-dir "$DESK_TARGET/release" --out "$OUT" --version "$VERSION"
 }
 step build-linux build_desktop
 step package-linux package_linux_archives
+
+# ---------------------------------------------------------------- SBOM (CycloneDX 1.5; SHA256SUMS below covers it)
+step sbom "$SRC/scripts/gen-sbom.sh" --root "$SRC" --out "$OUT/geekbridge-sbom.cdx.json"
 
 # ---------------------------------------------------------------- Arch package
 build_arch() {
@@ -443,8 +450,8 @@ if (( RELEASE_SIGNED )); then
 else
     SIGNER_NOTE="Android APK is DEBUG-signed (prerelease only; not updatable from or to a release build). Signer SHA-256: \`$SIGNER\`"
 fi
-no_assets="Linux (x86_64 tarball, installer tarball, .deb, Arch package) and Android only."
-(( WINDOWS )) && no_assets="Linux, Android and an experimental, untested Windows zip."
+no_assets="Linux (x86_64 tarball, installer tarball, .deb, Arch package), Android and a CycloneDX SBOM (geekbridge-sbom.cdx.json) only."
+(( WINDOWS )) && no_assets="Linux, Android, a CycloneDX SBOM and an experimental, untested Windows zip."
 {
     printf '%s\n\n%s\n\n' "$notes_body" "$SIGNER_NOTE"
     printf 'Assets: %s Windows and macOS builds are not part of this release (build from source). ' "$no_assets"
@@ -466,6 +473,12 @@ ok()  { note "ok: $*"; }
 
 # 1. SHA256SUMS matches the files.
 ( cd "$OUT" && sha256sum -c --quiet SHA256SUMS ) && ok "SHA256SUMS matches" || bad "SHA256SUMS does not match the files"
+
+# 1b. The SBOM is there, is CycloneDX 1.5 for this version, and is listed in SHA256SUMS.
+python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["bomFormat"]=="CycloneDX" and d["specVersion"]=="1.5"; assert d["metadata"]["component"]["version"]==sys.argv[2]; assert len(d["components"])>100' \
+    "$OUT/geekbridge-sbom.cdx.json" "$VERSION" 2>/dev/null \
+    && grep -q ' geekbridge-sbom\.cdx\.json$' "$OUT/SHA256SUMS" \
+    && ok "geekbridge-sbom.cdx.json: CycloneDX 1.5 for $VERSION, in SHA256SUMS" || bad "SBOM missing, malformed, wrong version or not in SHA256SUMS"
 
 # 2. The tarball runs, and says the tag's version.
 vdir="$(mktemp -d "$WORK/tmp/verify.XXXXXX")"

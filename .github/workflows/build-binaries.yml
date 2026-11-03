@@ -116,21 +116,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: SBOM (CycloneDX 1.5, deterministic; covered by SHA256SUMS below)
+        shell: bash
+        run: scripts/gen-sbom.sh --out artifacts/geekbridge-sbom.cdx.json
       - name: Combine
         shell: bash
         run: |
           set -euo pipefail
           cd artifacts
-          cat SHA256SUMS-* | sort -k2 > SHA256SUMS
+          { cat SHA256SUMS-*; sha256sum geekbridge-sbom.cdx.json; } | sort -k2 > SHA256SUMS
           sha256sum -c SHA256SUMS
           rm SHA256SUMS-*
           ls -l
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: SHA256SUMS
-          path: artifacts/SHA256SUMS
+          path: |
+            artifacts/SHA256SUMS
+            artifacts/geekbridge-sbom.cdx.json
           retention-days: 14
