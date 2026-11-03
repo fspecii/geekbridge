@@ -615,10 +615,12 @@ dependencies = [
 name = "bridge-apps"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bridge-core",
  "bridge-i18n",
  "bridge-kde",
  "eframe",
+ "jpeg-decoder",
  "qrcode",
  "rqrr",
  "tempfile",
@@ -682,6 +684,7 @@ dependencies = [
 name = "bridge-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "serde",
  "serde_json",
  "sha2",
@@ -752,6 +755,7 @@ dependencies = [
 name = "bridge-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bridge-calls",
  "bridge-calls-windows",
  "bridge-chaos",

@@ -91,7 +91,7 @@ Entries are kept for up to 10 minutes after they finish.
 
 Wire contract: `docs/phone-data-link.md`. Rust relays an allow-listed set of packets and interprets none of them.
 
-* `transport_start` takes `data: {contacts?, calendar?, calendar_edit?, sms?, debug?, battery?, notifications?}` (booleans, default false). It decides the declared
+* `transport_start` takes `data: {contacts?, calendar?, calendar_edit?, sms?, debug?, battery?, notifications?, photos?}` (booleans, default false). It decides the declared
   capabilities; changing it needs a restart. `transport_data_config` (the same keys) toggles the runtime
   flags (an off feature drops its packets and discards its queued requests).
 * `transport_wait {since?, timeout_ms?}` (max 600 s) -> `{last_event_seq, stopped}`: blocks until an event newer than `since` or a

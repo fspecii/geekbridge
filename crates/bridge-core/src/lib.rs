@@ -20,6 +20,8 @@ pub mod notification_link;
 pub mod pairing_help;
 pub mod phone_link;
 pub mod phone_view;
+pub mod photos_link;
+pub mod photos_view;
 pub mod report;
 pub mod share;
 pub mod statefile;

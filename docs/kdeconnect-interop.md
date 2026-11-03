@@ -166,6 +166,13 @@ identity stays valid); a port the phone dialed itself is never replaced by the h
 address the connection came from, so it can only point the phone at the peer's own IP. Pinned stock-peer captures
 (`kdeconnect-real/*`, `kdeconnect-android-real/*`) and their tests are unchanged.
 
+### Recent photos (`geekbridge.photos.*`)
+
+GeekBridge-only packets (`geekbridge.photos.request`, `.list`, `.thumb`): a stock KDE Connect peer neither declares nor is
+sent them, so nothing changes for it (`tests/stock_peer.rs` and `tests/android_negotiation.rs` pin that the stock lists are
+unchanged and that no photo packet is negotiated with them). Shapes, limits and privacy rules:
+[design/recent-photos.md](design/recent-photos.md). A full picture is an ordinary `kdeconnect.share.request` file offer.
+
 ## Battery status (`kdeconnect.battery`)
 
 Phone battery level and charging state use the stock packets, so a stock KDE Connect peer interoperates in both

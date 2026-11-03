@@ -104,6 +104,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "photos_wire"
+path = "fuzz_targets/photos_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "clipboard"
 path = "fuzz_targets/clipboard.rs"
 test = false

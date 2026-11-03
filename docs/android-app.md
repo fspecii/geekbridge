@@ -241,7 +241,7 @@ Run with `.tools` JDK 17.0.21 / Gradle 8.13 / SDK 36 in this checkout (the `asse
   `INTERNET` and the other permissions listed in `AndroidManifest.xml` (update install, foreground service, boot,
   notifications, battery-optimisation exemption, multicast, SMS, calendar write, call answering, call log, call placing for the optional PC dial), each runtime
   permission requested only when its feature is switched on. Phone notification mirroring uses Android's special
-  Notification access (a `NotificationListenerService` the user enables in system settings), not a runtime permission. Never requested: phone numbers, Bluetooth, storage, location.
+  Notification access (a `NotificationListenerService` the user enables in system settings), not a runtime permission. Recent photos (off by default) asks for `READ_MEDIA_IMAGES` plus `READ_MEDIA_VISUAL_USER_SELECTED` on Android 14+ (the user may share only the photos they pick), `READ_MEDIA_IMAGES` on 13 and `READ_EXTERNAL_STORAGE` (API 32 and below), only when its switch is turned on; see [design/recent-photos.md](design/recent-photos.md). Never requested: phone numbers, Bluetooth, videos, audio, all-files access, photo location, location.
 - Guard check: in a copy of the project without the `.so` files, `assembleDebug` fails in `verifyNativeLibs`
   with the message above.
 

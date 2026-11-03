@@ -3,7 +3,7 @@
 //! output bounded, and asserts the property its sanitiser promises (no control characters, no path
 //! separators, ...). A violated property is a panic whose message starts with `ORACLE`.
 
-use bridge_core::{calls_link, clipboard_wire, ipc, notification_link, phone_link};
+use bridge_core::{calls_link, clipboard_wire, ipc, notification_link, phone_link, photos_link};
 use bridge_kde::{
     Identity, Packet,
     identity::{self, DeviceId},
@@ -549,6 +549,88 @@ fn notification_seeds() -> Vec<Vec<u8>> {
     .collect()
 }
 
+fn photos_wire(input: &[u8]) {
+    let (kind, body) = kind_and_body(
+        input,
+        &[
+            "geekbridge.photos.request",
+            "geekbridge.photos.list",
+            "geekbridge.photos.thumb",
+        ],
+    );
+    // Whatever the phone sent, what is kept is bounded, free of control and direction-changing characters,
+    // and a thumbnail never exceeds its byte and pixel caps.
+    if let Ok(list) = photos_link::parse_list(&body) {
+        oracle(list.items.len() <= photos_link::MAX_ITEMS, || {
+            "photo list over its cap".into()
+        });
+        let mut ids = std::collections::HashSet::new();
+        for p in &list.items {
+            oracle(
+                photos_link::valid_id(&p.id) && ids.insert(p.id.clone()),
+                || "bad or repeated photo id".into(),
+            );
+            oracle(p.name.chars().count() <= photos_link::MAX_NAME, || {
+                "photo name over its cap".into()
+            });
+            oracle(
+                !p.name.chars().any(|c| {
+                    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+                }),
+                || "control or bidi character in a photo name".into(),
+            );
+            oracle(p.size <= photos_link::MAX_PHOTO_BYTES, || {
+                "photo size over its cap".into()
+            });
+        }
+    }
+    if let Ok(photos_link::Thumb::Image {
+        id,
+        width,
+        height,
+        jpeg,
+    }) = photos_link::parse_thumb(&body)
+    {
+        oracle(photos_link::valid_id(&id), || "bad thumbnail id".into());
+        oracle(
+            jpeg.len() <= photos_link::MAX_THUMB_BYTES && photos_link::looks_like_jpeg(&jpeg),
+            || "thumbnail over its byte cap or not a JPEG".into(),
+        );
+        oracle(
+            (1..=photos_link::MAX_THUMB_EDGE).contains(&width)
+                && (1..=photos_link::MAX_THUMB_EDGE).contains(&height),
+            || "thumbnail dimensions out of range".into(),
+        );
+    }
+    if let Ok(ask) = photos_link::parse_request(&body) {
+        match ask {
+            photos_link::Ask::List { limit } => {
+                oracle((1..=photos_link::MAX_ITEMS).contains(&limit), || {
+                    "list limit out of range".into()
+                })
+            }
+            photos_link::Ask::Thumb { id } | photos_link::Ask::Get { id } => {
+                oracle(photos_link::valid_id(&id), || "bad request id".into());
+            }
+        }
+    }
+    let _ = kind;
+}
+
+fn photos_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"type":"geekbridge.photos.request","body":{"op":"list","limit":24}}"#,
+        r#"{"type":"geekbridge.photos.request","body":{"op":"thumb","id":"p1"}}"#,
+        r#"{"type":"geekbridge.photos.request","body":{"op":"get","id":"p1"}}"#,
+        r#"{"type":"geekbridge.photos.list","body":{"items":[{"id":"p1","name":"IMG_0001.jpg","taken":1700000000000,"size":2400000,"w":4032,"h":3024},{"id":"p2","name":"a\u202eb\u0000.png","taken":1,"size":1,"w":1,"h":1}],"partial":true}}"#,
+        r#"{"type":"geekbridge.photos.thumb","body":{"id":"p1","w":160,"h":120,"jpeg":"/9j/4AAQSkZJRgABAQ=="}}"#,
+        r#"{"type":"geekbridge.photos.thumb","body":{"id":"p1","gone":true}}"#,
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
 fn clipboard_parse(input: &[u8]) {
     let (kind, body) = kind_and_body(
         input,
@@ -759,6 +841,7 @@ fn hub_phone_data(input: &[u8]) {
         battery_request: true,
         notification_request: true,
         notification_action: true,
+        photos: true,
     };
     let (_rx, gen_) = hub.link_up(
         "0123456789abcdef0123456789abcdef",
@@ -1370,6 +1453,17 @@ pub static TARGETS: &[Target] = &[
         ],
         &["kdeconnect.notification"],
         notification_seeds
+    ),
+    t!(
+        "photos_wire",
+        photos_wire,
+        &[
+            "geekbridge.photos.request",
+            "geekbridge.photos.list",
+            "geekbridge.photos.thumb"
+        ],
+        &["geekbridge.photos"],
+        photos_seeds
     ),
     t!(
         "clipboard",

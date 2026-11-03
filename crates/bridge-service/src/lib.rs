@@ -37,6 +37,7 @@ pub mod notify_text;
 pub mod os_notify;
 pub mod phone_data;
 pub mod phone_debug;
+pub mod photos;
 pub mod private;
 pub mod reconnect;
 pub mod session_env;

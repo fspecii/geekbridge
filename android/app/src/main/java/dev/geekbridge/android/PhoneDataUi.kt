@@ -92,6 +92,8 @@ object PhoneDataUi {
         separator(kit, parent)
         notificationsSection(a, kit, parent, s, rerender)
         separator(kit, parent)
+        photosSection(a, kit, parent, s, rerender)
+        separator(kit, parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, GrantFeature.Sms, PhoneDataRuntime::setSms)
         if (s.sms) {
             kit.row(
@@ -100,6 +102,44 @@ object PhoneDataUi {
             )
         }
         parent.addView(kit.text(a.getString(R.string.pd_sms_honest), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+    }
+
+    /**
+     * "Show recent photos on the computer": the switch, Android's photo access (all photos or only the ones the user
+     * picks, Android 14+), a plain line saying what is missing, and who is allowed. Off by default.
+     */
+    private fun photosSection(a: Activity, kit: UiKit, parent: LinearLayout, s: PhoneDataSettings, rerender: () -> Unit) {
+        val perms = PhotoAccessRules.requestPermissions(android.os.Build.VERSION.SDK_INT)
+        fun ask() {
+            perms.forEach { AppState.markAsked(it) }
+            a.requestPermissions(perms, REQUEST_CODE)
+        }
+        kit.row(
+            parent, R.drawable.ic_image, a.getString(R.string.pd_photos), a.getString(R.string.pd_photos_sub),
+            kit.toggle(s.photos) { on ->
+                PhoneDataRuntime.setPhotos(on)
+                GrantsUi.switched(a, GrantFeature.Photos, on, rerender)
+                if (on && PhotoAccessRules.evaluate(android.os.Build.VERSION.SDK_INT) { granted(a, arrayOf(it)) } == PhotoAccess.None) ask()
+                rerender()
+            },
+        )
+        val access = PhotoAccessRules.evaluate(android.os.Build.VERSION.SDK_INT) { granted(a, arrayOf(it)) }
+        ComputerGrantsRuntime.init(a)
+        val peers = AppState.pairedPeers
+        val allowed = ComputerGrantsRuntime.grants.devicesFor(GrantFeature.Photos)
+        val step = PhotosReadiness.evaluate(s.photos, access, peers.size, peers.count { it.first in allowed })
+        parent.addView(
+            kit.text(PhotosReadiness.message(step, a.strings), 13.5f, if (step == PhotosStep.Ready) Tone.Ok else if (s.photos) Tone.Warn else Tone.Muted)
+                .apply { setPadding(0, kit.dp(6), 0, 0) },
+        )
+        if (!s.photos) return
+        if (access == PhotoAccess.None) {
+            kit.button(parent, a.getString(R.string.pd_grant), BtnStyle.Tonal) { ask() }
+            kit.button(parent, a.getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(a) }
+        } else if (access == PhotoAccess.Partial) {
+            kit.button(parent, a.getString(R.string.photos_pick_more), BtnStyle.Tonal) { ask() }
+        }
+        GrantsUi.add(a, kit, parent, GrantFeature.Photos, rerender)
     }
 
     /**

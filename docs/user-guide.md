@@ -80,6 +80,20 @@ If either side cannot find the other, use **Test connection** (both apps have it
 *Connect by address*. Then finish the setup wizard (notifications, contacts, calendar, phone state and the **battery**
 step so Android keeps the link alive). Details: [pairing.md](pairing.md).
 
+## Recent photos on the computer
+
+Off by default, on the phone and on the computer. On the phone, open Settings and switch on *Show recent photos on the
+computer*; Android then asks for access to your photos (on Android 14 and later you may choose *Select photos* and share
+only those) and you allow the computer. On the computer, open **GeekBridge Share**: when a connected phone offers photos
+the window gets a *Phone photos* tab, which first shows an *Allow photos from PHONE* button (or run
+`geekbridge-ctl consent DEVICE_ID photos on`). After that, opening the tab asks the phone for its newest 24 photos and
+shows small previews. Press a preview and choose **Save** (the full picture goes to the save folder) or **Copy to
+clipboard** (needs `wl-copy` or `xclip` on Linux and a JPEG, PNG, GIF or WebP picture). Only the previews are sent to
+the list; the full picture leaves the phone when you press one of those buttons. Nothing is uploaded in the background,
+the list is kept in memory only (erased when you press *Stop showing photos*, when the link ends or after 30 minutes)
+and `geekbridge-ctl photos` shows what is held. See [design/recent-photos.md](design/recent-photos.md). Checked with
+automated tests and a stand-in phone; not yet confirmed on a real phone.
+
 ## Phone notifications on the computer
 
 Off by default. On the phone, open Settings and switch on *Show phone notifications on the computer*, then follow the
@@ -170,8 +184,8 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 `geekbridge-ctl --help` is the authoritative list. Groups: **link** (`status`, `connect`, `pair`, `pair-qr`,
 `test-connection`, `approve`, `deny`, `disconnect`, `unpair`, `rename`, `ping`, `events`); **permissions** (`consent DEVICE
 FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
-`battery`, plus `calendar_edit` and `calendar_alerts`, which the command accepts although `--help` does not list them); **phone data** (`agenda`,
-`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `notifications`); **calls**
+`battery`, `photos`, plus `calendar_edit` and `calendar_alerts`, which the command accepts although `--help` does not list them); **phone data** (`agenda`,
+`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `notifications`, `photos [refresh|save|copy]`); **calls**
 (`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
 `autostart`, `tray`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
@@ -189,9 +203,9 @@ a debug build never updates to a release. Turn checks off under *Settings*, or
 ## Privacy
 
 No accounts, no GeekBridge servers, no analytics. Everything stays on your local network. Contacts, calendar, Messages,
-battery level, phone notifications, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
+battery level, phone notifications, recent photos, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
 specific phone**, on both the phone and the computer, and can be switched off again at any time. Nothing from the phone is
-written to the computer's disk (contacts, calendar, messages, battery level and mirrored notifications are held in memory and erased when the
+written to the computer's disk (contacts, calendar, messages, battery level, mirrored notifications and photo previews are held in memory and erased when the
 service stops); received files are the one thing you ask it to keep. Message text, and the text of mirrored phone notifications, is hidden in desktop banners by default, and
 caller numbers and message text are masked in logs and in the redacted `diagnose` report. The only internet traffic is
 the optional update check to `api.github.com` (turn it off with `geekbridge-ctl update disable`). Reporting problems:

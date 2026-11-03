@@ -54,10 +54,13 @@ pub(in crate::transport) enum Feature {
     /// Phone notification mirroring (`kdeconnect.notification*`, stock KDE Connect). Off until the user turns it
     /// on, gave Notification access and allowed at least one computer; only allowed computers hear anything.
     Notifications,
+    /// Recent photos (`geekbridge.photos.*`, GeekBridge only): a short list and small thumbnails when a computer asks.
+    /// Off until the user turns it on and allows at least one computer; needs the photo permission.
+    Photos,
 }
 
 impl Feature {
-    const ALL: [Feature; 7] = [
+    const ALL: [Feature; 8] = [
         Feature::Contacts,
         Feature::Calendar,
         Feature::CalendarEdit,
@@ -65,6 +68,7 @@ impl Feature {
         Feature::Debug,
         Feature::Battery,
         Feature::Notifications,
+        Feature::Photos,
     ];
 
     fn key(self) -> &'static str {
@@ -76,6 +80,7 @@ impl Feature {
             Feature::Debug => "debug",
             Feature::Battery => "battery",
             Feature::Notifications => "notifications",
+            Feature::Photos => "photos",
         }
     }
 
@@ -98,6 +103,7 @@ impl Feature {
                 bridge_core::notification_link::REQUEST,
                 bridge_core::notification_link::ACTION,
             ],
+            Feature::Photos => &[bridge_core::photos_link::REQUEST],
         }
     }
 
@@ -113,6 +119,10 @@ impl Feature {
             Feature::Debug => &[bridge_core::debug_link::LOG, bridge_core::debug_link::STATE],
             Feature::Battery => &["kdeconnect.battery"],
             Feature::Notifications => &[bridge_core::notification_link::NOTIFICATION],
+            Feature::Photos => &[
+                bridge_core::photos_link::LIST,
+                bridge_core::photos_link::THUMB,
+            ],
         }
     }
 
@@ -135,6 +145,7 @@ pub(in crate::transport) struct Flags {
     pub debug: bool,
     pub battery: bool,
     pub notifications: bool,
+    pub photos: bool,
 }
 
 impl Flags {
@@ -148,6 +159,7 @@ impl Flags {
             Feature::Debug => self.debug,
             Feature::Battery => self.battery,
             Feature::Notifications => self.notifications,
+            Feature::Photos => self.photos,
         }
     }
 }
@@ -311,6 +323,7 @@ impl Hub {
             "debug": g.flags.debug,
             "battery": g.flags.battery,
             "notifications": g.flags.notifications,
+            "photos": g.flags.photos,
         })
     }
 
@@ -452,6 +465,7 @@ mod tests {
             debug: false,
             battery: false,
             notifications: false,
+            photos: false,
         }
     }
 
@@ -521,6 +535,31 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn photos_are_geekbridge_only_and_declared_only_when_on() {
+        assert!(
+            incoming_types(on())
+                .iter()
+                .chain(outgoing_types(on()).iter())
+                .all(|k| !k.contains("photos"))
+        );
+        let p = Flags {
+            photos: true,
+            ..Flags::default()
+        };
+        assert_eq!(incoming_types(p), vec!["geekbridge.photos.request"]);
+        assert_eq!(
+            outgoing_types(p),
+            vec!["geekbridge.photos.list", "geekbridge.photos.thumb"]
+        );
+        assert_eq!(Feature::Photos.key(), "photos");
+        assert_eq!(
+            Feature::of_incoming("geekbridge.photos.request"),
+            Some(Feature::Photos)
+        );
+        assert!(Feature::of_incoming("geekbridge.photos.list").is_none());
     }
 
     #[test]

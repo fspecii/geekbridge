@@ -42,6 +42,10 @@ default). The default is the project AVD `gbnothing` (`scripts/bootstrap-android
 `hw.lcd.density=420`, `hw.lcd.width=1080`, `hw.lcd.height=2400` in its `config.ini`, and run with `GOLDEN_AVD=gbgolden`.
 A different image, density or GPU renders text a few pixels differently, so the goldens are only valid on that setup.
 
+Photo previews (`share-photos*`) are gradients and edges that the 256-colour reducer and the comparer's palette mapping
+round differently, so those screens allow 0.2 % differing pixels instead of 0.05 % (`max_ratio` in the script); a layout
+change moves far more than that.
+
 ## Running on a busy machine
 
 Both scripts pick every port at run time (control, API, discovery, mock release server, adb server, emulator console), give

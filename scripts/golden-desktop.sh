@@ -170,11 +170,14 @@ shot_once() { # display app theme name keys [ENV=VAL...]   keys is an xdotool ke
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
   return 0
 }
+# Photo previews are gradients-and-edges content that the 256-colour reducer and the comparer's palette mapping round
+# differently, so the photo screens get a wider (still far below any layout change) allowance of differing pixels.
+max_ratio() { case $1 in share-photos*) echo 0.002 ;; *) echo "${GOLDEN_MAX_RATIO:-0.0005}" ;; esac; }
 shot_matches() { # NAME-THEME: both sizes within tolerance of their goldens (a missing golden counts as matching; the report says NEW)
   local base=$1 sz
   for sz in std min; do
     [ -f "$GOLDEN_DIR/$base-$sz.png" ] || continue
-    $IMG compare "$RUN/raw/$base-$sz.png" "$GOLDEN_DIR/$base-$sz.png" "$RUN/retry.$base-$sz.png" >/dev/null 2>&1 || return 1
+    GOLDEN_MAX_RATIO=$(max_ratio "$base") $IMG compare "$RUN/raw/$base-$sz.png" "$GOLDEN_DIR/$base-$sz.png" "$RUN/retry.$base-$sz.png" >/dev/null 2>&1 || return 1
   done
 }
 # A shot is retried (3 tries); if the worker's X server has gone away it is replaced first (SHOT_DISP is the new display).
@@ -213,6 +216,11 @@ tasks_rest() { # theme
   local t=$1
   echo "geekbridge-clipboard|$t|clipboard|-|"
   echo "geekbridge-share|$t|share|-|"
+  # Recent photos tab: the scripted phone declares the photos packets and the service allowed them for it, so the grid is
+  # the real thing (list and thumbnails over the link). The "off" screen is the state before the user allowed photos.
+  echo "geekbridge-share|$t|share-photos|-|GEEKBRIDGE_SHARE_TAB=photos"
+  echo "geekbridge-share|$t|share-photos-detail|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_SELECT_FIRST=1"
+  echo "geekbridge-share|$t|share-photos-off|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_FIXTURE=offered"
   echo "geekbridge-calls|$t|calls-keypad|-|"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
@@ -267,7 +275,7 @@ for raw in "$RUN"/raw/*.png; do
   n=$((n+1))
   if [ "$MODE" = update ]; then $IMG reduce "$raw" "$GOLDEN_DIR/$name" || die "reduce failed for $name"; continue; fi
   if [ ! -f "$GOLDEN_DIR/$name" ]; then echo "NEW   $name (no golden; run --update after reviewing)"; $IMG reduce "$raw" "$DIFF/desktop-NEW-$name"; bad=$((bad+1)); continue; fi
-  if out=$($IMG compare "$raw" "$GOLDEN_DIR/$name" "$DIFF/desktop-$name"); then echo "ok    $name"; else echo "FAIL  $name: $out"; bad=$((bad+1)); fi
+  if out=$(GOLDEN_MAX_RATIO=$(max_ratio "$name") $IMG compare "$raw" "$GOLDEN_DIR/$name" "$DIFF/desktop-$name"); then echo "ok    $name"; else echo "FAIL  $name: $out"; bad=$((bad+1)); fi
 done
 if [ "$MODE" = check ] && [ -z "${ONLY:-}" ]; then
   for g in "$GOLDEN_DIR"/*.png; do [ -e "$RUN/raw/$(basename "$g")" ] || { echo "STALE $(basename "$g") (golden without a screen)"; bad=$((bad+1)); }; done

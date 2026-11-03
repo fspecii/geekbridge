@@ -213,6 +213,8 @@ pub struct Daemon {
     /// Mirrored phone notifications (memory only, bounded) and the banner for them.
     mirror: crate::mirror::Mirror,
     mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
+    /// Recent phone photos: a list and thumbnails, asked for, memory only (`photos`).
+    photos: crate::photos::Photos,
     /// Log lines and state dumps from a debug-build phone (`phone_debug`).
     debug: Arc<crate::phone_debug::PhoneDebug>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
@@ -360,6 +362,7 @@ impl Daemon {
             data,
             mirror,
             mirror_notifier,
+            photos: crate::photos::Photos::default(),
             debug,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
@@ -379,6 +382,143 @@ impl Daemon {
 
     fn consents(&self) -> &ConsentStore {
         &self.consents
+    }
+
+    // ------------------------------------------------------------ recent photos
+
+    fn photos_ready(&self, device_id: &str) -> Result<(), ErrorBody> {
+        parse_id(device_id)?;
+        if !self.consents().is_enabled(device_id, Feature::Photos) {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "recent photos are off for this phone",
+            ));
+        }
+        if !self.data.caps(device_id).photos {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "this phone does not offer recent photos",
+            ));
+        }
+        Ok(())
+    }
+
+    fn photos_view(&self, device_id: Option<&str>) -> bridge_core::photos_view::PhotosView {
+        use bridge_core::photos_view::{PhotoDevice, PhotosView};
+        let now = std::time::Instant::now();
+        let connected: Vec<(String, String)> = self
+            .core()
+            .links
+            .iter()
+            .filter(|(id, l)| {
+                l.status.phase == LinkPhase::Connected && device_id.is_none_or(|d| d == id.as_str())
+            })
+            .map(|(id, l)| (id.clone(), l.status.name.clone()))
+            .collect();
+        let mut view = PhotosView::default();
+        for (id, name) in connected {
+            if !self.data.caps(&id).photos {
+                continue;
+            }
+            let (listed, partial) = self.photos.state(&id, now);
+            let dev = PhotoDevice {
+                device_id: id.clone(),
+                name,
+                partial,
+                listed,
+            };
+            if self.consents().is_enabled(&id, Feature::Photos) {
+                view.items.extend(self.photos.items(&id, now));
+                view.devices.push(dev);
+            } else {
+                view.offered.push(dev);
+            }
+        }
+        view.items.sort_by_key(|i| std::cmp::Reverse(i.taken_ms));
+        let shown: Vec<&str> = view.devices.iter().map(|d| d.device_id.as_str()).collect();
+        view.fetches = self
+            .share
+            .fetches()
+            .into_iter()
+            .filter(|f| shown.contains(&f.device_id.as_str()))
+            .collect();
+        view
+    }
+
+    /// Ask a phone for its newest photos. Asking again within a few seconds is answered `Ack` without a new request.
+    fn photos_refresh(&self, device_id: &str) -> Result<(), ErrorBody> {
+        self.photos_ready(device_id)?;
+        match self
+            .photos
+            .begin_refresh(device_id, std::time::Instant::now())
+        {
+            crate::photos::Refresh::TooSoon => return Ok(()),
+            crate::photos::Refresh::Full => {
+                return Err(err(
+                    ErrorCode::TooMany,
+                    "too many phones are listing photos",
+                ));
+            }
+            crate::photos::Refresh::Go => {}
+        }
+        if self.data.send_stock(
+            device_id,
+            gate::PHOTOS_REQUEST,
+            bridge_core::photos_link::list_request_body(bridge_core::photos_link::MAX_ITEMS),
+        ) {
+            Ok(())
+        } else {
+            Err(err(ErrorCode::NotConnected, "the phone is not connected"))
+        }
+    }
+
+    fn photo_thumb(
+        &self,
+        device_id: &str,
+        id: &str,
+    ) -> Result<bridge_core::photos_view::PhotoThumbView, ErrorBody> {
+        use base64::Engine as _;
+        parse_id(device_id)?;
+        if !self.consents().is_enabled(device_id, Feature::Photos) {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "recent photos are off for this phone",
+            ));
+        }
+        let (width, height, jpeg) = self
+            .photos
+            .thumb(device_id, id)
+            .ok_or_else(|| err(ErrorCode::NotFound, "no such thumbnail"))?;
+        Ok(bridge_core::photos_view::PhotoThumbView {
+            width,
+            height,
+            jpeg_base64: base64::engine::general_purpose::STANDARD.encode(jpeg),
+        })
+    }
+
+    /// Ask the phone to send one listed photo in full over the share channel.
+    fn photo_fetch(
+        &self,
+        device_id: &str,
+        id: &str,
+        mode: bridge_core::photos_view::FetchMode,
+    ) -> Result<(), ErrorBody> {
+        self.photos_ready(device_id)?;
+        let photo = self
+            .photos
+            .photo(device_id, id)
+            .ok_or_else(|| err(ErrorCode::NotFound, "no such photo; refresh the list"))?;
+        let fetch = self.share.expect_photo(device_id, id, &photo.name, mode)?;
+        if self.data.send_stock(
+            device_id,
+            gate::PHOTOS_REQUEST,
+            bridge_core::photos_link::get_request_body(id),
+        ) {
+            Ok(())
+        } else {
+            self.share.cancel_expectation(fetch);
+            Err(err(ErrorCode::NotConnected, "the phone is not connected"))
+        }
     }
 
     /// Ask a connected phone for the notifications it is showing (consent already checked by the caller).
@@ -688,6 +828,22 @@ impl Daemon {
             Request::Notifications { device_id } => Ok(Response::Notifications(Box::new(
                 self.notifications_view(device_id.as_deref()),
             ))),
+            Request::Photos { device_id } => Ok(Response::Photos(Box::new(
+                self.photos_view(device_id.as_deref()),
+            ))),
+            Request::PhotosRefresh { device_id } => {
+                self.photos_refresh(&device_id).map(|()| Response::Ack)
+            }
+            Request::PhotoThumb { device_id, id } => self
+                .photo_thumb(&device_id, &id)
+                .map(|t| Response::PhotoThumb(Box::new(t))),
+            Request::PhotoFetch {
+                device_id,
+                id,
+                mode,
+            } => self
+                .photo_fetch(&device_id, &id, mode)
+                .map(|()| Response::Ack),
             Request::DismissNotification { device_id, id } => self
                 .dismiss_notification(&device_id, &id)
                 .map(|()| Response::Ack),
@@ -1344,6 +1500,7 @@ impl Daemon {
 
     fn forget_consent(&self, device_id: &str) -> Result<(), ErrorBody> {
         self.mirror.clear(device_id);
+        self.photos.clear(device_id);
         self.share.forget_device(device_id);
         self.data.forget(device_id);
         if let Some(clip) = &self.clipboard {
@@ -1387,6 +1544,11 @@ impl Daemon {
                 // Withdrawn: everything held is erased at once.
                 self.mirror.clear(device_id);
             }
+        }
+        if feature == Feature::Photos && !enabled {
+            // Withdrawn: the list, the thumbnails and any photo still being waited for are gone at once.
+            self.photos.clear(device_id);
+            self.share.drop_expectations(device_id);
         }
         if feature == Feature::Battery {
             if enabled {
@@ -2058,6 +2220,15 @@ async fn trusted_loop(
                         }
                         continue;
                     }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Photos {
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        if (!clean || !on_photos_packet(d, id, &packet))
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
                     if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Notification {
                         // An icon payload is never fetched; the packet itself is judged on its body.
                         if !on_notification_packet(d, id, &packet) && !count_rejected(d, id, attempt) {
@@ -2386,6 +2557,42 @@ fn on_battery_packet(d: &Daemon, id: &str, attempt: u64, packet: &kde::Packet) -
     true
 }
 
+/// One `geekbridge.photos.list` / `.thumb` packet from a negotiated, trusted phone. False only when it is
+/// malformed. Without the `photos` consent, or when this computer did not ask for it, it is dropped unread.
+/// Names and image bytes are never logged.
+fn on_photos_packet(d: &Arc<Daemon>, id: &str, packet: &kde::Packet) -> bool {
+    use bridge_core::photos_link as wire;
+    if !d.consents().is_enabled(id, Feature::Photos) {
+        return true;
+    }
+    let now = std::time::Instant::now();
+    match packet.kind.as_str() {
+        wire::LIST => {
+            let Ok(list) = wire::parse_list(&packet.body) else {
+                return false;
+            };
+            let (_, need) = d.photos.on_list(id, list, now);
+            for photo in need {
+                if !d
+                    .data
+                    .send_stock(id, gate::PHOTOS_REQUEST, wire::thumb_request_body(&photo))
+                {
+                    break;
+                }
+            }
+            true
+        }
+        wire::THUMB => match wire::parse_thumb(&packet.body) {
+            Ok(t) => {
+                let _ = d.photos.on_thumb(id, t, now);
+                true
+            }
+            Err(_) => false,
+        },
+        _ => false,
+    }
+}
+
 /// One `kdeconnect.notification` packet from a negotiated, trusted phone. False only when it is malformed.
 /// Without the `notifications` consent it is dropped unread (stock phones send it unasked). Titles and
 /// texts are never logged.
@@ -2456,6 +2663,8 @@ impl Drop for DataLinkGuard {
         {
             // What was mirrored belongs to that session: gone with the link.
             d.mirror.clear(&id);
+            d.photos.clear(&id);
+            d.share.drop_expectations(&id);
         }
     }
 }
@@ -2601,6 +2810,7 @@ fn on_packet(
         | Incoming::Debug
         | Incoming::Battery
         | Incoming::Notification
+        | Incoming::Photos
         | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {

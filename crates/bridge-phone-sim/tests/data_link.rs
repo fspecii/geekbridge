@@ -1005,3 +1005,89 @@ async fn notifications_need_consent_are_bounded_dismissed_and_erased_when_withdr
     sleep(Duration::from_millis(300)).await;
     assert!(view(&rig).await.items.is_empty());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_scripted_phone_serves_recent_photos_and_nothing_before_it_is_asked() {
+    use bridge_core::photos_view::FetchMode;
+    let rig = Rig::start().await;
+    let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+    let id = creds.device_id().to_string();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let link = rig
+        .pair_with(&creds, data::capabilities_with_photos())
+        .await;
+    let mut script = PhoneScript::demo(now);
+    script.photos_on = true;
+    script.photos_partial = true;
+    let (_push, mut seen) = run_phone(link, script);
+    let view = async |rig: &Rig| match rig.call(Request::Photos { device_id: None }).await {
+        Ok(Response::Photos(v)) => *v,
+        other => panic!("expected photos, got {other:?}"),
+    };
+
+    // Allowed, but nobody has asked yet: the phone hears nothing and the service holds nothing.
+    rig.ok(Request::SetConsent {
+        device_id: id.clone(),
+        feature: Feature::Photos,
+        enabled: true,
+    })
+    .await;
+    sleep(Duration::from_millis(300)).await;
+    while let Ok(kind) = seen.try_recv() {
+        assert!(
+            !kind.starts_with("geekbridge.photos"),
+            "unasked request: {kind}"
+        );
+    }
+    assert!(view(&rig).await.items.is_empty());
+
+    rig.ok(Request::PhotosRefresh {
+        device_id: id.clone(),
+    })
+    .await;
+    let mut v = view(&rig).await;
+    for _ in 0..100 {
+        if v.items.len() == 8 && v.items.iter().all(|i| i.has_thumb) {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+        v = view(&rig).await;
+    }
+    assert_eq!(v.items.len(), 8);
+    assert!(v.items.iter().all(|i| i.has_thumb));
+    assert!(v.devices[0].partial);
+    // Newest first, and a thumbnail decodes as the JPEG the script holds.
+    assert!(v.items.windows(2).all(|w| w[0].taken_ms >= w[1].taken_ms));
+    let t = match rig
+        .call(Request::PhotoThumb {
+            device_id: id.clone(),
+            id: v.items[0].id.clone(),
+        })
+        .await
+    {
+        Ok(Response::PhotoThumb(t)) => t,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!((t.width, t.height), (160, 120));
+    // Asking for the whole picture reaches the phone as a `get` for that id (the file itself is the share channel's job).
+    rig.ok(Request::PhotoFetch {
+        device_id: id.clone(),
+        id: v.items[1].id.clone(),
+        mode: FetchMode::Save,
+    })
+    .await;
+    let mut got = false;
+    for _ in 0..50 {
+        while let Ok(kind) = seen.try_recv() {
+            got |= kind == bridge_core::photos_link::REQUEST;
+        }
+        if got {
+            break;
+        }
+        sleep(Duration::from_millis(40)).await;
+    }
+    assert!(got);
+}

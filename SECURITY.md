@@ -28,7 +28,7 @@ Only the latest released version receives fixes while the project is pre-1.0.
   can be switched off (`--no-listen-inbound`, `--no-announce`). An unpaired connection can only pair or be closed.
 - The local control API is bound to loopback (default port 17381; the read-only discovery API is 17380) and needs a per-user
   token stored with owner-only permissions.
-- Clipboard, file sharing, contacts, calendar, SMS, battery level, phone notifications (only from apps the user picks) and
+- Clipboard, file sharing, contacts, calendar, SMS, battery level, phone notifications (only from apps the user picks), recent photos (a list and small previews on request; a full picture only when the user presses Save or Copy) and
   call control including dialing are each off until the user opts in per phone, on both the phone and the computer;
   nothing is read or sent in the background. Phone content is kept in memory only. Dialing from the computer is also
   rate limited on the phone (3 per 10 minutes) with a visible notice and an optional on-phone confirmation.

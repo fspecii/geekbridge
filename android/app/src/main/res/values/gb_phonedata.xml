@@ -17,6 +17,15 @@
     <string name="pd_battery_sub">Sends only the charge percentage, whether the phone is charging and a low-battery flag to the computers you allow, while they are connected. No permission needed. The computer keeps it in memory only.</string>
     <string name="pd_notifications">Show phone notifications on the computer</string>
     <string name="pd_notifications_sub">Shows notifications of the apps you pick on the computers you allow, and lets that computer dismiss them or press their buttons (never type a reply). Needs Notification access, which Android asks you to switch on in its own settings.</string>
+    <string name="pd_photos">Show recent photos on the computer</string>
+    <string name="pd_photos_sub">When an allowed computer asks, shows it your newest photos as small previews. A full picture is sent only when you press Save or Copy on that computer. Nothing is uploaded in the background. Needs access to your photos, which Android asks you for.</string>
+    <string name="photos_pick_more">Choose which photos GeekBridge may see</string>
+    <string name="photos_state_ready">Ready: allowed computers can list your newest photos and ask for one.</string>
+    <string name="photos_state_partial">Ready, with only the photos you picked: Android shows GeekBridge just those.</string>
+    <string name="photos_state_turn_on">Switched off. Nothing about your photos leaves this phone.</string>
+    <string name="photos_state_access">Android still needs your OK. Tap “Grant” and choose which photos GeekBridge may see.</string>
+    <string name="photos_state_pair">No computer is paired. Pair a computer first.</string>
+    <string name="photos_state_choose">No computer is allowed yet. Tap “Allowed computers…” to allow one.</string>
     <string name="mirror_open_access">Open Notification access settings</string>
     <string name="mirror_pick_apps">Choose apps…</string>
     <string name="mirror_apps_none">No app chosen: nothing is shown yet</string>

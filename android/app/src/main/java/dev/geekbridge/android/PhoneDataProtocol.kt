@@ -16,8 +16,10 @@ data class ActiveFeatures(
     val battery: Boolean = false,
     /** Mirror notifications of the chosen apps: its own switch AND Notification access, never without both. */
     val notifications: Boolean = false,
+    /** Recent photos for the allowed computers: its own switch AND photo access (full or partial), never without both. */
+    val photos: Boolean = false,
 ) {
-    val any: Boolean get() = contacts || calendar || sms || battery || notifications
+    val any: Boolean get() = contacts || calendar || sms || battery || notifications || photos
 }
 
 /** The user's opt-ins. All off by default; [calendarIds] is the read-only calendar selection (default none). */
@@ -36,6 +38,8 @@ data class PhoneDataSettings(
     val notifications: Boolean = false,
     /** Package names whose notifications may be mirrored. Empty by default: nothing leaves until the user picks apps. */
     val notificationApps: Set<String> = emptySet(),
+    /** "Show recent photos on the computer": off by default; needs photo access and an allowed computer. */
+    val photos: Boolean = false,
 )
 
 data class PhoneDataPermissions(
@@ -47,6 +51,8 @@ data class PhoneDataPermissions(
     val writeCalendar: Boolean = false,
     /** The user granted Notification access (a special access, not a runtime permission). */
     val notificationAccess: Boolean = false,
+    /** What Android lets the app see of the photo library (see [PhotoAccessRules]). */
+    val photoAccess: PhotoAccess = PhotoAccess.None,
 ) {
     val smsComplete: Boolean get() = readSms && sendSms && receiveSms
 }
@@ -59,6 +65,7 @@ object PhoneDataGate {
         calendarEdit = s.calendarEdit && s.calendar && p.readCalendar && p.writeCalendar,
         battery = s.battery,
         notifications = s.notifications && p.notificationAccess,
+        photos = s.photos && p.photoAccess != PhotoAccess.None,
     )
 }
 
@@ -80,9 +87,13 @@ object PhoneDataKinds {
     const val BATTERY_REQ = BatteryRules.REQUEST_KIND
     const val NOTIFICATION_REQ = MirrorRules.REQUEST_KIND
     const val NOTIFICATION_ACTION = MirrorRules.ACTION_KIND
+    const val PHOTOS_REQ = PhotoRules.REQUEST_KIND
 
     val outgoing: Set<String> =
-        setOf(CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, CALENDAR_WRITE_RESULT, SMS_MESSAGES, SMS_STATUS)
+        setOf(
+            CONTACTS_RES_UIDS, CONTACTS_RES_VCARDS, CALENDAR_SYNC, CALENDAR_WRITE_RESULT, SMS_MESSAGES, SMS_STATUS,
+            PhotoRules.LIST_KIND, PhotoRules.THUMB_KIND,
+        )
 }
 
 /** One desktop request relayed by the native core. */
@@ -135,13 +146,13 @@ object PhoneDataProtocol {
         if (!a.any && !debug) return null
         return JSONObject().put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
             .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
-            .put("notifications", a.notifications).also { if (debug) it.put("debug", true) }
+            .put("notifications", a.notifications).put("photos", a.photos).also { if (debug) it.put("debug", true) }
     }
 
     fun configRequest(a: ActiveFeatures): String =
         base("transport_data_config").put("contacts", a.contacts).put("calendar", a.calendar).put("sms", a.sms)
             .put("calendar_edit", a.calendarEdit && a.calendar).put("battery", a.battery)
-            .put("notifications", a.notifications).also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
+            .put("notifications", a.notifications).put("photos", a.photos).also { if (DebugHooks.streaming) it.put("debug", true) }.toString()
 
     fun waitRequest(since: Long, timeoutMs: Long = PhoneDataLimits.WAIT_MS): String =
         base("transport_data_wait").put("since", since)

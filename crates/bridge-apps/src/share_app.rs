@@ -318,7 +318,7 @@ fn spawn_quiet(program: &str, args: &[String]) {
     }
 }
 
-fn open_in_system(path: &Path, reveal: bool) {
+pub(crate) fn open_in_system(path: &Path, reveal: bool) {
     let (prog, args) = open_command(path, reveal);
     spawn_quiet(prog, &args);
 }
@@ -376,7 +376,7 @@ struct Worker {
     latest: Arc<Mutex<Option<View>>>,
 }
 
-fn token() -> Result<Token, String> {
+pub(crate) fn token() -> Result<Token, String> {
     let dir =
         ipc::default_state_dir().ok_or("This computer's private app folder couldn't be found.")?;
     let mut bytes = bridge_kde::fsutil::read_private_file(&ipc::token_path(&dir))
@@ -392,7 +392,7 @@ fn token() -> Result<Token, String> {
     t
 }
 
-fn describe(e: ipc::IpcError) -> String {
+pub(crate) fn describe(e: ipc::IpcError) -> String {
     match e {
         ipc::IpcError::Io(_) => {
             format!(
@@ -535,11 +535,20 @@ fn send_files(port: u16, token: &Token, device_id: &str, paths: &[String]) -> St
 
 // ---------------------------------------------------------------------- window
 
+/// The two pages of the window; the photos page exists only while a connected phone offers recent photos.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tab {
+    Share,
+    Photos,
+}
+
 struct ShareApp {
     worker: Worker,
     view: View,
     chosen: Option<String>,
     text: String,
+    tab: Tab,
+    photos: crate::photos_pane::PhotosPane,
 }
 
 impl ShareApp {
@@ -569,6 +578,12 @@ impl ShareApp {
         if let Some(v) = self.worker.latest() {
             self.view = v;
         }
+        self.photos.poll();
+        let photos_offered = self.photos.available();
+        if !photos_offered {
+            self.tab = Tab::Share;
+        }
+        self.photos.set_active(self.tab == Tab::Photos);
         let pal = theme::current(ctx, LOOK);
         let list = self.view.status.as_ref().map(targets).unwrap_or_default();
         let target = self.target(&list).cloned();
@@ -615,10 +630,26 @@ impl ShareApp {
                             ui.add(egui::Label::new(RichText::new(e).color(pal.err)).wrap());
                             ui.add_space(8.0);
                         }
-                        self.send_section(ui, &pal, &list, ready, hovering);
-                        self.incoming_section(ui, &pal);
-                        self.transfers_section(ui, &pal);
-                        self.settings_section(ui, &pal, &list);
+                        if photos_offered {
+                            theme::segmented(
+                                ui,
+                                &pal,
+                                &mut self.tab,
+                                &[
+                                    (Tab::Share, crate::i18n::tr("photos.tab.share")),
+                                    (Tab::Photos, crate::i18n::tr("photos.tab.photos")),
+                                ],
+                            );
+                            ui.add_space(10.0);
+                        }
+                        if self.tab == Tab::Photos {
+                            self.photos.show(ui, &pal);
+                        } else {
+                            self.send_section(ui, &pal, &list, ready, hovering);
+                            self.incoming_section(ui, &pal);
+                            self.transfers_section(ui, &pal);
+                            self.settings_section(ui, &pal, &list);
+                        }
                     })
                     .bars(ui.ctx());
             });
@@ -1015,7 +1046,14 @@ pub fn run(theme_choice: ThemeChoice, files: Vec<String>) -> eframe::Result {
             });
             let ctx = cc.egui_ctx.clone();
             let initial = sendable(files.into_iter().map(PathBuf::from));
+            let photos_ctx = cc.egui_ctx.clone();
             Ok(Box::new(ShareApp {
+                photos: crate::photos_pane::PhotosPane::new(move || photos_ctx.request_repaint()),
+                tab: if std::env::var("GEEKBRIDGE_SHARE_TAB").is_ok_and(|v| v == "photos") {
+                    Tab::Photos
+                } else {
+                    Tab::Share
+                },
                 worker: Worker::spawn(move || ctx.request_repaint(), initial),
                 view: View::default(),
                 chosen: None,

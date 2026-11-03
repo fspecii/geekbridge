@@ -34,6 +34,10 @@ pub use bridge_core::notification_link::{
     ACTION as NOTIFICATION_ACTION, NOTIFICATION, REQUEST as NOTIFICATION_REQUEST,
 };
 
+pub use bridge_core::photos_link::{
+    LIST as PHOTOS_LIST, REQUEST as PHOTOS_REQUEST, THUMB as PHOTOS_THUMB,
+};
+
 pub use bridge_core::debug_link::{
     LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
 };
@@ -44,7 +48,7 @@ pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 18] = [
+pub const LOCAL_INCOMING: [&str; 20] = [
     PING,
     BATTERY,
     NOTIFICATION,
@@ -63,8 +67,11 @@ pub const LOCAL_INCOMING: [&str; 18] = [
     SMS_STATUS,
     DEBUG_LOG,
     DEBUG_STATE,
+    // GeekBridge-only: a stock peer never declares these, so it is never offered or sent them.
+    PHOTOS_LIST,
+    PHOTOS_THUMB,
 ];
-pub const LOCAL_OUTGOING: [&str; 19] = [
+pub const LOCAL_OUTGOING: [&str; 20] = [
     PING,
     BATTERY_REQUEST,
     NOTIFICATION_REQUEST,
@@ -83,6 +90,7 @@ pub const LOCAL_OUTGOING: [&str; 19] = [
     SMS_REQUEST_CONVERSATION,
     SMS_REQUEST,
     DEBUG_STATE_REQUEST,
+    PHOTOS_REQUEST,
     // GeekBridge-only: said to a GeekBridge phone that declared it, never to a stock peer.
     GOODBYE,
 ];
@@ -125,6 +133,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::battery_link::is_battery_kind(kind) {
         return Some(Feature::Battery);
     }
+    if bridge_core::photos_link::is_photos_kind(kind) {
+        return Some(Feature::Photos);
+    }
     if kind == SMS_STATUS {
         return Some(Feature::Sms);
     }
@@ -154,6 +165,7 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::Debug
             | Feature::Battery
             | Feature::Notifications
+            | Feature::Photos
     )
 }
 
@@ -176,6 +188,9 @@ pub enum Incoming {
     /// A `kdeconnect.notification` packet from the phone. Acted on only for a paired device whose
     /// `notifications` consent is on; otherwise dropped unread (stock phones send it unasked).
     Notification,
+    /// A `geekbridge.photos.list` / `.thumb` packet from the phone. Acted on only for a paired device whose
+    /// `photos` consent is on and only as an answer to a request this computer made; otherwise dropped unread.
+    Photos,
     Reject,
 }
 
@@ -202,6 +217,8 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::Battery
     } else if kind == NOTIFICATION && negotiated.iter().any(|k| k == kind) {
         Incoming::Notification
+    } else if matches!(kind, PHOTOS_LIST | PHOTOS_THUMB) && negotiated.iter().any(|k| k == kind) {
+        Incoming::Photos
     } else if matches!(kind, DEBUG_LOG | DEBUG_STATE) && negotiated.iter().any(|k| k == kind) {
         Incoming::Debug
     } else {
@@ -443,6 +460,36 @@ mod tests {
         );
         assert_eq!(
             classify_incoming(NOTIFICATION, &[PING.to_owned()]),
+            Incoming::Reject
+        );
+    }
+
+    #[test]
+    fn photos_packets_are_geekbridge_only_and_need_consent_to_leave() {
+        let phone = peer(&[PHOTOS_REQUEST], &[PHOTOS_LIST, PHOTOS_THUMB]);
+        assert_eq!(negotiated_incoming(&phone), [PHOTOS_LIST, PHOTOS_THUMB]);
+        assert_eq!(negotiated_outgoing(&phone), [PHOTOS_REQUEST]);
+        assert_eq!(
+            classify_incoming(PHOTOS_THUMB, &negotiated_incoming(&phone)),
+            Incoming::Photos
+        );
+        assert_eq!(
+            check_outgoing(PHOTOS_REQUEST, &negotiated_outgoing(&phone), |_| false),
+            Outgoing::ConsentRequired(Feature::Photos)
+        );
+        assert_eq!(
+            check_outgoing(PHOTOS_REQUEST, &negotiated_outgoing(&phone), |_| true),
+            Outgoing::Allowed
+        );
+        // A peer that did not declare them (any stock peer) gets nothing and is heard on nothing.
+        let stock = peer(&[PING], &[PING]);
+        assert!(
+            !negotiated_outgoing(&stock)
+                .iter()
+                .any(|k| k.contains("photos"))
+        );
+        assert_eq!(
+            classify_incoming(PHOTOS_LIST, &negotiated_incoming(&stock)),
             Incoming::Reject
         );
     }

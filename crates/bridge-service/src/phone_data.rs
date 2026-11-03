@@ -86,6 +86,8 @@ pub struct Caps {
     pub notification_request: bool,
     /// The phone accepts `kdeconnect.notification.action` (press a button).
     pub notification_action: bool,
+    /// The phone accepts `geekbridge.photos.request` and answers with a list and thumbnails (GeekBridge phones only).
+    pub photos: bool,
 }
 impl Caps {
     pub fn from_negotiated(outgoing: &[String], incoming: &[String]) -> Self {
@@ -106,6 +108,9 @@ impl Caps {
             battery_request: out(bridge_core::battery_link::REQUEST),
             notification_request: out(bridge_core::notification_link::REQUEST),
             notification_action: out(bridge_core::notification_link::ACTION),
+            photos: out(bridge_core::photos_link::REQUEST)
+                && inc(bridge_core::photos_link::LIST)
+                && inc(bridge_core::photos_link::THUMB),
         }
     }
 }
@@ -2054,6 +2059,7 @@ mod tests {
             battery_request: true,
             notification_request: true,
             notification_action: true,
+            photos: true,
         }
     }
     const ID: &str = "pppppppppppppppppppppppppppppppp";

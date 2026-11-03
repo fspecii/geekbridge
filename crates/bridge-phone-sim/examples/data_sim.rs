@@ -40,7 +40,7 @@ async fn main() {
 
     let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
     let id = creds.device_id().to_string();
-    let (incoming, outgoing) = data::capabilities();
+    let (incoming, outgoing) = data::capabilities_with_photos();
     let mut config = kde::TransportConfig::default();
     config.address_policy.loopback = true;
     config.limits.packet_line = 2 * 1024 * 1024;
@@ -126,6 +126,7 @@ async fn main() {
             Feature::CalendarEdit,
             Feature::CalendarAlerts,
             Feature::Sms,
+            Feature::Photos,
         ] {
             call(
                 port,
@@ -144,6 +145,7 @@ async fn main() {
         .unwrap()
         .as_millis() as i64;
     let mut script = PhoneScript::demo(now);
+    script.photos_on = true;
     drive.await.unwrap();
     eprintln!("data_sim: paired as {id}; answering until killed");
     while let Ok(ev) = link.recv().await {

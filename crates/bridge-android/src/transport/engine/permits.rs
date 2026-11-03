@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError};
 
 use super::{Core, Ctl, Phase};
 
-pub(in crate::transport) const FEATURES: [&str; 7] = [
+pub(in crate::transport) const FEATURES: [&str; 8] = [
     "calls",
     "contacts",
     "calendar",
@@ -18,6 +18,7 @@ pub(in crate::transport) const FEATURES: [&str; 7] = [
     "sms",
     "battery",
     "notifications",
+    "photos",
 ];
 
 /// feature -> device ids allowed to use it.

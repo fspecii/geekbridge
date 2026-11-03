@@ -1283,6 +1283,7 @@ async fn consent_defaults_off_needs_a_pairing_and_ping_needs_no_consent() {
                     | Feature::Debug
                     | Feature::Battery
                     | Feature::Notifications
+                    | Feature::Photos
             )));
 
     rig.ok(Request::SetConsent {

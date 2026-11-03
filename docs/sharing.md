@@ -50,6 +50,11 @@ the stock KDE Connect apps; **nothing here has been run against a real phone or 
   otherwise). Files then wait for Accept unless that device's *auto-accept* is on (default off; it implies receive,
   and turning receive off clears it). Unpairing deletes the device's share settings. Text and links are only
   held for the user: never opened, never put on the clipboard, and only `http`/`https` links get an *Open* button.
+* **Photos the user asked for.** A file offer is also taken, without the *receive* permission and without a prompt, when
+  it answers a photo the user just asked that phone for (**Save** or **Copy** in the Phone photos tab, see
+  [design/recent-photos.md](design/recent-photos.md)): same phone, same sanitised name, within two minutes, once. Such a
+  request is forgotten when the photos consent is withdrawn or the link ends. A copy for the clipboard lands in a private
+  scratch folder (`.geekbridge-photo-copy` inside the save folder) that is emptied after ten minutes and at start.
 * **Limits.** 8 GiB per file; 3 transfers at once (2 per device); 8 unanswered offers; offers expire after 120 s
   (desktop) / 5 min (phone); 64 / 32 transfers listed (finished ones are forgotten after 10 minutes); payload ports
   must be in 1739-1764 when dialling; 10 s connect (3 s per route while another is left), 4 s TLS handshake, 30 s idle between chunks, 120 s for the

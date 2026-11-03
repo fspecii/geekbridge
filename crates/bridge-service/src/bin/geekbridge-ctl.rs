@@ -27,12 +27,17 @@ Commands:
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
   consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, calendar_edit, calendar_alerts,
-                                      clipboard, notifications, telephony, debug, battery
+                                      clipboard, notifications, telephony, debug, battery, photos
   notifications [DEVICE_ID] [--json]  phone notifications mirrored here (needs `consent ID notifications on`; prints
                                       personal data; memory only, newest first)
   notifications dismiss DEVICE_ID ID  dismiss one here and on the phone
   notifications action DEVICE_ID ID TITLE
                                       press the phone notification's button titled TITLE
+  photos [DEVICE_ID] [--json]         the phone's recent photos held here (needs `consent ID photos on`; names only,
+                                      memory only, newest first)
+  photos refresh DEVICE_ID            ask the phone for its newest photos (at most 24, thumbnails follow)
+  photos save DEVICE_ID PHOTO_ID      ask the phone to send that photo in full to the save folder
+  photos copy DEVICE_ID PHOTO_ID      same, to a scratch file that is emptied soon (for the clipboard)
   phone-log DEVICE_ID [-f] [-n N]     last N (default 200) lines of a debug-build phone's log; -f follows
   phone-state DEVICE_ID               ask a debug-build phone for its redacted state dump and print it
   ping DEVICE_ID                      interoperability check on a paired link
@@ -189,6 +194,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "notifications" {
         return notifications_command(&args[1..], port, &state_dir);
+    }
+    if command == "photos" {
+        return photos_command(&args[1..], port, &state_dir);
     }
     if command == "phone-state" {
         return phone_state_command(&args[1..], port, &state_dir);
@@ -1248,6 +1256,124 @@ fn notifications_command(
             }
             Ok(())
         }
+    }
+}
+
+fn photos_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    use bridge_core::photos_view::FetchMode;
+    let words: Vec<String> = args
+        .iter()
+        .map(|a| {
+            a.to_str()
+                .map(str::to_owned)
+                .ok_or("arguments must be text")
+        })
+        .collect::<Result<_, _>>()?;
+    let token = load_token(state_dir)?;
+    let send = |request: Request| match ipc::call(port, &token, &request) {
+        Ok(Response::Error(e)) => Err(e.message),
+        Ok(r) => Ok(r),
+        Err(IpcError::Service(e)) => Err(e.message),
+        Err(e) => Err(e.to_string()),
+    };
+    match words.first().map(String::as_str) {
+        Some("refresh") => {
+            let Some(device_id) = words.get(1) else {
+                return Err("usage: photos refresh DEVICE_ID".into());
+            };
+            send(Request::PhotosRefresh {
+                device_id: device_id.clone(),
+            })?;
+            println!("asked; run `geekbridge-ctl photos` in a moment");
+            Ok(())
+        }
+        Some(mode @ ("save" | "copy")) => {
+            let (Some(device_id), Some(id)) = (words.get(1), words.get(2)) else {
+                return Err(format!("usage: photos {mode} DEVICE_ID PHOTO_ID"));
+            };
+            send(Request::PhotoFetch {
+                device_id: device_id.clone(),
+                id: id.clone(),
+                mode: if mode == "save" {
+                    FetchMode::Save
+                } else {
+                    FetchMode::Copy
+                },
+            })?;
+            println!("asked the phone to send it; progress is in `geekbridge-ctl photos`");
+            Ok(())
+        }
+        _ => {
+            let json = words.iter().any(|w| w == "--json");
+            let device_id = words
+                .iter()
+                .find(|w| !w.starts_with("--") && *w != "list")
+                .cloned();
+            let Response::Photos(view) = send(Request::Photos { device_id })? else {
+                return Err("unexpected reply from the service".into());
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&*view).map_err(|e| e.to_string())?
+                );
+                return Ok(());
+            }
+            if view.devices.is_empty() {
+                eprintln!(
+                    "recent photos are off for every connected phone: geekbridge-ctl consent DEVICE_ID photos on"
+                );
+            }
+            for d in &view.devices {
+                if d.partial {
+                    eprintln!(
+                        "{}: the phone shows only the photos its user picked",
+                        d.name
+                    );
+                }
+            }
+            for p in &view.items {
+                println!(
+                    "{}  {}  {}  {}x{}  {}{}",
+                    p.device_id,
+                    p.id,
+                    p.name,
+                    p.width,
+                    p.height,
+                    human_bytes(p.size),
+                    if p.has_thumb {
+                        ""
+                    } else {
+                        "  (no thumbnail yet)"
+                    },
+                );
+            }
+            for f in &view.fetches {
+                println!(
+                    "fetch {}  {}  {:?} {:?}{}",
+                    f.fetch_id,
+                    f.name,
+                    f.mode,
+                    f.state,
+                    f.path
+                        .as_deref()
+                        .map(|p| format!("  {p}"))
+                        .unwrap_or_default(),
+                );
+            }
+            if view.items.is_empty() {
+                println!("no photos held; run `geekbridge-ctl photos refresh DEVICE_ID`");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn human_bytes(n: u64) -> String {
+    if n >= 1 << 20 {
+        format!("{:.1} MB", n as f64 / f64::from(1u32 << 20))
+    } else {
+        format!("{} KB", n.div_ceil(1024))
     }
 }
 

@@ -4,6 +4,7 @@
 //! out, no sockets, so tests and the `geekbridge-phone-data-sim` binary can drive it over any link.
 //! Nothing here reads a real phone.
 use bridge_core::phone_link as wire;
+use bridge_core::photos_link as photos;
 use serde_json::{Map, Value, json};
 
 pub const SMS_MESSAGES: &str = "kdeconnect.sms.messages";
@@ -51,6 +52,15 @@ pub fn capabilities_with_notifications() -> (Vec<String>, Vec<String>) {
     i.push(bridge_core::notification_link::REQUEST.to_owned());
     i.push(bridge_core::notification_link::ACTION.to_owned());
     o.push(bridge_core::notification_link::NOTIFICATION.to_owned());
+    (i, o)
+}
+
+/// Capabilities of a GeekBridge phone whose user also switched on recent photos (`geekbridge.photos.*`).
+pub fn capabilities_with_photos() -> (Vec<String>, Vec<String>) {
+    let (mut i, mut o) = capabilities();
+    i.push(photos::REQUEST.to_owned());
+    o.push(photos::LIST.to_owned());
+    o.push(photos::THUMB.to_owned());
     (i, o)
 }
 
@@ -117,7 +127,36 @@ pub struct SimCalendar {
     pub writable: bool,
 }
 
+/// One made-up photo: the list entry and the thumbnail JPEG the phone would send for it.
+#[derive(Clone)]
+pub struct SimPhoto {
+    pub photo: photos::Photo,
+    pub thumb: Vec<u8>,
+    pub thumb_width: u32,
+    pub thumb_height: u32,
+}
+
+/// The made-up thumbnails in `fixtures/photos` (160 pixels on the long edge), with their sizes.
+pub const DEMO_THUMBS: [(&[u8], u32, u32); 8] = [
+    (include_bytes!("../fixtures/photos/photo-1.jpg"), 160, 120),
+    (include_bytes!("../fixtures/photos/photo-2.jpg"), 120, 160),
+    (include_bytes!("../fixtures/photos/photo-3.jpg"), 160, 120),
+    (include_bytes!("../fixtures/photos/photo-4.jpg"), 160, 120),
+    (include_bytes!("../fixtures/photos/photo-5.jpg"), 160, 90),
+    (include_bytes!("../fixtures/photos/photo-6.jpg"), 120, 160),
+    (include_bytes!("../fixtures/photos/photo-7.jpg"), 160, 120),
+    (include_bytes!("../fixtures/photos/photo-8.jpg"), 160, 120),
+];
+
 pub struct PhoneScript {
+    /// Recent photos, newest first. Answered only when [`Self::photos_on`].
+    pub photos: Vec<SimPhoto>,
+    /// The user turned recent photos on: requests are answered (otherwise the phone would not have declared them).
+    pub photos_on: bool,
+    /// The phone only shows the photos its user picked.
+    pub photos_partial: bool,
+    /// Photo ids the computer asked to be sent in full, in order.
+    pub photo_gets: Vec<String>,
     pub contacts: Vec<SimContact>,
     pub events: Vec<SimEvent>,
     pub calendars: Vec<SimCalendar>,
@@ -164,6 +203,10 @@ pub fn vcard(name: &str, phone: &str, email: Option<&str>, org: Option<&str>) ->
 impl PhoneScript {
     pub fn empty() -> Self {
         Self {
+            photos: Vec::new(),
+            photos_on: false,
+            photos_partial: false,
+            photo_gets: Vec::new(),
             contacts: Vec::new(),
             events: Vec::new(),
             calendars: vec![
@@ -403,6 +446,23 @@ impl PhoneScript {
             "attachments": [{"part_id": 1, "mime_type": "image/jpeg", "unique_identifier": "u1"}]}),
         );
         s.messages.extend(more);
+        s.photos = DEMO_THUMBS
+            .iter()
+            .enumerate()
+            .map(|(i, (jpeg, w, h))| SimPhoto {
+                photo: photos::Photo {
+                    id: format!("p{}", i + 1),
+                    name: format!("IMG_{:04}.jpg", 2041 - i),
+                    taken_ms: (now_ms - (3 + 7 * i as i64) * 3_600_000).max(0) as u64,
+                    size: 2_400_000 + 130_000 * i as u64,
+                    width: if h > w { 3024 } else { 4032 },
+                    height: if h > w { 4032 } else { 3024 },
+                },
+                thumb: jpeg.to_vec(),
+                thumb_width: *w,
+                thumb_height: *h,
+            })
+            .collect();
         s
     }
 
@@ -721,7 +781,41 @@ impl PhoneScript {
                 }
                 out
             }
+            photos::REQUEST if self.photos_on => self.photos_request(body),
             _ => Vec::new(),
+        }
+    }
+
+    /// `geekbridge.photos.request`: a list, a thumbnail, or "send this one in full" (recorded; the file itself
+    /// goes over the share channel, which this packet-level script does not speak).
+    fn photos_request(&mut self, body: &Map<String, Value>) -> Vec<Reply> {
+        match photos::parse_request(body) {
+            Ok(photos::Ask::List { limit }) => {
+                let list = photos::List {
+                    items: self
+                        .photos
+                        .iter()
+                        .take(limit)
+                        .map(|p| p.photo.clone())
+                        .collect(),
+                    partial: self.photos_partial,
+                };
+                vec![(photos::LIST, photos::list_body(&list))]
+            }
+            Ok(photos::Ask::Thumb { id }) => {
+                let reply = match self.photos.iter().find(|p| p.photo.id == id) {
+                    Some(p) => photos::thumb_body(&id, p.thumb_width, p.thumb_height, &p.thumb),
+                    None => photos::thumb_gone_body(&id),
+                };
+                vec![(photos::THUMB, reply)]
+            }
+            Ok(photos::Ask::Get { id }) => {
+                if self.photos.iter().any(|p| p.photo.id == id) {
+                    self.photo_gets.push(id);
+                }
+                Vec::new()
+            }
+            Err(_) => Vec::new(),
         }
     }
 }

@@ -139,6 +139,7 @@ async fn stock_phone_gets_no_geekbridge_packet_and_no_dial_even_with_every_conse
         Feature::Contacts,
         Feature::Calendar,
         Feature::Debug,
+        Feature::Photos,
     ] {
         rig.ok(Request::SetConsent {
             device_id: phone.id(),
@@ -162,8 +163,10 @@ async fn stock_phone_gets_no_geekbridge_packet_and_no_dial_even_with_every_conse
     // nothing else: no GeekBridge extension, no telephony/dial, no ping, no battery request.
     let negotiated = gate::negotiated_outgoing(&stock_identity());
     assert!(
-        seen.iter()
-            .all(|k| negotiated.contains(k) && k != "kdeconnect.ping" && !k.contains("battery")),
+        seen.iter().all(|k| negotiated.contains(k)
+            && k != "kdeconnect.ping"
+            && !k.contains("battery")
+            && !k.contains("photos")),
         "stock phone received {seen:?}"
     );
     // A user-initiated ping is the only ping it gets (the heartbeat is for GeekBridge peers).

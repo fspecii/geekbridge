@@ -39,6 +39,7 @@ fn caps() -> Caps {
         battery_request: true,
         notification_request: true,
         notification_action: true,
+        photos: true,
     }
 }
 fn rss_kib() -> u64 {

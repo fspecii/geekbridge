@@ -36,6 +36,7 @@ deterministic mode, which needs nothing extra.
 | `vcard` | `contact_from_vcard`, `strip_vcard_blobs`, `contact_revision`, `vcard_rev` | blob stripping never grows text |
 | `calls_wire` | `LinkCallReport::parse`, `parse_request`, `parse_result` | – |
 | `notification_wire` | `notification_link::parse`, `parse_request` | id, app, title and text within their caps and free of control characters; at most 3 action titles |
+| `photos_wire` | `photos_link::parse_list`, `parse_thumb`, `parse_request` | at most 24 photos with unique valid ids; names within their cap and free of control and bidi characters; a thumbnail within 24 KiB, 256 px and starting like a JPEG; list limit 1..=24 |
 | `clipboard` | `clipboard_wire::parse`, `parse_item`, `parse_none`, `parse_pull`, `sniff_image` | – |
 | `messages_wire` | `WireMessage` → `Message::from_wire`, `sms_segments` | – |
 | `ipc` | control API `Request`/`Response`/`Event`, `Token::parse`, `split_frame`, `parse_hello`, `decode_hex`, `format_hello` | request round-trips; a Ready nonce is valid hex; hello is one ASCII line |

@@ -35,6 +35,12 @@
          computer can add, change and delete one-off events through the Calendar Provider. Google Calendar gets them
          through the phone's own sync; GeekBridge has no Google account, API key or OAuth of its own. -->
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <!-- Optional "Show recent photos on the computer" (docs/design/recent-photos.md), behind its own switch in the app,
+         off by default, and asked for only when the user switches it on. Android 14+ lets the user share just the photos
+         they pick (READ_MEDIA_VISUAL_USER_SELECTED); the app works with either. Never used in the background. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <!-- Optional "Messages" sharing (docs/phone-data-link.md), each behind its own switch in the app and off by
          default. Google Play only allows these for the default SMS handler, so they are meant for sideloaded

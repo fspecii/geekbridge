@@ -124,3 +124,34 @@ fn stock_android_notifications_are_negotiated_without_replies_and_only_acted_on_
         gate::Outgoing::ConsentRequired(Feature::Notifications)
     );
 }
+
+#[test]
+fn stock_android_is_never_offered_recent_photos_and_cannot_use_them() {
+    use bridge_core::ipc::Feature;
+    let p = stock_android();
+    let inc = gate::negotiated_incoming(&p);
+    let out = gate::negotiated_outgoing(&p);
+    // The GeekBridge photo packets are in our lists, but the stock app declares none of them, so the intersection
+    // has none: nothing is sent to it and nothing it sends is routed.
+    for kind in [
+        "geekbridge.photos.request",
+        "geekbridge.photos.list",
+        "geekbridge.photos.thumb",
+    ] {
+        assert!(!inc.iter().chain(&out).any(|k| k == kind), "{kind}");
+        assert_eq!(
+            gate::classify_incoming(kind, &inc),
+            Incoming::Reject,
+            "{kind}"
+        );
+        assert_eq!(
+            gate::check_outgoing(kind, &out, |_| true),
+            gate::Outgoing::NotNegotiated,
+            "{kind}"
+        );
+        assert_eq!(gate::feature_of(kind), Some(Feature::Photos));
+    }
+    assert!(gate::adapter_integrated(Feature::Photos));
+    // The stock phone's negotiated sets are exactly what they were before the feature existed.
+    assert!(!inc.iter().chain(&out).any(|k| k.contains("photos")));
+}

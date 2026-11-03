@@ -13,6 +13,7 @@
 //!   offers, offer lifetime, file size, payload idle time.
 
 use bridge_core::ipc::{ErrorBody, ErrorCode, EventKind};
+use bridge_core::photos_view::{FetchInfo, FetchMode, FetchState};
 use bridge_core::share::{
     MAX_SEND_PATH_BYTES, MAX_SEND_TEXT_BYTES, ShareDeviceSettings, ShareStatus, ShareTextKind,
     TransferDirection, TransferInfo, TransferKind, TransferState,
@@ -42,6 +43,15 @@ pub const MAX_OFFERED_PER_DEVICE: usize = 3;
 pub const MAX_RECEIVED_TEXT: usize = kshare::MAX_TEXT_BYTES;
 /// How long an unfetched outgoing file survives its link before it is given up (see `link_lost`).
 const LINK_LOST_GRACE: Duration = Duration::from_secs(10);
+/// A photo the user asked for is welcome this long; it then needs the phone to have offered it.
+pub const FETCH_WAIT: Duration = Duration::from_secs(120);
+/// Photo requests waiting for their file, in all and per phone; and finished ones remembered.
+pub const MAX_FETCHES_WAITING: usize = 8;
+pub const MAX_FETCHES_WAITING_PER_DEVICE: usize = 4;
+pub const MAX_FETCHES_KEPT: usize = 16;
+/// Scratch folder (inside the save folder) for photos that are only going to the clipboard.
+pub const COPY_DIR: &str = ".geekbridge-photo-copy";
+const COPY_KEEP: Duration = Duration::from_secs(10 * 60);
 pub const SETTINGS_FILE: &str = "share.json";
 const MAX_SETTINGS_DEVICES: usize = 1024;
 
@@ -349,6 +359,20 @@ impl Notifier for NotifySend {
     }
 }
 
+/// Create `dir` (and parents) readable by the owner only where the platform has such a thing.
+fn make_private_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        let _ = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir);
+    }
+    #[cfg(not(unix))]
+    let _ = std::fs::create_dir_all(dir);
+}
+
 pub fn human_size(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = n as f64;
@@ -366,7 +390,16 @@ pub fn human_size(n: u64) -> String {
 
 // ---------------------------------------------------------------------- manager
 
+/// A full-size photo this computer asked the phone for. The phone's file offer that matches (same phone, same
+/// name, within [`FETCH_WAIT`]) is taken without the phone having the general `receive` permission.
+struct Fetch {
+    info: FetchInfo,
+    until: Instant,
+    transfer_id: Option<u64>,
+}
+
 struct Transfer {
+    fetch: Option<u64>,
     info: TransferInfo,
     bytes: Arc<AtomicU64>,
     cancel: CancelToken,
@@ -379,6 +412,8 @@ struct Transfer {
 struct Inner {
     next_id: u64,
     items: Vec<Transfer>,
+    next_fetch: u64,
+    fetches: Vec<Fetch>,
 }
 
 pub struct ShareManager {
@@ -423,14 +458,16 @@ impl ShareManager {
         let settings = Settings::open(opts.settings_path.clone());
         // A previous run may have died mid-download; clear what it left in the save directory.
         kshare::sweep_partials(&opts.save_dir, Duration::from_secs(600));
-        Arc::new(Self {
+        let me = Arc::new(Self {
             opts,
             inner: Mutex::new(Inner::default()),
             settings: Mutex::new(settings),
             settings_writer: Mutex::new(()),
             sink: Mutex::new(None),
             notifier: Mutex::new(Arc::new(NoNotifier)),
-        })
+        });
+        me.sweep_copy_dir();
+        me
     }
 
     pub fn set_event_sink(&self, sink: EventSink) {
@@ -535,6 +572,9 @@ impl ShareManager {
         }
         drop(_writer);
         let now = Instant::now();
+        self.inner()
+            .fetches
+            .retain(|f| f.info.device_id != device_id);
         for t in self.inner().items.iter_mut() {
             if t.info.device_id == device_id && t.info.state.is_live() {
                 t.cancel.cancel();
@@ -651,6 +691,159 @@ impl ShareManager {
         )
     }
 
+    // ------------------------------------------------------------ photos asked for
+
+    /// The scratch folder for photos that only go to the clipboard.
+    pub fn copy_dir(&self) -> PathBuf {
+        self.opts.save_dir.join(COPY_DIR)
+    }
+
+    /// Delete what is left in the scratch folder from earlier copies (older than ten minutes).
+    pub fn sweep_copy_dir(&self) {
+        let dir = self.copy_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let old = e
+                .metadata()
+                .ok()
+                .filter(|m| m.is_file())
+                .and_then(|m| m.modified().ok())
+                .and_then(|m| m.elapsed().ok())
+                .is_some_and(|age| age >= COPY_KEEP);
+            if old {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
+    /// Remember that the user asked `device_id` for the photo `photo_id` (display name `name`). The phone's
+    /// matching file offer will be accepted by [`Self::on_packet`]. The caller then sends the request.
+    pub fn expect_photo(
+        &self,
+        device_id: &str,
+        photo_id: &str,
+        name: &str,
+        mode: FetchMode,
+    ) -> Result<u64, ErrorBody> {
+        self.sweep_copy_dir();
+        let name = kshare::sanitize_filename(name);
+        let now = Instant::now();
+        let mut inner = self.inner();
+        Self::lapse_fetches(&mut inner, now);
+        let waiting = |f: &&Fetch| f.info.state == FetchState::Waiting;
+        if inner.fetches.iter().filter(waiting).count() >= MAX_FETCHES_WAITING
+            || inner
+                .fetches
+                .iter()
+                .filter(waiting)
+                .filter(|f| f.info.device_id == device_id)
+                .count()
+                >= MAX_FETCHES_WAITING_PER_DEVICE
+        {
+            return Err(err(ErrorCode::Busy, "too many photo requests are waiting"));
+        }
+        if inner.fetches.iter().any(|f| {
+            f.info.state == FetchState::Waiting
+                && f.info.device_id == device_id
+                && f.info.name == name
+        }) {
+            return Err(err(ErrorCode::Busy, "that photo was already asked for"));
+        }
+        inner.next_fetch += 1;
+        let fetch_id = inner.next_fetch;
+        inner.fetches.push(Fetch {
+            info: FetchInfo {
+                fetch_id,
+                device_id: device_id.to_owned(),
+                photo_id: photo_id.to_owned(),
+                name,
+                mode,
+                state: FetchState::Waiting,
+                path: None,
+                code: None,
+            },
+            until: now + FETCH_WAIT,
+            transfer_id: None,
+        });
+        while inner.fetches.len() > MAX_FETCHES_KEPT {
+            let Some(i) = inner
+                .fetches
+                .iter()
+                .position(|f| !matches!(f.info.state, FetchState::Waiting | FetchState::Receiving))
+            else {
+                break;
+            };
+            inner.fetches.remove(i);
+        }
+        Ok(fetch_id)
+    }
+
+    /// Forget every photo still waited for from `device_id` (its consent was withdrawn or the link ended).
+    /// A transfer already receiving is left to finish: the file was offered and accepted before.
+    pub fn drop_expectations(&self, device_id: &str) {
+        self.inner()
+            .fetches
+            .retain(|f| f.info.device_id != device_id || f.info.state != FetchState::Waiting);
+    }
+
+    /// The request could not be sent: forget the expectation.
+    pub fn cancel_expectation(&self, fetch_id: u64) {
+        self.inner().fetches.retain(|f| f.info.fetch_id != fetch_id);
+    }
+
+    fn lapse_fetches(inner: &mut Inner, now: Instant) {
+        let Inner { items, fetches, .. } = inner;
+        for f in fetches.iter_mut() {
+            if f.info.state == FetchState::Waiting && now >= f.until {
+                f.info.state = FetchState::Failed;
+                f.info.code = Some("expired".to_owned());
+            }
+            if f.info.state == FetchState::Receiving {
+                // The transfer ended some way other than finishing (cancelled, expired, forgotten).
+                let t = items
+                    .iter()
+                    .find(|t| Some(t.info.transfer_id) == f.transfer_id);
+                match t {
+                    Some(t) if t.info.state.is_live() || t.info.state == TransferState::Done => {}
+                    Some(t) => {
+                        f.info.state = FetchState::Failed;
+                        f.info.code = Some(t.info.code.clone().unwrap_or_else(|| "failed".into()));
+                    }
+                    None => {
+                        f.info.state = FetchState::Failed;
+                        f.info.code = Some("lost".to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    /// A file offer from `device_id` named `name`: the id of the fetch it answers, once.
+    fn take_expected(&self, device_id: &str, name: &str) -> Option<u64> {
+        let name = kshare::sanitize_filename(name);
+        let now = Instant::now();
+        let mut inner = self.inner();
+        Self::lapse_fetches(&mut inner, now);
+        inner
+            .fetches
+            .iter()
+            .find(|f| {
+                f.info.state == FetchState::Waiting
+                    && f.info.device_id == device_id
+                    && f.info.name == name
+            })
+            .map(|f| f.info.fetch_id)
+    }
+
+    /// Photo requests, newest last (for the control API).
+    pub fn fetches(&self) -> Vec<FetchInfo> {
+        let mut inner = self.inner();
+        Self::lapse_fetches(&mut inner, Instant::now());
+        inner.fetches.iter().map(|f| f.info.clone()).collect()
+    }
+
     // ------------------------------------------------------------ receiving
 
     pub fn is_share_packet(kind: &str) -> bool {
@@ -669,19 +862,29 @@ impl ShareManager {
             return Disposition::NotShare;
         }
         let perm = self.perm(device_id);
-        if !perm.receive {
-            return Disposition::Rejected;
-        }
         let content = match kshare::parse_share(packet, self.opts.max_file_bytes) {
             Ok(c) => c,
             Err(_) => return Disposition::Rejected,
         };
+        // A photo this computer asked the phone for is taken without the general `receive` permission: the
+        // user's click on "Save" or "Copy" was the consent. Anything else still needs `receive`.
+        if let ShareContent::File(offer) = &content
+            && let Some(fetch) = self.take_expected(device_id, &offer.name)
+        {
+            let ShareContent::File(offer) = content else {
+                unreachable!()
+            };
+            return self.offer_file(device_id, device_name, ctx, offer, true, Some(fetch));
+        }
+        if !perm.receive {
+            return Disposition::Rejected;
+        }
         match content {
             ShareContent::Ignored => Disposition::Handled,
             ShareContent::Text(t) => self.store_text(device_id, device_name, TransferKind::Text, t),
             ShareContent::Url(u) => self.store_text(device_id, device_name, TransferKind::Url, u),
             ShareContent::File(offer) => {
-                self.offer_file(device_id, device_name, ctx, offer, perm.auto_accept)
+                self.offer_file(device_id, device_name, ctx, offer, perm.auto_accept, None)
             }
         }
     }
@@ -705,6 +908,7 @@ impl ShareManager {
             let id = inner.next_id;
             let now = Instant::now();
             inner.items.push(Transfer {
+                fetch: None,
                 info: TransferInfo {
                     transfer_id: id,
                     device_id: device_id.to_owned(),
@@ -746,6 +950,7 @@ impl ShareManager {
         ctx: PayloadContext,
         offer: FileOffer,
         auto_accept: bool,
+        fetch: Option<u64>,
     ) -> Disposition {
         let (id, name, size) = {
             let mut inner = self.inner();
@@ -769,6 +974,7 @@ impl ShareManager {
             let now = Instant::now();
             let (name, size) = (offer.name.clone(), offer.size);
             inner.items.push(Transfer {
+                fetch,
                 info: TransferInfo {
                     transfer_id: id,
                     device_id: device_id.to_owned(),
@@ -791,6 +997,12 @@ impl ShareManager {
                 created: now,
                 finished: None,
             });
+            if let Some(f) = fetch
+                && let Some(rec) = inner.fetches.iter_mut().find(|r| r.info.fetch_id == f)
+            {
+                rec.transfer_id = Some(id);
+                rec.info.state = FetchState::Receiving;
+            }
             (id, name, size)
         };
         self.emit(device_id, EventKind::ShareOffered { transfer_id: id });
@@ -830,7 +1042,7 @@ impl ShareManager {
     /// Accept or decline an offer. Accepting starts the download in the background.
     pub fn decide(self: &Arc<Self>, transfer_id: u64, accept: bool) -> Result<(), ErrorBody> {
         self.expire();
-        let (offer, ctx, bytes, cancel, device_id) = {
+        let (offer, ctx, bytes, cancel, device_id, copy_only) = {
             let mut inner = self.inner();
             let idx = inner
                 .items
@@ -875,16 +1087,30 @@ impl ShareManager {
                 .ok_or_else(|| err(ErrorCode::Busy, "the offer is no longer available"))?;
             t.info.state = TransferState::Active;
             crate::tray::poke();
-            (
+            let parts = (
                 offer,
                 ctx,
                 t.bytes.clone(),
                 t.cancel.clone(),
                 t.info.device_id.clone(),
-            )
+            );
+            let fetch = t.fetch;
+            let copy_only = fetch.is_some_and(|f| {
+                inner
+                    .fetches
+                    .iter()
+                    .any(|r| r.info.fetch_id == f && r.info.mode == FetchMode::Copy)
+            });
+            (parts.0, parts.1, parts.2, parts.3, parts.4, copy_only)
         };
         let me = self.clone();
-        let dir = self.opts.save_dir.clone();
+        let dir = if copy_only {
+            let dir = self.copy_dir();
+            make_private_dir(&dir);
+            dir
+        } else {
+            self.opts.save_dir.clone()
+        };
         let max = self.opts.max_file_bytes;
         tokio::spawn(async move {
             let counter = bytes.clone();
@@ -936,6 +1162,16 @@ impl ShareManager {
                 }
             }
             t.finished = Some(Instant::now());
+            let (state, path, code) = (t.info.state, t.info.path.clone(), t.info.code.clone());
+            if let Some(rec) = inner.fetches.iter_mut().find(|r| r.transfer_id == Some(id)) {
+                if state == TransferState::Done {
+                    rec.info.state = FetchState::Done;
+                    rec.info.path = path;
+                } else {
+                    rec.info.state = FetchState::Failed;
+                    rec.info.code = code;
+                }
+            }
         }
         self.emit(
             device,
@@ -944,7 +1180,7 @@ impl ShareManager {
                 ok,
             },
         );
-        if let Some(path) = received {
+        if let Some(path) = received.filter(|p| !p.starts_with(self.copy_dir())) {
             let notifier = self
                 .notifier
                 .lock()
@@ -1043,6 +1279,7 @@ impl ShareManager {
         let id = inner.next_id;
         let now = Instant::now();
         inner.items.push(Transfer {
+            fetch: None,
             info: TransferInfo {
                 transfer_id: id,
                 device_id: device_id.to_owned(),

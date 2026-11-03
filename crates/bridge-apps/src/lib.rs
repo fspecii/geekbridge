@@ -26,6 +26,7 @@ pub mod onboarding;
 pub mod pace;
 pub mod phone_feed;
 pub mod phone_ui;
+pub mod photos_pane;
 pub mod poller;
 pub mod prefill;
 pub mod report_ui;

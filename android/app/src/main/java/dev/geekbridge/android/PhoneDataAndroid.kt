@@ -611,6 +611,7 @@ object PhoneDataRuntime {
             battery = p.getBoolean("battery", false),
             notifications = p.getBoolean("notifications", false),
             notificationApps = p.getStringSet("notification_apps", emptySet()).orEmpty().toSet(),
+            photos = p.getBoolean("photos", false),
         )
         val mirrorOut = NotificationMirror(
             port = MirrorAndroid.Port(a),
@@ -651,6 +652,7 @@ object PhoneDataRuntime {
             allowSpecialNumbers = { settings.smsSpecialNumbers },
             battery = reporter,
             mirror = mirrorOut,
+            photoPort = AndroidPhotoPort(a, main),
             smsLedger = RequestLedger(object : BlobStore {
                 override fun read() = p.getString("sms_requests", "") ?: ""
                 override fun write(text: String) {
@@ -670,6 +672,7 @@ object PhoneDataRuntime {
             receiveSms = has(Manifest.permission.RECEIVE_SMS),
             writeCalendar = has(Manifest.permission.WRITE_CALENDAR),
             notificationAccess = MirrorAndroid.accessGranted(ctx),
+            photoAccess = PhotoAccessRules.evaluate(android.os.Build.VERSION.SDK_INT) { has(it) },
         )
     }
 
@@ -681,7 +684,7 @@ object PhoneDataRuntime {
     /** Called when the transport is (re)started so the declared capabilities are what [active] says right now. */
     fun startFeatures(): ActiveFeatures = active().also {
         declared = it
-        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms} battery=${it.battery} notifications=${it.notifications}")
+        GbLog.i("capability", "declared at link start: contacts=${it.contacts} calendar=${it.calendar} calendar_edit=${it.calendarEdit} sms=${it.sms} battery=${it.battery} notifications=${it.notifications} photos=${it.photos}")
     }
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
@@ -690,6 +693,7 @@ object PhoneDataRuntime {
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
     fun setBattery(on: Boolean) = update { it.copy(battery = on) }
     fun setNotifications(on: Boolean) = update { it.copy(notifications = on) }
+    fun setPhotos(on: Boolean) = update { it.copy(photos = on) }
     fun setNotificationApps(apps: Set<String>) = update { it.copy(notificationApps = apps.take(MirrorRules.MAX_APPS).toSet()) }
     fun setSmsSpecialNumbers(on: Boolean) = update { it.copy(smsSpecialNumbers = on) }
     fun setCalendarIds(ids: Set<String>) {
@@ -703,7 +707,8 @@ object PhoneDataRuntime {
             ?.putBoolean("contacts", settings.contacts)?.putBoolean("calendar", settings.calendar)
             ?.putBoolean("sms", settings.sms)?.putStringSet("calendar_ids", settings.calendarIds)?.putBoolean("calendar_edit", settings.calendarEdit)
             ?.putBoolean("sms_special", settings.smsSpecialNumbers)?.putBoolean("battery", settings.battery)
-            ?.putBoolean("notifications", settings.notifications)?.putStringSet("notification_apps", settings.notificationApps)?.apply()
+            ?.putBoolean("notifications", settings.notifications)?.putStringSet("notification_apps", settings.notificationApps)
+            ?.putBoolean("photos", settings.photos)?.apply()
         resync()
     }
 
@@ -716,7 +721,7 @@ object PhoneDataRuntime {
         if (CapabilityRedeclare.onChange(declared, now, linkRunning) == CapabilityRedeclare.Action.Reconnect) {
             // Capabilities are declared in the identity packet at connect time: reconnect to change them.
             declared = now
-            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms} battery=${now.battery} notifications=${now.notifications}): reconnecting to re-declare")
+            GbLog.i("capability", "changed (contacts=${now.contacts} calendar=${now.calendar} calendar_edit=${now.calendarEdit} sms=${now.sms} battery=${now.battery} notifications=${now.notifications} photos=${now.photos}): reconnecting to re-declare")
             val controller = LinkRuntime.controller()
             controller.stop(R.string.pd_reconnecting)
             restartAttempt(a, 0)

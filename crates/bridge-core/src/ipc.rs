@@ -277,10 +277,13 @@ pub enum Feature {
     /// The phone's battery level and charging state (`kdeconnect.battery`). Off by default; read
     /// only while on, kept in memory for the life of the link.
     Battery,
+    /// A short list of the phone's recent photos with small thumbnails, on request (`geekbridge.photos.*`).
+    /// Off by default; never a background upload, nothing is read unless this computer asked.
+    Photos,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 10] = [
+    pub const ALL: [Feature; 11] = [
         Feature::Sms,
         Feature::Contacts,
         Feature::Calendar,
@@ -291,6 +294,7 @@ impl Feature {
         Feature::Telephony,
         Feature::Debug,
         Feature::Battery,
+        Feature::Photos,
     ];
 }
 
@@ -385,6 +389,27 @@ pub enum Request {
     Notifications {
         #[serde(default)]
         device_id: Option<String>,
+    },
+    /// The phone photos currently held (memory only), newest first; no image bytes. Needs the `photos` consent.
+    Photos {
+        #[serde(default)]
+        device_id: Option<String>,
+    },
+    /// Ask a phone for its newest photos (a list and then thumbnails). Needs the `photos` consent; the
+    /// service asks at most once every few seconds per phone.
+    PhotosRefresh {
+        device_id: String,
+    },
+    /// One held thumbnail (a small JPEG). Needs the `photos` consent.
+    PhotoThumb {
+        device_id: String,
+        id: String,
+    },
+    /// Ask the phone to send one photo in full over the share channel. Progress is in `Photos.fetches`.
+    PhotoFetch {
+        device_id: String,
+        id: String,
+        mode: crate::photos_view::FetchMode,
     },
     /// Dismiss one mirrored notification: removed here and, when the phone allows it, cancelled there.
     /// Needs the `notifications` consent.
@@ -1014,6 +1039,8 @@ pub enum Response {
     },
     Calls(Box<CallsStatus>),
     Notifications(Box<NotificationsView>),
+    Photos(Box<crate::photos_view::PhotosView>),
+    PhotoThumb(Box<crate::photos_view::PhotoThumbView>),
     Update(Box<UpdateStatus>),
     ClipboardStatus(Box<ClipboardStatus>),
     Share(Box<ShareStatus>),
@@ -1043,6 +1070,8 @@ fn every_response_is_parsed(r: &Response) {
         | Response::PhoneDebugState { .. }
         | Response::Calls(_)
         | Response::Notifications(_)
+        | Response::Photos(_)
+        | Response::PhotoThumb(_)
         | Response::Update(_)
         | Response::ClipboardStatus(_)
         | Response::Share(_)
@@ -1093,6 +1122,8 @@ impl Response {
             },
             "calls" => Response::Calls(Box::new(p(json)?)),
             "notifications" => Response::Notifications(Box::new(p(json)?)),
+            "photos" => Response::Photos(Box::new(p(json)?)),
+            "photo_thumb" => Response::PhotoThumb(Box::new(p(json)?)),
             "update" => Response::Update(Box::new(p(json)?)),
             "clipboard_status" => Response::ClipboardStatus(Box::new(p(json)?)),
             "share" => Response::Share(Box::new(p(json)?)),
@@ -1556,6 +1587,19 @@ mod tests {
             }], "enabled_devices": ["p1"]}),
             ),
             (
+                "photos",
+                json!({"kind": "photos", "items": [{
+                "device_id": "p1", "id": "p3", "name": "IMG_1.jpg", "taken_ms": 5, "size": 9,
+                "width": 4, "height": 3, "has_thumb": true
+            }], "devices": [{"device_id": "p1", "name": "Pixel", "partial": false, "listed": true}],
+                "offered": [], "fetches": [{"fetch_id": 1, "device_id": "p1", "photo_id": "p3",
+                "name": "IMG_1.jpg", "mode": "copy", "state": "done", "path": "/x/y.jpg", "code": null}]}),
+            ),
+            (
+                "photo_thumb",
+                json!({"kind": "photo_thumb", "width": 2, "height": 2, "jpeg_base64": "/9j/"}),
+            ),
+            (
                 "update",
                 json!({"kind": "update", "enabled": true, "current_version": "0.1.0", "state": "up_to_date",
                 "latest": {"version": "0.2.0", "tag": "v0.2.0", "notes": "n", "release_url": "u",
@@ -1637,7 +1681,7 @@ mod tests {
     #[test]
     fn from_json_covers_every_response_variant_and_round_trips() {
         let all = every_response_json();
-        assert_eq!(all.len(), 17, "one sample per Response variant");
+        assert_eq!(all.len(), 19, "one sample per Response variant");
         let mut seen = std::collections::HashSet::new();
         for (name, j) in &all {
             let bytes = serde_json::to_vec(j).unwrap();
@@ -1657,7 +1701,7 @@ mod tests {
             assert_eq!(serde_json::to_value(&r).unwrap()["kind"], *name);
             seen.insert(std::mem::discriminant(&r));
         }
-        assert_eq!(seen.len(), 17, "every variant was produced");
+        assert_eq!(seen.len(), 19, "every variant was produced");
     }
 
     /// Every way to break one value: drop it, or swap it for each JSON type.

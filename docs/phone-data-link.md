@@ -33,12 +33,17 @@ desktop by default (memory only, dropped on unpair, consent-off, restart).
 | `kdeconnect.sms.messages` extra `sims` | phone -> desktop | `"sims": [{"id", "slot", "label"}]` on any messages packet | GeekBridge extension, <= 4 SIMs. `id` = Android subscription id (the `subID` of a send), `slot` 1-based (0 unknown), `label` <= 24 printable chars. The desktop offers a SIM choice only from this list and refuses any other `subID`; the phone refuses an unlisted `subID` as `unknown_sim` (never a silent fallback to another SIM). Stock phones send none, so only "phone default" is offered |
 | `geekbridge.sms.status` | phone -> desktop | `{requestId, state, reason?}` | GeekBridge extension. `state` = `accepted` (phone handed it to the radio stack), `sent` (Android reports the message left the phone), `delivered` (carrier delivery report), `failed` (`reason` = short code such as `no_permission`, `no_service`, `radio_off`, `generic`, `limit`). Stock phones never send this |
 
+| `geekbridge.photos.request` | desktop -> phone | `{op:"list", limit:1..24}`, `{op:"thumb", id}` or `{op:"get", id}` | GeekBridge extension (recent photos, [design/recent-photos.md](design/recent-photos.md)). `get` makes the phone send that one picture as an ordinary file share |
+| `geekbridge.photos.list` | phone -> desktop | `{items:[{id, name, taken, size, w, h}], partial}` | GeekBridge extension; <= 24 items, unique opaque ids, `partial` = Android shares only the photos the user picked |
+| `geekbridge.photos.thumb` | phone -> desktop | `{id, w, h, jpeg: base64}` or `{id, gone: true}` | GeekBridge extension; JPEG <= 24 KiB, <= 256 px |
+
 Capabilities (identity `incomingCapabilities` / `outgoingCapabilities`) of the Android app, per enabled feature:
 
 * contacts: incoming `kdeconnect.contacts.request_all_uids_timestamps`, `kdeconnect.contacts.request_vcards_by_uid`; outgoing `kdeconnect.contacts.response_uids_timestamps`, `kdeconnect.contacts.response_vcards`
 * calendar: incoming `geekbridge.calendar.request`; outgoing `geekbridge.calendar.sync`
 * calendar editing (needs calendar too): incoming `geekbridge.calendar.write`; outgoing `geekbridge.calendar.write_result`
 * sms: incoming `kdeconnect.sms.request_conversations`, `kdeconnect.sms.request_conversation`, `kdeconnect.sms.request`; outgoing `kdeconnect.sms.messages`, `geekbridge.sms.status`
+* photos (needs photo access): incoming `geekbridge.photos.request`; outgoing `geekbridge.photos.list`, `geekbridge.photos.thumb`
 
 The desktop declares the mirror image (it needs `kdeconnect.sms.messages` etc. incoming).
 

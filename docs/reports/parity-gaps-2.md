@@ -47,9 +47,9 @@ Priority: P1 high value and feasible soon, P2 worthwhile, P3 later or optional.
 3. **Per-sender text banners that do not hide each other (P1, small). Done.** Details below.
 4. **Why-disconnected status (P2, small).** Name the cause on the desktop (phone silent, battery restricted by the
    phone's own report, different network, computer offline) using one vocabulary on both sides.
-5. **MMS attachments (P2, medium).** Request and show small images in a thread, with size caps and no auto-download
+5. **MMS attachments (P2, medium). Designed, not built: see docs/design/recent-photos.md.** Request and show small images in a thread, with size caps and no auto-download
    over limits.
-6. **Recent photos feed (P2, medium).** Read-only, user-selected folder or the media permission, thumbnails on demand,
+6. **Recent photos feed (P2, medium). Done: see docs/reports/recent-photos.md.** Read-only, user-selected folder or the media permission, thumbnails on demand,
    never a background upload.
 7. **In-app OEM guidance (P2, small).** A "fix disconnects" screen driven by a table of vendor intents, shown only when
    the intent resolves; link to a community page.

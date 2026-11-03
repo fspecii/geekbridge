@@ -774,6 +774,97 @@ fn notifications_go_only_to_allowed_computers_and_requests_surface_as_events() {
     );
 }
 
+fn photos_peer() -> Peer {
+    // A GeekBridge desktop: accepts the list and thumbnail packets and can ask.
+    Peer::new(
+        &[
+            "kdeconnect.ping",
+            "geekbridge.photos.list",
+            "geekbridge.photos.thumb",
+        ],
+        &["kdeconnect.ping", "geekbridge.photos.request"],
+    )
+}
+
+#[test]
+fn photos_are_declared_only_when_enabled_and_never_with_other_private_data() {
+    let off = Phone::start(Some(ALL()));
+    assert!(!off.started.to_string().contains("photos"));
+    let on = Phone::start(Some(json!({"photos": true})));
+    let caps = &on.started["capabilities"];
+    assert!(
+        caps["incoming"]
+            .to_string()
+            .contains("\"geekbridge.photos.request\""),
+        "{caps}"
+    );
+    let out = caps["outgoing"].to_string();
+    assert!(
+        out.contains("\"geekbridge.photos.list\"") && out.contains("\"geekbridge.photos.thumb\""),
+        "{out}"
+    );
+    assert!(!caps.to_string().contains("sms") && !caps.to_string().contains("contacts"));
+}
+
+#[test]
+fn photos_go_only_to_allowed_computers_and_requests_surface_as_events() {
+    let phone = Phone::start(Some(json!({"photos": true})));
+    let mut peer = photos_peer();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"photos": ["e".repeat(32)]}}),
+    );
+    let list = json!({"items": [], "partial": false});
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.photos.list", "body": list})
+        ),
+        "not_connected"
+    );
+    peer.send(
+        "geekbridge.photos.request",
+        body(json!({"op": "list", "limit": 24})),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "a computer that was not allowed is ignored"
+    );
+
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"photos": ["d".repeat(32)]}}),
+    );
+    peer.send(
+        "geekbridge.photos.request",
+        body(json!({"op": "list", "limit": 24})),
+    );
+    let evs = phone.events(0, 1);
+    assert_eq!(evs[0]["kind"], "geekbridge.photos.request");
+    assert_eq!(evs[0]["body"]["op"], "list");
+    // The answer goes to that connection with the GeekBridge names.
+    phone.ok(
+        "transport_data_send",
+        json!({"kind": "geekbridge.photos.list", "body": list, "connection_id": evs[0]["connection_id"]}),
+    );
+    let p = peer.recv_kind("geekbridge.photos.list");
+    assert_eq!(p.body["items"].as_array().unwrap().len(), 0);
+
+    phone.ok("transport_data_config", json!({"photos": false}));
+    assert_eq!(
+        phone.code(
+            "transport_data_send",
+            json!({"kind": "geekbridge.photos.list", "body": list})
+        ),
+        "data_disabled"
+    );
+}
+
 /// Against the REAL stock KDE Connect daemon's capabilities (captured fixture): the phone sends it only
 /// the stock packets it declared (SMS answers, battery) and never a GeekBridge extension, even with the
 /// feature on and the computer allowed.
@@ -798,11 +889,13 @@ fn a_stock_desktop_gets_stock_packets_only() {
         .map(String::as_str)
         .collect();
     let phone = Phone::start(Some(
-        json!({"contacts": true, "calendar": true, "sms": true, "debug": true, "battery": true}),
+        json!({"contacts": true, "calendar": true, "sms": true, "debug": true, "battery": true, "photos": true}),
     ));
     let mut peer = Peer::new(&incoming, &outgoing);
     peer.pair(&phone);
     for kind in [
+        "geekbridge.photos.list",
+        "geekbridge.photos.thumb",
         "geekbridge.calendar.sync",
         "geekbridge.sms.status",
         "geekbridge.debug.log",

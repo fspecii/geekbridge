@@ -61,6 +61,7 @@ individually confirmed there.**
 | Updates | GitHub release check, SHA-256 verified download, never auto-installs | Emulator self-update against a mock release server; real GitHub not contacted | not yet |
 | Phone battery on the computer | Level and charging state in the tray, Home and `status`; **off by default** on both ends | Scripted tests and unit tests against stock `kdeconnect.battery` packets | not yet |
 | Phone notifications on the computer | Banners with Dismiss and the phone's own buttons (no typed replies); only apps you pick; **off by default** on both ends; memory only | Emulator and scripted tests against stock `kdeconnect.notification` packets | not yet |
+| Recent phone photos on the computer | A "Phone photos" tab in the Share window: the newest 24 as small previews, **Save** and **Copy to clipboard** (full picture only on request); GeekBridge phones only; **off by default** on both ends; memory only | Scripted tests and a stand-in phone; Android code checked by unit tests | not yet |
 | Dial from the computer | Type a number in Calls (or `geekbridge-ctl call dial`), confirm, the phone places the call; the voice stays on the phone | Scripted tests against a stand-in phone only; nothing was dialed on any network | not yet |
 | "Why is it disconnected" | One plain sentence and a fix for each paired phone without a link (Home, tray, waybar, `status`, `doctor`) | Unit and service tests; wording not yet judged on real failures | not yet |
 | Android service / battery | Foreground link service, boot restart, OEM battery guidance | Emulator reboot and battery dialog; no OEM device | not yet |
@@ -195,7 +196,7 @@ tools (`geekbridge-pair`, `geekbridge-call-probe`) are described in [docs/call-c
 
 ## Privacy and security in one paragraph
 
-Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, battery level, phone notifications (only from apps you pick), clipboard,
+Pairing pins both TLS certificates; discovery never grants trust; contacts, calendar, SMS, battery level, phone notifications (only from apps you pick), recent photos (previews on request), clipboard,
 calls (including dialing) and file receiving are each off until you allow them for a specific phone on both sides, and
 nothing from the phone is stored on the computer (battery level and mirrored notifications are held in memory only). The only internet traffic is
 the optional update check to GitHub; there are no accounts and no GeekBridge servers. Report vulnerabilities privately as

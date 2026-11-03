@@ -140,7 +140,12 @@ class PhoneDataEngine(
     private val battery: BatteryReporter? = null,
     /** Answers a computer's notification requests and button presses; null = no mirroring on this phone. */
     private val mirror: NotificationMirror? = null,
+    /** The media library for the recent-photos feature; null = this phone has none (tests, or no photo support). */
+    photoPort: PhotoPort? = null,
 ) {
+    private val photos: RecentPhotos? =
+        photoPort?.let { RecentPhotos(it, { kind, body, conn -> emit(kind, body, conn) }, { features().photos }) }
+
     // calendar sync state for the current link
     private var calToken: String? = null
     private var calCounter = 0
@@ -162,6 +167,7 @@ class PhoneDataEngine(
     @Synchronized
     fun reset() {
         cancel.rearm()
+        photos?.reset()
         calToken = null
         calCounter = 0
         calSent = emptyMap()
@@ -205,6 +211,7 @@ class PhoneDataEngine(
             PhoneDataKinds.NOTIFICATION_ACTION -> if (f.notifications) mirror?.let { m ->
                 MirrorRules.parseAction(e.body)?.let { (id, title) -> m.onAction(id, title) }
             }
+            PhoneDataKinds.PHOTOS_REQ -> if (f.photos) photos?.onRequest(e.connectionId, e.body)
             else -> if (e.kind.startsWith("geekbridge.debug.")) DebugHooks.onDataEvent?.invoke(e)
         }
     }
@@ -212,11 +219,11 @@ class PhoneDataEngine(
     // ------------------------------------------------------------------ transport
 
     /** True if the core accepted the packet. Rate-limit rejections back off for 10 s and drop. */
-    private fun emit(kind: String, body: JSONObject): Boolean {
+    private fun emit(kind: String, body: JSONObject, connectionId: Long? = null): Boolean {
         if (kind !in PhoneDataKinds.outgoing) return false
         val now = clock()
         if (now < backoffUntil) return false
-        val request = PhoneDataProtocol.sendRequest(kind, body)
+        val request = PhoneDataProtocol.sendRequest(kind, body, connectionId)
         if (Bounds.utf8Size(request) > PhoneDataLimits.MAX_PACKET_BYTES + 512) return false
         // A rate-limited answer is retried for a few seconds (the core refills 8 packets a second): dropping it
         // would leave the computer waiting for a reply that never comes. Only after that does it back off.

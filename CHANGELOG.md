@@ -7,6 +7,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Recent phone photos on the computer (gap 6 of the parity list): a *Phone photos* tab in the Share window shows the newest
+  24 photos as small previews, with **Save** and **Copy to clipboard**, and `geekbridge-ctl photos`. GeekBridge-only packets
+  (`geekbridge.photos.request`, `.list`, `.thumb`), so a stock KDE Connect peer sees nothing. Off by default on both ends,
+  per computer on the phone; Android 14 partial photo access is supported; previews only (24 KiB each) until a full picture
+  is asked for, which then travels over the ordinary file-share channel; memory only on the computer. MMS attachments
+  (gap 5) are designed but not built. See docs/design/recent-photos.md and docs/reports/recent-photos.md.
 - A manual disconnect on the computer is no longer undone by the phone's redial: a GeekBridge-only `geekbridge.goodbye`
   packet (reasons `user_disconnect`, `shutdown`, `unpair`) makes the phone stay off that computer for 5 minutes or until
   either side connects; a service shutdown makes it redial with the normal back-off. The computer's secure identity also

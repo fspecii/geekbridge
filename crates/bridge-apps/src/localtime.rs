@@ -423,6 +423,19 @@ pub fn utc_offset_minutes_at(utc_ms: i64) -> i32 {
     utc_offset_seconds(utc_ms.div_euclid(1000)).map_or(0, |s| s / 60)
 }
 
+/// "2026-06-15 09:30" for the instant `utc_ms` in the computer's time zone (24 h or 12 h clock as the locale says).
+pub fn stamp_local(utc_ms: i64) -> String {
+    let offset = utc_offset_minutes_at(utc_ms);
+    let (date, _) = split_unix(utc_ms.div_euclid(1000), offset * 60);
+    format!(
+        "{:04}-{:02}-{:02} {}",
+        date.year,
+        date.month,
+        date.day,
+        clock_label(utc_ms, offset)
+    )
+}
+
 /// `clock_label` at the offset that applied at `utc_ms` itself.
 pub fn clock_label_local(utc_ms: i64) -> String {
     clock_label(utc_ms, utc_offset_minutes_at(utc_ms))

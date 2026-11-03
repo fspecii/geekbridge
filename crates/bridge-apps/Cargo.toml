@@ -27,6 +27,14 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 [dependencies.bridge-kde]
 path = "../bridge-kde"
 
+# Decodes the small preview JPEGs of the phone-photos tab (already in the lock file through egui; no threads).
+[dependencies.jpeg-decoder]
+version = "0.3"
+default-features = false
+
+[dependencies.base64]
+version = "0.22"
+
 [dependencies.zeroize]
 version = "1"
 

@@ -119,6 +119,8 @@ fn app_with(view: View) -> (ShareApp, mpsc::Receiver<Cmd>) {
         view,
         chosen: None,
         text: String::new(),
+        tab: Tab::Share,
+        photos: crate::photos_pane::PhotosPane::for_test(Default::default()).0,
     };
     (app, rx)
 }
