@@ -108,9 +108,11 @@ impl Phone {
     /// Poll `wait` (it returns promptly once an event exists) until `n` events are seen.
     fn events(&self, since: u64, n: usize) -> Vec<Value> {
         let end = Instant::now() + Duration::from_secs(10);
+        // Delivered events are released by the phone, so keep what each poll returns.
+        let mut evs: Vec<Value> = Vec::new();
         loop {
             let r = self.wait_events(since, 1);
-            let evs = r["events"].as_array().unwrap().clone();
+            evs.extend(r["events"].as_array().unwrap().iter().cloned());
             if evs.len() >= n {
                 return evs;
             }
@@ -749,11 +751,11 @@ fn notifications_go_only_to_allowed_computers_and_requests_surface_as_events() {
         "kdeconnect.notification.action",
         body(json!({"key": "n1", "action": "Archive"})),
     );
-    let first = phone.events(0, 1);
-    assert_eq!(first[0]["kind"], "kdeconnect.notification.request");
-    assert_eq!(first[0]["body"]["cancel"], "n1");
-    let second = phone.events(first[0]["seq"].as_u64().unwrap(), 1);
-    assert_eq!(second[0]["kind"], "kdeconnect.notification.action");
+    // One wait may hand back both events (they are released once delivered), so ask for both.
+    let got = phone.events(0, 2);
+    assert_eq!(got[0]["kind"], "kdeconnect.notification.request");
+    assert_eq!(got[0]["body"]["cancel"], "n1");
+    assert_eq!(got[1]["kind"], "kdeconnect.notification.action");
     phone.ok(
         "transport_data_send",
         json!({"kind": "kdeconnect.notification", "body": post}),

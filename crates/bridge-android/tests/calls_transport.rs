@@ -108,9 +108,11 @@ impl Phone {
     /// Poll `wait` (it returns promptly once an event exists) until `n` events are seen.
     fn events(&self, since: u64, n: usize) -> Vec<Value> {
         let end = Instant::now() + Duration::from_secs(10);
+        // Delivered events are released by the phone, so keep what each poll returns.
+        let mut evs: Vec<Value> = Vec::new();
         loop {
             let r = self.wait_events(since, 1);
-            let evs = r["events"].as_array().unwrap().clone();
+            evs.extend(r["events"].as_array().unwrap().iter().cloned());
             if evs.len() >= n {
                 return evs;
             }
