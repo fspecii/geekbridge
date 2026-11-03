@@ -1055,6 +1055,82 @@ async fn unpairing_without_a_live_link_forgets_locally() {
     assert!(rig.reopen_trust().list().unwrap().is_empty());
 }
 
+/// A debug-build phone's log files as the service would have written them (live + two rotated).
+fn plant_phone_logs(rig: &Rig, id: &str) -> Vec<PathBuf> {
+    let dir = bridge_service::phone_debug::log_dir(&rig.state_dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths: Vec<PathBuf> = ["log", "log.1", "log.2"]
+        .iter()
+        .map(|e| dir.join(format!("{id}.{e}")))
+        .collect();
+    for p in &paths {
+        std::fs::write(p, "redacted line\n").unwrap();
+    }
+    paths
+}
+
+#[tokio::test]
+async fn unpair_in_every_direction_deletes_the_phones_debug_logs() {
+    // Local unpair with a live link.
+    let rig = Rig::start().await;
+    let phone = Phone::ping_phone();
+    let _link = pair_phone(&rig, &phone).await;
+    let logs = plant_phone_logs(&rig, &phone.id());
+    rig.ok(Request::Unpair {
+        device_id: phone.id(),
+    })
+    .await;
+    assert!(logs.iter().all(|p| !p.exists()), "local unpair");
+
+    // The phone unpairs.
+    let rig = Rig::start().await;
+    let phone = Phone::ping_phone();
+    let link = pair_phone(&rig, &phone).await;
+    let logs = plant_phone_logs(&rig, &phone.id());
+    link.unpair().await.unwrap();
+    rig.wait("peer unpair", |s| s.links.is_empty() && s.paired.is_empty())
+        .await;
+    assert!(logs.iter().all(|p| !p.exists()), "phone-initiated unpair");
+
+    // Unpair with no live link.
+    let rig = Rig::start().await;
+    let phone = Phone::ping_phone();
+    drop(pair_phone(&rig, &phone).await);
+    rig.wait("link lost", |s| s.links.is_empty()).await;
+    let logs = plant_phone_logs(&rig, &phone.id());
+    let other = bridge_service::phone_debug::log_dir(&rig.state_dir).join("someone-else.log");
+    std::fs::write(&other, "x").unwrap();
+    rig.ok(Request::Unpair {
+        device_id: phone.id(),
+    })
+    .await;
+    assert!(logs.iter().all(|p| !p.exists()), "unpair without link");
+    assert!(other.exists(), "another phone's log is untouched");
+}
+
+#[tokio::test]
+async fn withdrawing_debug_consent_deletes_the_log_but_keeps_the_pairing() {
+    let rig = Rig::start().await;
+    let phone = Phone::ping_phone();
+    let _link = pair_phone(&rig, &phone).await;
+    let logs = plant_phone_logs(&rig, &phone.id());
+    rig.ok(Request::SetConsent {
+        device_id: phone.id(),
+        feature: Feature::Debug,
+        enabled: true,
+    })
+    .await;
+    assert!(logs.iter().all(|p| p.exists()), "turning on keeps it");
+    rig.ok(Request::SetConsent {
+        device_id: phone.id(),
+        feature: Feature::Debug,
+        enabled: false,
+    })
+    .await;
+    assert!(logs.iter().all(|p| !p.exists()));
+    assert_eq!(rig.status().await.paired.len(), 1);
+}
+
 #[tokio::test]
 async fn discovery_cannot_redirect_a_paired_device_or_replace_its_pin() {
     let rig = Rig::start().await;

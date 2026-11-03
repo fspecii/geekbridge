@@ -114,8 +114,11 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 * Travels: stock `kdeconnect.sms.*` packets plus the GeekBridge `geekbridge.sms.status` ([doc] `docs/phone-data-link.md`).
 * Computer: memory only, bounded counts per thread and per conversation, dropped on consent-off, unpair and restart
   ([code] `crates/bridge-service/src/phone_data.rs` module comment; [doc] `docs/state-formats.md` "Not persisted").
-  Read marks stay on the computer; I found no file written by the Messages app (grep of non-test `fs::write` /
-  `File::create` in `crates/bridge-apps/src`), but whether they survive an app restart is **UNVERIFIED**.
+  Read marks stay on the computer and are **memory only**: they live in the service's per-thread state
+  (`read_through_ms`, `unread_at_mark`; [code] `phone_data.rs` `mark_read`), not in the Messages app, which only calls
+  the service and writes no file (grep of non-test `fs::write` / `File::create` in `crates/bridge-apps/src`). They do
+  not survive a restart of the service, and are dropped on consent-off and unpair. After a restart, the unread counts
+  come from the phone again.
 * Desktop banner names the sender only. Message text appears in a banner only if you create the marker file
   `<state dir>/sms-notify-content` or set `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` ([code] `crates/bridge-service/src/lib.rs`
   near line 504).
@@ -219,10 +222,13 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 
 ### Device name and identity
 
-* Travels: device id, device name, type, protocol version, capability lists, and the TCP port, in the clear in a UDP
-  broadcast (see [Threat notes](#threat-notes)), and again inside TLS once connected ([code]
-  `crates/bridge-kde/src/identity.rs` `to_packet`; `crates/bridge-service/src/pairing_flow.rs` `announce_loop`;
-  `crates/bridge-android/src/transport/discovery.rs` `announce_loop`).
+* Travels: device id, device name, type, protocol version, the stock (`kdeconnect.*`) capability lists, and the TCP
+  port, in the clear in a UDP broadcast and in the first plaintext TCP line (see [Threat notes](#threat-notes)). The
+  `geekbridge.*` capability names and the port hint are left out of both and travel only inside TLS once connected
+  ([code] `crates/bridge-kde/src/identity.rs` `for_broadcast`, `addressed_to`, `to_packet`;
+  `crates/bridge-service/src/pairing_flow.rs` `announcement`; `crates/bridge-android/src/transport/discovery.rs`
+  `encode_announcement`). Every decision about a peer (heartbeat, negotiation, collision handling) reads the identity
+  inside TLS, never the broadcast.
 * The computer's name is 32 characters or fewer, no control characters, stored in `device-name`. Change it with
   `geekbridge-ctl rename`. `--no-announce` stops the computer broadcasting (phones then cannot find it).
 * The phone stops broadcasting while every paired computer is linked ([code] `discovery.rs` `announce_loop`).
@@ -240,7 +246,11 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   passes the redactor again ([code] `DebugState.kt` header).
 * Computer: lines are sanitised (control and bidi characters), then written to `<state dir>/phone-logs/<device id>.log`,
   owner-only, rotated at 5 MiB keeping three older files ([code] `phone_debug.rs`). The files are not read by `diagnose`,
-  only their sizes are reported ([code] `diagnose.rs`).
+  only their sizes are reported ([code] `diagnose.rs`). The state dump from `geekbridge-ctl phone-state` is printed and
+  never written to a file.
+* Erase: the live and rotated logs of a phone are deleted when it is unpaired (from the computer, from
+  `geekbridge-ctl unpair`, or by the phone) and when its `debug` consent is switched off ([code] `daemon.rs`
+  `forget_consent`, `set_consent`; `phone_debug.rs` `erase`).
 * Not covered by this: redaction is pattern-based. A new log line with unexpected wording could slip through; the unit
   test `DebugDiagnosticsTest` covers the known patterns ([code] `android/app/src/testDebug`). **UNVERIFIED** against a real
   phone's logcat.
@@ -267,7 +277,7 @@ Desktop state directory: `$XDG_DATA_HOME/geekbridge/service` (Linux, default `~/
 | `trusted_peers.json` | paired phones, pinned certificate, device name | yes | until unpair |
 | `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
 | `ipc-token` | local control token | yes (local) | until purge; replaced if damaged |
-| `phone-logs/<id>.log` | debug-build phone log (redacted) | medium | rotated at 5 MiB, 3 old files; **not removed on unpair** |
+| `phone-logs/<id>.log` | debug-build phone log (redacted) | medium | rotated at 5 MiB, 3 old files; removed on unpair and when `debug` consent is withdrawn |
 | `~/Downloads/GeekBridge/` | files and photos you received or saved | yes | until you delete |
 | `<save dir>/.geekbridge-photo-copy/` | photo sent to the clipboard | yes | emptied at start, files older than 10 minutes swept |
 | updater download folder `geekbridge-update-<random>` in the OS temp directory | a downloaded installer, only after you click Download | no | until you delete |
@@ -339,20 +349,21 @@ while using each feature would turn this statement into a measurement.
 | Goal | Desktop | Phone |
 | --- | --- | --- |
 | Stop one feature | `geekbridge-ctl consent DEVICE FEATURE off`, or the switch in the app. Clears that feature's in-memory data at once (notifications, photos, battery shown immediately; SMS/contacts/calendar with `data.set_enabled`) | the feature's switch, or remove the computer's grant |
-| Forget a phone | `geekbridge-ctl unpair DEVICE` (or the unpair control in the desktop app): clears notifications, photo previews, phone data, share and clipboard entries and the consent record ([code] `daemon.rs` `forget_consent`) and tells the phone | Diagnostics & about > Unpair (forgets the computer) |
+| Forget a phone | `geekbridge-ctl unpair DEVICE` (or the unpair control in the desktop app): clears notifications, photo previews, phone data, share and clipboard entries, a debug-build phone's logs and the consent record ([code] `daemon.rs` `forget_consent`) and tells the phone | Diagnostics & about > Unpair (forgets the computer) |
 | Remove everything | Linux: `./install.sh --uninstall --purge-data` deletes the state directory and the updater notes ([code] `packaging/linux/install.sh`); Windows/macOS: uninstall and delete the state directory listed above (**UNVERIFIED** that the Windows/macOS uninstallers offer a purge) | Settings > Apps > GeekBridge > Storage > Clear data, or uninstall |
 | Saved files | delete `~/Downloads/GeekBridge` | delete `Download/GeekBridge` |
 | Stop the broadcast | start the service with `--no-announce` | keep a paired computer linked (the phone stops broadcasting) |
 | Stop internet traffic | `geekbridge-ctl update disable` | App updates card switch |
 
-Unpair does not delete received files, saved photos or, for a debug-build phone, `phone-logs/<device id>.log`.
+Unpair does not delete received files or saved photos.
 
 ## Threat notes
 
 * **LAN observer.** The UDP announcement (broadcast to `255.255.255.255` and each local /24, every few seconds while
-  not linked) carries device id, name, type and the capability lists in clear text. The Android capability list names
-  the packet kinds of each feature that is switched on ([doc] `docs/phone-data-link.md`), so an observer on the Wi-Fi can
-  tell that, say, contacts sharing is enabled. They get no data from it. Do not put personal names in the device name.
+  not linked) carries device id, name, type and the stock `kdeconnect.*` capability lists in clear text; those must be there
+  for stock KDE Connect to list and dial a device. The GeekBridge-only `geekbridge.*` names (which reveal that, say,
+  photos or the debug link are on) are not broadcast and are not in the plaintext TCP line either; they go only inside
+  TLS. An observer can still see which stock packet kinds are declared. They get no data from it. Do not put personal names in the device name.
   mDNS is not used.
 * **Hostile LAN peer.** Discovery never grants trust. Pairing needs a code compared on both screens or a single-use QR
   token; links are TLS with pinned certificates ([doc] `docs/pairing.md`, [code] `gate.rs`). An unpaired peer can do
@@ -374,17 +385,17 @@ Unpair does not delete received files, saved photos or, for a debug-build phone,
 
 ## Findings
 
-1. **Debug logs outlive an unpair.** `phone-logs/<device id>.log` is not removed by unpair or `forget_consent`
-   ([code] `daemon.rs`; the only deletion in `phone_debug.rs` is rotation). Only a debug-build phone produces it, and
-   the content is redacted, but it is phone-derived data on disk. Workaround: delete the folder, or `--purge-data`.
-   Not changed in this review.
+1. **Debug logs outlived an unpair. Fixed.** `phone-logs/<device id>.log` and its rotated files are now deleted on
+   unpair (every path) and when `debug` consent is withdrawn; covered by `control_api.rs` tests.
 2. **"Nothing is written to disk" is slightly too strong.** The user guide and README say nothing from the phone is
    stored on the computer except files you ask for. The photo clipboard scratch copy (up to 10 minutes) and the
    debug-build log are two more cases; the wording in `docs/user-guide.md` now says so.
 3. **The update check is on by default.** The README says it is "optional", which is true, but a reader may assume it
    is off. It is the only default-on network call and is listed above with its exact request.
-4. **Capability names are visible on the LAN** (see Threat notes). Low impact; documented, not changed.
-5. **Whether Messages read marks survive a restart** is unverified.
+4. **`geekbridge.*` capability names were visible on the LAN. Fixed.** The UDP announcement and the plaintext TCP line
+   now carry only stock capabilities. Stock `kdeconnect.*` names remain visible (stock interop needs them). The
+   desktop Agenda "phone advertises calendar" hint, which read the broadcast, no longer sees it; nothing else used it.
+5. **Messages read marks** are memory only and do not survive a service restart (verified by reading the code, see SMS).
 
 ## Keeping this document true
 

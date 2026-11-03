@@ -268,7 +268,7 @@ impl Daemon {
 
     /// The identity datagram phones list this computer from.
     pub fn announcement(&self, tcp_port: u16) -> Vec<u8> {
-        let mut packet = self.endpoint.current_identity().to_packet();
+        let mut packet = self.endpoint.current_identity().for_broadcast().to_packet();
         packet.body.insert("tcpPort".into(), tcp_port.into());
         packet.to_line()
     }

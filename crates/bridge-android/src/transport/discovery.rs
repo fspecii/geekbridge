@@ -60,7 +60,7 @@ impl Status {
 
 /// The identity line other KDE Connect devices expect on UDP, plus the TCP port to dial.
 pub(super) fn encode_announcement(identity: &Identity, tcp_port: u16) -> Vec<u8> {
-    let mut packet = identity.to_packet();
+    let mut packet = identity.for_broadcast().to_packet();
     packet.body.insert("tcpPort".into(), Value::from(tcp_port));
     packet.to_line()
 }
@@ -227,6 +227,21 @@ mod tests {
         let d = parse_announcement(&line, IP, &local(), Instant::now()).unwrap();
         assert_eq!(d.device_id.as_str(), "a".repeat(32));
         assert_eq!((d.tcp_port, d.ip, d.device_type), (1716, IP, "desktop"));
+    }
+
+    #[test]
+    fn the_broadcast_names_no_geekbridge_feature() {
+        let mut id = ident('a');
+        id.incoming_capabilities.extend([
+            "geekbridge.photos.list".into(),
+            "geekbridge.heartbeat".into(),
+        ]);
+        id.outgoing_capabilities.push("geekbridge.debug.log".into());
+        let line = encode_announcement(&id, 1716);
+        let text = String::from_utf8(line.clone()).unwrap();
+        assert!(!text.contains("geekbridge"), "{text}");
+        assert!(text.contains("kdeconnect.ping"));
+        assert!(parse_announcement(&line, IP, &local(), Instant::now()).is_some());
     }
 
     #[test]

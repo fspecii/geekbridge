@@ -1514,23 +1514,16 @@ fn announce_follows_a_ready_listener_and_is_kde_shaped() {
     assert_eq!(packet.body["deviceId"], phone.id.as_str());
     assert_eq!(packet.body["protocolVersion"], 8);
     assert_eq!(packet.body["deviceType"], "phone");
+    // Plaintext broadcast: stock capabilities only; the geekbridge.* names travel inside TLS.
     assert_eq!(
         packet.body["incomingCapabilities"],
-        json!([
-            "kdeconnect.ping",
-            "kdeconnect.share.request",
-            "geekbridge.heartbeat",
-            "geekbridge.goodbye"
-        ])
+        json!(["kdeconnect.ping", "kdeconnect.share.request"])
     );
     assert_eq!(
         packet.body["outgoingCapabilities"],
-        json!([
-            "kdeconnect.ping",
-            "kdeconnect.share.request",
-            "geekbridge.heartbeat"
-        ])
+        json!(["kdeconnect.ping", "kdeconnect.share.request"])
     );
+    assert!(!String::from_utf8_lossy(line).contains("geekbridge"));
     // The listening port field is the computer's; the phone's announcement carries tcpPort only.
     assert!(packet.body.get("geekbridgePort").is_none());
     assert!(packet.body.get("targetDeviceId").is_none());

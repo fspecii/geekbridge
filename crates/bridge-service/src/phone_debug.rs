@@ -290,6 +290,17 @@ impl PhoneDebug {
         self.lock().links.get(device).map(|l| l.lines_received)
     }
 
+    /// Delete everything kept for this phone: the live log, the rotated logs, and a state request still
+    /// waiting. Called on unpair, forget and when the `debug` consent is withdrawn. A file that is
+    /// already gone is fine; a failure is returned after trying every file.
+    pub fn erase(&self, device: &str) -> std::io::Result<()> {
+        self.lock().waiting.remove(device);
+        match &self.dir {
+            Some(dir) => erase_files(dir, device),
+            None => Ok(()),
+        }
+    }
+
     pub fn log_path(&self, device: &str) -> Option<PathBuf> {
         self.dir.as_ref().map(|d| d.join(format!("{device}.log")))
     }
@@ -370,6 +381,23 @@ fn ensure_dir(dir: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn ensure_dir(dir: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dir)
+}
+
+fn erase_files(dir: &Path, device: &str) -> std::io::Result<()> {
+    if !is_plain_id(device) {
+        return Ok(());
+    }
+    let mut paths = vec![dir.join(format!("{device}.log"))];
+    paths.extend((1..=KEEP_ROTATED).map(|n| rotated(dir, device, n)));
+    let mut first_error = None;
+    for p in paths {
+        match fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => first_error = first_error.or(Some(e)),
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn rotated(dir: &Path, device: &str, n: usize) -> PathBuf {
@@ -554,6 +582,24 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    #[test]
+    fn erase_removes_live_and_rotated_logs_of_that_phone_only() {
+        let t = tempfile::tempdir().unwrap();
+        let h = hub(t.path());
+        let dir = log_dir(t.path());
+        append_lines(&dir, DEV, &["a".into()]).unwrap();
+        rotate(&dir, DEV).unwrap();
+        rotate(&dir, DEV).unwrap();
+        append_lines(&dir, DEV, &["b".into()]).unwrap();
+        append_lines(&dir, "other", &["keep".into()]).unwrap();
+        h.erase(DEV).unwrap();
+        for n in ["", ".1", ".2", ".3"] {
+            assert!(!dir.join(format!("{DEV}.log{n}")).exists(), "{n}");
+        }
+        assert!(dir.join("other.log").exists());
+        h.erase(DEV).unwrap(); // already gone: fine
     }
 
     #[test]

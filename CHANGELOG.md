@@ -194,6 +194,9 @@ builds have not been run on real hardware (see "Known limitations").
   re-made private (links replaced) and emptied at start, only picture-named files are listed, clipboard copies are
   header-checked (type, 250 MP) first, ids are per computer and the phone ignores request floods, and file names lose
   more bidirectional/line-separator characters.
+- Privacy review (docs/privacy.md): a debug-build phone's logs are deleted on unpair and when its debug consent is
+  withdrawn, and the LAN broadcast and the plaintext TCP line no longer carry `geekbridge.*` capability names (they go
+  only inside TLS).
 
 ### Known limitations
 - One real phone (Samsung SM-F946B) has been paired, and only pairing and link behaviour were verified on it. Every other

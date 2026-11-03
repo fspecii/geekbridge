@@ -1507,9 +1507,12 @@ impl Daemon {
             clip.forget(device_id);
             self.sync_hotkey();
         }
+        // A debug-build phone's log is phone-derived data: it goes with the pairing.
+        let logs = self.debug.erase(device_id);
         self.consents()
             .forget(device_id)
-            .map_err(|e| err(ErrorCode::Failed, reason(&e)))
+            .map_err(|e| err(ErrorCode::Failed, reason(&e)))?;
+        logs.map_err(|e| err(ErrorCode::Failed, e.to_string()))
     }
 
     fn set_consent(
@@ -1544,6 +1547,12 @@ impl Daemon {
                 // Withdrawn: everything held is erased at once.
                 self.mirror.clear(device_id);
             }
+        }
+        if feature == Feature::Debug && !enabled {
+            // Withdrawn: the log kept for this phone is erased at once.
+            self.debug
+                .erase(device_id)
+                .map_err(|e| err(ErrorCode::Failed, e.to_string()))?;
         }
         if feature == Feature::Photos && !enabled {
             // Withdrawn: the list, the thumbnails and any photo still being waited for are gone at once.

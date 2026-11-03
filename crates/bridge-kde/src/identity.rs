@@ -211,9 +211,30 @@ impl Identity {
         let mut out = self.clone();
         out.target_device_id = Some(target.clone());
         out.target_protocol_version = Some(PROTOCOL_VERSION);
-        // The hint travels only inside TLS.
-        out.geekbridge_port = None;
+        out.strip_private();
         out
+    }
+
+    /// The copy that goes out in the clear to the whole LAN (UDP announcement). Same as the plaintext TCP line:
+    /// see [`Identity::strip_private`].
+    pub fn for_broadcast(&self) -> Self {
+        let mut out = self.clone();
+        out.strip_private();
+        out
+    }
+
+    /// Plaintext identities (UDP broadcast, first TCP line) are readable by anyone on the network, so they carry
+    /// only what stock KDE Connect needs to find and dial us: no `geekbridge.*` capability names (they reveal which
+    /// optional features are switched on) and no port hint. A peer judges us by the identity inside TLS, which still
+    /// has all of it; stock peers do the same in protocol 8.
+    fn strip_private(&mut self) {
+        self.geekbridge_port = None;
+        for caps in [
+            &mut self.incoming_capabilities,
+            &mut self.outgoing_capabilities,
+        ] {
+            caps.retain(|c| !c.starts_with("geekbridge."));
+        }
     }
 
     pub fn to_packet(&self) -> Packet {
@@ -420,6 +441,39 @@ mod tests {
         // Without a port nothing extra is written: byte-identical to what a stock-shaped identity looks like.
         me.geekbridge_port = None;
         assert!(me.to_packet().body.get(GEEKBRIDGE_PORT_KEY).is_none());
+    }
+
+    #[test]
+    fn plaintext_identities_carry_no_geekbridge_capabilities_but_the_secure_one_does() {
+        let mut me = Identity::from_packet(&wire(None)).unwrap();
+        me.incoming_capabilities = vec![
+            "kdeconnect.ping".into(),
+            "geekbridge.photos.list".into(),
+            "geekbridge.heartbeat".into(),
+        ];
+        me.outgoing_capabilities = vec!["geekbridge.debug.log".into(), "kdeconnect.ping".into()];
+        me.geekbridge_port = Some(1731);
+        let caps = |p: &Packet, k: &str| -> Vec<String> {
+            serde_json::from_value(p.body[k].clone()).unwrap()
+        };
+        // Inside TLS: everything.
+        let secure = me.to_packet();
+        assert_eq!(caps(&secure, "incomingCapabilities").len(), 3);
+        assert_eq!(caps(&secure, "outgoingCapabilities").len(), 2);
+        // UDP broadcast and the plaintext TCP line: stock capabilities only.
+        let target = DeviceId::parse(&id('b')).unwrap();
+        for plain in [
+            me.for_broadcast().to_packet(),
+            me.addressed_to(&target).to_packet(),
+        ] {
+            assert_eq!(caps(&plain, "incomingCapabilities"), ["kdeconnect.ping"]);
+            assert_eq!(caps(&plain, "outgoingCapabilities"), ["kdeconnect.ping"]);
+            assert!(plain.body.get(GEEKBRIDGE_PORT_KEY).is_none());
+            let text = String::from_utf8(plain.to_line()).unwrap();
+            assert!(!text.contains("geekbridge."), "{text}");
+        }
+        // The sender's own record is untouched.
+        assert_eq!(me.incoming_capabilities.len(), 3);
     }
 
     #[test]
