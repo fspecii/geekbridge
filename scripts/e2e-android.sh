@@ -410,7 +410,12 @@ stage_file_d2p() {
   local want; want="$(sha256sum "$RUN/e2e-d2p-file.bin" | cut -d' ' -f1)"
   local have; have="$($ADB shell sha256sum /sdcard/Download/GeekBridge/e2e-d2p-file.bin 2>/dev/null | cut -d' ' -f1)"
   if [[ -n "$have" && "$have" == "$want" ]]; then rec file_d2p PASS "desktop -> phone, accepted on the phone, SHA-256 equal"
-  else rec file_d2p FAIL "transfer: ${line:-none}; phone never opened the payload connection (E2E-5)"; fi
+  else
+    rec file_d2p FAIL "transfer: ${line:-none}; phone never opened the payload connection (E2E-5)"
+    # Evidence for CI runs (the artifact upload picks these up): the phone log and the desktop's view of the link.
+    $ADB logcat -d 2>/dev/null | grep -iE "geekbridge|payload" >"$LOGS/e2e-file_d2p-logcat.txt" 2>&1
+    { ctl status; ctl share; } >"$LOGS/e2e-file_d2p-status.txt" 2>&1
+  fi
   # Text/link share uses no payload connection and does work: record it separately.
   goto_home; ctl send-text "$PHONE_ID" "hello-e2e" >/dev/null; sleep 4; shot 27-text-received
   if ui has "hello-e2e"; then rec share_text_d2p PASS "text offer shown on the phone"; tap Close >/dev/null 2>&1

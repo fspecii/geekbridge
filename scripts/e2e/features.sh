@@ -394,6 +394,11 @@ stage_dial() {
   # 7. "Ask me before placing a call": the phone asks, Deny leaves the modem idle, Call places it (fresh limiter after the restart).
   phone_config "calls" false false true
   ctl consent "$PHONE_ID" telephony on >/dev/null; sleep 4
+  # Earlier stages leave test notifications in the shade; with several stacked, the question's Deny button is not
+  # visible (CI runs showed "Expand"). Clear them first so the question is the only entry.
+  wake; $ADB shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
+  ui tap "Clear all" >/dev/null 2>&1 || ui tap "Clear all" --contains >/dev/null 2>&1
+  sleep 1; $ADB shell cmd statusbar collapse >/dev/null 2>&1
   local question="$ADB shell dumpsys notification --noredact 2>/dev/null | grep -q 'Place this call?'"
   dial "$TEST_NUMBER" --yes >/dev/null
   if wait_for 15 bash -c "$question"; then

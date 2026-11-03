@@ -280,7 +280,9 @@ stage_popup() {
   if wait_modem 2 12; then rec callui_popup_answer PASS "click on Answer -> modem off-hook"; else rec callui_popup_answer FAIL "modem $(modem_state) after clicking Answer"; fi
   sleep 2; app_shot call-popup-answered.png
   local ocr_live; ocr_live="$(ocr call-popup-answered.png)"
-  grep -qiE "In ?call" <<<"$ocr_live" && grep -qiE "Hang ?up" <<<"$ocr_live" \
+  # The Hang up label is white on red and some tesseract builds (CI) do not read it: accept a red pill where it is.
+  local hu hr hg hb; hu="$(px call-popup-answered.png $((HANGUP_X - 40)) "$HANGUP_Y")"; read -r hr hg hb <<<"$hu"
+  grep -qiE "In ?call" <<<"$ocr_live" && { grep -qiE "Hang ?up" <<<"$ocr_live" || { ((hr > 170 && hg < 90)); }; } \
     && rec callui_popup_incall PASS "in-call panel with timer and Hang up (OCR: $(echo "$ocr_live" | head -c 120))" \
     || rec callui_popup_incall FAIL "in-call panel not read: $ocr_live"
   # --- the audio hint: nothing routed the voice to this computer (no Bluetooth HFP here)

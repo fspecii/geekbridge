@@ -48,6 +48,7 @@ jobs:
           mkdir -p pack/target/release pack/scratch/dist
           find target/ci/release -maxdepth 1 -type f -name 'geekbridge*' ! -name '*.d' -perm -u+x -exec cp {} pack/target/release/ \;
           cp dist/android/geekbridge-debug.apk pack/scratch/dist/
+          cp -r android/app/src/main/jniLibs pack/jniLibs
           ls -l pack/target/release pack/scratch/dist
           tar -C pack -czf e2e-build.tar.gz target scratch
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -97,7 +98,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y $CI_APT dbus-x11 libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
-            sway mako-notifier grim xdotool imagemagick tesseract-ocr
+            libnotify-bin sway xwayland mako-notifier grim xdotool imagemagick tesseract-ocr
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: e2e-build
@@ -106,6 +107,8 @@ jobs:
           mkdir -p "$HOME/ci-e2e"
           tar -C "$HOME/ci-e2e" -xzf e2e-build.tar.gz
           chmod +x "$HOME"/ci-e2e/target/release/*
+          # gitignored native libraries: update-install builds two more APKs from copies of android/ and needs them
+          mkdir -p android/app/src/main && cp -r "$HOME/ci-e2e/jniLibs" android/app/src/main/jniLibs
           {
             echo "E2E_TARGET=$HOME/ci-e2e/target"
             echo "E2E_SCRATCH=$HOME/ci-e2e/scratch"
