@@ -141,4 +141,124 @@ mod tests {
             .is_ok()
         );
     }
+
+    // ---- test-gaps-4
+
+    #[test]
+    fn every_level_from_minus_one_to_a_hundred_and_one_is_classified() {
+        for c in -5i64..=105 {
+            let r = parse(&obj(json!({"currentCharge": c, "isCharging": true})));
+            match c {
+                -1 => assert_eq!(r, Ok(Reading::Unknown)),
+                0..=100 => assert_eq!(
+                    r,
+                    Ok(Reading::Level {
+                        percent: c as u8,
+                        charging: true,
+                        low: false
+                    }),
+                    "{c}"
+                ),
+                _ => assert_eq!(r, Err(BatteryError::Malformed("currentCharge")), "{c}"),
+            }
+        }
+    }
+
+    #[test]
+    fn threshold_event_is_low_only_for_exactly_one() {
+        let low = |t: Value| match parse(&obj(
+            json!({"currentCharge": 9, "isCharging": false, "thresholdEvent": t}),
+        )) {
+            Ok(Reading::Level { low, .. }) => Ok(low),
+            Ok(Reading::Unknown) => unreachable!(),
+            Err(e) => Err(e),
+        };
+        assert_eq!(low(json!(1)), Ok(true));
+        for not_low in [json!(0), json!(2), json!(-1), json!(null)] {
+            assert_eq!(low(not_low.clone()), Ok(false), "{not_low}");
+        }
+        for bad in [json!("1"), json!(1.5), json!(true), json!([1]), json!({})] {
+            assert_eq!(
+                low(bad.clone()),
+                Err(BatteryError::Malformed("thresholdEvent")),
+                "{bad}"
+            );
+        }
+        // Missing is the same as none.
+        assert_eq!(
+            parse(&obj(json!({"currentCharge": 9, "isCharging": false}))),
+            Ok(Reading::Level {
+                percent: 9,
+                charging: false,
+                low: false
+            })
+        );
+    }
+
+    #[test]
+    fn the_error_names_the_first_field_that_is_wrong() {
+        let name = |v: Value| match parse(&obj(v)) {
+            Err(BatteryError::Malformed(f)) => f,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(name(json!({})), "currentCharge");
+        assert_eq!(name(json!({"currentCharge": 5})), "isCharging");
+        assert_eq!(
+            name(json!({"currentCharge": 500})),
+            "isCharging",
+            "the range is judged after the other fields"
+        );
+        assert_eq!(
+            name(json!({"currentCharge": 500, "isCharging": 0})),
+            "isCharging"
+        );
+        assert_eq!(
+            name(json!({"currentCharge": u64::MAX, "isCharging": true})),
+            "currentCharge"
+        );
+        assert_eq!(
+            name(json!({"currentCharge": null, "isCharging": true})),
+            "currentCharge"
+        );
+    }
+
+    #[test]
+    fn a_built_body_parses_back_for_every_input_and_never_exceeds_a_hundred() {
+        for percent in [0u8, 1, 14, 15, 16, 99, 100, 101, 200, 255] {
+            for charging in [false, true] {
+                for low in [false, true] {
+                    let b = body(percent, charging, low);
+                    assert_eq!(
+                        parse(&b),
+                        Ok(Reading::Level {
+                            percent: percent.min(100),
+                            charging,
+                            low
+                        }),
+                        "{percent} {charging} {low}"
+                    );
+                    assert_eq!(b.len(), 3, "exactly the stock fields");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn kinds_and_the_request_body() {
+        assert!(
+            is_battery_kind("kdeconnect.battery") && is_battery_kind("kdeconnect.battery.request")
+        );
+        for other in [
+            "",
+            "kdeconnect.batteryx",
+            "kdeconnect.Battery",
+            "geekbridge.battery",
+            "kdeconnect.battery.",
+        ] {
+            assert!(!is_battery_kind(other), "{other}");
+        }
+        assert_eq!(request_body()["request"], true);
+        assert_eq!(request_body().len(), 1);
+        assert_ne!(BATTERY, REQUEST);
+    }
 }

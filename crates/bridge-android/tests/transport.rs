@@ -2097,3 +2097,68 @@ fn qr_text_is_parsed_by_the_core() {
         "qr_malformed"
     );
 }
+
+// ------------------------------------------------------------------------------- announce pause (test-gaps-4)
+
+#[test]
+fn announcements_stay_paused_while_linked_a_newcomer_wakes_them_and_a_storm_is_rate_limited() {
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let target = rx.local_addr().unwrap();
+    let phone = Phone::start_with(json!({
+        "discovery": {"listen": true, "port": 0, "announce": true, "announce_to": target.to_string()}
+    }));
+    let discovery_port = phone.status()["discovery"]["port"].as_u64().unwrap();
+    let to = format!("127.0.0.1:{discovery_port}");
+    let mut buf = vec![0u8; 16384];
+    // Nobody is paired, so the first round announces at once.
+    rx.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    rx.recv_from(&mut buf).expect("the first announcement");
+
+    // Pair one computer and keep it linked: every paired computer is now linked.
+    let peer = Peer::new('p');
+    let _link = pair_by_peer(&phone, &peer);
+    phone.wait("a trusted link", Phone::first_trusted);
+    let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    rx.set_read_timeout(Some(Duration::from_millis(1200)))
+        .unwrap();
+    assert!(
+        rx.recv_from(&mut buf).is_err(),
+        "nothing is sent while every paired computer is linked"
+    );
+
+    // A paired computer announcing itself is not a newcomer: no wake.
+    udp.send_to(&datagram('p', 40001), &to).unwrap();
+    assert!(
+        rx.recv_from(&mut buf).is_err(),
+        "the linked computer's own announcement is not answered"
+    );
+
+    // An unpaired computer is answered at once, with a KDE-shaped identity of this phone.
+    rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    let t0 = Instant::now();
+    udp.send_to(&datagram('n', 40002), &to).unwrap();
+    let (n, _) = rx.recv_from(&mut buf).expect("a newcomer is answered");
+    assert!(t0.elapsed() < Duration::from_secs(2));
+    let packet = Packet::from_line(buf[..n].strip_suffix(b"\n").unwrap()).unwrap();
+    assert_eq!(packet.kind, "kdeconnect.identity");
+    assert_eq!(packet.body["deviceId"], phone.id.as_str());
+
+    // A burst of further newcomers is answered at most once per WAKE_GAP (5 s): quiet for the next second,
+    // then exactly one more announcement, not one per datagram.
+    for i in 0..10u16 {
+        udp.send_to(&datagram('m', 40010 + i), &to).unwrap();
+    }
+    rx.set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(
+        rx.recv_from(&mut buf).is_err(),
+        "the burst did not cause an announcement storm"
+    );
+    rx.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+    rx.recv_from(&mut buf)
+        .expect("one deferred announcement for the burst");
+    rx.set_read_timeout(Some(Duration::from_millis(1500)))
+        .unwrap();
+    assert!(rx.recv_from(&mut buf).is_err(), "and only one");
+    phone.stop();
+}

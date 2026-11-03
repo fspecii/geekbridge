@@ -152,4 +152,124 @@ class BatteryReportTest {
         // Withdrawing sms leaves battery alone.
         assertTrue(g.set(laptop, GrantFeature.Sms, true).set(laptop, GrantFeature.Sms, false).allows(laptop, GrantFeature.Battery))
     }
+
+    // ---- test-gaps-4: risky branches
+
+    @Test fun theGapIsExactlyOneMinuteAndAnEarlierChangeWaitsOnlyTheRemainder() {
+        val r = Rig()
+        r.reporter.onChanged() // sent at t0
+        r.reading = BatteryReading(79, false, false)
+        r.now += 59_999
+        r.reporter.onChanged()
+        assertEquals(1, r.sent.size)
+        assertEquals("the trailing send waits for the remainder, not a full gap", 1L, r.scheduled.single().first)
+        r.now += 1
+        r.reading = BatteryReading(78, false, false)
+        r.reporter.onChanged() // exactly gapMs after the last send: goes out at once
+        assertEquals(2, r.sent.size)
+        assertEquals(78, r.body(1).getInt("currentCharge"))
+    }
+
+    @Test fun aTrailingSendThatFiresEarlyReschedulesInsteadOfSendingOrStalling() {
+        val r = Rig()
+        r.reporter.onChanged()
+        r.reading = BatteryReading(70, false, false)
+        r.now += 10_000
+        r.reporter.onChanged()
+        assertEquals(1, r.scheduled.size)
+        // The scheduler fires before the gap is over (clock did not advance): still nothing sent, and a new one is queued.
+        r.scheduled[0].second()
+        assertEquals(1, r.sent.size)
+        assertEquals(2, r.scheduled.size)
+        r.now += 60_000
+        r.scheduled[1].second()
+        assertEquals(70, r.body(1).getInt("currentCharge"))
+    }
+
+    @Test fun aTrailingSendIsDroppedWhenTheFeatureWasSwitchedOffMeanwhile() {
+        val r = Rig()
+        r.reporter.onChanged()
+        r.reading = BatteryReading(70, false, false)
+        r.now += 1_000
+        r.reporter.onChanged()
+        r.on = false
+        r.now += 60_000
+        r.scheduled.single().second()
+        assertEquals(1, r.sent.size)
+        // pending was cleared, so a later change can schedule again
+        r.on = true
+        r.reading = BatteryReading(60, false, false)
+        r.now += 1
+        r.reporter.onChanged()
+        assertEquals(2, r.sent.size)
+    }
+
+    @Test fun aRevertToTheLastSentValueSendsNothing() {
+        val r = Rig()
+        r.reporter.onChanged()
+        r.reading = BatteryReading(79, false, false)
+        r.now += 1_000
+        r.reporter.onChanged()
+        r.reading = BatteryReading(80, false, false)
+        r.now += 60_000
+        r.scheduled.single().second()
+        assertEquals(1, r.sent.size)
+    }
+
+    @Test fun aFailedBroadcastIsNotRememberedAndOnlyOneRetryIsQueuedForRateLimits() {
+        val r = Rig()
+        r.reject = "rate_limited"
+        r.reporter.onChanged()
+        r.reporter.onChanged()
+        r.reporter.onChanged()
+        assertEquals(1, r.scheduled.size)
+        assertEquals(5_000L, r.scheduled.single().first)
+        r.reject = null
+        r.scheduled.single().second()
+        assertEquals(1, r.sent.size) // nothing had been remembered, so the same level goes out now
+        // Any other refusal queues no retry.
+        val q = Rig()
+        for (code in listOf("data_disabled", "not_connected", "bad_request")) {
+            q.reject = code
+            q.reporter.reset()
+            q.reporter.onChanged()
+        }
+        assertTrue(q.scheduled.isEmpty())
+    }
+
+    @Test fun aRateLimitOnAReplyRetriesTheBroadcastPathAndLeavesTheMemoryAlone() {
+        val r = Rig()
+        r.reporter.onChanged()
+        r.reject = "rate_limited"
+        r.reporter.sendNow(4)
+        assertEquals(1, r.scheduled.size)
+        r.reject = null
+        r.now += 1
+        r.reporter.sendNow(4)
+        assertEquals(4L, r.sent.last().getLong("connection_id"))
+        r.reporter.onChanged()
+        assertEquals("the reply did not change what was broadcast", 2, r.sent.size)
+    }
+
+    @Test fun sendNowWithAnUnknownLevelSendsNothingAndTheReadingEdgeValuesAreExact() {
+        val r = Rig(reading = null)
+        r.reporter.sendNow()
+        assertTrue(r.sent.isEmpty())
+        assertEquals(BatteryReading(15, false, true), BatteryRules.reading(15, 100, 0))
+        assertEquals(BatteryReading(16, false, false), BatteryRules.reading(16, 100, 0))
+        assertEquals(BatteryReading(0, false, true), BatteryRules.reading(0, 100, 0))
+        assertEquals(BatteryReading(33, false, false), BatteryRules.reading(1, 3, 0)) // truncates like the system UI
+        assertEquals(BatteryReading(100, false, false), BatteryRules.reading(Int.MAX_VALUE, 1, 0)) // no Int overflow
+        assertEquals(BatteryReading(0, true, false), BatteryRules.reading(0, 100, 4))
+        assertEquals(BatteryReading(50, true, false), BatteryRules.reading(50, 100, -1)) // any plug source counts
+        assertNull(BatteryRules.reading(0, -100, 0))
+        assertEquals("kdeconnect.battery", BatteryRules.KIND)
+        assertEquals("kdeconnect.battery.request", BatteryRules.REQUEST_KIND)
+    }
+
+    @Test fun theBodyAlwaysCarriesAllThreeStockFields() {
+        val b = BatteryReading(14, false, true).body()
+        assertEquals(setOf("currentCharge", "isCharging", "thresholdEvent"), b.keys().asSequence().toSet())
+        assertEquals(1, b.getInt("thresholdEvent"))
+    }
 }

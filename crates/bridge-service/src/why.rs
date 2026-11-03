@@ -154,4 +154,126 @@ mod tests {
         s.record("p", b, 200);
         assert_eq!(s.get("p"), Some((b, 200)));
     }
+
+    // ---- test-gaps-4
+
+    #[test]
+    fn sightings_are_capped_but_known_phones_keep_updating() {
+        let mut s = Sightings::default();
+        for i in 0..300u32 {
+            s.record(&format!("d{i}"), "192.168.1.9".parse().unwrap(), 10);
+        }
+        assert!(s.get("d0").is_some() && s.get("d255").is_some());
+        assert!(
+            s.get("d256").is_none(),
+            "newcomers beyond the cap are not kept"
+        );
+        let b: IpAddr = "192.168.1.77".parse().unwrap();
+        s.record("d0", b, 20);
+        assert_eq!(
+            s.get("d0"),
+            Some((b, 20)),
+            "a known phone still updates at the cap"
+        );
+        // Equal timestamps keep the first address.
+        s.record("d0", "10.0.0.1".parse().unwrap(), 20);
+        assert_eq!(s.get("d0"), Some((b, 20)));
+    }
+
+    #[test]
+    fn events_of_other_kinds_or_without_a_device_do_not_hide_how_the_link_ended() {
+        let mut q = VecDeque::new();
+        q.push_back(ev(
+            1,
+            "a",
+            EventKind::LinkLost {
+                reason: "reset".into(),
+            },
+        ));
+        q.push_back(ev(2, "a", EventKind::Connecting));
+        q.push_back(Event {
+            seq: 3,
+            at_unix_ms: 3,
+            device_id: None,
+            kind: EventKind::Connected,
+        });
+        q.push_back(ev(4, "b", EventKind::Connected));
+        assert_eq!(last_end(&q, "a"), Some(LinkEnd::Lost("reset".into())));
+        // An unpair ends it too, and the newest ending wins over an older one.
+        q.push_back(ev(5, "a", EventKind::Unpaired));
+        assert_eq!(last_end(&q, "a"), Some(LinkEnd::Unpaired));
+        assert_eq!(last_end(&VecDeque::new(), "a"), None);
+    }
+
+    #[test]
+    fn usable_addresses_exclude_loopback_link_local_and_unspecified() {
+        for ip in [
+            "127.0.0.1",
+            "169.254.3.4",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "fe80::1",
+            "febf::1",
+        ] {
+            assert!(!computer_online(&[Iface::new("x", ip, true)]), "{ip}");
+        }
+        for ip in [
+            "192.168.1.2",
+            "10.1.2.3",
+            "fd00::5",
+            "2001:db8::1",
+            "fec0::1",
+        ] {
+            assert!(computer_online(&[Iface::new("x", ip, true)]), "{ip}");
+        }
+        // One good interface among bad ones is enough; a down one never counts.
+        assert!(computer_online(&[
+            Iface::new("lo", "127.0.0.1", true),
+            Iface::new("eth0", "192.168.1.2", true)
+        ]));
+        assert!(!computer_online(&[Iface::new(
+            "eth0",
+            "192.168.1.2",
+            false
+        )]));
+        assert!(!computer_online(&[]));
+    }
+
+    #[test]
+    fn same_network_means_the_same_slash_24_on_any_usable_up_interface() {
+        let ifaces = [
+            Iface::new("lo", "127.0.0.1", true),
+            Iface::new("docker0", "172.17.0.1", false),
+            Iface::new("wlan0", "192.168.1.5", true),
+            Iface::new("eth0", "10.0.0.2", true),
+        ];
+        let at = |ip: &str| on_our_network(&ifaces, ip.parse().unwrap());
+        assert_eq!(at("192.168.1.200"), Some(true));
+        assert_eq!(at("10.0.0.99"), Some(true), "any interface counts");
+        assert_eq!(
+            at("192.168.2.5"),
+            Some(false),
+            "a different third octet is another network"
+        );
+        assert_eq!(
+            at("172.17.0.9"),
+            Some(false),
+            "a down interface is not ours"
+        );
+        assert_eq!(at("127.0.0.9"), Some(false), "loopback is not a network");
+        // Only IPv6 interfaces: cannot say either way.
+        let v6 = [Iface::new("wlan0", "fd00::2", true)];
+        assert_eq!(on_our_network(&v6, "192.168.1.5".parse().unwrap()), None);
+        assert_eq!(on_our_network(&[], "192.168.1.5".parse().unwrap()), None);
+        // A mixed host compares IPv4 only.
+        let mixed = [
+            Iface::new("a", "fd00::2", true),
+            Iface::new("b", "192.168.1.5", true),
+        ];
+        assert_eq!(
+            on_our_network(&mixed, "192.168.9.9".parse().unwrap()),
+            Some(false)
+        );
+    }
 }

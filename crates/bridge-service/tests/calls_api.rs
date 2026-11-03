@@ -506,3 +506,127 @@ async fn ctl_call_dial_explains_asks_to_confirm_and_then_dials_through_the_link(
         "+15550100"
     );
 }
+
+// ---- test-gaps-4: the remaining `geekbridge-ctl calls` / `call ...` commands against a real service
+
+fn ctl_runner(
+    rig: &Rig,
+) -> impl Fn(Vec<&'static str>) -> tokio::task::JoinHandle<(bool, String)> + use<> {
+    let (state, port) = (rig.state_dir.clone(), rig.control_port);
+    let home = Arc::new(tempfile::tempdir().unwrap());
+    move |args: Vec<&'static str>| {
+        let (state, home) = (state.clone(), home.clone());
+        tokio::task::spawn_blocking(move || {
+            let out = std::process::Command::new(env!("CARGO_BIN_EXE_geekbridge-ctl"))
+                .args(args)
+                .env("GEEKBRIDGE_STATE_DIR", &state)
+                .env("GEEKBRIDGE_CONTROL_PORT", port.to_string())
+                .env("HOME", home.path())
+                .env("XDG_CONFIG_HOME", home.path().join(".config"))
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            (
+                out.status.success(),
+                format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn ctl_calls_masks_numbers_and_each_control_says_plainly_when_it_is_missing() {
+    let rig = Rig::start().await;
+    let phone = calls_phone();
+    let mut phone_link = pair_phone(&rig, &phone).await;
+    let ctl = ctl_runner(&rig);
+
+    // Nothing going on: every control explains itself and sends nothing.
+    let (ok, text) = ctl(vec!["calls"]).await.unwrap();
+    assert!(ok && text.starts_with("no calls"), "{text}");
+    for (args, said) in [
+        (
+            vec!["call", "answer"],
+            "nothing can answer a call right now",
+        ),
+        (
+            vec!["call", "reject"],
+            "nothing can decline a call right now",
+        ),
+        (vec!["call", "hangup"], "nothing can end a call right now"),
+        (vec!["call", "mute", "on"], "muting is not available"),
+        (
+            vec!["call", "audio"],
+            "moving the audio here is not available",
+        ),
+        (vec!["call", "bogus"], "unknown call command"),
+        (vec!["call", "dial"], "unknown call command"),
+        (vec!["call", "dial", "1", "2"], "unknown call command"),
+        (vec!["nonsense"], "unknown"),
+    ] {
+        let (ok, text) = ctl(args.clone()).await.unwrap();
+        assert!(!ok && text.contains(said), "{args:?}: {text}");
+    }
+    assert!(sends_nothing(&mut phone_link).await);
+
+    rig.ok(Request::SetConsent {
+        device_id: phone.id(),
+        feature: Feature::Telephony,
+        enabled: true,
+    })
+    .await;
+    phone_link
+        .send(&report(PhoneState::Ringing, true))
+        .await
+        .unwrap();
+    wait_calls(&rig, "ringing", |c| c.view.ringing().is_some()).await;
+
+    // Numbers are masked unless asked for; names are never printed.
+    let (ok, text) = ctl(vec!["calls"]).await.unwrap();
+    assert!(ok && text.contains("ringing | number: *******00"), "{text}");
+    assert!(
+        !text.contains("+15550100") && !text.contains("Ada"),
+        "{text}"
+    );
+    assert!(
+        text.contains("answer: phone-link reject: phone-link"),
+        "{text}"
+    );
+    let (_, text) = ctl(vec!["calls", "--reveal"]).await.unwrap();
+    assert!(
+        text.contains("number: +15550100") && !text.contains("Ada"),
+        "{text}"
+    );
+    // Mute and audio stay unavailable on the link path; ending a ringing call is not "hang up".
+    let (ok, text) = ctl(vec!["call", "hangup"]).await.unwrap();
+    assert!(!ok && text.contains("nothing can end a call"), "{text}");
+    let (ok, text) = ctl(vec!["call", "mute", "maybe"]).await.unwrap();
+    assert!(!ok && text.contains("muting is not available"), "{text}");
+    assert!(sends_nothing(&mut phone_link).await);
+
+    // Reject reaches the phone as exactly one request, and the command says ok.
+    let (ok, text) = ctl(vec!["call", "reject"]).await.unwrap();
+    assert!(ok && text.trim() == "ok", "{text}");
+    let (id, action) = next_request(&mut phone_link).await;
+    assert_eq!(action, LinkAction::Reject);
+    assert!(sends_nothing(&mut phone_link).await);
+    // The phone's refusal comes back as the next `calls` notice.
+    phone_link
+        .send(&kde::Packet::new(
+            link::RESULT,
+            link::result_body(&id, Err(LinkFailure::NoSuchCall)),
+        ))
+        .await
+        .unwrap();
+    wait_calls(&rig, "notice", |c| c.notice.is_some()).await;
+    let (_, text) = ctl(vec!["calls"]).await.unwrap();
+    assert!(
+        text.contains("notice: The call had already changed on the phone."),
+        "{text}"
+    );
+    assert!(text.contains("source: Phone link ("), "{text}");
+}

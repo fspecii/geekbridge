@@ -1498,6 +1498,371 @@ mod tests {
         assert!(Response::from_json(b"not json").is_err());
     }
 
+    // ---- test-gaps-4: Response::from_json parity with the derived parser, every variant
+
+    /// One representative reply per `Response` variant, as the JSON the service writes. Each is checked
+    /// to parse with the derived parser first, so a sample that rots fails loudly instead of testing nothing.
+    fn every_response_json() -> Vec<(&'static str, serde_json::Value)> {
+        use serde_json::json;
+        let view = json!({
+            "rows": [{
+                "key": "k", "phone": "Pixel", "direction": "incoming", "phase": "incoming",
+                "number": "+155", "name": null, "answer": null, "reject": null, "hangup": null,
+                "missing_control": "x"
+            }],
+            "audio": {"route": {"route": "no_call"}, "hint": null, "connect": null},
+            "mute": null, "sources_up": 1,
+            "dial": {"source": "link:p1", "path": "link", "phone": "Pixel"}
+        });
+        let status = json!({
+            "kind": "status", "ipc_version": 1, "service_version": "0.1.0", "device_id": "me",
+            "device_name": "pc", "own_cert_sha256": "", "paired": [{
+                "device_id": "p1", "name": "Pixel", "device_type": "phone", "cert_sha256": "ab",
+                "paired_at_unix": 5, "consents": []
+            }], "links": [], "challenges": [], "event_seq": 3, "inbound_listener": "0.0.0.0:1716",
+            "reconnecting": ["p1"], "disconnected": [{
+                "device_id": "p1", "code": "gave_up", "sentence": "s", "fix": "f",
+                "last_seen_ago_s": 3, "tries": 2
+            }]
+        });
+        let v = vec![
+            ("status", status),
+            (
+                "events",
+                json!({"kind": "events", "events": [
+                {"seq": 1, "at_unix_ms": 2, "device_id": "p1", "kind": "link_lost", "reason": "x"},
+                {"seq": 2, "at_unix_ms": 3, "device_id": null, "kind": "connected"}
+            ], "next_after": 2, "gap": true}),
+            ),
+            (
+                "calling_status",
+                json!({"kind": "calling_status", "platform": "linux", "backend": "pipewire",
+                "verdict": "ready", "telephony_service_present": true, "bluetooth_controllers": 1,
+                "phones": 1, "calls": 0, "read_only": false}),
+            ),
+            (
+                "phone_debug_state",
+                json!({"kind": "phone_debug_state", "text": "a\nb \u{1F600}"}),
+            ),
+            (
+                "calls",
+                json!({"kind": "calls", "view": view, "notice": "n", "sources": ["a", "b"], "audio_note": null}),
+            ),
+            (
+                "notifications",
+                json!({"kind": "notifications", "items": [{
+                "device_id": "p1", "device_name": "Pixel", "id": "gb1", "app": "Chat", "title": "T",
+                "text": "x", "time_ms": 5, "clearable": true, "actions": ["A"]
+            }], "enabled_devices": ["p1"]}),
+            ),
+            (
+                "update",
+                json!({"kind": "update", "enabled": true, "current_version": "0.1.0", "state": "up_to_date",
+                "latest": {"version": "0.2.0", "tag": "v0.2.0", "notes": "n", "release_url": "u",
+                    "asset_name": null, "asset_size": null, "sha256": null},
+                "newer": true, "skipped": false, "downloadable": false, "last_checked_unix": 1,
+                "downloaded_bytes": 0, "download_total": 0, "downloaded_path": null, "error": null}),
+            ),
+            (
+                "clipboard_status",
+                json!({"kind": "clipboard_status", "backend": "wl", "available": true,
+                "observe": "watch", "watching": true, "problem": null, "max_text_bytes": 1, "max_image_bytes": 2,
+                "window_ms": 3, "hotkey": "h", "hotkey_binding": "b", "last_pull": {"device_id": "p1",
+                "state": "none", "reason": "empty", "kind": "text", "at_unix_ms": 1}, "devices": [],
+                "other_sync_app": false}),
+            ),
+            (
+                "share",
+                json!({"kind": "share", "save_dir": "/d", "max_file_bytes": 9,
+                "devices": [{"device_id": "p1", "receive": true, "auto_accept": false}], "transfers": []}),
+            ),
+            (
+                "pair_qr",
+                json!({"kind": "pair_qr", "payload": "gb:x", "expires_in_ms": 5, "computer_name": "pc",
+                "addresses": ["192.168.1.2"]}),
+            ),
+            (
+                "connection_test",
+                json!({"kind": "connection_test", "ok": false, "headline": "h",
+                "steps": [{"label": "l", "ok": true, "detail": "d"}], "advice": ["a"]}),
+            ),
+            (
+                "agenda",
+                json!({"kind": "agenda", "devices": [], "people": [], "people_total": 0, "events": []}),
+            ),
+            (
+                "messages",
+                json!({"kind": "messages", "devices": [], "conversations": [], "selected": null,
+                "sends": []}),
+            ),
+            (
+                "message_queued",
+                json!({"kind": "message_queued", "send_id": u64::MAX}),
+            ),
+            (
+                "transfer_started",
+                json!({"kind": "transfer_started", "transfer_id": 0}),
+            ),
+            ("ack", json!({"kind": "ack"})),
+            (
+                "error",
+                json!({"kind": "error", "code": "busy", "message": "m"}),
+            ),
+        ];
+        for (name, j) in &v {
+            let derived = serde_json::from_value::<Response>(j.clone());
+            assert!(
+                derived.is_ok(),
+                "sample {name} no longer parses: {derived:?}"
+            );
+        }
+        v
+    }
+
+    fn parity(bytes: &[u8]) -> Result<(), String> {
+        let a = Response::from_json(bytes);
+        let b = serde_json::from_slice::<Response>(bytes);
+        match (&a, &b) {
+            (Ok(x), Ok(y)) if x == y => Ok(()),
+            (Err(_), Err(_)) => Ok(()),
+            _ => Err(format!(
+                "from_json={:?} derived={:?} for {}",
+                a.map(|_| ()),
+                b.map(|_| ()),
+                String::from_utf8_lossy(bytes)
+            )),
+        }
+    }
+
+    #[test]
+    fn from_json_covers_every_response_variant_and_round_trips() {
+        let all = every_response_json();
+        assert_eq!(all.len(), 17, "one sample per Response variant");
+        let mut seen = std::collections::HashSet::new();
+        for (name, j) in &all {
+            let bytes = serde_json::to_vec(j).unwrap();
+            let r = Response::from_json(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                r,
+                serde_json::from_slice::<Response>(&bytes).unwrap(),
+                "{name}"
+            );
+            // And what the service really writes (serialising the parsed value) parses back to itself.
+            let out = serde_json::to_vec(&r).unwrap();
+            assert_eq!(
+                Response::from_json(&out).unwrap(),
+                r,
+                "{name} re-serialised"
+            );
+            assert_eq!(serde_json::to_value(&r).unwrap()["kind"], *name);
+            seen.insert(std::mem::discriminant(&r));
+        }
+        assert_eq!(seen.len(), 17, "every variant was produced");
+    }
+
+    /// Every way to break one value: drop it, or swap it for each JSON type.
+    fn damaged(v: &serde_json::Value) -> Vec<serde_json::Value> {
+        use serde_json::{Value, json};
+        let mut out = vec![
+            Value::Null,
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!(u64::MAX),
+            json!(""),
+            json!("x"),
+            json!(true),
+            json!([]),
+            json!({}),
+        ];
+        if let Value::Array(a) = v {
+            out.push(Value::Array(a.iter().chain(a.iter()).cloned().collect()));
+        }
+        out
+    }
+
+    /// Visit every object member and array element up to `depth` levels, calling `f` with a copy of the
+    /// whole document that has that one place damaged or removed.
+    fn mutations(root: &serde_json::Value, depth: usize, f: &mut dyn FnMut(serde_json::Value)) {
+        use serde_json::Value;
+        fn at<'a>(v: &'a mut Value, path: &[String]) -> &'a mut Value {
+            let mut cur = v;
+            for p in path {
+                cur = match cur {
+                    Value::Object(m) => m.get_mut(p).unwrap(),
+                    Value::Array(a) => &mut a[p.parse::<usize>().unwrap()],
+                    _ => unreachable!(),
+                };
+            }
+            cur
+        }
+        fn walk(root: &Value, path: &mut Vec<String>, depth: usize, f: &mut dyn FnMut(Value)) {
+            let mut copy = root.clone();
+            let here = at(&mut copy, path).clone();
+            let keys: Vec<String> = match &here {
+                Value::Object(m) => m.keys().cloned().collect(),
+                Value::Array(a) => (0..a.len()).map(|i| i.to_string()).collect(),
+                _ => return,
+            };
+            // an unknown member
+            if matches!(here, Value::Object(_)) {
+                let mut c = root.clone();
+                at(&mut c, path)
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("zz_unknown".into(), serde_json::json!({"a": [1]}));
+                f(c);
+            }
+            for k in keys {
+                // remove it
+                let mut c = root.clone();
+                match at(&mut c, path) {
+                    Value::Object(m) => {
+                        m.remove(&k);
+                    }
+                    Value::Array(a) => {
+                        a.remove(k.parse().unwrap());
+                    }
+                    _ => {}
+                }
+                f(c);
+                // replace it by every other type
+                path.push(k.clone());
+                let target = at(&mut root.clone(), path).clone();
+                for d in damaged(&target) {
+                    let mut c = root.clone();
+                    *at(&mut c, path) = d;
+                    f(c);
+                }
+                if depth > 1 {
+                    walk(root, path, depth - 1, f);
+                }
+                path.pop();
+            }
+        }
+        walk(root, &mut Vec::new(), depth, f);
+    }
+
+    #[test]
+    fn from_json_agrees_with_the_derived_parser_on_damaged_replies() {
+        let mut cases = 0usize;
+        for (name, j) in every_response_json() {
+            mutations(&j, 3, &mut |m| {
+                cases += 1;
+                if let Err(e) = parity(&serde_json::to_vec(&m).unwrap()) {
+                    panic!("{name}: {e}");
+                }
+            });
+        }
+        assert!(cases > 1500, "{cases} damaged replies were compared");
+    }
+
+    #[test]
+    fn from_json_agrees_on_the_tag_itself_in_every_shape() {
+        use serde_json::json;
+        let kinds: Vec<String> = every_response_json()
+            .into_iter()
+            .map(|(n, _)| n.to_owned())
+            .collect();
+        // Every sample body under every other kind (wrong payload for the tag), and a bare tag.
+        for (name, j) in every_response_json() {
+            for k in &kinds {
+                let mut m = j.clone();
+                m["kind"] = json!(k);
+                parity(&serde_json::to_vec(&m).unwrap())
+                    .unwrap_or_else(|e| panic!("{name} as {k}: {e}"));
+                parity(format!(r#"{{"kind":"{k}"}}"#).as_bytes()).unwrap();
+            }
+        }
+        for raw in [
+            // tag shapes
+            r#"{}"#,
+            r#"{"kind":null}"#,
+            r#"{"kind":5}"#,
+            r#"{"kind":["ack"]}"#,
+            r#"{"kind":{"a":1}}"#,
+            r#"{"kind":""}"#,
+            r#"{"kind":"ACK"}"#,
+            r#"{"kind":"ack "}"#,
+            r#"{"kind":"Ack"}"#,
+            r#"{"kind":"nope"}"#,
+            r#"{"kind":"__proto__"}"#,
+            r#"{"Kind":"ack"}"#,
+            // escapes, duplicates, order, whitespace
+            r#"{"k\u0069nd":"ack"}"#,
+            r#"{"kind":"\u0061ck"}"#,
+            r#"{"kind":"ack","kind":"ack"}"#,
+            r#"{"kind":"ack","kind":"error","code":"busy","message":"m"}"#,
+            r#"{"kind":"error","kind":"ack"}"#,
+            r#"{"code":"busy","message":"m","kind":"error"}"#,
+            r#"{"message":"m","code":"busy","message":"again","kind":"error"}"#,
+            "  \n{\"kind\" : \"ack\"}\n",
+            r#"{"kind":"ack",}"#,
+            r#"{"kind":"ack"} {}"#,
+            r#"{"kind":"ack"}x"#,
+            // not objects, not JSON, empty
+            "",
+            " ",
+            "null",
+            "true",
+            "5",
+            r#""ack""#,
+            "[]",
+            r#"[{"kind":"ack"}]"#,
+            "{",
+            "}",
+            r#"{"kind":"ack""#,
+            "\u{feff}{\"kind\":\"ack\"}",
+            // numbers
+            r#"{"kind":"message_queued","send_id":1.0}"#,
+            r#"{"kind":"message_queued","send_id":1e3}"#,
+            r#"{"kind":"message_queued","send_id":-0}"#,
+            r#"{"kind":"message_queued","send_id":18446744073709551616}"#,
+            r#"{"kind":"message_queued","send_id":"7"}"#,
+            r#"{"kind":"message_queued","send_id":7,"send_id":8}"#,
+            r#"{"kind":"transfer_started","transfer_id":null}"#,
+            // strings
+            r#"{"kind":"phone_debug_state","text":"\ud800"}"#,
+            r#"{"kind":"phone_debug_state","text":"\udc00x"}"#,
+            r#"{"kind":"phone_debug_state","text":null}"#,
+            r#"{"kind":"phone_debug_state","text":"a","text":"b"}"#,
+            r#"{"kind":"phone_debug_state","text":"tab	raw"}"#,
+        ] {
+            parity(raw.as_bytes()).unwrap_or_else(|e| panic!("{e}"));
+        }
+        // invalid UTF-8 and NULs
+        for raw in [
+            &b"\xff\xfe"[..],
+            b"{\"kind\":\"ack\"}\0",
+            b"{\"kind\":\"\xff\"}",
+            b"{\"kind\":\"phone_debug_state\",\"text\":\"\xc3\"}",
+        ] {
+            parity(raw).unwrap_or_else(|e| panic!("{e}"));
+        }
+    }
+
+    #[test]
+    fn from_json_agrees_on_every_truncation_and_single_byte_corruption() {
+        for (name, j) in every_response_json() {
+            let bytes = serde_json::to_vec(&j).unwrap();
+            let step = (bytes.len() / 400).max(1);
+            for cut in (0..bytes.len()).step_by(step) {
+                parity(&bytes[..cut]).unwrap_or_else(|e| panic!("{name} cut {cut}: {e}"));
+            }
+            // Deterministic xorshift, no dependency.
+            let mut x: u64 = 0x9e37_79b9_7f4a_7c15 ^ bytes.len() as u64;
+            for _ in 0..300 {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let mut b = bytes.clone();
+                let at = (x % b.len() as u64) as usize;
+                b[at] = b"{}[]\":,0 -ex\\\xff\n"[(x >> 32) as usize % 15];
+                parity(&b).unwrap_or_else(|e| panic!("{name} byte {at}: {e}"));
+            }
+        }
+    }
+
     #[test]
     fn client_reports_unavailable_without_sending_anything() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

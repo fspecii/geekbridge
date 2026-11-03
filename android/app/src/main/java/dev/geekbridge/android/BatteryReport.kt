@@ -17,7 +17,7 @@ object BatteryRules {
     /** From the extras of the sticky ACTION_BATTERY_CHANGED intent; null when the level is not known. */
     fun reading(level: Int, scale: Int, plugged: Int): BatteryReading? {
         if (level < 0 || scale <= 0) return null
-        val percent = (level.toLong() * 100 / scale).toInt().coerceIn(0, 100)
+        val percent = (level.toLong() * 100 / scale).coerceIn(0L, 100L).toInt()
         val charging = plugged != 0
         return BatteryReading(percent, charging, low = !charging && percent <= LOW_PERCENT)
     }

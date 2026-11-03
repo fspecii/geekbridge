@@ -470,4 +470,326 @@ mod tests {
         assert_eq!(one_line(&w), "You disconnected this phone.");
         assert_eq!(age_words(7200), "2 h");
     }
+
+    // ---- test-gaps-4: precedence, keyword and boundary branches
+
+    fn lost(r: &str) -> Option<LinkEnd> {
+        Some(LinkEnd::Lost(r.into()))
+    }
+
+    #[test]
+    fn the_documented_precedence_holds_pairwise() {
+        // computer > listener > user > unpaired > announcing > network > timeout > silent
+        let all = Facts {
+            computer_online: true,
+            listening: true,
+            paused: true,
+            announcing: true,
+            tries: 99,
+            max_tries: 12,
+            last_seen_ago_s: Some(1),
+            on_our_network: Some(false),
+            last_end: Some(LinkEnd::Unpaired),
+        };
+        assert_eq!(classify(&all), ReasonCode::PausedByUser);
+        let f = Facts {
+            paused: false,
+            ..all.clone()
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::PairingLost,
+            "unpaired beats announcing"
+        );
+        let f = Facts {
+            last_end: lost("timed out"),
+            ..f
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::GaveUp,
+            "announcing beats the network and the timeout"
+        );
+        let f = Facts {
+            announcing: false,
+            ..f
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::DifferentNetwork,
+            "network beats the timeout"
+        );
+        let f = Facts {
+            on_our_network: Some(true),
+            ..f
+        };
+        assert_eq!(classify(&f), ReasonCode::LinkTimedOut);
+        let f = Facts {
+            on_our_network: None,
+            ..f
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::LinkTimedOut,
+            "unknown network is not a different network"
+        );
+        let f = Facts {
+            listening: false,
+            ..f
+        };
+        assert_eq!(classify(&f), ReasonCode::NotListening);
+        let f = Facts {
+            computer_online: false,
+            ..f
+        };
+        assert_eq!(classify(&f), ReasonCode::ComputerOffline);
+    }
+
+    #[test]
+    fn a_zero_retry_cap_never_means_gave_up() {
+        for tries in [0, 1, 50] {
+            let f = Facts {
+                announcing: true,
+                tries,
+                max_tries: 0,
+                ..base()
+            };
+            assert_eq!(classify(&f), ReasonCode::Reconnecting, "tries {tries}");
+        }
+        let f = Facts {
+            announcing: true,
+            tries: 11,
+            ..base()
+        };
+        assert_eq!(classify(&f), ReasonCode::Reconnecting);
+        let f = Facts {
+            announcing: true,
+            tries: 13,
+            ..base()
+        };
+        assert_eq!(classify(&f), ReasonCode::GaveUp);
+    }
+
+    #[test]
+    fn every_trust_failure_keyword_is_found_in_any_case_but_only_for_connect_failures() {
+        for r in [
+            "peer NOT PAIRED",
+            "Unpaired by phone",
+            "untrusted certificate",
+            "not trusted",
+            "bad Certificate",
+            "Fingerprint mismatch",
+        ] {
+            let f = Facts {
+                last_end: Some(LinkEnd::ConnectFailed(r.into())),
+                ..base()
+            };
+            assert_eq!(classify(&f), ReasonCode::PairingLost, "{r}");
+        }
+        // A link that was lost mentioning a certificate is not evidence of a lost pairing.
+        let f = Facts {
+            last_end: lost("certificate expired"),
+            ..base()
+        };
+        assert_eq!(classify(&f), ReasonCode::PhoneSilent);
+        // An ordinary connect failure is not a trust failure.
+        let f = Facts {
+            last_end: Some(LinkEnd::ConnectFailed("connection refused".into())),
+            ..base()
+        };
+        assert_eq!(classify(&f), ReasonCode::PhoneSilent);
+    }
+
+    #[test]
+    fn every_timeout_keyword_is_found_for_lost_links_and_failed_connects() {
+        for r in [
+            "timed out",
+            "TIMEOUT",
+            "peer went silent",
+            "no heartbeat",
+            "Connection reset by peer",
+            "Broken pipe",
+        ] {
+            for end in [LinkEnd::Lost(r.into()), LinkEnd::ConnectFailed(r.into())] {
+                let f = Facts {
+                    last_end: Some(end.clone()),
+                    ..base()
+                };
+                assert_eq!(classify(&f), ReasonCode::LinkTimedOut, "{end:?}");
+            }
+        }
+        for end in [LinkEnd::Disconnected, LinkEnd::Lost(String::new())] {
+            let f = Facts {
+                last_end: Some(end),
+                last_seen_ago_s: Some(5),
+                ..base()
+            };
+            assert_eq!(classify(&f), ReasonCode::PhoneSilent);
+        }
+    }
+
+    #[test]
+    fn any_history_at_all_means_silent_and_none_means_not_seen_yet() {
+        let f = Facts {
+            last_end: Some(LinkEnd::Disconnected),
+            ..base()
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::PhoneSilent,
+            "an end without a sighting"
+        );
+        let f = Facts {
+            last_seen_ago_s: Some(0),
+            ..base()
+        };
+        assert_eq!(
+            classify(&f),
+            ReasonCode::PhoneSilent,
+            "a sighting without an end"
+        );
+        let f = Facts {
+            on_our_network: Some(true),
+            ..base()
+        };
+        assert_eq!(classify(&f), ReasonCode::NotSeenYet);
+        assert_eq!(
+            classify(&Facts::default()),
+            ReasonCode::ComputerOffline,
+            "nothing known is not online"
+        );
+    }
+
+    #[test]
+    fn explain_copies_the_facts_and_the_texts_of_its_code() {
+        let f = Facts {
+            announcing: true,
+            tries: 4,
+            last_seen_ago_s: Some(9),
+            ..base()
+        };
+        let w = explain("dev", &f);
+        assert_eq!(
+            (w.device_id.as_str(), w.tries, w.last_seen_ago_s),
+            ("dev", 4, Some(9))
+        );
+        assert_eq!(w.code, ReasonCode::Reconnecting);
+        assert_eq!(
+            (w.sentence.as_str(), w.fix.as_str()),
+            (w.code.sentence(), w.code.fix())
+        );
+        // Round trip, and an older status without the optional fields still parses.
+        assert_eq!(
+            serde_json::from_str::<WhyDisconnected>(&serde_json::to_string(&w).unwrap()).unwrap(),
+            w
+        );
+        let old: WhyDisconnected =
+            serde_json::from_str(r#"{"device_id":"d","code":"gave_up","sentence":"s","fix":"f"}"#)
+                .unwrap();
+        assert_eq!((old.last_seen_ago_s, old.tries), (None, 0));
+        let future: WhyDisconnected = serde_json::from_str(
+            r#"{"device_id":"d","code":"from_the_future","sentence":"s","fix":"f"}"#,
+        )
+        .unwrap();
+        assert_eq!(future.code, ReasonCode::Unknown);
+    }
+
+    #[test]
+    fn the_firewall_rewrites_exactly_four_codes() {
+        for code in ReasonCode::ALL {
+            let mut w = WhyDisconnected {
+                device_id: "p".into(),
+                code,
+                sentence: "keep".into(),
+                fix: "keep".into(),
+                last_seen_ago_s: Some(1),
+                tries: 2,
+            };
+            with_firewall_blocking(&mut w, false);
+            assert_eq!(
+                (w.code, w.sentence.as_str()),
+                (code, "keep"),
+                "{code:?} not blocking"
+            );
+            with_firewall_blocking(&mut w, true);
+            let rewritten = matches!(
+                code,
+                ReasonCode::GaveUp
+                    | ReasonCode::Reconnecting
+                    | ReasonCode::PhoneSilent
+                    | ReasonCode::LinkTimedOut
+            );
+            if rewritten {
+                assert_eq!(w.code, ReasonCode::FirewallBlocking, "{code:?}");
+                assert_eq!(w.sentence, ReasonCode::FirewallBlocking.sentence());
+                assert_eq!(w.fix, ReasonCode::FirewallBlocking.fix());
+            } else {
+                assert_eq!((w.code, w.sentence.as_str()), (code, "keep"), "{code:?}");
+            }
+            assert_eq!((w.last_seen_ago_s, w.tries), (Some(1), 2), "facts survive");
+        }
+    }
+
+    #[test]
+    fn age_words_switch_unit_exactly_at_the_boundaries() {
+        for (secs, text) in [
+            (0, "0 s"),
+            (59, "59 s"),
+            (60, "1 min"),
+            (119, "1 min"),
+            (3599, "59 min"),
+            (3600, "1 h"),
+            (86_399, "23 h"),
+            (86_400, "1 d"),
+            (172_800, "2 d"),
+            (u64::MAX, &format!("{} d", u64::MAX / 86_400)),
+        ] {
+            assert_eq!(age_words(secs), text, "{secs}");
+        }
+    }
+
+    #[test]
+    fn one_line_adds_the_age_for_silent_and_timed_out_only() {
+        for code in ReasonCode::ALL {
+            let w = WhyDisconnected {
+                device_id: "p".into(),
+                code,
+                sentence: code.sentence().into(),
+                fix: code.fix().into(),
+                last_seen_ago_s: Some(3700),
+                tries: 0,
+            };
+            let line = one_line(&w);
+            if matches!(code, ReasonCode::PhoneSilent | ReasonCode::LinkTimedOut) {
+                assert_eq!(line, format!("{} Last heard 1 h ago.", code.sentence()));
+            } else {
+                assert_eq!(line, code.sentence(), "{code:?}");
+            }
+            let unknown_age = WhyDisconnected {
+                last_seen_ago_s: None,
+                ..w
+            };
+            assert_eq!(one_line(&unknown_age), code.sentence());
+        }
+    }
+
+    #[test]
+    fn texts_are_calm_plain_and_free_of_private_detail() {
+        for c in ReasonCode::ALL {
+            for t in [c.sentence(), c.fix()] {
+                assert!(t.ends_with('.'), "{t}");
+                assert!(!t.contains('\n') && t.len() < 120, "{t}");
+                assert!(
+                    !t.chars().any(|ch| ch.is_ascii_digit()) || c == ReasonCode::FirewallBlocking,
+                    "{t}"
+                );
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        assert!(
+            ReasonCode::ALL.iter().all(|c| seen.insert(c.as_str())),
+            "names are unique"
+        );
+        assert_eq!(ReasonCode::ALL.len(), 12);
+    }
 }

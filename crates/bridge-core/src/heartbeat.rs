@@ -202,4 +202,189 @@ mod tests {
         let m = vec![MARKER.to_owned()];
         assert!(is_geekbridge_peer(&m, &m));
     }
+
+    // ---- test-gaps-4: screen-off cadence and the silence rules, simulated the way the engines drive them
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// Run the timer loop both engines have: a tick every `EVERY` (a little late), a ping when due, the write
+    /// stamped afterwards. `idle_at(t)` says whether the screen is off at second `t`. Returns ping times (s).
+    fn simulate(minutes: u64, idle_at: impl Fn(u64) -> bool) -> Vec<u64> {
+        let t0 = Instant::now();
+        let mut h = Heartbeat::new(t0);
+        let mut pings = Vec::new();
+        let mut tick = t0;
+        while tick < t0 + Duration::from_secs(minutes * 60) {
+            tick += EVERY + ms(2); // timer lateness
+            let secs = tick.duration_since(t0).as_secs();
+            if h.ping_due_idle(tick, idle_at(secs)) {
+                pings.push(secs);
+                h.sent(tick + ms(30)); // the write took 30 ms
+            }
+        }
+        pings
+    }
+
+    #[test]
+    fn with_the_screen_on_a_ping_goes_out_every_tick_and_with_it_off_every_third_tick() {
+        let on = simulate(10, |_| false);
+        let off = simulate(10, |_| true);
+        assert_eq!(on.len(), 30, "{on:?}");
+        assert_eq!(off.len(), 10, "{off:?}");
+        let gaps: Vec<u64> = off.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.iter().all(|g| (59..=62).contains(g)), "{gaps:?}");
+        let on_gaps: Vec<u64> = on.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(on_gaps.iter().all(|g| (19..=21).contains(g)), "{on_gaps:?}");
+    }
+
+    #[test]
+    fn the_idle_gap_stays_inside_the_peers_silence_limit_with_room_for_a_late_tick() {
+        let off = simulate(30, |_| true);
+        let worst = off.windows(2).map(|w| w[1] - w[0]).max().unwrap();
+        // The peer checks on its own 20 s ticks, so the worst case it can see is one gap plus one tick.
+        assert!(
+            Duration::from_secs(worst) + EVERY < PEER_SILENCE_LIMIT + EVERY,
+            "worst idle gap {worst} s"
+        );
+        assert!(Duration::from_secs(worst) < PEER_SILENCE_LIMIT - Duration::from_secs(5));
+    }
+
+    #[test]
+    fn switching_the_screen_back_on_pings_at_the_next_tick_not_a_minute_later() {
+        // Off until 4:50, on afterwards; the last idle ping was at 4:00.
+        let pings = simulate(8, |t| t < 290);
+        let after: Vec<u64> = pings.iter().copied().filter(|t| *t >= 290).collect();
+        assert_eq!(
+            after.first().copied().map(|t| t / 10),
+            Some(30),
+            "{pings:?}"
+        ); // 300 s, the next tick
+        assert!(after.windows(2).all(|w| w[1] - w[0] <= 21), "{after:?}");
+        // And going quiet again after being active slows down to every third tick.
+        let pings = simulate(8, |t| !(120..240).contains(&t));
+        let quiet: Vec<u64> = pings.iter().copied().filter(|t| *t > 260).collect();
+        assert!(quiet.windows(2).all(|w| w[1] - w[0] >= 59), "{quiet:?}");
+    }
+
+    #[test]
+    fn the_idle_boundary_is_one_slack_before_the_interval() {
+        let t0 = Instant::now();
+        let h = Heartbeat::new(t0);
+        assert!(!h.ping_due_idle(at(t0, 58), true));
+        assert!(!h.ping_due_idle(t0 + Duration::from_millis(58_999), true));
+        assert!(h.ping_due_idle(at(t0, 59), true));
+        assert!(!h.ping_due_idle(at(t0, 18), false));
+        assert!(h.ping_due_idle(at(t0, 19), false));
+        // A clock that reads earlier than the last send never makes a ping due.
+        let mut h = Heartbeat::new(at(t0, 100));
+        h.sent(at(t0, 100));
+        assert!(!h.ping_due_idle(t0, true) && !h.ping_due(t0));
+    }
+
+    #[test]
+    fn other_traffic_defers_the_idle_ping_too() {
+        let t0 = Instant::now();
+        let mut h = Heartbeat::new(t0);
+        h.sent(at(t0, 50));
+        assert!(!h.ping_due_idle(at(t0, 100), true));
+        assert!(!h.ping_due_idle(at(t0, 108), true));
+        assert!(h.ping_due_idle(at(t0, 109), true));
+        // Hearing the peer is not sending: it does not defer our ping.
+        let mut h = Heartbeat::new(t0);
+        h.heard(at(t0, 55), false);
+        assert!(h.ping_due_idle(at(t0, 59), true));
+    }
+
+    #[test]
+    fn a_peer_that_pinged_before_going_idle_is_still_judged_by_the_silence_limit() {
+        // Screen on for two minutes (pings 20 s apart), then off (pings 60 s apart).
+        let t0 = Instant::now();
+        let mut peer = Heartbeat::new(t0);
+        for t in (20..=120).step_by(20) {
+            peer.heard(at(t0, t), true);
+        }
+        let mut last = 120;
+        for _ in 0..20 {
+            last += 60;
+            peer.heard(at(t0, last), true);
+            // Checked on the peer's own ticks, 20 s apart, all the way to the next ping.
+            for probe in (last..last + 60).step_by(20) {
+                assert!(
+                    !peer.peer_silent(at(t0, probe)),
+                    "cut off at {probe} after a ping at {last}"
+                );
+            }
+        }
+        // If it then really goes quiet, it is cut off once the limit has passed.
+        assert!(!peer.peer_silent(at(t0, last + 70)));
+        assert!(peer.peer_silent(at(t0, last + 71)));
+    }
+
+    #[test]
+    fn a_peer_seen_only_pinging_a_minute_apart_is_never_cut_off() {
+        // Pings 60 s apart are outside what counts as a heartbeat, so the peer is never marked and never
+        // timed out here: dead-peer detection is left to the socket (fail safe, never a false cut-off).
+        let t0 = Instant::now();
+        let mut h = Heartbeat::new(t0);
+        for n in 1..=10 {
+            h.heard(at(t0, 60 * n), true);
+        }
+        assert!(!h.peer_silent(at(t0, 100_000)));
+    }
+
+    #[test]
+    fn the_heartbeat_gap_window_includes_both_ends_and_excludes_just_outside() {
+        let armed = |gap_ms: u64| {
+            let t0 = Instant::now();
+            let mut h = Heartbeat::new(t0);
+            h.heard(t0, true);
+            h.heard(t0 + ms(gap_ms), true);
+            h.peer_silent(t0 + ms(gap_ms) + PEER_SILENCE_LIMIT + ms(1))
+        };
+        assert!(armed(10_000) && armed(20_000) && armed(50_000));
+        assert!(!armed(9_999) && !armed(50_001) && !armed(0) && !armed(60_000));
+    }
+
+    #[test]
+    fn a_burst_of_pings_never_arms_the_silence_rule_but_a_later_real_pair_does() {
+        let t0 = Instant::now();
+        let mut h = Heartbeat::new(t0);
+        for n in 0..200 {
+            h.heard(t0 + ms(n * 500), true); // a ping every half second
+        }
+        assert!(!h.peer_silent(at(t0, 10_000)));
+        // Other packets in between do not break the measuring of the gap between pings.
+        h.heard(at(t0, 200), true);
+        h.heard(at(t0, 210), false);
+        h.heard(at(t0, 225), true); // 25 s after the previous ping
+        assert!(h.peer_silent(at(t0, 225 + 71)));
+    }
+
+    #[test]
+    fn capability_matching_is_by_the_geekbridge_prefix_only() {
+        let caps = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(!is_geekbridge_peer(&[], &[]));
+        assert!(!is_geekbridge_peer(
+            &caps(&["geekbridge"]),
+            &caps(&["Geekbridge.x", "xgeekbridge.x"])
+        ));
+        assert!(!is_geekbridge_peer(
+            &caps(&["kdeconnect.geekbridge.x"]),
+            &[]
+        ));
+        assert!(is_geekbridge_peer(&[], &caps(&["geekbridge.calls.state"])));
+        assert!(is_geekbridge_peer(&caps(&["geekbridge."]), &[]));
+        assert_eq!(MARKER, "geekbridge.heartbeat");
+        assert!(MARKER.starts_with("geekbridge."));
+    }
+
+    #[test]
+    fn the_constants_keep_their_documented_relations() {
+        assert!(EVERY < IDLE_EVERY && IDLE_EVERY < PEER_SILENCE_LIMIT);
+        assert!(PEER_SILENCE_LIMIT >= EVERY * 3, "three missed pings");
+        assert!(HEARTBEAT_GAP_MIN < EVERY && EVERY < HEARTBEAT_GAP_MAX);
+        assert!(TICK_SLACK < EVERY);
+    }
 }

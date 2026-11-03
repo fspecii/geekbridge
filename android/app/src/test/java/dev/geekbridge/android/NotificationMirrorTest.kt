@@ -210,4 +210,164 @@ class NotificationMirrorTest {
         assertTrue(PhoneDataProtocol.startObject(ActiveFeatures(notifications = true))!!.getBoolean("notifications"))
         assertNull(PhoneDataProtocol.startObject(ActiveFeatures()))
     }
+
+    // ---- test-gaps-4: risky branches
+
+    @Test fun aLongOrPaddedButtonTitleStillPressesTheRealButton() {
+        // The computer is given the clipped title (<= 48 chars, trimmed, controls removed) and sends it back.
+        val long = "Reply later " + "x".repeat(60)
+        val padded = "  Archive\u0007  "
+        val showing = n { copy(actions = listOf(long, padded)) }
+        val port = FakePort(listOf(showing))
+        val r = Rig(port)
+        r.mirror.onPosted(showing)
+        val id = r.body(0).getString("id")
+        val sent = r.body(0).getJSONArray("actions")
+        assertEquals(2, sent.length())
+        r.mirror.onAction(id, sent.getString(0))
+        r.mirror.onAction(id, sent.getString(1))
+        // The phone side matches the real button by the same clipping, so the clipped title is what is passed on.
+        assertEquals(listOf("k1" to sent.getString(0), "k1" to "Archive"), port.pressed)
+        assertEquals(MirrorRules.MAX_ACTION, sent.getString(0).length)
+        // A title that was never offered still presses nothing.
+        r.mirror.onAction(id, "x".repeat(48))
+        assertEquals(2, port.pressed.size)
+    }
+
+    @Test fun clippingNeverLeavesALoneSurrogateAtTheCut() {
+        val emoji = "\uD83D\uDE00"
+        val s = "a".repeat(MirrorRules.MAX_APP - 1) + emoji
+        val clipped = MirrorRules.clip(s, MirrorRules.MAX_APP)
+        assertTrue(clipped.length <= MirrorRules.MAX_APP)
+        assertFalse(Character.isHighSurrogate(clipped.last()))
+        val body = MirrorRules.postBody(n { copy(appName = s, title = s, text = s) }, "gb1", false)
+        for (f in listOf("appName", "title", "text")) {
+            val v = body.getString(f)
+            assertFalse(f, v.isNotEmpty() && Character.isHighSurrogate(v.last()))
+        }
+        // A whole pair that fits is kept.
+        assertEquals(emoji, MirrorRules.clip(emoji, 2))
+    }
+
+    @Test fun clipCleansControlsTrimsAndHonoursTheBoundary() {
+        assertEquals("a b", MirrorRules.clip("a\nb", 10))
+        assertEquals("", MirrorRules.clip(" \t\u0000 ", 10))
+        assertEquals("abc", MirrorRules.clip("abc", 3))
+        assertEquals("ab", MirrorRules.clip("ab c", 3)) // cut at 3 leaves "ab " and is trimmed
+        assertEquals("", MirrorRules.clip("", 5))
+    }
+
+    @Test fun theTimeIsNeverNegativeAndTheTickerFallsBackToTheTitle() {
+        val b = MirrorRules.postBody(n(text = "") { copy(whenMs = -5) }, "gb1", true)
+        assertEquals("0", b.getString("time"))
+        assertEquals("Ada", b.getString("ticker"))
+        assertEquals(true, b.getBoolean("silent"))
+        assertEquals("Ada: hi", MirrorRules.postBody(n(), "gb1", false).getString("ticker"))
+        assertEquals(false, MirrorRules.postBody(n(), "gb1", false).getBoolean("onlyOnce"))
+        assertEquals("gb2", MirrorRules.cancelBody("gb2").getString("id"))
+    }
+
+    @Test fun requestParsingBoundariesAndPrecedence() {
+        assertEquals(MirrorRules.Ask.Dismiss("x".repeat(128)), MirrorRules.parseRequest(JSONObject().put("cancel", "x".repeat(128))))
+        assertNull(MirrorRules.parseRequest(JSONObject().put("cancel", "x".repeat(129))))
+        assertNull(MirrorRules.parseRequest(JSONObject().put("cancel", "")))
+        // A body with both asks the narrower thing; it never turns into "send everything".
+        assertEquals(MirrorRules.Ask.Dismiss("gb1"), MirrorRules.parseRequest(JSONObject().put("cancel", "gb1").put("request", true)))
+        assertNull(MirrorRules.parseRequest(JSONObject().put("cancel", "bad\nid").put("request", true)))
+        assertNull(MirrorRules.parseAction(JSONObject().put("key", 5).put("action", "A")))
+        assertNull(MirrorRules.parseAction(JSONObject().put("key", "gb1").put("action", 7)))
+        assertNull(MirrorRules.parseAction(JSONObject().put("key", "").put("action", "A")))
+        assertNull(MirrorRules.parseAction(JSONObject().put("key", "a\u0000b").put("action", "A")))
+        assertNull(MirrorRules.parseAction(JSONObject().put("key", "gb1").put("action", "x".repeat(201))))
+        assertEquals("gb1" to "x".repeat(200), MirrorRules.parseAction(JSONObject().put("key", "gb1").put("action", "x".repeat(200))))
+    }
+
+    @Test fun aBulkSendStopsAtTheFirstRefusalAndNeverRunsWhileOff() {
+        val port = FakePort((1..5).map { n(key = "k$it") { copy(whenMs = it * 1000L) } })
+        val r = Rig(port)
+        r.outcome = CoreOutcome.Rejected("rate_limited", "x")
+        r.mirror.sendAll(3)
+        assertEquals("one refusal ends the burst", 1, r.sent.size)
+        r.sent.clear()
+        r.on = false
+        r.mirror.sendAll(3)
+        r.mirror.onDismiss("gb1")
+        r.mirror.onAction("gb1", "Archive")
+        r.mirror.onRemoved("k1")
+        assertTrue(r.sent.isEmpty() && port.cancelled.isEmpty() && port.pressed.isEmpty())
+        // Without a connection id (a broadcast request) nothing is addressed.
+        r.on = true
+        r.outcome = CoreOutcome.Ok(JSONObject())
+        r.mirror.sendAll(null)
+        assertFalse(r.sent.first().has("connection_id"))
+    }
+
+    @Test fun resetForgetsIdsSoAnOldIdCannotActAndAnUnchangedPostGoesOutAgain() {
+        val showing = n()
+        val port = FakePort(listOf(showing))
+        val r = Rig(port)
+        r.mirror.onPosted(showing)
+        val id = r.body(0).getString("id")
+        r.mirror.reset()
+        r.mirror.onDismiss(id)
+        r.mirror.onAction(id, "Archive")
+        assertTrue(port.cancelled.isEmpty() && port.pressed.isEmpty())
+        r.mirror.onPosted(showing)
+        assertEquals(2, r.sent.size)
+        assertNotEquals("ids are never reused after a reset", id, r.body(1).getString("id"))
+    }
+
+    @Test fun removalWithoutTheFeatureIsSilentButStillForgetsTheId() {
+        val r = Rig()
+        r.mirror.onPosted(n())
+        r.on = false
+        r.mirror.onRemoved("k1")
+        assertEquals(1, r.sent.size)
+        r.on = true
+        r.mirror.onRemoved("k1") // already forgotten: no second cancel
+        assertEquals(1, r.sent.size)
+    }
+
+    @Test fun theRepostMemoryIsBoundedButNeverBlocksNewNotifications() {
+        val r = Rig()
+        repeat(MirrorRules.MAX_IDS + 20) { r.mirror.onPosted(n(key = "k$it")) }
+        assertEquals(MirrorRules.MAX_IDS + 20, r.sent.size)
+        // The oldest was forgotten, so the same thing posted again is sent again; a recent one is not.
+        r.mirror.onPosted(n(key = "k${MirrorRules.MAX_IDS + 19}"))
+        assertEquals(MirrorRules.MAX_IDS + 20, r.sent.size)
+        r.mirror.onPosted(n(key = "k0"))
+        assertEquals(MirrorRules.MAX_IDS + 21, r.sent.size)
+    }
+
+    @Test fun anIdIsNeverGivenToTwoKeysAndEvictionKeepsBothMapsInStep() {
+        val ids = MirrorIds(max = 2)
+        val a = ids.idFor("a")
+        val b = ids.idFor("b")
+        assertNotEquals(a, b)
+        assertEquals(a, ids.idFor("a"))
+        val c = ids.idFor("c") // evicts a
+        assertNull(ids.keyOf(a))
+        assertNull(ids.idOfKey("a"))
+        assertEquals("b", ids.keyOf(b))
+        assertEquals("c", ids.keyOf(c))
+        val a2 = ids.idFor("a") // evicts b; a gets a fresh id
+        assertNotEquals(a, a2)
+        assertNull(ids.keyOf(b))
+        ids.clear()
+        assertNull(ids.keyOf(c))
+        ids.forget("never") // no-op
+    }
+
+    @Test fun skipReasonsAreReportedInTheirDocumentedOrder() {
+        val own = "me"
+        assertEquals("own", MirrorRules.skipReason(n(pkg = own) { copy(ongoing = true) }, own))
+        assertEquals("ongoing", MirrorRules.skipReason(n { copy(ongoing = true, secret = true) }, own))
+        assertEquals("foreground_service", MirrorRules.skipReason(n { copy(foregroundService = true, groupSummary = true) }, own))
+        assertEquals("group_summary", MirrorRules.skipReason(n { copy(groupSummary = true, secret = true) }, own))
+        assertEquals("secret", MirrorRules.skipReason(n { copy(secret = true, category = "call") }, own))
+        for (c in listOf("sys", "navigation", "status", "stopwatch")) assertEquals(c, "category", MirrorRules.skipReason(n { copy(category = c) }, own))
+        assertEquals("empty", MirrorRules.skipReason(n(title = "", text = "  "), own))
+        assertNull(MirrorRules.skipReason(n(title = "", text = "only text"), own))
+        assertNull(MirrorRules.skipReason(n { copy(category = null) }, own))
+    }
 }

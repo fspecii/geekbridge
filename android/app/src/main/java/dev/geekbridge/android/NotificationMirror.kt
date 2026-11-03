@@ -64,7 +64,10 @@ object MirrorRules {
 
     fun clip(s: String, max: Int): String {
         val cleaned = buildString { for (c in s) append(if (Character.isISOControl(c)) ' ' else c) }.trim()
-        return if (cleaned.length <= max) cleaned else cleaned.substring(0, max).trimEnd()
+        if (cleaned.length <= max) return cleaned
+        // Never cut between the two halves of an emoji: a lone surrogate is not valid text on the wire.
+        val end = if (max > 0 && Character.isHighSurrogate(cleaned[max - 1])) max - 1 else max
+        return cleaned.substring(0, end).trimEnd()
     }
 
     /** Body of a stock `kdeconnect.notification` post. No icon is sent: the computer never asks for one. */
@@ -173,7 +176,8 @@ class NotificationMirror(
     private val ownPackage: String,
     private val ids: MirrorIds = MirrorIds(),
 ) {
-    private val lastSent = HashMap<String, String>()
+    /** Insertion ordered: the oldest entry is the one forgotten when the memory is full. */
+    private val lastSent = LinkedHashMap<String, String>()
 
     @Synchronized
     fun reset() {
@@ -230,7 +234,9 @@ class NotificationMirror(
         if (!enabled()) return
         val key = ids.keyOf(id) ?: return
         val n = port.active().firstOrNull { it.key == key } ?: return
-        if (!eligible(n) || title !in n.actions) return
+        // The computer only ever saw the clipped titles (and the first three), so that is what it can name.
+        val offered = n.actions.map { MirrorRules.clip(it, MirrorRules.MAX_ACTION) }.filter { it.isNotEmpty() }.take(MirrorRules.MAX_ACTIONS)
+        if (!eligible(n) || title !in offered) return
         port.press(key, title)
     }
 

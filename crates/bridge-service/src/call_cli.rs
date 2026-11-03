@@ -228,4 +228,181 @@ mod tests {
         assert_eq!(mask("12"), "**");
         assert_eq!(mask(""), "");
     }
+
+    // ---- test-gaps-4
+
+    fn row(phase: &str, extra: serde_json::Value) -> CallRow {
+        let mut v = serde_json::json!({
+            "key": "k", "phone": "Pixel", "direction": "incoming", "phase": phase,
+            "number": "+15550142", "name": "Ada", "answer": null, "reject": null, "hangup": null,
+            "missing_control": null
+        });
+        for (k, val) in extra.as_object().unwrap() {
+            v[k] = val.clone();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn target(path: &str) -> serde_json::Value {
+        serde_json::json!({"source": "s", "call": "c1", "path": path})
+    }
+
+    fn status(rows: Vec<CallRow>, sources: &[&str], notice: Option<&str>) -> CallsStatus {
+        let mut v = serde_json::json!({
+            "view": {
+                "rows": [], "audio": {"route": {"route": "no_call"}, "hint": null, "connect": null},
+                "mute": null, "sources_up": 0, "dial": null
+            },
+            "notice": notice, "sources": sources, "audio_note": null
+        });
+        v["view"]["rows"] = serde_json::to_value(&rows).unwrap();
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn mask_counts_characters_not_bytes_and_never_shows_more_than_two() {
+        assert_eq!(mask("1"), "*");
+        assert_eq!(mask("123"), "*23");
+        assert_eq!(mask("\u{661}\u{662}\u{663}\u{664}"), "**\u{663}\u{664}");
+        assert_eq!(
+            mask("+4915112345678").chars().filter(|c| *c == '*').count(),
+            12
+        );
+        assert!(!mask("+15550142").contains("5550"));
+    }
+
+    #[test]
+    fn a_row_names_the_phase_the_masked_number_and_which_path_each_control_takes() {
+        let r = row(
+            "incoming",
+            serde_json::json!({"answer": target("hfp"), "reject": target("link")}),
+        );
+        let line = describe_row(&r, false);
+        assert_eq!(
+            line,
+            "ringing | number: *******42 | name: known | answer: bluetooth reject: phone-link hangup: -"
+        );
+        assert!(
+            !line.contains("Ada"),
+            "the name is never printed, only that it is known"
+        );
+        assert!(describe_row(&r, true).contains("number: +15550142"));
+        let waiting = row("waiting", serde_json::json!({"number": null, "name": null}));
+        assert_eq!(
+            describe_row(&waiting, true),
+            "ringing | number: - | name: - | answer: - reject: - hangup: -"
+        );
+        for (phase, word) in [
+            ("dialing", "dialing"),
+            ("alerting", "dialing"),
+            ("active", "active"),
+            ("held", "held"),
+            ("waiting", "ringing"),
+        ] {
+            assert!(
+                describe_row(&row(phase, serde_json::json!({})), false)
+                    .starts_with(&format!("{word} |")),
+                "{phase}"
+            );
+        }
+        let missing = row(
+            "active",
+            serde_json::json!({"hangup": target("link"), "missing_control": "no answer button"}),
+        );
+        assert!(describe_row(&missing, false).ends_with("hangup: phone-link | no answer button"));
+    }
+
+    #[test]
+    fn the_overview_says_no_calls_the_audio_route_the_notice_and_every_source() {
+        let s = status(
+            vec![],
+            &[
+                "Phone link (Pixel): ready.",
+                "Bluetooth hands-free calling is not available on this computer.",
+            ],
+            Some("The phone could not do that."),
+        );
+        let text = describe(&s, false);
+        assert!(text.starts_with("no calls\n"));
+        assert!(text.contains("audio: NoCall\n"));
+        assert!(text.contains("notice: The phone could not do that.\n"));
+        assert_eq!(text.matches("source: ").count(), 2);
+        // With calls there is no "no calls" line, and no notice line without a notice.
+        let s = status(vec![row("active", serde_json::json!({}))], &[], None);
+        let text = describe(&s, false);
+        assert!(
+            !text.contains("no calls") && !text.contains("notice:") && !text.contains("source:")
+        );
+        assert!(text.starts_with("active |"));
+        assert!(!text.contains("5550142"), "masked by default");
+        assert!(describe(&s, true).contains("+15550142"));
+        // The audio hint shows in brackets.
+        let mut s = s;
+        s.view.audio.hint = Some("Answered on the phone".into());
+        assert!(describe(&s, false).contains("audio: NoCall (Answered on the phone)\n"));
+    }
+
+    #[test]
+    fn dial_unavailable_lists_what_the_service_said_and_what_dialing_needs() {
+        let idle = status(
+            vec![],
+            &[
+                "Phone link (Pixel): ready to answer; to dial from here, allow GeekBridge to make phone calls in the phone app's setup.",
+            ],
+            None,
+        );
+        let t = dial_unavailable(&idle);
+        assert!(t.starts_with("dialing is not available right now; nothing was dialed."));
+        assert!(!t.contains("already going on"));
+        assert!(t.contains("\n  Phone link (Pixel)"));
+        assert!(
+            t.contains("geekbridge-ctl consent DEVICE telephony on")
+                && t.contains("make phone calls")
+        );
+        let busy = status(vec![row("active", serde_json::json!({}))], &[], None);
+        let t = dial_unavailable(&busy);
+        assert!(t.contains("A call is already going on."));
+        assert!(!t.contains("5550142"));
+        // No sources: still a usable message.
+        assert!(dial_unavailable(&status(vec![], &[], None)).contains("Dialing needs:"));
+    }
+
+    #[test]
+    fn unknown_commands_fail_before_any_network_use_and_print_the_usage() {
+        let token = Token::from_bytes([7; 32]);
+        for args in [
+            vec![],
+            vec!["calls", "extra"],
+            vec!["hello"],
+            vec!["calls", "--reveal", "x"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(String::from).collect();
+            let e = run(&args, 1, &token).unwrap_err();
+            assert!(e.starts_with("unknown calls command"), "{args:?}: {e}");
+            assert!(e.contains("call dial NUMBER [--yes]"));
+        }
+        // A reachable-service failure is reported, not a panic (port 1 refuses).
+        let args = vec!["calls".to_owned()];
+        assert!(run(&args, 1, &token).is_err());
+        let args = vec!["call".into(), "dial".into(), "+1555".into(), "--yes".into()];
+        assert!(run(&args, 1, &token).is_err());
+        assert!(
+            USAGE.contains("call dial")
+                && USAGE.contains("--reveal")
+                && USAGE.contains("call mute")
+        );
+    }
+
+    #[test]
+    fn path_labels_are_the_three_documented_words() {
+        use bridge_core::calls_view::ActionTarget;
+        let t = |p| ActionTarget {
+            source: "s".into(),
+            call: bridge_core::calls::CallId::new("c"),
+            path: p,
+        };
+        assert_eq!(path(None), "-");
+        assert_eq!(path(Some(&t(ControlPath::Hfp))), "bluetooth");
+        assert_eq!(path(Some(&t(ControlPath::Link))), "phone-link");
+    }
 }

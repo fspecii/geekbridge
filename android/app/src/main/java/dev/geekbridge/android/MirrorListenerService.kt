@@ -130,7 +130,7 @@ object MirrorAndroid {
         override fun press(key: String, title: String): Boolean {
             val s = service() ?: return false
             val sbn = try { s.activeNotifications.orEmpty().firstOrNull { it.key == key } } catch (_: RuntimeException) { null } ?: return false
-            val action = sbn.notification.actions.orEmpty().firstOrNull { replyLess(it) && it.title.toString() == title } ?: return false
+            val action = sbn.notification.actions.orEmpty().firstOrNull { replyLess(it) && MirrorRules.clip(it.title.toString(), MirrorRules.MAX_ACTION) == title } ?: return false
             return try { action.actionIntent.send(); true } catch (_: PendingIntent.CanceledException) { false }
         }
     }

@@ -1110,4 +1110,524 @@ mod tests {
         let b = NotifySendCalls::args("x", false, false);
         assert!(!b.iter().any(|s| s.starts_with("--action")) && !b.contains(&"--wait".to_owned()));
     }
+
+    // ---- test-gaps-4: dialing from this computer, the unnamed-caller grace and the pending-request cap
+
+    /// A consenting phone that is idle and says it may place calls.
+    fn dialer(hub: &Arc<CallHub>, id: &str) -> mpsc::Receiver<LinkRequest> {
+        let rx = hub.link_up(id, "Pixel", true);
+        assert!(hub.on_packet(
+            id,
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true,"canDial":true}))
+        ));
+        rx
+    }
+
+    fn number(s: &str) -> Sensitive {
+        Sensitive::new(s)
+    }
+
+    #[test]
+    fn dial_over_the_link_sends_exactly_the_number_once_and_a_refusal_becomes_a_notice() {
+        let hub = CallHub::new();
+        let mut rx = dialer(&hub, "dev");
+        let dial = hub.view().dial.expect("dial offered");
+        assert_eq!(
+            (dial.source.as_str(), dial.path),
+            ("link:dev", ControlPath::Link)
+        );
+        assert_eq!(dial.phone, "Pixel");
+        hub.dial(&dial.source, &number("+15550142")).unwrap();
+        let req = rx.try_recv().unwrap();
+        assert_eq!(req.action, LinkAction::Dial);
+        assert_eq!(req.number.as_ref().unwrap().expose(), "+15550142");
+        assert!(rx.try_recv().is_err(), "one request per dial");
+        assert!(hub.status().notice.is_none());
+        // The phone refuses (CALL_PHONE revoked meanwhile): the person sees why, the number is not logged.
+        assert!(hub.on_packet(
+            "dev",
+            link::RESULT,
+            &link::result_body(&req.request_id, Err(LinkFailure::PermissionMissing))
+        ));
+        let notice = hub.status().notice.unwrap();
+        assert!(notice.contains("not allowed") && !notice.contains("5550142"));
+        // A confirmed dial clears an older notice when the next one succeeds.
+        hub.dial(&dial.source, &number("112")).unwrap();
+        assert!(hub.status().notice.is_none());
+        assert_eq!(rx.try_recv().unwrap().number.unwrap().expose(), "112");
+    }
+
+    #[test]
+    fn dial_rejects_anything_that_is_not_a_plain_number_before_looking_at_the_source() {
+        let hub = CallHub::new();
+        let mut rx = dialer(&hub, "dev");
+        let too_long = "1".repeat(link::MAX_DIAL_DIGITS + 1);
+        for bad in [
+            "",
+            "+",
+            "12 34",
+            "*21#",
+            "#31#",
+            "1,2",
+            "12;3",
+            "++1",
+            "1+2",
+            "abc",
+            "\u{0661}\u{0662}",
+            "12\n",
+            &too_long,
+        ] {
+            let e = hub.dial("link:dev", &number(bad)).unwrap_err();
+            assert_eq!(e.code, ErrorCode::BadRequest, "{bad:?}");
+            // Same answer for a source that does not exist: the number is judged first.
+            assert_eq!(
+                hub.dial("nope", &number(bad)).unwrap_err().code,
+                ErrorCode::BadRequest
+            );
+        }
+        assert!(rx.try_recv().is_err(), "nothing was sent for any of them");
+        assert!(
+            hub.status().notice.is_none(),
+            "a malformed number is not a phone refusal"
+        );
+        // The longest allowed number goes through.
+        hub.dial(
+            "link:dev",
+            &number(&format!("+{}", "9".repeat(link::MAX_DIAL_DIGITS))),
+        )
+        .unwrap();
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn dial_is_refused_unless_the_current_view_offers_that_exact_source() {
+        let hub = CallHub::new();
+        // No phone at all.
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        // A phone without the permission to place calls.
+        let mut rx = hub.link_up("dev", "Pixel", true);
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        assert!(hub.view().dial.is_none());
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        // Allowed on the phone, but the computer withdrew Telephony consent: also nothing.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canDial":true})),
+        );
+        assert!(hub.view().dial.is_some());
+        hub.set_enabled("dev", false);
+        assert!(hub.view().dial.is_none());
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        hub.set_enabled("dev", true);
+        // consent back on, but the phone must report again before anything is offered
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canDial":true})),
+        );
+        // A forged or foreign source never dials, and a hands-free source is not the link.
+        for source in ["link:other", "link:", "hfp:dev", "dev", "", "LINK:dev"] {
+            assert_eq!(
+                hub.dial(source, &number("112")).unwrap_err().code,
+                ErrorCode::NotFound,
+                "{source}"
+            );
+        }
+        assert!(rx.try_recv().is_err());
+        hub.dial("link:dev", &number("112")).unwrap();
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn dial_is_not_offered_during_a_call_and_returns_when_it_ends() {
+        let hub = CallHub::new();
+        let mut rx = dialer(&hub, "dev");
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","number":"+155","canAnswer":true,"canEnd":true,"canDial":true})),
+        );
+        assert!(hub.view().dial.is_none());
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"offhook","canAnswer":true,"canEnd":true,"canDial":true})),
+        );
+        assert!(
+            hub.dial("link:dev", &number("112")).is_err(),
+            "a live call blocks a second one"
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true,"canDial":true})),
+        );
+        hub.dial("link:dev", &number("112")).unwrap();
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Dial);
+    }
+
+    #[test]
+    fn dial_with_two_phones_goes_to_the_offered_one_only() {
+        let hub = CallHub::new();
+        let mut a = dialer(&hub, "a");
+        let mut b = dialer(&hub, "b");
+        let offered = hub.view().dial.unwrap().source;
+        hub.dial(&offered, &number("112")).unwrap();
+        let (got_a, got_b) = (a.try_recv().is_ok(), b.try_recv().is_ok());
+        assert!(got_a ^ got_b, "exactly one phone dials, not both");
+        // The other phone's source is not what the view offers, so it is refused.
+        let other = if offered == "link:a" {
+            "link:b"
+        } else {
+            "link:a"
+        };
+        assert_eq!(
+            hub.dial(other, &number("112")).unwrap_err().code,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn a_phone_that_stops_answering_cannot_be_flooded_with_dials() {
+        let hub = CallHub::new();
+        let mut rx = dialer(&hub, "dev");
+        let mut ids = Vec::new();
+        for _ in 0..MAX_PENDING {
+            hub.dial("link:dev", &number("112")).unwrap();
+            ids.push(rx.try_recv().unwrap().request_id);
+        }
+        let e = hub.dial("link:dev", &number("112")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::Busy);
+        assert!(rx.try_recv().is_err(), "the refused dial was not queued");
+        assert_eq!(
+            hub.status().notice.as_deref(),
+            Some("the phone has not answered yet")
+        );
+        // Request ids are unique, so an answer can only match its own request.
+        let unique: BTreeSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len());
+        // One answer frees one slot, and an answer is accepted once only.
+        assert!(hub.on_packet("dev", link::RESULT, &link::result_body(&ids[0], Ok(()))));
+        assert!(!hub.on_packet("dev", link::RESULT, &link::result_body(&ids[0], Ok(()))));
+        hub.dial("link:dev", &number("112")).unwrap();
+        assert!(hub.status().notice.is_none());
+        assert_eq!(
+            hub.dial("link:dev", &number("112")).unwrap_err().code,
+            ErrorCode::Busy
+        );
+        // Turning Telephony off forgets what was pending, so a re-enabled phone starts clean.
+        hub.set_enabled("dev", false);
+        hub.set_enabled("dev", true);
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canDial":true})),
+        );
+        hub.dial("link:dev", &number("112")).unwrap();
+    }
+
+    #[test]
+    fn dial_on_a_dead_link_reports_not_connected_and_queues_nothing() {
+        let hub = CallHub::new();
+        let rx = dialer(&hub, "dev");
+        drop(rx); // the link task is gone
+        let e = hub.dial("link:dev", &number("112")).unwrap_err();
+        assert_eq!(e.code, ErrorCode::NotConnected);
+        assert!(hub.status().notice.is_some());
+        // The failed send must not use up one of the pending slots.
+        for _ in 0..MAX_PENDING + 2 {
+            assert_eq!(
+                hub.dial("link:dev", &number("112")).unwrap_err().code,
+                ErrorCode::NotConnected
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_link_queue_is_reported_instead_of_blocking() {
+        let hub = CallHub::new();
+        let _rx = dialer(&hub, "dev"); // never drained: capacity 8, pending cap 4
+        // Answer each one so the pending cap is never what stops us; the channel is.
+        let mut refused = None;
+        for _ in 0..20 {
+            match hub.dial("link:dev", &number("112")) {
+                Ok(()) => {
+                    let id = format!("c{}", hub.inner().next_request);
+                    hub.on_packet("dev", link::RESULT, &link::result_body(&id, Ok(())));
+                }
+                Err(e) => {
+                    refused = Some(e);
+                    break;
+                }
+            }
+        }
+        let e = refused.expect("the bounded queue pushed back");
+        assert_eq!(e.code, ErrorCode::NotConnected);
+        assert!(e.message.contains("busy or closed"));
+    }
+
+    #[test]
+    fn dial_through_hands_free_runs_on_the_host_and_a_host_failure_is_shown() {
+        use bridge_core::calls::{CallFeature, LinkState, Support};
+        struct Flaky {
+            snap: SourceSnapshot,
+            log: Arc<Mutex<Vec<CallCommand>>>,
+            fail: Arc<Mutex<Option<String>>>,
+        }
+        impl HostCalls for Flaky {
+            fn label(&self) -> String {
+                "Flaky".into()
+            }
+            fn poll(&mut self, wait: Duration) -> Result<Vec<SourceSnapshot>, String> {
+                std::thread::sleep(wait.min(Duration::from_millis(10)));
+                Ok(vec![self.snap.clone()])
+            }
+            fn execute(&mut self, _s: &str, c: &CallCommand) -> Result<(), String> {
+                self.log.lock().unwrap().push(c.clone());
+                match self.fail.lock().unwrap().clone() {
+                    Some(why) => Err(why),
+                    None => Ok(()),
+                }
+            }
+        }
+        let mut snap = host_snapshot(CallPhase::Active, false);
+        snap.state = CallState::default();
+        snap.state.apply(CallEvent::Link {
+            state: LinkState::Up,
+        });
+        snap.caps.set(CallFeature::Dial, Support::Declared);
+        let (log, fail) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Mutex::new(None)));
+        let hub = CallHub::new();
+        hub.start_host(Box::new(Flaky {
+            snap,
+            log: log.clone(),
+            fail: fail.clone(),
+        }));
+        let v = wait_for(&hub, |v| v.dial.is_some());
+        let dial = v.dial.unwrap();
+        assert_eq!(
+            (dial.source.as_str(), dial.path),
+            ("hfp:ag1", ControlPath::Hfp)
+        );
+        hub.dial(&dial.source, &number("+15550142")).unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![CallCommand::Dial {
+                number: number("+15550142")
+            }]
+        );
+        // The stack refuses: the failure reaches the person and nothing else was attempted.
+        *fail.lock().unwrap() = Some("adapter busy".into());
+        let e = hub.dial(&dial.source, &number("112")).unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (ErrorCode::Failed, "adapter busy")
+        );
+        assert_eq!(hub.status().notice.as_deref(), Some("adapter busy"));
+        // An invalid number never reaches the host.
+        let before = log.lock().unwrap().len();
+        assert!(hub.dial(&dial.source, &number("*21#")).is_err());
+        assert_eq!(log.lock().unwrap().len(), before);
+    }
+
+    #[test]
+    fn host_commands_without_a_host_fail_plainly() {
+        let hub = CallHub::new();
+        let e = hub
+            .send_host("hfp:x", &CallCommand::ConnectAudio)
+            .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unsupported);
+        assert_eq!(
+            hub.mute("hfp:x", true).unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+        assert_eq!(
+            hub.connect_audio("hfp:x").unwrap_err().code,
+            ErrorCode::Unsupported
+        );
+        // A source that is not a link source cannot be sent a link request.
+        assert_eq!(
+            hub.send_link("hfp:x", LinkAction::Answer, None)
+                .unwrap_err()
+                .code,
+            ErrorCode::BadRequest
+        );
+        assert_eq!(
+            hub.send_link("link:gone", LinkAction::Answer, None)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotConnected
+        );
+    }
+
+    struct Rings(Arc<Mutex<Vec<String>>>);
+    impl CallNotifier for Rings {
+        fn ringing(&self, caller: &str, _: bool, _: bool, _: Box<dyn FnOnce(RingChoice) + Send>) {
+            self.0.lock().unwrap().push(caller.to_owned());
+        }
+    }
+
+    #[test]
+    fn a_ring_without_a_caller_waits_for_the_number_and_is_announced_once() {
+        let rings = Arc::new(Mutex::new(Vec::new()));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Rings(rings.clone())));
+        let _rx = hub.link_up("dev", "Pixel", true);
+        // "ringing" arrives first, the number follows within the grace period.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","canAnswer":true,"canEnd":true})),
+        );
+        assert!(
+            rings.lock().unwrap().is_empty(),
+            "held back while the caller is unknown"
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","number":"+15550142","canAnswer":true,"canEnd":true})),
+        );
+        assert_eq!(*rings.lock().unwrap(), vec!["+15550142".to_owned()]);
+        // The delayed re-check that was queued finds it already announced and says nothing more.
+        std::thread::sleep(UNNAMED_GRACE + Duration::from_millis(400));
+        assert_eq!(rings.lock().unwrap().len(), 1);
+        // Repeated identical reports do not repeat the banner.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","number":"+15550142","canAnswer":true,"canEnd":true})),
+        );
+        assert_eq!(rings.lock().unwrap().len(), 1);
+        // The call ends; a later call from the same number rings (and is announced) again.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","number":"+15550142","canAnswer":true,"canEnd":true})),
+        );
+        assert_eq!(rings.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_private_number_is_announced_as_unknown_after_the_grace_period_not_before() {
+        let rings = Arc::new(Mutex::new(Vec::new()));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Rings(rings.clone())));
+        let _rx = hub.link_up("dev", "Pixel", true);
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","canAnswer":true,"canEnd":true})),
+        );
+        std::thread::sleep(UNNAMED_GRACE / 2);
+        assert!(rings.lock().unwrap().is_empty());
+        let end = Instant::now() + Duration::from_secs(5);
+        while rings.lock().unwrap().is_empty() {
+            assert!(Instant::now() < end, "never announced");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(*rings.lock().unwrap(), vec!["Unknown caller".to_owned()]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(rings.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_call_that_stops_ringing_during_the_grace_period_is_never_announced() {
+        let rings = Arc::new(Mutex::new(Vec::new()));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Rings(rings.clone())));
+        let _rx = hub.link_up("dev", "Pixel", true);
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","canAnswer":true,"canEnd":true})),
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        std::thread::sleep(UNNAMED_GRACE + Duration::from_millis(400));
+        assert!(
+            rings.lock().unwrap().is_empty(),
+            "a missed call is not announced after it ended"
+        );
+    }
+
+    #[test]
+    fn the_banner_buttons_follow_the_controls_and_press_through_the_hub() {
+        type Reply = Box<dyn FnOnce(RingChoice) + Send>;
+        struct Press(Mutex<Option<Reply>>);
+        impl CallNotifier for Press {
+            fn ringing(
+                &self,
+                _: &str,
+                a: bool,
+                d: bool,
+                reply: Box<dyn FnOnce(RingChoice) + Send>,
+            ) {
+                assert!(a && d);
+                *self.0.lock().unwrap() = Some(reply);
+            }
+        }
+        let p = Arc::new(Press(Mutex::new(None)));
+        let hub = CallHub::new();
+        hub.set_notifier(p.clone());
+        let mut rx = hub.link_up("dev", "Pixel", true);
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","name":"Ada","canAnswer":true,"canEnd":true})),
+        );
+        let reply = p.0.lock().unwrap().take().expect("banner shown");
+        reply(RingChoice::Decline);
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Reject);
+        // A late press on a stale banner after the call ended sends nothing.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","name":"Bob","canAnswer":true,"canEnd":true})),
+        );
+        let fresh = p.0.lock().unwrap().take().unwrap();
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        fresh(RingChoice::Answer);
+        assert!(rx.try_recv().is_err());
+    }
 }

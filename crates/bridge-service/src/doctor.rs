@@ -813,4 +813,548 @@ mod tests {
         c.bluetooth_controllers = Some(1);
         assert!(!calls_check(&c).detail.contains("stays on the phone"));
     }
+
+    // ---- test-gaps-4: every branch of the firewall, session, phone and capability rules
+
+    fn ufw(enabled: Option<bool>, rules: Option<&str>, firewalld: bool) -> Firewall {
+        Firewall {
+            ufw_enabled: enabled,
+            ufw_rules: rules.map(str::to_owned),
+            firewalld_active: firewalld,
+        }
+    }
+
+    #[test]
+    fn ufw_port_ranges_must_contain_the_whole_geekbridge_range() {
+        let rule = |ports: &str| format!("-A ufw-user-input -p tcp --dport {ports} -j ACCEPT");
+        // Wider ranges and the exact range open it; one port short on either end does not.
+        for ok in ["1716:1764", "1700:1800", "1:65535", "1716:65535", "0:1764"] {
+            assert!(ufw_allows(&rule(ok), "tcp"), "{ok}");
+        }
+        for bad in [
+            "1717:1764",
+            "1716:1763",
+            "1716",
+            "1764",
+            "1000:1715",
+            "1765:2000",
+            "1764:1716",
+            "a:b",
+            "1716:",
+            ":1764",
+            "1716:1764:1800",
+            "99999:99999",
+            "-1:1764",
+            " ",
+        ] {
+            assert!(!ufw_allows(&rule(bad), "tcp"), "{bad}");
+        }
+        // Another protocol, another chain, no destination port, a trailing comment and padding.
+        assert!(!ufw_allows(&rule("1716:1764"), "udp"));
+        assert!(!ufw_allows(
+            "-A ufw-user-output -p tcp --dport 1716:1764 -j ACCEPT",
+            "tcp"
+        ));
+        assert!(!ufw_allows("-A ufw-user-input -p tcp -j ACCEPT", "tcp"));
+        assert!(!ufw_allows(
+            "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT -m comment",
+            "tcp"
+        ));
+        assert!(ufw_allows(&format!("  {}  \r", rule("1716:1764")), "tcp"));
+        // A missing value after --dport must not panic.
+        assert!(!ufw_allows(
+            "-A ufw-user-input -p tcp --dport -j ACCEPT",
+            "tcp"
+        ));
+        assert!(!ufw_allows("-A ufw-user-input -p --dport -j ACCEPT", "tcp"));
+        // Only one line has to match; a later DROP does not cancel an earlier ACCEPT (ufw orders them itself).
+        let two = format!("{}\n{}\n", rule("22"), rule("1716:1764"));
+        assert!(ufw_allows(&two, "tcp"));
+    }
+
+    #[test]
+    fn every_ufw_state_gets_exactly_one_answer() {
+        let tcp = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT";
+        let udp = "-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT";
+        let both = format!("{tcp}\n{udp}");
+        // on + readable
+        assert_eq!(
+            firewall_check(&ufw(Some(true), Some(&both), false)).level,
+            Level::Ok
+        );
+        let c = firewall_check(&ufw(Some(true), Some(udp), false));
+        assert_eq!(c.level, Level::Fail);
+        assert!(c.detail.contains("no rule for TCP 1716"), "{}", c.detail);
+        let c = firewall_check(&ufw(Some(true), Some(tcp), false));
+        assert!(c.detail.contains("no rule for UDP 1716"), "{}", c.detail);
+        let c = firewall_check(&ufw(Some(true), Some(""), false));
+        assert!(c.detail.contains("TCP and UDP 1716"), "{}", c.detail);
+        // on + unreadable: a warning with a way to look, never a failure and never an "ok"
+        let c = firewall_check(&ufw(Some(true), None, false));
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.fix.unwrap().contains("sudo ufw status"));
+        // ufw on beats firewalld for the verdict when its rules are readable
+        assert_eq!(
+            firewall_check(&ufw(Some(true), Some(&both), true)).level,
+            Level::Ok
+        );
+        assert_eq!(
+            firewall_check(&ufw(Some(true), Some(""), true)).level,
+            Level::Fail
+        );
+        // ufw on but unreadable: the ufw warning, not the firewalld one
+        assert!(
+            firewall_check(&ufw(Some(true), None, true))
+                .detail
+                .contains("ufw is on")
+        );
+        // ufw off + firewalld running: firewalld is what could block
+        let c = firewall_check(&ufw(Some(false), None, true));
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.fix.unwrap().contains("firewall-cmd"));
+        // ufw off alone
+        let c = firewall_check(&ufw(Some(false), None, false));
+        assert_eq!(
+            (c.level, c.detail.as_str()),
+            (Level::Ok, "ufw is off; nothing here blocks the phone.")
+        );
+        // rules left behind by an off ufw are ignored
+        assert_eq!(
+            firewall_check(&ufw(Some(false), Some(""), false)).level,
+            Level::Ok
+        );
+        // nothing known + firewalld
+        assert_eq!(firewall_check(&ufw(None, None, true)).level, Level::Warn);
+        // nothing at all
+        let c = firewall_check(&ufw(None, None, false));
+        assert_eq!(c.level, Level::Ok);
+        assert!(c.detail.contains("No ufw or firewalld"));
+        // every answer titled the same, so the output groups
+        assert_eq!(c.title, "Firewall");
+    }
+
+    #[test]
+    fn firewall_blocks_agrees_with_the_check_for_every_state() {
+        let tcp = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT";
+        for (fw, blocks) in [
+            (ufw(Some(true), Some(""), false), true),
+            (ufw(Some(true), Some(tcp), false), true),
+            (
+                ufw(
+                    Some(true),
+                    Some(&format!("{tcp}\n{}", tcp.replace("tcp", "udp"))),
+                    false,
+                ),
+                false,
+            ),
+            (ufw(Some(true), None, false), false),
+            (ufw(Some(false), Some(""), false), false),
+            (ufw(None, Some(""), false), false),
+            (ufw(None, None, true), false),
+        ] {
+            assert_eq!(firewall_blocks(&fw), blocks, "{fw:?}");
+            assert_eq!(
+                firewall_check(&fw).level == Level::Fail,
+                blocks,
+                "a failing check is exactly a known block: {fw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_check_covers_wayland_x11_runtime_dir_and_hyprland() {
+        let env = |w, x, rt, sig, desktop: &str| SessionEnv {
+            wayland_display: w,
+            display: x,
+            xdg_runtime_dir: rt,
+            hyprland_signature: sig,
+            desktop: desktop.into(),
+        };
+        let c = session_check_on(&env(true, false, true, false, "GNOME"), true);
+        assert_eq!(
+            (c.level, c.detail.as_str()),
+            (Level::Ok, "Wayland session found.")
+        );
+        let c = session_check_on(&env(false, true, true, false, ""), true);
+        assert_eq!(
+            (c.level, c.detail.as_str()),
+            (Level::Ok, "X11 session found.")
+        );
+        // both set: Wayland is the one named
+        assert!(
+            session_check_on(&env(true, true, true, false, ""), true)
+                .detail
+                .starts_with("Wayland")
+        );
+        // a display but no runtime dir
+        for (w, x) in [(true, false), (false, true)] {
+            let c = session_check_on(&env(w, x, false, false, ""), true);
+            assert_eq!(c.level, Level::Warn);
+            assert!(c.detail.contains("XDG_RUNTIME_DIR"));
+        }
+        // no display at all outranks a missing runtime dir
+        assert!(
+            session_check_on(&env(false, false, false, false, ""), true)
+                .detail
+                .contains("neither")
+        );
+        // Hyprland, any case, with or without a colon list; X11 under Hyprland (XWayland shell) warns too
+        for d in ["Hyprland", "hyprland", "X-Hyprland:Other"] {
+            let c = session_check_on(&env(false, true, true, false, d), true);
+            assert_eq!(c.level, Level::Warn, "{d}");
+        }
+        assert_eq!(
+            session_check_on(&env(true, false, true, true, "Hyprland"), true).level,
+            Level::Ok
+        );
+        assert_eq!(
+            session_check_on(&env(true, false, true, false, "Sway"), true).level,
+            Level::Ok
+        );
+        // Windows and macOS: nothing in the environment can make it fail or warn
+        for e in [
+            SessionEnv::default(),
+            env(true, true, true, true, "Hyprland"),
+            env(false, false, false, false, "Hyprland"),
+        ] {
+            let c = session_check_on(&e, false);
+            assert_eq!(c.level, Level::Ok);
+            assert!(c.detail.contains("Native desktop session"));
+            assert!(c.fix.is_none());
+        }
+    }
+
+    #[test]
+    fn the_real_session_check_uses_the_platform_it_runs_on() {
+        let empty = session_check(&SessionEnv::default());
+        if cfg!(all(unix, not(target_os = "macos"))) {
+            assert_eq!(empty.level, Level::Warn);
+        } else {
+            assert_eq!(
+                empty.level,
+                Level::Ok,
+                "Windows and macOS never warn about Wayland/X11"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reconnecting_phone_without_a_reason_says_so_and_a_reason_wins_over_it() {
+        let mut s = status();
+        phone(&mut s, false);
+        s.reconnecting.push("p1".into());
+        let c = phones_checks(&s, false);
+        assert_eq!(c[0].level, Level::Warn);
+        assert!(c[0].detail.contains("trying to reach it again"));
+        assert!(c[0].fix.as_ref().unwrap().contains("test-connection"));
+        // A reason from the service replaces the generic line.
+        s.disconnected.push(bridge_core::why_disconnected::explain(
+            "p1",
+            &bridge_core::why_disconnected::Facts {
+                computer_online: false,
+                ..Default::default()
+            },
+        ));
+        let c = phones_checks(&s, false);
+        assert!(
+            c[0].detail.contains("no network connection"),
+            "{}",
+            c[0].detail
+        );
+        assert!(!c[0].detail.contains("trying to reach"));
+    }
+
+    #[test]
+    fn a_connected_phone_is_ok_even_when_a_stale_reason_is_left_over() {
+        let mut s = status();
+        phone(&mut s, true);
+        s.disconnected.push(bridge_core::why_disconnected::explain(
+            "p1",
+            &bridge_core::why_disconnected::Facts::default(),
+        ));
+        let c = phones_checks(&s, true);
+        assert_eq!(c.len(), 1);
+        assert_eq!(
+            (c[0].level, c[0].detail.as_str()),
+            (Level::Ok, "Pixel is connected.")
+        );
+    }
+
+    #[test]
+    fn a_link_that_is_not_in_the_connected_phase_does_not_count_as_connected() {
+        let mut s = status();
+        phone(&mut s, true);
+        s.links[0].phase = LinkPhase::Connecting;
+        let c = phones_checks(&s, false);
+        assert_eq!(c[0].level, Level::Warn);
+        // A link for some other device is no help either.
+        let mut s = status();
+        phone(&mut s, true);
+        s.links[0].device_id = "other".into();
+        assert_eq!(phones_checks(&s, false)[0].level, Level::Warn);
+    }
+
+    #[test]
+    fn every_paired_phone_gets_its_own_line_and_the_firewall_only_refines_the_unreachable_ones() {
+        use bridge_core::why_disconnected::{ReasonCode, WhyDisconnected};
+        let mut s = status();
+        phone(&mut s, true);
+        phone(&mut s, false);
+        s.paired[1].device_id = "p2".into();
+        s.paired[1].name = "Tablet".into();
+        s.disconnected.push(WhyDisconnected {
+            device_id: "p2".into(),
+            code: ReasonCode::PausedByUser,
+            sentence: ReasonCode::PausedByUser.sentence().into(),
+            fix: ReasonCode::PausedByUser.fix().into(),
+            last_seen_ago_s: None,
+            tries: 0,
+        });
+        let c = phones_checks(&s, true);
+        assert_eq!(c.len(), 2);
+        assert!(c[0].detail.contains("Pixel is connected"));
+        assert!(
+            c[1].detail.contains("You disconnected this phone"),
+            "paused is not a firewall matter"
+        );
+        assert_eq!(why_for(&s, "nobody", true), None);
+        assert_eq!(
+            why_for(&s, "p2", true).unwrap().code,
+            ReasonCode::PausedByUser
+        );
+    }
+
+    #[test]
+    fn listener_note_for_a_fallback_port() {
+        let mut s = status();
+        s.inbound_listener = Some("0.0.0.0:1720".parse().unwrap());
+        let c = listener_check(&s);
+        assert_eq!(c.level, Level::Ok);
+        assert!(
+            c.detail.contains("1720") && c.detail.contains("1716"),
+            "{}",
+            c.detail
+        );
+        s.inbound_listener = Some("0.0.0.0:2000".parse().unwrap());
+        assert_eq!(listener_check(&s).detail, "Listening on TCP 2000.");
+        let none = {
+            let mut n = status();
+            n.inbound_listener = None;
+            listener_check(&n)
+        };
+        assert!(none.fix.unwrap().contains("ss -tlnp"));
+    }
+
+    fn clip(available: bool, problem: Option<&str>) -> ClipboardStatus {
+        ClipboardStatus {
+            backend: "wl-clipboard".into(),
+            available,
+            observe: "watch".into(),
+            watching: available,
+            problem: problem.map(str::to_owned),
+            max_text_bytes: 1,
+            max_image_bytes: 1,
+            window_ms: 1,
+            hotkey: String::new(),
+            hotkey_binding: String::new(),
+            last_pull: None,
+            devices: vec![],
+            other_sync_app: false,
+        }
+    }
+
+    #[test]
+    fn clipboard_checks_say_why_and_what_to_install() {
+        let mut i = inputs(Ok(status()));
+        i.clipboard = Some(clip(true, None));
+        let checks = run(&i);
+        let c = find(&checks, "Clipboard");
+        assert_eq!(
+            (c[0].level, c[0].detail.as_str()),
+            (Level::Ok, "Backend wl-clipboard works.")
+        );
+        i.clipboard = Some(clip(false, Some("no data-control")));
+        let checks = run(&i);
+        let c = find(&checks, "Clipboard");
+        assert_eq!(c[0].level, Level::Warn);
+        assert!(c[0].detail.contains("no data-control") && c[0].detail.contains("wl-clipboard"));
+        assert!(c[0].fix.as_ref().unwrap().contains("xclip"));
+        i.clipboard = Some(clip(false, None));
+        assert!(
+            find(&run(&i), "Clipboard")[0]
+                .detail
+                .contains("no reason given")
+        );
+        i.clipboard = None;
+        assert!(find(&run(&i), "Clipboard").is_empty());
+    }
+
+    #[test]
+    fn calls_levels_follow_the_backend_and_the_read_only_flag() {
+        let calling =
+            |backend: &str, verdict: &str, controllers: Option<usize>, ro: bool| CallingStatus {
+                platform: "linux".into(),
+                backend: backend.into(),
+                verdict: verdict.into(),
+                telephony_service_present: true,
+                bluetooth_controllers: controllers,
+                phones: 0,
+                calls: 0,
+                read_only: ro,
+            };
+        assert_eq!(
+            calls_check(&calling("pipewire", "ready", Some(1), false)).level,
+            Level::Ok
+        );
+        assert_eq!(
+            calls_check(&calling("none", "ready", Some(1), false)).level,
+            Level::Warn
+        );
+        assert_eq!(
+            calls_check(&calling("pipewire", "ready", Some(1), true)).level,
+            Level::Warn
+        );
+        // Unknown controller count is not "no controller"
+        assert_eq!(
+            calls_check(&calling("pipewire", "ready", None, false)).level,
+            Level::Ok
+        );
+        // Zero controllers is fine whatever the backend, and it wins over read-only
+        let k = calls_check(&calling("none", "something_else", Some(0), true));
+        assert_eq!(k.level, Level::Ok);
+        assert!(k.detail.contains("No Bluetooth controller"));
+        // The verdict is scrubbed before it is printed
+        let k = calls_check(&calling(
+            "pipewire",
+            "see /home/alice/secret",
+            Some(1),
+            false,
+        ));
+        assert!(!k.detail.contains("alice"), "{}", k.detail);
+        assert_eq!(k.title, "Calls");
+    }
+
+    #[test]
+    fn messages_states_waiting_and_ok_have_no_fix() {
+        let d = |sms| DataDevice {
+            device_id: "p1".into(),
+            sms,
+            ..DataDevice::default()
+        };
+        for st in [DataState::Ready, DataState::Waiting] {
+            let c = messages_check(&d(st), "Pixel");
+            assert_eq!(c.level, Level::Ok);
+            assert!(c.fix.is_none());
+            assert!(c.detail.starts_with("Pixel: "));
+        }
+        for st in [
+            DataState::Offline,
+            DataState::ConsentOff,
+            DataState::NotOffered,
+        ] {
+            let c = messages_check(&d(st), "Pixel");
+            assert_eq!(c.level, Level::Warn);
+            assert!(c.fix.is_some());
+        }
+    }
+
+    #[test]
+    fn run_orders_the_checks_and_skips_phone_checks_when_the_service_is_down() {
+        let mut s = status();
+        phone(&mut s, true);
+        let mut i = inputs(Ok(s));
+        i.calling = Some(CallingStatus {
+            platform: "linux".into(),
+            backend: "pipewire".into(),
+            verdict: "ready".into(),
+            telephony_service_present: true,
+            bluetooth_controllers: Some(1),
+            phones: 1,
+            calls: 0,
+            read_only: false,
+        });
+        i.data = vec![DataDevice {
+            device_id: "p1".into(),
+            sms: DataState::Ready,
+            ..DataDevice::default()
+        }];
+        let titles: Vec<_> = run(&i).into_iter().map(|c| c.title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Service",
+                "Listener",
+                "Firewall",
+                "Desktop session",
+                "Phones",
+                "Calls",
+                "Messages"
+            ]
+        );
+        // Service down: only the facts that need no service remain, and calling/clipboard replies are not trusted.
+        let mut down = inputs(Err("refused".into()));
+        down.calling = i.calling.clone();
+        down.clipboard = Some(clip(true, None));
+        let titles: Vec<_> = run(&down).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles, ["Service", "Firewall", "Desktop session"]);
+        // The service's version is scrubbed of paths.
+        let mut s = status();
+        s.service_version = "0.1.0 /home/alice/bin".into();
+        let c = run(&inputs(Ok(s)));
+        assert!(!c[0].detail.contains("alice"), "{}", c[0].detail);
+    }
+
+    #[test]
+    fn a_service_error_is_scrubbed_before_it_is_printed() {
+        let c = service_down(
+            "failed to read /home/alice/.local/state/geekbridge/token",
+            false,
+        );
+        assert!(!c.detail.contains("alice"), "{}", c.detail);
+        assert_eq!(c.level, Level::Fail);
+    }
+
+    #[test]
+    fn render_counts_problems_and_warnings_and_indents_fixes() {
+        let checks = [
+            check(Level::Ok, "A", "fine", None),
+            check(Level::Warn, "B", "meh", Some("do x")),
+            check(Level::Fail, "C", "bad", Some("do y")),
+            check(Level::Fail, "D", "worse", None),
+        ];
+        assert_eq!(failures(&checks), 2);
+        let t = render(&checks);
+        assert!(t.contains("[ ok ] A: fine\n"));
+        assert!(t.contains("[warn] B: meh\n       fix: do x\n"));
+        assert!(t.contains("[FAIL] C: bad\n       fix: do y\n"));
+        assert!(t.contains("[FAIL] D: worse\n\n"));
+        assert!(t.contains("2 problem(s), 1 warning(s)."));
+        // Only warnings still is not "all good".
+        assert!(
+            render(&[check(Level::Warn, "B", "meh", None)]).contains("0 problem(s), 1 warning(s).")
+        );
+        assert!(render(&[]).contains("All good."));
+        assert_eq!(failures(&[]), 0);
+    }
+
+    #[test]
+    fn error_hints_cover_both_token_failures_and_ignore_everything_else() {
+        assert!(
+            hint_for_error("no control token yet")
+                .unwrap()
+                .contains("state director")
+        );
+        assert!(
+            hint_for_error("rejected the control token")
+                .unwrap()
+                .contains("--state-dir")
+        );
+        assert!(
+            hint_for_error("cannot reach GeekBridge service control port 127.0.0.1:1")
+                .unwrap()
+                .contains("systemctl")
+        );
+        assert_eq!(hint_for_error(""), None);
+        assert_eq!(hint_for_error("timeout"), None);
+    }
 }
