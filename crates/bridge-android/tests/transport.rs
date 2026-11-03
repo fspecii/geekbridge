@@ -441,7 +441,11 @@ fn start_reports_identity_listener_and_only_ping() {
     let hs = peer.finish(accepted).unwrap();
     // The peer saw the phone's identity during the handshake.
     assert_eq!(hs.info().peer.device_type, DeviceType::Phone);
-    let caps = ["kdeconnect.ping", "kdeconnect.share.request"];
+    let caps = [
+        "kdeconnect.ping",
+        "kdeconnect.share.request",
+        "geekbridge.heartbeat",
+    ];
     assert_eq!(hs.info().peer.incoming_capabilities, caps);
     assert_eq!(hs.info().peer.outgoing_capabilities, caps);
 }
@@ -1498,7 +1502,11 @@ fn announce_follows_a_ready_listener_and_is_kde_shaped() {
     assert_eq!(packet.body["deviceId"], phone.id.as_str());
     assert_eq!(packet.body["protocolVersion"], 8);
     assert_eq!(packet.body["deviceType"], "phone");
-    let caps = json!(["kdeconnect.ping", "kdeconnect.share.request"]);
+    let caps = json!([
+        "kdeconnect.ping",
+        "kdeconnect.share.request",
+        "geekbridge.heartbeat"
+    ]);
     assert_eq!(packet.body["incomingCapabilities"], caps);
     assert_eq!(packet.body["outgoingCapabilities"], caps);
     assert!(packet.body.get("targetDeviceId").is_none());

@@ -868,6 +868,9 @@ fn capabilities(
 ) -> (Vec<String>, Vec<String>) {
     let mut incoming = vec![PING.to_owned(), SHARE_REQUEST.to_owned()];
     let mut outgoing = incoming.clone();
+    // Lets the computer heartbeat this phone even with every optional feature off (see `heartbeat::MARKER`).
+    incoming.push(bridge_core::heartbeat::MARKER.to_owned());
+    outgoing.push(bridge_core::heartbeat::MARKER.to_owned());
     if clipboard {
         incoming.extend(engine::clipboard_incoming_types());
         outgoing.extend(engine::clipboard_outgoing_types());
@@ -1077,6 +1080,17 @@ mod coexist_tests {
         let first = std::net::TcpListener::bind((LO, 0)).unwrap();
         let base = first.local_addr().unwrap().port();
         assert!(bind_tcp(LO, base, base).is_err());
+    }
+
+    /// The computer only heartbeats a peer that declares a `geekbridge.*` capability (stock KDE Connect shows
+    /// every ping as a notification). A phone with every optional feature off declared none, so the computer
+    /// never pinged it and the phone never learned to cut a vanished computer off.
+    #[test]
+    fn a_phone_with_everything_off_still_identifies_as_a_geekbridge_peer() {
+        let (incoming, outgoing) = capabilities(false, false, engine::DataFlags::default());
+        assert!(bridge_core::heartbeat::is_geekbridge_peer(
+            &incoming, &outgoing
+        ));
     }
 
     // SO_REUSEADDR shares a UDP port on Linux/Android (the phone); BSD/macOS would need SO_REUSEPORT.

@@ -21,6 +21,10 @@ const TICK_SLACK: Duration = Duration::from_secs(1);
 const HEARTBEAT_GAP_MIN: Duration = Duration::from_secs(10);
 const HEARTBEAT_GAP_MAX: Duration = Duration::from_secs(50);
 
+/// Declared by GeekBridge on the phone in every identity packet, whatever optional features are on, so the
+/// computer can tell it from a stock KDE Connect phone and heartbeat it. Carries no packets.
+pub const MARKER: &str = "geekbridge.heartbeat";
+
 /// Does this peer take part in our heartbeat? A stock KDE Connect peer shows every `kdeconnect.ping` as a
 /// "Ping!" notification, so the periodic ping only goes to peers that declared a `geekbridge.*` capability.
 pub fn is_geekbridge_peer(incoming: &[String], outgoing: &[String]) -> bool {
@@ -191,5 +195,11 @@ mod tests {
             &caps(&["kdeconnect.ping", "geekbridge.clipboard.pull"])
         ));
         assert!(is_geekbridge_peer(&caps(&["geekbridge.debug.log"]), &stock));
+    }
+
+    #[test]
+    fn the_marker_alone_makes_a_heartbeat_peer() {
+        let m = vec![MARKER.to_owned()];
+        assert!(is_geekbridge_peer(&m, &m));
     }
 }
