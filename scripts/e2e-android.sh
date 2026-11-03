@@ -116,9 +116,11 @@ start_emulator() {
   mkdir -p "$ROOT/.tools/e2e-emu/tmp"
   local envs=(GB_EMU_AVD="$AVD" GB_EMU_PORT="$CONSOLE_PORT" GB_EMU_ADB_PORT="$ANDROID_ADB_SERVER_PORT" GB_EMU_TMPDIR="$ROOT/.tools/e2e-emu/tmp")
   # A transient systemd user unit keeps the emulator out of this process tree (see scripts/emulator-call.sh).
-  if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --unit "gbe2e-emulator${E2E_TAG:-}" \
-       "${envs[@]/#/--setenv=}" "$ROOT/.tools/gbcall/start.sh" >/dev/null 2>&1; then :
-  else (env "${envs[@]}" setsid nohup "$ROOT/.tools/gbcall/start.sh" >"$LOGS/e2e-emulator.log" 2>&1 &); fi
+  # CI (no user systemd, no untracked .tools/gbcall/start.sh): start the in-repo launcher directly.
+  local launcher="$ROOT/.tools/gbcall/start.sh"; [[ -x "$launcher" ]] || launcher="$ROOT/scripts/emulator-call-launch.sh"
+  if [[ -z "${CI:-}" ]] && command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --unit "gbe2e-emulator${E2E_TAG:-}" \
+       "${envs[@]/#/--setenv=}" "$launcher" >/dev/null 2>&1; then :
+  else (env "${envs[@]}" setsid nohup "$launcher" >"$LOGS/e2e-emulator.log" 2>&1 &); fi
   wait_for 300 bash -c "[[ \$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]"
 }
 build_all() {

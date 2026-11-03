@@ -1,0 +1,155 @@
+name: Emulator end-to-end
+
+# Runs the Android emulator end-to-end suites (scripts/e2e*.sh) on ubuntu-latest with KVM. Nightly and by hand:
+#   gh workflow run emulator-e2e.yml --ref main
+# One job per suite (fail-fast off). Read-only permissions, no secrets, nothing is published: the APK and desktop
+# binaries are built once and handed to the suites as a workflow artifact. Logs, screenshots and logcat are
+# uploaded as artifacts when a suite fails. See docs/emulator-ci.md for what each suite needs and which are non-blocking.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulator-e2e-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI_APT: >-
+    pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev dbus
+    xvfb xclip rsync python3 jq
+
+jobs:
+  build:
+    name: Build APK and desktop binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+      - name: Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $CI_APT
+      - name: Project toolchain (JDK, Gradle, Rust with Android targets, SDK, NDK)
+        run: scripts/bootstrap-android.sh
+      - name: Desktop binaries
+        run: |
+          source scripts/android-env.sh
+          CARGO_TARGET_DIR="$PWD/target/ci" cargo build --release --locked -p bridge-service -p bridge-apps --bins
+      - name: Debug APK (native core for arm64-v8a and x86_64)
+        run: scripts/build-android.sh --skip-tests --skip-lint --skip-host-tests
+      - name: Pack
+        run: |
+          mkdir -p pack/target/release pack/scratch/dist
+          find target/ci/release -maxdepth 1 -type f -name 'geekbridge*' ! -name '*.d' -perm -u+x -exec cp {} pack/target/release/ \;
+          cp dist/android/geekbridge-debug.apk pack/scratch/dist/
+          ls -l pack/target/release pack/scratch/dist
+          tar -C pack -czf e2e-build.tar.gz target scratch
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-build
+          path: e2e-build.tar.gz
+          retention-days: 3
+          if-no-files-found: error
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-logs
+          path: |
+            dist/android/*.log
+            target/android/**/*.log
+          if-no-files-found: ignore
+
+  suite:
+    name: ${{ matrix.name }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Suites marked experimental are reported but never turn the run red (reasons in docs/emulator-ci.md).
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: e2e-android, run: 'scripts/e2e-android.sh --no-build', adb_port: 16038, setup: light, experimental: false }
+          - { name: features, run: 'scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: false }
+          - { name: call-ui, run: 'scripts/e2e/call-ui.sh', adb_port: 16080, setup: light, experimental: false }
+          - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
+          - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: false }
+          - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL /usr/local/lib/node_modules
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $CI_APT dbus-x11 libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
+            sway mako-notifier grim xdotool imagemagick tesseract-ocr
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: e2e-build
+      - name: Unpack the build
+        run: |
+          mkdir -p "$HOME/ci-e2e"
+          tar -C "$HOME/ci-e2e" -xzf e2e-build.tar.gz
+          chmod +x "$HOME"/ci-e2e/target/release/*
+          {
+            echo "E2E_TARGET=$HOME/ci-e2e/target"
+            echo "E2E_SCRATCH=$HOME/ci-e2e/scratch"
+            echo "E2E_UPD_DESK_TARGET=$HOME/ci-e2e/target"
+            echo "GB_BASE_AVD=gb36"
+            echo "GB_MIN_FREE_GB=6"
+            echo "ADB_PORT=${{ matrix.adb_port }}"
+          } >> "$GITHUB_ENV"
+      - name: Emulator toolchain and base AVD
+        run: scripts/ci/e2e-setup.sh ${{ matrix.setup }}
+      - name: Run the suite
+        env:
+          E2E_UPD_REBUILD: ${{ matrix.name == 'update-install' && '1' || '' }}
+        run: |
+          set -o pipefail
+          source scripts/android-env.sh >/dev/null 2>&1
+          ${{ matrix.run }}
+      - name: Results
+        if: always()
+        run: |
+          shopt -s nullglob
+          for f in dist/android/logs/*results*.tsv target/e2e-update/and-results.tsv; do
+            { echo "### $f"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Collect logcat
+        if: failure()
+        run: |
+          source scripts/android-env.sh >/dev/null 2>&1
+          mkdir -p dist/android/logs
+          ANDROID_ADB_SERVER_PORT="$ADB_PORT" adb logcat -d > dist/android/logs/logcat-final.txt 2>&1 || true
+          ANDROID_ADB_SERVER_PORT="$ADB_PORT" adb devices -l > dist/android/logs/adb-devices.txt 2>&1 || true
+      - name: Upload logs, screenshots and logcat
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-${{ matrix.name }}
+          path: |
+            dist/android/logs
+            dist/screenshots
+            target/*-run/**/*.log
+            target/e2e-update/**/*.log
+            target/e2e-update/**/*.tsv
+            ~/.cache/gb-battery/run/**/*.log
+            ~/.cache/gb-tmp/feat-e2e/run/**/*.log
+            .tools/gbcall/*.log
+          retention-days: 7
+          if-no-files-found: ignore
