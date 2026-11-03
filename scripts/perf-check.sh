@@ -37,7 +37,7 @@ fi
 : "${BUDGET_WAKEUPS_PER_S:=3}"        # context switches per second, whole process
 : "${BUDGET_CPU_TICKS:=2}"            # CPU ticks (10 ms each) burned over the whole window
 : "${BUDGET_STARTUP_MS:=300}"         # exec to "discovery API" line, warm cache
-: "${BUDGET_SERVICE_BYTES:=5800000}"  # stripped binary size (5.0 -> 5.3 -> 5.6 -> 5.8 MB: the tray, then CI-measured, docs/performance.md)
+: "${BUDGET_SERVICE_BYTES:=6000000}"  # stripped binary size (5.0 -> 5.3 -> 5.6 -> 5.8 -> 6.0 MB: phone mirroring, 5.82 MB measured in CI; the tray, then CI-measured, docs/performance.md)
 : "${BUDGET_CTL_BYTES:=1300000}"       # 1 214 392 B after Response::from_json (was 1.31 MB; 1.35 MB budget for the reason sentences is back to the old 1.3, docs/performance.md)
 : "${BUDGET_UI_RSS_KIB:=75000}"       # geekbridge-messages, idle, warm GL shader cache (65 MB measured 2026-11-02; 90000 before the memtrim/atlas work)
 : "${BUDGET_UI_WAKEUPS_PER_S:=12}"

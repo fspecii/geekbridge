@@ -556,9 +556,18 @@ impl PendingLink {
         tokio::pin!(approvals);
 
         loop {
-            for action in std::mem::take(&mut actions) {
+            let batch = std::mem::take(&mut actions);
+            // Our accept and the completion come in one batch: the trust record must be durable and
+            // visible before the accept goes out, or the peer can finish first and observe us unpaired.
+            let completing = batch.iter().any(|a| matches!(a, Action::Complete));
+            let mut stored = false;
+            for action in batch {
                 match action {
                     Action::Send { pair, timestamp } => {
+                        if completing && pair && timestamp.is_none() && !stored {
+                            self.persist(conn_id, bound_fp, clock).await?;
+                            stored = true;
+                        }
                         let mut packet = pair_packet(pair, timestamp);
                         // Only our own request carries the QR token, never an accept or a cancel.
                         if let (true, Some(_), Some(token)) = (pair, timestamp, &self.pairing.token)
@@ -593,7 +602,12 @@ impl PendingLink {
                         let _ = prompt_tx.send((generation, req));
                     }
                     Action::Fail(f) => return Err(f.into()),
-                    Action::Complete => return self.complete(conn_id, bound_fp, clock).await,
+                    Action::Complete => {
+                        if !stored {
+                            self.persist(conn_id, bound_fp, clock).await?;
+                        }
+                        return Ok(self.into_trusted());
+                    }
                 }
             }
 
@@ -630,12 +644,12 @@ impl PendingLink {
         }
     }
 
-    async fn complete(
-        mut self,
+    async fn persist(
+        &mut self,
         conn_id: crate::link::ConnectionId,
         fp: [u8; 32],
         clock: fn() -> i64,
-    ) -> Result<TrustedLink> {
+    ) -> Result<()> {
         // The certificate we verified and showed to the user must be the one on
         // this connection, and it is the one we pin.
         if self.conn.info.connection_id != conn_id || self.conn.info.peer_cert.fingerprint() != fp {
@@ -660,12 +674,11 @@ impl PendingLink {
             let _ = self.conn.send(&pair_packet(false, None)).await;
             return Err(e);
         }
-        Ok(TrustedLink::new(
-            self.conn,
-            self.store,
-            self.own_cert,
-            self.pairing,
-        ))
+        Ok(())
+    }
+
+    fn into_trusted(self) -> TrustedLink {
+        TrustedLink::new(self.conn, self.store, self.own_cert, self.pairing)
     }
 }
 
