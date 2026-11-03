@@ -67,6 +67,8 @@ object DebugDiagnostics {
     private var lastTrusted: Set<Long> = emptySet()
     private var lastEventSeq = 0L
     private var lastCapabilities = ""
+    private var lastDrop: DropNote? = null
+    private var drops = 0
 
     /** Process start (ContentProvider.onCreate): start reading the log; hook the UI once the Application is up. */
     @Synchronized
@@ -149,7 +151,13 @@ object DebugDiagnostics {
                 else -> e.kind
             }
             val why = e.code ?: "no code"
-            linkHistory.add("event ${e.kind}: $who; reason: $why")
+            val net = app?.let { DebugStateCollector.network(it) } ?: "unknown"
+            val quiet = e.quietMs?.let { "; silent for ${it / 1000} s" }.orEmpty()
+            linkHistory.add("event ${e.kind}: $who; reason: $why$quiet; network: $net")
+            if (e.kind == "link_closed") {
+                drops++
+                lastDrop = DropNote(System.currentTimeMillis(), why, net, e.quietMs)
+            }
             if (e.kind.contains("clos") || e.kind.contains("unpair") || e.kind.contains("lost") || e.kind.contains("fail")) {
                 GbLog.i("link", "close: kind=${e.kind} who=$who why=$why connection=${e.connectionId ?: 0}")
             }
@@ -219,13 +227,16 @@ object DebugDiagnostics {
         }, "geekbridge-debug-state").apply { isDaemon = true; start() }
     }
 
+    @Synchronized
+    private fun linkHealth(): List<String> = LinkHealthText.render(lastDrop, drops, System.currentTimeMillis())
+
     fun stateText(): String {
         val ctx = app ?: return "not started"
         return try {
             DebugStateText.render(
                 DebugStateCollector.model(
                     ctx, DebugHooks.streaming, ring, streamer?.connectionCount() ?: 0,
-                    linkHistory.all(), exceptions.all(),
+                    linkHistory.all(), exceptions.all(), linkHealth(),
                 ),
             )
         } catch (t: RuntimeException) {

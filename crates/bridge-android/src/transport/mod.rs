@@ -31,7 +31,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 31] = [
+pub(crate) const ACTIONS: [&str; 32] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -63,6 +63,7 @@ pub(crate) const ACTIONS: [&str; 31] = [
     "transport_permits",
     "transport_screen",
     "transport_heartbeat_now",
+    "transport_wifi_bind",
 ];
 
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
@@ -532,6 +533,44 @@ pub(crate) fn screen_off() -> bool {
 static HEARTBEAT_NOW: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 
+/// The phone's current Wi-Fi IPv4 address, or `None`. Outgoing dials and the announcement socket leave from it, so
+/// they use Wi-Fi even when mobile data is the default network (One UI "Switch to mobile data"). Process-wide like
+/// [`SCREEN_OFF`]: the app updates it on every Wi-Fi change, whether or not the transport is running.
+static WIFI_BIND: Mutex<Option<Ipv4Addr>> = Mutex::new(None);
+
+pub(crate) fn wifi_bind() -> Option<Ipv4Addr> {
+    *WIFI_BIND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn set_wifi_bind(ip: Option<Ipv4Addr>) {
+    *WIFI_BIND
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ip;
+}
+
+/// Source address for a dial to `target`: the Wi-Fi address, only for an IPv4 LAN target (never loopback).
+pub(crate) fn dial_source(target: IpAddr) -> Option<IpAddr> {
+    dial_source_with(wifi_bind(), target)
+}
+
+fn dial_source_with(bind: Option<Ipv4Addr>, target: IpAddr) -> Option<IpAddr> {
+    match (bind, target) {
+        (Some(ip), IpAddr::V4(t)) if !t.is_loopback() => Some(IpAddr::V4(ip)),
+        _ => None,
+    }
+}
+
+/// An address worth leaving from: a unicast IPv4 address of this phone (not loopback, unspecified, multicast or broadcast).
+fn parse_wifi_bind(s: &str) -> Result<Ipv4Addr, ApiError> {
+    let ip: Ipv4Addr = s.parse().map_err(|_| invalid_field())?;
+    if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || ip.is_broadcast() {
+        return Err(invalid_field());
+    }
+    Ok(ip)
+}
+
 pub(crate) fn heartbeat_now_receiver() -> tokio::sync::watch::Receiver<u64> {
     HEARTBEAT_NOW.subscribe()
 }
@@ -543,6 +582,16 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             f.finish()?;
             SCREEN_OFF.store(!on, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "screen_on": on }))
+        }
+        "transport_wifi_bind" => {
+            // `ip` absent: no Wi-Fi address (Wi-Fi off, or more than one): dial and announce unbound.
+            let ip = f
+                .take_opt_string("ip")?
+                .map(|s| parse_wifi_bind(&s))
+                .transpose()?;
+            f.finish()?;
+            set_wifi_bind(ip);
+            Ok(json!({ "bound": ip.is_some() }))
         }
         "transport_heartbeat_now" => {
             f.finish()?;
@@ -984,10 +1033,7 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         None
     };
     let udp_announce = if announce_to.is_some() {
-        Some(bind_udp(
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-            true,
-        ))
+        Some(discovery::bind_announce(wifi_bind()))
     } else {
         None
     };
@@ -1069,6 +1115,8 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
         rt.spawn(discovery::announce_loop(
             socket,
             target,
+            wifi_bind(),
+            wifi_bind,
             move || discovery::encode_announcement(&announcing.endpoint.current_identity(), port),
             move || linked.all_paired_linked(),
             {
@@ -1141,5 +1189,53 @@ mod coexist_tests {
         // A stock KDE Connect on the same phone binds with SO_REUSEADDR as well.
         let b = bind_udp(SocketAddr::new(LO, port), false).unwrap();
         assert_eq!(b.local_addr().unwrap().port(), port);
+    }
+
+    #[test]
+    fn dials_leave_from_the_wifi_address_for_lan_ipv4_targets_only() {
+        let ip = Ipv4Addr::new(192, 168, 1, 20);
+        let wifi = Some(ip);
+        let lan = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 5));
+        assert_eq!(dial_source_with(wifi, lan), Some(IpAddr::V4(ip)));
+        assert_eq!(
+            dial_source_with(None, lan),
+            None,
+            "no Wi-Fi address: unbound"
+        );
+        assert_eq!(dial_source_with(wifi, LO), None, "loopback is never bound");
+        let v6: IpAddr = "fe80::1".parse().unwrap();
+        assert_eq!(
+            dial_source_with(wifi, v6),
+            None,
+            "IPv6 targets are not bound"
+        );
+    }
+
+    #[test]
+    fn only_a_unicast_ipv4_address_is_accepted_as_the_wifi_address() {
+        assert!(parse_wifi_bind("192.168.1.20").is_ok());
+        assert!(parse_wifi_bind("10.0.0.7").is_ok());
+        for bad in [
+            "",
+            "0.0.0.0",
+            "127.0.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "fe80::1",
+            "host",
+            "1.2.3",
+        ] {
+            assert!(parse_wifi_bind(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_wifi_address_is_set_and_cleared_process_wide() {
+        let before = wifi_bind();
+        set_wifi_bind(Some(Ipv4Addr::new(192, 168, 9, 9)));
+        assert_eq!(wifi_bind(), Some(Ipv4Addr::new(192, 168, 9, 9)));
+        set_wifi_bind(None);
+        assert_eq!(wifi_bind(), None);
+        set_wifi_bind(before);
     }
 }

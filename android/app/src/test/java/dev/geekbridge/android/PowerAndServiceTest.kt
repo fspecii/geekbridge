@@ -119,10 +119,37 @@ class PowerAndServiceTest {
         assertEquals(false, WifiLockPolicy.wanted(1, false, WifiLockPolicy.LINGER_MS))
     }
 
-    @Test fun wifiLockModeFollowsTheApiLevel() {
-        assertEquals(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, WifiLockPolicy.mode(28))
-        assertEquals(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, WifiLockPolicy.mode(29))
-        assertEquals(android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY, WifiLockPolicy.mode(35))
+    @Test fun wifiLockModesFollowTheApiLevel() {
+        val hp = android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        val ll = android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        assertEquals(listOf(hp), WifiLockPolicy.modes(26))
+        assertEquals(listOf(hp), WifiLockPolicy.modes(28))
+        assertEquals(listOf(hp, ll), WifiLockPolicy.modes(29))
+        assertEquals(listOf(hp, ll), WifiLockPolicy.modes(35))
+    }
+
+    @Test fun wifiBindChoosesTheOnlyUsableWifiAddress() {
+        assertEquals("192.168.1.20", WifiBindPolicy.choose(listOf(listOf("192.168.1.20"))))
+        assertEquals("192.168.1.20", WifiBindPolicy.choose(listOf(listOf("192.168.1.20", "192.168.1.20"))))
+        assertEquals("10.0.0.7", WifiBindPolicy.choose(listOf(listOf("169.254.3.4", "10.0.0.7")))) // link-local ignored
+        assertEquals(null, WifiBindPolicy.choose(emptyList())) // no Wi-Fi: unbound
+        assertEquals(null, WifiBindPolicy.choose(listOf(emptyList()))) // IPv6-only Wi-Fi
+        assertEquals(null, WifiBindPolicy.choose(listOf(listOf("192.168.1.20"), listOf("10.0.0.7")))) // ambiguous
+        assertEquals(null, WifiBindPolicy.choose(listOf(listOf("192.168.1.20", "192.168.2.20"))))
+    }
+
+    @Test fun wifiBindRejectsAddressesThatCannotBeLeftFrom() {
+        for (bad in listOf("", "0.0.0.0", "127.0.0.1", "224.0.0.1", "255.255.255.255", "169.254.1.1", "300.1.1.1", "fe80::1", "1.2.3", "a.b.c.d"))
+            assertFalse(bad, WifiBindPolicy.usable(bad))
+        for (good in listOf("192.168.0.2", "10.1.2.3", "172.16.5.5", "100.64.0.9")) assertTrue(good, WifiBindPolicy.usable(good))
+    }
+
+    @Test fun wifiBindIsPushedOnceFirstAndThenOnlyOnChange() {
+        assertTrue(WifiBindPolicy.shouldPush(first = true, last = null, now = null)) // the core outlives the service
+        assertFalse(WifiBindPolicy.shouldPush(first = false, last = "10.0.0.7", now = "10.0.0.7"))
+        assertTrue(WifiBindPolicy.shouldPush(first = false, last = "10.0.0.7", now = "10.0.0.8"))
+        assertTrue(WifiBindPolicy.shouldPush(first = false, last = "10.0.0.7", now = null)) // Wi-Fi lost: clear
+        assertFalse(WifiBindPolicy.shouldPush(first = false, last = null, now = null))
     }
 
     @Test fun review3GraceCheckKeepsLookingWhileAnExtendedGraceRuns() {

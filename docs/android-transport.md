@@ -260,6 +260,16 @@ progress, or a trusted link). Result `{disconnected:true}`; `unknown_connection`
   60 s screen-off ping runs on a monotonic clock that stands still while the CPU sleeps, so it would not fire until
   well after the window. A write to a dead link fails, which starts the redial. It needs no running transport.
 
+* `transport_wifi_bind {ip?}`: the phone's current Wi-Fi IPv4 address (a unicast address; loopback, unspecified,
+  multicast, broadcast and IPv6 are refused), or no `ip` when there is none or it is ambiguous. While set, outgoing dials
+  to a non-loopback IPv4 address bind to it first (`Endpoint::connect_from`: a 4 s trial from that address, then the
+  plain connect, so a stale address never costs the link; a refusal is final) and the announcement socket is made from
+  it (rebuilt before the next send when the address changes). The point: One UI's "Switch to mobile data" makes mobile
+  data the default network while Wi-Fi is still up, and an unbound socket follows the default network. It is process
+  wide like `transport_screen`, needs no running transport and survives a restart. Established connections are not
+  touched. A `link_closed` event also carries `quiet_ms`: how long nothing had been heard from the computer when the
+  link closed (debug diagnostics print it).
+
 ### `version`
 
 Unchanged, plus `transport_actions` (the list above) and `limits.max_transport_request_bytes`.

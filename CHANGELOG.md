@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Changed
+- The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile
+  data"): the core binds its outgoing connections and the announcement socket to the Wi-Fi IPv4 address, with a fallback
+  to the plain route. Wi-Fi lock claims corrected (it does not keep the radio awake with the screen off on Android 14+),
+  and the debug state shows a link-health section (last close reason, network then, silence before it).
+  See docs/reports/wifi-binding.md.
+
 ### Fixed
 - Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state
   directory that holds pairings (it needs `--forget-pairings` and then moves the old state aside instead of deleting it);

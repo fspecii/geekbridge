@@ -51,7 +51,7 @@ data class PairPrompt(
 
 data class PairedPeer(val deviceId: String, val name: String, val deviceType: String, val certSha256: String)
 
-data class LinkEvent(val seq: Long, val kind: String, val connectionId: Long?, val deviceId: String?, val code: String?)
+data class LinkEvent(val seq: Long, val kind: String, val connectionId: Long?, val deviceId: String?, val code: String?, val quietMs: Long? = null)
 
 data class TransportSnapshot(
     val state: String,
@@ -163,6 +163,8 @@ object TransportProtocol {
     fun screenRequest(on: Boolean): String = base("transport_screen").put("on", on).toString()
     /** Sends the heartbeat ping on every link now: Doze opened a maintenance window or ended. */
     fun heartbeatNowRequest(): String = base("transport_heartbeat_now").toString()
+    /** The phone's Wi-Fi IPv4 address for dials and announcements; no [ip] clears it (no Wi-Fi, or ambiguous). */
+    fun wifiBindRequest(ip: String?): String = base("transport_wifi_bind").also { if (ip != null) it.put("ip", ip) }.toString()
     fun pingRequest(connectionId: Long): String = base("transport_ping").put("connection_id", connectionId).toString()
 
     // ------------------------------------------------------------------ parsing
@@ -270,6 +272,7 @@ object TransportProtocol {
                 connectionId = it.long("connection_id"),
                 deviceId = it.id("device_id"),
                 code = (it.opt("code") as? String)?.takeIf { c -> kindPattern.matches(c) },
+                quietMs = it.long("quiet_ms")?.takeIf { q -> q >= 0 },
             )
         }
         return TransportSnapshot(

@@ -45,7 +45,17 @@ adds "Battery optimisation is on".
   `dataSync` was rejected: it has a time limit on Android 15 and may not start from `BOOT_COMPLETED`.
 - Notification: channel "Background connection", `IMPORTANCE_LOW`, ongoing, silent, with a Stop action.
 - Holds one TCP listener and sends UDP announcements; it does not listen for discovery, so there is **no multicast
-  lock**, and there are **no wake locks** in the new code. (Share transfers by the sharing code keep their own holds.)
+  lock**, and there are **no CPU wake locks** in the new code. It does hold `WifiLock`s while a computer is linked
+  (`WifiLockPolicy.modes`: `FULL_HIGH_PERF`, plus `FULL_LOW_LATENCY` from API 29), with honest limits: Android applies
+  low latency only with the screen on and the holder in the foreground, and `FULL_HIGH_PERF` is deprecated in API 34
+  and documented as non-functional from there. On Android 14+ the lock is therefore a screen-on improvement and does
+  **not** keep the radio out of power save with the screen locked; that case is carried by the heartbeat, kernel
+  keepalive and redial (check with `adb shell dumpsys wifi | grep -iA3 lock`). It also does not keep the CPU awake. (Share transfers by the sharing code keep their own holds.)
+- The core's own sockets stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile data"):
+  the service tells the core the Wi-Fi IPv4 address (`transport_wifi_bind`, `WifiBindPolicy`: exactly one usable
+  address, else unbound) and redials and the announcement socket leave from it, with a fallback to the plain route.
+  See docs/reports/wifi-binding.md. This is deliberately not `bindProcessToNetwork`, which would capture every socket
+  of the app.
 - No polling or timers in the service. It watches the **Wi-Fi network** (`registerNetworkCallback` with
   `TRANSPORT_WIFI`; not the default network, which One UI moves between Wi-Fi and mobile data on its own while the Wi-Fi
   link stays fine) and restarts the transport (debounced 3 s, bounded retries) only for another Wi-Fi network or a

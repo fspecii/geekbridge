@@ -540,9 +540,20 @@ impl Endpoint {
 
     /// Dial an explicitly chosen endpoint as TCP initiator (TLS server).
     pub async fn connect(&self, addr: SocketAddr, target: &DeviceId) -> Result<Handshake> {
-        let stream = timeout(self.config.timeouts.connect, TcpStream::connect(addr))
-            .await
-            .map_err(|_| KdeError::Timeout("TCP connect"))??;
+        self.connect_from(addr, target, None).await
+    }
+
+    /// Like [`Endpoint::connect`], but first tries the TCP connect from the local address `source` (the
+    /// phone's Wi-Fi address, so the dial leaves over Wi-Fi even when mobile data is the default network).
+    /// If that attempt cannot be made or fails (the address is gone, no route from it), the plain connect
+    /// follows, so a stale `source` never costs the link. A refusal is final: the plain route would say the same.
+    pub async fn connect_from(
+        &self,
+        addr: SocketAddr,
+        target: &DeviceId,
+        source: Option<IpAddr>,
+    ) -> Result<Handshake> {
+        let stream = dial_tcp(addr, source, self.config.timeouts.connect).await?;
         configure_tcp(&stream)?;
         let local = stream.local_addr().ok().map(|a| a.ip());
         self.initiate(stream, addr.ip(), target)
@@ -821,4 +832,114 @@ fn configure_tcp(stream: &TcpStream) -> Result<()> {
     stream.set_nodelay(true)?;
     crate::keepalive::arm(&socket2::SockRef::from(stream))?;
     Ok(())
+}
+
+/// Time the source-bound attempt gets before the plain connect takes over.
+const BOUND_TRIAL: Duration = Duration::from_secs(4);
+
+/// TCP connect, optionally from `source`. A source of the other address family is ignored.
+pub(crate) async fn dial_tcp(
+    addr: SocketAddr,
+    source: Option<IpAddr>,
+    budget: Duration,
+) -> Result<TcpStream> {
+    let plain = |budget: Duration| async move {
+        timeout(budget, TcpStream::connect(addr))
+            .await
+            .map_err(|_| KdeError::Timeout("TCP connect"))?
+            .map_err(KdeError::from)
+    };
+    let Some(ip) = source.filter(|ip| ip.is_ipv4() == addr.is_ipv4()) else {
+        return plain(budget).await;
+    };
+    let trial = budget.min(BOUND_TRIAL);
+    let bound = async {
+        let socket = if addr.is_ipv4() {
+            tokio::net::TcpSocket::new_v4()?
+        } else {
+            tokio::net::TcpSocket::new_v6()?
+        };
+        socket.bind(SocketAddr::new(ip, 0))?;
+        socket.connect(addr).await
+    };
+    match timeout(trial, bound).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => Err(e.into()),
+        _ => plain(budget.saturating_sub(trial).max(Duration::from_secs(1))).await,
+    }
+}
+
+#[cfg(test)]
+mod dial_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[tokio::test]
+    async fn a_bound_dial_leaves_from_the_given_address() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        // 127.0.0.1 is the stand-in for the Wi-Fi address.
+        let src = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let c = dial_tcp(addr, Some(src), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(c.local_addr().unwrap().ip(), src);
+        let (_s, peer) = l.accept().await.unwrap();
+        assert_eq!(peer.ip(), src);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn the_source_address_really_is_used() {
+        // All of 127.0.0.0/8 is loopback on Linux, so a second address proves the bind is not decorative.
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let src = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let c = dial_tcp(l.local_addr().unwrap(), Some(src), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(c.local_addr().unwrap().ip(), src);
+        assert_eq!(l.accept().await.unwrap().1.ip(), src);
+    }
+
+    #[tokio::test]
+    async fn a_source_that_is_not_ours_falls_back_to_the_plain_route() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        // TEST-NET-1: never assigned to this host, so the bind fails with AddrNotAvailable.
+        let gone = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 77));
+        let c = dial_tcp(l.local_addr().unwrap(), Some(gone), Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(c.peer_addr().unwrap(), l.local_addr().unwrap());
+    }
+
+    #[tokio::test]
+    async fn no_source_and_a_source_of_the_other_family_dial_plainly() {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        dial_tcp(addr, None, Duration::from_secs(5)).await.unwrap();
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        dial_tcp(addr, Some(v6), Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_not_retried_and_stays_a_refusal() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+        let e = dial_tcp(
+            addr,
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&e, KdeError::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused),
+            "{e:?}"
+        );
+    }
 }

@@ -85,6 +85,11 @@ impl Heartbeat {
         now.saturating_duration_since(self.last_sent) + TICK_SLACK >= every
     }
 
+    /// How long since anything was last heard from the peer (for the "silent for" part of a loss report).
+    pub fn silent_for(&self, now: Instant) -> std::time::Duration {
+        now.saturating_duration_since(self.last_heard)
+    }
+
     /// The peer heartbeats and has been silent for too long.
     pub fn peer_silent(&self, now: Instant) -> bool {
         self.peer_pings && now.saturating_duration_since(self.last_heard) > PEER_SILENCE_LIMIT

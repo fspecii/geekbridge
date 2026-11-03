@@ -21,35 +21,44 @@ object WifiLockPolicy {
         paired > 0 && (connected || (msSinceLoss != null && msSinceLoss in 0 until LINGER_MS))
 
     /**
-     * Low latency from Android 10; the older high-performance mode before. Android applies low-latency mode only while
-     * the screen is on and the holder is in the foreground, so with the screen locked this lock does not keep the radio
-     * out of power save (docs/reports/link-stability-review-2.md, F-7): the link must survive power save on its own.
+     * The lock modes to hold, strongest guarantee first. Neither mode is a promise on every device, so they are
+     * combined and the OS applies what it honours (docs/android-power.md):
+     *  - `WIFI_MODE_FULL_HIGH_PERF` exists on every API level. It is the only mode meant to work with the screen off
+     *    (the holder here is a foreground service). It is deprecated as of API 34 and documented as having no effect
+     *    from there on, so on newer phones it is a harmless extra.
+     *  - `WIFI_MODE_FULL_LOW_LATENCY` (API 29+) is applied only while the screen is on and the holder is in the
+     *    foreground; it is the useful one on API 34+ with the screen on.
+     * With the screen off on Android 14 and later there is therefore no lock that keeps the radio out of power save:
+     * the link has to survive it (heartbeat, kernel keepalive, redial) and the lock is a screen-on improvement.
      */
     @Suppress("DEPRECATION")
-    fun mode(sdk: Int): Int =
-        if (sdk >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+    fun modes(sdk: Int): List<Int> = when {
+        sdk >= 29 -> listOf(WifiManager.WIFI_MODE_FULL_HIGH_PERF, WifiManager.WIFI_MODE_FULL_LOW_LATENCY)
+        else -> listOf(WifiManager.WIFI_MODE_FULL_HIGH_PERF)
+    }
 }
 
-/** Holds one [WifiManager.WifiLock] while [WifiLockPolicy] wants it. Main thread only. */
+/** Holds the [WifiManager.WifiLock]s of [WifiLockPolicy.modes] while [WifiLockPolicy] wants them. Main thread only. */
 class WifiLinkLock(context: Context) {
-    private val lock: WifiManager.WifiLock? = try {
-        context.applicationContext.getSystemService(WifiManager::class.java)
-            ?.createWifiLock(WifiLockPolicy.mode(Build.VERSION.SDK_INT), "geekbridge-link")
-            ?.apply { setReferenceCounted(false) }
+    private val locks: List<WifiManager.WifiLock> = try {
+        val wm = context.applicationContext.getSystemService(WifiManager::class.java)
+        WifiLockPolicy.modes(Build.VERSION.SDK_INT).mapNotNull { mode ->
+            wm?.createWifiLock(mode, "geekbridge-link-$mode")?.apply { setReferenceCounted(false) }
+        }
     } catch (_: RuntimeException) {
-        null
+        emptyList()
     }
 
-    val held: Boolean get() = lock?.isHeld == true
+    val held: Boolean get() = locks.any { it.isHeld }
 
     fun set(wanted: Boolean) {
-        val l = lock ?: return
+        if (locks.isEmpty()) return
         try {
-            if (wanted && !l.isHeld) {
-                l.acquire()
-                GbLog.i("wifi", "wifi lock acquired")
-            } else if (!wanted && l.isHeld) {
-                l.release()
+            if (wanted && !held) {
+                locks.forEach { it.acquire() }
+                GbLog.i("wifi", "wifi lock acquired (${locks.size} mode(s))")
+            } else if (!wanted && held) {
+                locks.forEach { if (it.isHeld) it.release() }
                 GbLog.i("wifi", "wifi lock released")
             }
         } catch (e: RuntimeException) {

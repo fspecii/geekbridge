@@ -39,6 +39,9 @@ class LinkService : Service() {
     private var callback: ConnectivityManager.NetworkCallback? = null
     private var lastNetwork: Long? = null
     private var lastV4: Set<String>? = null
+    private val wifiAddresses = HashMap<Long, List<String>>()
+    private var pushedBind: String? = null
+    private var bindPushed = false
     private val restart = Runnable { restartGen++; restartLink(0, restartGen) }
     private lateinit var wifi: WifiLinkLock
     private var wasConnected = false
@@ -144,6 +147,8 @@ class LinkService : Service() {
         main.removeCallbacksAndMessages(null)
         callback?.let { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(it) }
         callback = null
+        wifiAddresses.clear()
+        pushWifiBind()
         controller.stop(R.string.link_stop_background)
         super.onDestroy()
     }
@@ -175,11 +180,15 @@ class LinkService : Service() {
 
             override fun onLost(network: Network) {
                 GbLog.i("link", "wifi network lost")
+                wifiAddresses.remove(network.networkHandle)
+                pushWifiBind()
             }
 
             override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
-                if (network.networkHandle != lastNetwork) return
                 val v4 = lp.linkAddresses.mapNotNull { it.address.takeIf { a -> a is Inet4Address }?.hostAddress }.toSet()
+                wifiAddresses[network.networkHandle] = v4.toList()
+                pushWifiBind()
+                if (network.networkHandle != lastNetwork) return
                 val changed = ServicePolicy.addressesChanged(lastV4, v4)
                 lastV4 = v4
                 if (changed) {
@@ -199,6 +208,16 @@ class LinkService : Service() {
         } catch (_: RuntimeException) {
             // Too many callbacks or missing permission: the link still works, it just will not re-announce.
         }
+    }
+
+    /** Keeps the core's dials and announcements on Wi-Fi when mobile data is the default network ([WifiBindPolicy]). */
+    private fun pushWifiBind() {
+        val ip = WifiBindPolicy.choose(wifiAddresses.values)
+        if (!WifiBindPolicy.shouldPush(!bindPushed, pushedBind, ip)) return
+        bindPushed = true
+        pushedBind = ip
+        GbLog.i("link", "wifi bind ${if (ip != null) "set" else "cleared"}")
+        controller.setWifiBind(ip)
     }
 
     /** A pairing that never finished must not keep the service alive forever: look again when its grace ends. */

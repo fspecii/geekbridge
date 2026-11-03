@@ -357,6 +357,18 @@ class DebugDiagnosticsTest {
         )) assertTrue("missing '$needle' in:\n$text", needle in text)
     }
 
+    @Test fun linkHealthExplainsTheLastDrop() {
+        val drop = DropNote(atMs = 1_000_000, code = "ping_timeout", network = "wifi, internet validated, unmetered", quietMs = 74_000)
+        val lines = LinkHealthText.render(drop, 3, nowMs = 1_000_000 + 300_000)
+        val text = lines.joinToString("\n")
+        for (needle in listOf("5 min ago", "reason ping_timeout", "network then: wifi", "for 74 s before it closed", "closes since the app started: 3"))
+            assertTrue("missing '$needle' in:\n$text", needle in text)
+        assertTrue(LinkHealthText.render(null, 0, 5).single().contains("no link has closed"))
+        assertTrue("unknown time" in LinkHealthText.render(drop.copy(quietMs = null), 1, 2_000_000).joinToString())
+        val dump = DebugStateText.render(model(emptyList(), emptyList()).copy(linkHealth = lines))
+        assertTrue("== Link health ==" in dump && "reason ping_timeout" in dump)
+    }
+
     @Test fun stateDumpNeverContainsSeededPersonalData() {
         val history = EventLog(50).also { l -> hostile().forEach(l::add) }.all()
         val exceptions = EventLog(20).also { l -> hostile().forEach(l::add) }.all()

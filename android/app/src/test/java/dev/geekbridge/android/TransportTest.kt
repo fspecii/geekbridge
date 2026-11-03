@@ -101,6 +101,10 @@ class TransportProtocolTest {
         assertEquals("transport_screen", screen.getString("action"))
         assertEquals(false, screen.getBoolean("on"))
         assertEquals("transport_heartbeat_now", JSONObject(TransportProtocol.heartbeatNowRequest()).getString("action"))
+        val bind = JSONObject(TransportProtocol.wifiBindRequest("192.168.1.20"))
+        assertEquals("transport_wifi_bind", bind.getString("action"))
+        assertEquals("192.168.1.20", bind.getString("ip"))
+        assertFalse(JSONObject(TransportProtocol.wifiBindRequest(null)).has("ip")) // absent clears it
         assertEquals("transport_disconnect", JSONObject(TransportProtocol.disconnectRequest(3)).getString("action"))
         assertEquals("transport_unpair", JSONObject(TransportProtocol.unpairRequest(ID_PEER)).getString("action"))
         val wait = JSONObject(TransportProtocol.waitRequest(7, Long.MAX_VALUE))
@@ -253,6 +257,18 @@ class TransportControllerTest {
         assertTrue(c.notice!!.text.contains("removed the pairing"))
         c.eventsUpTo(6) // already seen
         assertEquals(before + 1, f.actions().count { it == "transport_status" })
+    }
+
+    @Test fun aClosedLinkEventCarriesHowLongTheComputerWasSilent() {
+        val ev = { q: Any? ->
+            val e = JSONObject().put("seq", 9).put("kind", "link_closed").put("connection_id", 3).put("code", "ping_timeout")
+            if (q != null) e.put("quiet_ms", q)
+            TransportProtocol.parseSnapshot(running().put("events", JSONArray().put(e)).put("last_event_seq", 9))!!.events.single()
+        }
+        assertEquals(74_000L, ev(74_000).quietMs)
+        assertNull(ev(null).quietMs)
+        assertNull(ev(-5).quietMs)
+        assertNull(ev("soon").quietMs)
     }
 
     @Test fun failedStartReturnsToStoppedWithAnExplanation() {

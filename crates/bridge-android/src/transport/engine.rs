@@ -191,6 +191,8 @@ struct Event {
     connection_id: Option<u64>,
     device_id: Option<String>,
     code: Option<&'static str>,
+    /// Milliseconds since anything was last heard from the computer, on a `link_closed` event.
+    quiet_ms: Option<u64>,
 }
 
 #[derive(Default)]
@@ -223,6 +225,17 @@ impl State {
         device: Option<&DeviceId>,
         code: Option<&'static str>,
     ) {
+        self.event_quiet(kind, connection_id, device, code, None);
+    }
+
+    fn event_quiet(
+        &mut self,
+        kind: &'static str,
+        connection_id: Option<u64>,
+        device: Option<&DeviceId>,
+        code: Option<&'static str>,
+        quiet_ms: Option<u64>,
+    ) {
         if !self.open {
             return;
         }
@@ -236,6 +249,7 @@ impl State {
             connection_id,
             device_id: device.map(|d| d.to_string()),
             code,
+            quiet_ms,
         });
         self.changed.notify_all();
     }
@@ -719,12 +733,21 @@ impl Core {
     }
 
     fn remove_conn(&self, id: u64, event: Option<(&'static str, Option<&'static str>)>) {
+        self.remove_conn_quiet(id, event, None);
+    }
+
+    fn remove_conn_quiet(
+        &self,
+        id: u64,
+        event: Option<(&'static str, Option<&'static str>)>,
+        quiet_ms: Option<u64>,
+    ) {
         let mut st = self.lock();
         let device = st.conns.get(&id).map(|c| c.peer_id.clone());
         let present = device.is_some();
         st.drop_connection(id);
         if present && let Some((kind, code)) = event {
-            st.event(kind, Some(id), device.as_ref(), code);
+            st.event_quiet(kind, Some(id), device.as_ref(), code, quiet_ms);
         }
     }
 
@@ -887,6 +910,9 @@ impl Core {
                 if let Some(d) = &e.device_id {
                     o.insert("device_id".into(), d.as_str().into());
                 }
+                if let Some(q) = e.quiet_ms {
+                    o.insert("quiet_ms".into(), q.into());
+                }
                 if let Some(c) = e.code {
                     o.insert("code".into(), c.into());
                 }
@@ -987,7 +1013,13 @@ async fn inbound(core: Arc<Core>, stream: TcpStream, permit: tokio::sync::OwnedS
 }
 
 pub(super) async fn outbound(core: Arc<Core>, attempt: u64, addr: SocketAddr, target: DeviceId) {
-    match timeout(HANDSHAKE_DEADLINE, core.endpoint.connect(addr, &target)).await {
+    match timeout(
+        HANDSHAKE_DEADLINE,
+        core.endpoint
+            .connect_from(addr, &target, super::dial_source(addr.ip())),
+    )
+    .await
+    {
         Ok(Ok(hs)) => drive(core, hs, Origin::Outbound, Some(attempt), Some(addr)).await,
         Ok(Err(e)) => core.attempt_failed(attempt, &target, kde_code(&e)),
         Err(_) => core.attempt_failed(attempt, &target, "timeout"),
@@ -1296,7 +1328,8 @@ async fn run_trusted(
     }
     let redial = exit.is_some_and(|(kind, _)| kind == "link_closed");
     let device = core.lock().conns.get(&id).map(|c| c.peer_id.clone());
-    core.remove_conn(id, exit);
+    let quiet = u64::try_from(beat.silent_for(std::time::Instant::now()).as_millis()).ok();
+    core.remove_conn_quiet(id, exit, quiet);
     if redial && let Some(device) = device {
         spawn_redial(&core, device);
     }

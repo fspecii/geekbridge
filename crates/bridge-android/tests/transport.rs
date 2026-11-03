@@ -383,6 +383,30 @@ fn heartbeat_now_needs_no_running_transport_and_takes_no_arguments() {
 }
 
 #[test]
+fn wifi_bind_takes_a_unicast_ipv4_address_or_nothing() {
+    let d = Dispatcher::new();
+    let v = parse(
+        &d.handle(&request("transport_wifi_bind", json!({ "ip": "192.168.1.20" })).to_string()),
+    );
+    assert_eq!(ok(&v)["bound"], true);
+    for bad in [
+        json!("127.0.0.1"),
+        json!("0.0.0.0"),
+        json!("fe80::1"),
+        json!("x"),
+        json!(5),
+        json!(null),
+    ] {
+        let v = parse(&d.handle(&request("transport_wifi_bind", json!({ "ip": bad })).to_string()));
+        assert_eq!(v["ok"], false, "{bad}");
+    }
+    let v = parse(&d.handle(&request("transport_wifi_bind", json!({})).to_string()));
+    assert_eq!(ok(&v)["bound"], false, "no address clears it");
+    let v = parse(&d.handle(&request("transport_wifi_bind", json!({ "x": 1 })).to_string()));
+    assert_eq!(v["ok"], false);
+}
+
+#[test]
 fn nothing_starts_before_transport_start() {
     let d = Dispatcher::new();
     let dir = tempfile::tempdir().unwrap();

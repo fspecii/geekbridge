@@ -171,7 +171,27 @@ data class StateModel(
     val logLines: Int,
     val logBytes: Int,
     val streamingTo: Int,
+    val linkHealth: List<String> = emptyList(),
 )
+
+/** The last time a link closed: why (the core's reason code), on which network, and how long the computer had been silent. */
+data class DropNote(val atMs: Long, val code: String, val network: String, val quietMs: Long?)
+
+/** The "link health" lines of the dump. Pure. Only structured facts, never an address. */
+object LinkHealthText {
+    fun render(last: DropNote?, drops: Int, nowMs: Long): List<String> = buildList {
+        if (last == null) {
+            add("no link has closed since the app started")
+        } else {
+            val ago = ((nowMs - last.atMs).coerceAtLeast(0)) / 1000
+            add("last close: ${span(ago)} ago, reason ${last.code}, network then: ${last.network}")
+            add("nothing heard from the computer for ${last.quietMs?.let { span(it / 1000) } ?: "an unknown time"} before it closed")
+            add("closes since the app started: $drops")
+        }
+    }
+
+    private fun span(s: Long) = if (s < 120) "${s} s" else "${s / 60} min"
+}
 
 object DebugStateText {
     fun render(m: StateModel): String = buildString {
@@ -208,6 +228,9 @@ object DebugStateText {
         appendLine("link: ${m.linkPhase}")
         appendLine("network: ${m.network}")
         appendLine("doze: ${if (m.dozing) "IDLE (dozing)" else "not idle"}; power saver: ${on(m.powerSave)}; standby bucket: ${m.standbyBucket}")
+        appendLine()
+        appendLine("== Link health ==")
+        m.linkHealth.ifEmpty { listOf("not tracked") }.forEach(::appendLine)
         appendLine()
         appendLine("== Debug log ==")
         appendLine("buffered: ${m.logLines} lines / ${m.logBytes} bytes; computers receiving it: ${m.streamingTo}")
@@ -323,6 +346,7 @@ object DebugStateCollector {
         streamingTo: Int,
         linkHistory: List<String>,
         exceptions: List<String>,
+        linkHealth: List<String> = emptyList(),
     ): StateModel {
         val inputs = inputs(ctx, debugStreaming)
         val pm = ctx.getSystemService(PowerManager::class.java)
@@ -343,7 +367,7 @@ object DebugStateCollector {
             network = network(ctx),
             linkPhase = c.phase.name + (c.snapshot?.let { s -> ", ${s.connections.count { it.trusted }} trusted connection(s)" } ?: ""),
             linkHistory = linkHistory, exceptions = exceptions,
-            logLines = ring.size(), logBytes = ring.byteSize(), streamingTo = streamingTo,
+            logLines = ring.size(), logBytes = ring.byteSize(), streamingTo = streamingTo, linkHealth = linkHealth,
         )
     }
 
