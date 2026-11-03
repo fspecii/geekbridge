@@ -3,7 +3,7 @@
 GitHub Actions needs billing the project does not have, so releases are built **locally on the Linux (Arch/Omarchy)
 maintainer machine** and uploaded with `gh release create`, which works without Actions. One command does it:
 
-    scripts/release-local.sh vX.Y.Z [--prerelease] [--dry-run] [--publish] [--skip-tests] [--tag] [--push-tag]
+    scripts/release-local.sh vX.Y.Z [--prerelease] [--dry-run] [--publish] [--skip-tests] [--tag] [--push-tag] [--notes-file FILE]
 
 `.github/workflows/release.yml` still exists and still works the day Actions does (for example once the repository is
 public: public repositories get free Actions minutes). The local script copies its asset names, `SHA256SUMS` format,
@@ -133,7 +133,7 @@ fat-LTO release profile linked nine binaries at the same time; raise `GB_JOBS` o
 All scratch lives in `$GB_RELEASE_DIR` (default `~/.cache/gb-release`), one directory per tag, never in the repository:
 
     ~/.cache/gb-release/vX.Y.Z/out/              the finished assets (and SHA256SUMS)
-                          /release-notes.md      CHANGELOG section + signer line
+                          /release-notes.md      CHANGELOG section (or --notes-file) + signer line
                           /logs/<step>.log       one log per step (tail shown on failure)
                           /target-desktop, target-android, target-windows, src, stage, tmp, arch-out   build trees
                           /r8-mapping-*.txt      R8 mappings (to decode release crash traces; not uploaded)

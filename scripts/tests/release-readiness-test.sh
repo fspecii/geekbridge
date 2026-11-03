@@ -84,6 +84,17 @@ if command -v keytool >/dev/null; then
         expect_fail "malformed signer pin" "64 hex" "${rl[@]}"
     expect_fail "stable tag with --prerelease" "looks stable" scripts/release-local.sh v0.1.0 --prerelease --dry-run
     expect_fail "pre-release tag without --prerelease" "pass --prerelease" scripts/release-local.sh v0.1.0-rc.2 --dry-run
+    # --notes-file: the file replaces the CHANGELOG section; missing/empty files are refused. --print-notes stops before any build.
+    printf 'Line one\n\nLine two\n' > "$T/notes.md"; : > "$T/empty.md"
+    got="$(cd "$T" && "$ROOT/scripts/release-local.sh" v0.1.0 --dry-run --print-notes --notes-file notes.md 2>/dev/null | sed "1,/^----- release notes -----$/d")" || got="(failed)"
+    [[ "$got" == $'Line one\n\nLine two' ]] && ok "--notes-file (relative path) supplies the notes body" || bad "--notes-file notes body wrong: $got"
+    got="$(scripts/release-local.sh v0.1.0 --dry-run --print-notes --notes-file="$T/notes.md" 2>/dev/null | sed "1,/^----- release notes -----$/d")" || got="(failed)"
+    [[ "$got" == $'Line one\n\nLine two' ]] && ok "--notes-file=PATH form works" || bad "--notes-file=PATH wrong: $got"
+    expect_fail "--notes-file missing file" "not a readable file" scripts/release-local.sh v0.1.0 --dry-run --print-notes --notes-file "$T/none.md"
+    expect_fail "--notes-file empty file" "is empty" scripts/release-local.sh v0.1.0 --dry-run --print-notes --notes-file "$T/empty.md"
+    expect_fail "--notes-file without a value" "needs a path" scripts/release-local.sh v0.1.0 --dry-run --notes-file
+    got="$(scripts/release-local.sh v0.1.0 --dry-run --print-notes 2>/dev/null)"
+    grep -q '^### Highlights' <<<"$got" && ok "without --notes-file the CHANGELOG section is used" || bad "CHANGELOG section not used by default"
     ok "(release-local.sh was never run past preflight)"
 else
     echo "skip keystore checks: no keytool (scripts/bootstrap-android.sh)"

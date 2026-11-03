@@ -15,6 +15,9 @@
 #   --skip-tests    skip cargo fmt/clippy/test (only when they already passed on this commit)
 #   --skip-arch     skip the Arch package (the longest single step)
 #   --with-windows  also cross-build an EXPERIMENTAL Windows x86_64 (GNU) zip with zig; see docs/release-local.md
+#   --notes-file F  use the file F as the release notes body instead of the CHANGELOG.md '## [X.Y.Z]' section (the signer
+#                   line and asset note are still appended). Must exist and be non-empty; also works with --dry-run
+#   --print-notes   print the notes body that would be used and exit right after that check (builds nothing)
 #   --prune         delete build trees (target dirs, source copy) after success; the finished assets stay
 #   -h, --help      this text
 #
@@ -37,7 +40,7 @@ if [[ -z "${GB_RL_SELF:-}" ]]; then
     self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")"
     copy="$(mktemp "${TMPDIR:-/tmp}/gb-release-local.XXXXXX")"
     cp "$self" "$copy"
-    GB_RL_SELF="$self" GB_RL_COPY="$copy" exec bash "$copy" "$@"
+    GB_RL_CWD="$PWD" GB_RL_SELF="$self" GB_RL_COPY="$copy" exec bash "$copy" "$@"
 fi
 [[ -z "${GB_RL_COPY:-}" ]] || rm -f "$GB_RL_COPY"
 
@@ -51,9 +54,14 @@ warn() { printf '!!! WARNING: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- arguments
-TAG="" PRERELEASE=0 DRY=0 PUBLISH=0 TESTS=1 ARCH=1 WINDOWS=0 MKTAG=0 PUSHTAG=0 PRUNE=0
-for arg in "$@"; do
+TAG="" PRERELEASE=0 DRY=0 PUBLISH=0 TESTS=1 ARCH=1 WINDOWS=0 MKTAG=0 PUSHTAG=0 PRUNE=0 NOTES_FILE="" PRINT_NOTES=0
+args=("$@")
+for (( i = 0; i < ${#args[@]}; i++ )); do
+    arg="${args[i]}"
     case "$arg" in
+        --notes-file) (( i + 1 < ${#args[@]} )) || die "--notes-file needs a path"; NOTES_FILE="${args[++i]}" ;;
+        --notes-file=*) NOTES_FILE="${arg#--notes-file=}" ;;
+        --print-notes) PRINT_NOTES=1 ;;
         --prerelease) PRERELEASE=1 ;;
         --dry-run) DRY=1 ;;
         --publish) PUBLISH=1 ;;
@@ -63,7 +71,7 @@ for arg in "$@"; do
         --skip-arch) ARCH=0 ;;
         --with-windows) WINDOWS=1 ;;
         --prune) PRUNE=1 ;;
-        -h|--help) sed -n '2,32p' "$GB_RL_SELF"; exit 0 ;;
+        -h|--help) sed -n '2,34p' "$GB_RL_SELF"; exit 0 ;;
         -*) die "unknown option: $arg (try --help)" ;;
         *) [[ -z "$TAG" ]] || die "only one tag expected"; TAG="$arg" ;;
     esac
@@ -132,7 +140,14 @@ if (( ! DRY )); then
     fi
 fi
 
-# Release notes source.
+# Release notes source: --notes-file, else the CHANGELOG.md section for this version.
+if [[ -n "$NOTES_FILE" ]]; then
+    [[ "$NOTES_FILE" == /* ]] || NOTES_FILE="${GB_RL_CWD:-$ROOT}/$NOTES_FILE"
+    [[ -f "$NOTES_FILE" && -r "$NOTES_FILE" ]] || die "--notes-file '$NOTES_FILE' is not a readable file"
+    notes_body="$(cat -- "$NOTES_FILE")"
+    [[ -n "${notes_body//[$' \t\n']/}" ]] || die "--notes-file '$NOTES_FILE' is empty"
+    note "release notes: $NOTES_FILE ($(wc -l <"$NOTES_FILE") lines); CHANGELOG.md is not used for them"
+else
 notes_body="$(awk -v v="$VERSION" '
     $0 ~ "^## \\[" v "\\]" {on=1; next}
     on && /^## \[/ {exit}
@@ -146,6 +161,8 @@ if [[ -z "${notes_body//[$' \t\n']/}" ]]; then
         notes_body="(no changelog section)"
     fi
 fi
+fi
+if (( PRINT_NOTES )); then printf -- "----- release notes -----\n%s\n" "$notes_body"; exit 0; fi
 
 # Android toolchain (project-local; scripts/bootstrap-android.sh). Run commands inside it with with_android.
 with_android() { ( set +u; source "$ROOT/scripts/android-env.sh"; "$@" ); }

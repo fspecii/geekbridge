@@ -69,6 +69,7 @@ Decided 2026-11-02 (see [licence-decision.md](licence-decision.md)): GPL-3.0-or-
 - [ ] **Code signing** for Windows (Authenticode / MSIX) and macOS (Developer ID, notarisation). Until then the
   README must keep saying the binaries are unsigned.
 - [ ] **Trademark / name**: confirm "GeekBridge" and the `dev.geekbridge` identifiers are yours to use.
+- [ ] **Release notes**: `docs/release-notes-v0.1.0.md` reviewed (placeholder security contact filled); pass it with `scripts/release-local.sh v0.1.0 --notes-file docs/release-notes-v0.1.0.md`. Go/no-go: [reports/stable-go-no-go.md](reports/stable-go-no-go.md).
 - [ ] **Security contact** in `SECURITY.md` (replace the comment) and enable GitHub private vulnerability reporting.
 - [ ] **Privacy statement**: the app has no accounts or servers; the only network call besides the LAN is the
   GitHub update check. Say so in the README and store listings.
