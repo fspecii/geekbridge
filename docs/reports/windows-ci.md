@@ -84,3 +84,11 @@ ACL check on the runner.
 
 - Windows debug run 41517054444: success.
 - check.yml run 41517055060: success (all jobs, including macOS).
+
+## Persistence lock timeouts: resolved (see windows-persistence-stability.md)
+
+Root cause was an unfair lock, not only a slow disk: the `LOCKFILE_FAIL_IMMEDIATELY` polling let one thread wait 894 ms of a
+1.15 s run. Windows now queues a blocking overlapped `LockFileEx` (FIFO, per-thread waits flat at about 70-125 ms); the replace
+retry is time-bounded (5 s); the contended tests size themselves to the measured cycle cost.
+Verification on main: windows-debug `bridge-kde` runs 41656266357, 41656892951, 41657395263, 41658354965, 41659093589, all green
+(one on a slow runner, where the test scaled itself down to 4 threads); check.yml 41656197513 green on all jobs.
