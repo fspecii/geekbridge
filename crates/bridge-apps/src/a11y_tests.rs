@@ -118,7 +118,16 @@ impl Tree {
 }
 
 /// Runs `frames` frames of `ui` at `size` with AccessKit on and returns the final tree.
-pub fn capture(size: egui::Vec2, mut ui: impl FnMut(&egui::Context)) -> Tree {
+pub fn capture(size: egui::Vec2, ui: impl FnMut(&egui::Context)) -> Tree {
+    capture_scaled(size, 1.0, ui)
+}
+
+/// As [`capture`] at a display scale (1.0 = 100%, 1.5 = 150%). `size` is the window in points.
+pub fn capture_scaled(
+    size: egui::Vec2,
+    pixels_per_point: f32,
+    mut ui: impl FnMut(&egui::Context),
+) -> Tree {
     let ctx = egui::Context::default();
     theme::install_fonts(&ctx);
     ctx.enable_accesskit();
@@ -127,6 +136,14 @@ pub fn capture(size: egui::Vec2, mut ui: impl FnMut(&egui::Context)) -> Tree {
     for _ in 0..4 {
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    native_pixels_per_point: Some(pixels_per_point),
+                    ..Default::default()
+                },
+            ))
+            .collect(),
             ..Default::default()
         };
         let out = ctx.run(input, &mut ui);
@@ -371,4 +388,247 @@ fn tab_reaches_the_app_before_the_connection_strip() {
             "{app:?}: the strip must be the last two stops, got {stops:?}"
         );
     }
+}
+
+/// Every operable node with its on-screen size in points, as (name, width, height).
+fn target_sizes(tree: &Tree) -> Vec<(String, f64, f64)> {
+    tree.nodes
+        .values()
+        // The floating scroll bar is a 2 pt strip until hovered; wheel, touch-pad and keys scroll
+        // too, so it is not the only way to operate the list.
+        .filter(|n| is_control(n) && !name(n).ends_with("scroll bar"))
+        .filter_map(|n| {
+            let b = n.bounds()?;
+            Some((name(n).to_owned(), b.x1 - b.x0, b.y1 - b.y0))
+        })
+        .collect()
+}
+
+fn undersized(tree: &Tree, ppp: f32, min_points: f64) -> Vec<String> {
+    let mut bad: Vec<String> = target_sizes(tree)
+        .into_iter()
+        .filter(|(_, w, h)| *w < min_points || *h < min_points)
+        .map(|(n, w, h)| {
+            format!(
+                "{n:?} {w:.0}x{h:.0} pt = {:.0}x{:.0} px at {ppp}",
+                w * f64::from(ppp),
+                h * f64::from(ppp)
+            )
+        })
+        .collect();
+    bad.sort();
+    bad.dedup();
+    bad
+}
+
+/// WCAG 2.2 SC 2.5.8 (AA): pointer targets are at least 24 x 24 CSS px. A point is a CSS px, so the
+/// size in points must not shrink with the display scale, and at 100% it is 24 device pixels.
+#[test]
+fn operable_targets_are_at_least_24_points_at_100_and_150_percent() {
+    let mut problems = Vec::new();
+    for ppp in [1.0_f32, 1.5] {
+        let size = egui::vec2(900.0, 640.0);
+        let mut trees = vec![("home".to_owned(), {
+            let ctx = egui::Context::default();
+            let mut home = HomeApp::new(1, &ctx);
+            capture_scaled(size, ppp, move |ctx| {
+                theme::apply(ctx, AppKind::Calls);
+                home.frame(ctx);
+            })
+        })];
+        for app in SHELL_APPS {
+            for (details, model) in [(true, paired()), (false, paired())] {
+                let ctx = egui::Context::default();
+                let mut shell = Shell::new(app, 1, ctx, apps::view_for(app));
+                shell.details_open = details;
+                trees.push((
+                    format!("{app:?} details={details}"),
+                    capture_scaled(size, ppp, move |ctx| {
+                        theme::apply(ctx, app);
+                        shell.model = model.clone();
+                        shell.frame(ctx);
+                    }),
+                ));
+            }
+        }
+        for (screen, tree) in trees {
+            for bad in undersized(&tree, ppp, 24.0) {
+                problems.push(format!("{screen} @{ppp}: {bad}"));
+            }
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    assert!(
+        problems.is_empty(),
+        "targets under 24 pt:\n{}",
+        problems.join("\n")
+    );
+}
+
+#[test]
+fn target_size_in_points_does_not_shrink_with_scale() {
+    let at = |ppp: f32| {
+        let ctx = egui::Context::default();
+        let mut shell = Shell::new(AppKind::Calls, 1, ctx, apps::view_for(AppKind::Calls));
+        let t = capture_scaled(egui::vec2(900.0, 640.0), ppp, move |ctx| {
+            theme::apply(ctx, AppKind::Calls);
+            shell.model = paired();
+            shell.frame(ctx);
+        });
+        let mut v: Vec<_> = target_sizes(&t)
+            .into_iter()
+            .map(|(n, w, h)| (n, w.round() as i32, h.round() as i32))
+            .collect();
+        v.sort();
+        v
+    };
+    // Text widths may differ by a point or two between scales (glyph hinting); heights must not.
+    let (a, b) = (at(1.0), at(1.5));
+    assert_eq!(a.len(), b.len());
+    for (x, y) in a.iter().zip(&b) {
+        assert!(
+            x.0 == y.0 && (x.1 - y.1).abs() <= 2 && x.2 == y.2,
+            "{x:?} vs {y:?}"
+        );
+    }
+}
+
+/// A focused control must be drawn with an outline: the shared 2 pt ink ring, or the accent stroke
+/// egui puts around a focused text field.
+fn has_focus_indicator(shapes: &[egui::epaint::ClippedShape], pal: &theme::Palette) -> bool {
+    use egui::epaint::Shape;
+    fn walk(s: &Shape, pal: &theme::Palette, hit: &mut bool) {
+        match s {
+            Shape::Vec(v) => v.iter().for_each(|s| walk(s, pal, hit)),
+            Shape::Rect(r) => {
+                let st = r.stroke;
+                *hit |= (st.color == theme::focus_color(pal) && st.width >= 2.0)
+                    || (st.color == pal.accent && st.width >= 1.0);
+            }
+            Shape::Circle(c) => {
+                let st = c.stroke;
+                *hit |= st.color == theme::focus_color(pal) && st.width >= 2.0;
+            }
+            _ => {}
+        }
+    }
+    let mut hit = false;
+    shapes.iter().for_each(|c| walk(&c.shape, pal, &mut hit));
+    hit
+}
+
+/// Tab through each screen: every stop it lands on must show a visible focus indicator, in both
+/// themes, and Tab must reach more than one control.
+#[test]
+fn every_tab_stop_draws_a_focus_indicator_in_both_themes() {
+    let mut problems = Vec::new();
+    for app in SHELL_APPS {
+        for theme_choice in [egui::Theme::Light, egui::Theme::Dark] {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            ctx.enable_accesskit();
+            theme::apply(&ctx, app);
+            ctx.set_theme(theme_choice);
+            let mut shell = Shell::new(app, 1, ctx.clone(), apps::view_for(app));
+            shell.details_open = true;
+            let mut seen: Vec<egui::Id> = Vec::new();
+            for step in 0..200 {
+                let mut events = Vec::new();
+                if step >= 3 {
+                    events.push(egui::Event::Key {
+                        key: egui::Key::Tab,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers::NONE,
+                    });
+                }
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 640.0),
+                    )),
+                    events,
+                    ..Default::default()
+                };
+                shell.model = paired();
+                let _ = ctx.run(input, |ctx| shell.frame(ctx));
+                let Some(id) = ctx.memory(|m| m.focused()) else {
+                    continue;
+                };
+                if step < 3 || seen.last() == Some(&id) {
+                    continue;
+                }
+                if seen.contains(&id) {
+                    break;
+                }
+                seen.push(id);
+                // The ring is painted by the widget on the frame after focus moved to it.
+                shell.model = paired();
+                let out = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(900.0, 640.0),
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| shell.frame(ctx),
+                );
+                let pal = theme::current(&ctx, app);
+                if !has_focus_indicator(&out.shapes, &pal) {
+                    let who = out
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .and_then(|u| u.nodes.iter().find(|(n, _)| *n == u.focus))
+                        .map(|(_, n)| format!("{:?} {:?} {:?}", n.role(), name(n), n.bounds()))
+                        .unwrap_or_default();
+                    // egui's own scroll bar handle takes Tab focus and cannot be restyled (documented).
+                    if !who.contains("scroll bar") {
+                        problems.push(format!(
+                            "{app:?} {theme_choice:?}: stop {} ({who})",
+                            seen.len()
+                        ));
+                    }
+                }
+            }
+            if seen.len() < 4 {
+                problems.push(format!(
+                    "{app:?} {theme_choice:?}: Tab reached only {} widgets",
+                    seen.len()
+                ));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The dot-matrix lettering and status dots are decoration: one readable node for the words, no
+/// extra focusable or operable node per dot.
+#[test]
+fn dot_matrix_and_status_dots_add_no_operable_nodes() {
+    let tree = capture(egui::vec2(400.0, 200.0), |ctx| {
+        theme::apply(ctx, AppKind::Calls);
+        let pal = theme::current(ctx, AppKind::Calls);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            crate::nothing::dot_text(ui, &pal, "Missed call", 3.0, pal.accent_fill, false);
+            theme::dot(ui, pal.ok, false);
+            theme::dot(ui, pal.err, true);
+        });
+    });
+    assert_eq!(tree.controls(), 0, "{}", tree.outline());
+    let named: Vec<_> = tree
+        .nodes
+        .values()
+        .filter(|n| !name(n).is_empty() && n.role() != Role::Window)
+        .collect();
+    assert_eq!(named.len(), 1, "{}", tree.outline());
+    let focusable = tree
+        .nodes
+        .values()
+        .filter(|n| n.supports_action(Action::Focus) && n.role() != Role::Window)
+        .count();
+    assert_eq!(focusable, 0, "{}", tree.outline());
 }

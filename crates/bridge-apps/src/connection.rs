@@ -517,7 +517,7 @@ impl Connections {
             crate::a11y::named(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.manual_address)
-                        .hint_text("Phone IP:port")
+                        .hint_text(crate::theme::hint(ui, "Phone IP:port"))
                         .char_limit(80),
                 ),
                 "Phone IP address and port",
@@ -525,7 +525,7 @@ impl Connections {
             crate::a11y::named(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.manual_id)
-                        .hint_text("Device ID")
+                        .hint_text(crate::theme::hint(ui, "Device ID"))
                         .char_limit(38),
                 ),
                 "Phone device ID",
@@ -581,7 +581,7 @@ impl Connections {
                     );
                     crate::a11y::named(ui.add(
                         egui::TextEdit::singleline(&mut self.entered_code)
-                            .hint_text("Code from phone")
+                            .hint_text(crate::theme::hint(ui, "Code from phone"))
                             .char_limit(8),
                     ), "Pairing code from the phone");
                     ui.horizontal(|ui| {

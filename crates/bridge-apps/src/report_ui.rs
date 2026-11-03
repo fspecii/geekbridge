@@ -67,6 +67,7 @@ impl ReportPanel {
             );
             ui.add_space(S1);
             ScrollArea::vertical()
+                .drag_to_scroll(false)
                 .id_salt("report-preview")
                 .max_height(150.0)
                 .show(ui, |ui| {

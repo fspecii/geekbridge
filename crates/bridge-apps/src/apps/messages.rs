@@ -365,7 +365,7 @@ impl Messages {
                         );
                     });
                 }
-                egui::ScrollArea::vertical()
+                egui::ScrollArea::vertical().drag_to_scroll(false)
                     .id_salt("thread-list")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -459,7 +459,7 @@ impl Messages {
             }
             + if ready { 0.0 } else { 74.0 };
         let body_h = (ui.available_height() - footer).max(80.0);
-        egui::ScrollArea::vertical()
+        egui::ScrollArea::vertical().drag_to_scroll(false)
             .id_salt("thread-scroll")
             .max_height(body_h)
             .min_scrolled_height(body_h)
@@ -575,7 +575,7 @@ impl Messages {
         let ready = dev.is_some_and(|d| send_blocker(d).is_none());
         let to = conv.and_then(|c| c.addresses.first().cloned());
         ui.add_space(6.0);
-        crate::a11y::named(
+        let reply = crate::a11y::named(
             ui.add(
                 egui::TextEdit::multiline(&mut self.reply)
                     .frame(false)
@@ -586,6 +586,7 @@ impl Messages {
             ),
             "Reply",
         );
+        theme::ring_when_focused(ui, pal, &reply);
         input::limit_chars(&mut self.reply, input::MAX_DRAFT_CHARS);
         if let Some(d) = dev {
             self.sim_picker(ui, pal, d);
@@ -753,6 +754,7 @@ impl Messages {
                 ),
                 "Recipient phone number",
             );
+            theme::ring_when_focused(ui, pal, &to);
             if to.changed() {
                 self.recipient = input::sanitize_dial(&self.recipient);
             }
@@ -773,6 +775,7 @@ impl Messages {
         let footer_h = 176.0 + if sims { 34.0 } else { 0.0 };
         let body_h = (ui.available_height() - footer_h).max(70.0);
         egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
             .id_salt("draft-scroll")
             .max_height(body_h)
             .min_scrolled_height(body_h)
@@ -790,6 +793,7 @@ impl Messages {
                     ),
                     "Message text",
                 );
+                theme::ring_when_focused(ui, pal, &body);
                 if body.changed() {
                     input::limit_chars(&mut self.draft, input::MAX_DRAFT_CHARS);
                 }
@@ -1798,6 +1802,7 @@ mod tests {
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         egui::ScrollArea::vertical()
+                            .drag_to_scroll(false)
                             .stick_to_bottom(true)
                             .show_viewport(ui, |ui, viewport| {
                                 let origin = ui.min_rect().top();

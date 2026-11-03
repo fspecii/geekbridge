@@ -162,7 +162,7 @@ impl Contacts {
                 crate::a11y::named(
                     ui.add(
                         egui::TextEdit::singleline(&mut self.query)
-                            .hint_text("Search name, number or email")
+                            .hint_text(crate::theme::hint(ui, "Search name, number or email"))
                             .margin(Margin::symmetric(8, 4))
                             .desired_width(f32::INFINITY),
                     ),
@@ -184,7 +184,7 @@ impl Contacts {
                     return;
                 }
                 let secs = sections(&view.people);
-                let mut area = egui::ScrollArea::vertical()
+                let mut area = egui::ScrollArea::vertical().drag_to_scroll(false)
                     .id_salt("people-list")
                     .auto_shrink([false, false]);
                 if let Some(y) = self.jump.take() {
@@ -737,11 +737,13 @@ mod tests {
                 };
                 let out = ctx.run(input, |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for person in &view.people {
-                                person_row(ui, &pal, person, false);
-                            }
-                        });
+                        egui::ScrollArea::vertical()
+                            .drag_to_scroll(false)
+                            .show(ui, |ui| {
+                                for person in &view.people {
+                                    person_row(ui, &pal, person, false);
+                                }
+                            });
                     });
                 });
                 ctx.tessellate(out.shapes, out.pixels_per_point);

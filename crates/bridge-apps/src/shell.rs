@@ -141,6 +141,7 @@ impl Shell {
     fn details(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         let headline = self.model.headline();
         ScrollArea::vertical()
+            .drag_to_scroll(false)
             .max_height((ui.ctx().screen_rect().height() * 0.4).clamp(120.0, 280.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
@@ -182,18 +183,22 @@ impl Shell {
                 }
                 self.connections.details(ui, pal, &self.model);
                 self.updates.details(ui, pal);
-                egui::CollapsingHeader::new(theme::caption(pal, tr("shell.technical_details")))
-                    .id_salt("technical")
-                    .show(ui, |ui| {
-                        for line in self.model.technical_lines(self.app, self.api_port) {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(line).monospace().size(12.0).color(pal.text2),
-                                )
-                                .wrap(),
-                            );
-                        }
-                    });
+                let technical =
+                    egui::CollapsingHeader::new(theme::caption(pal, tr("shell.technical_details")))
+                        .id_salt("technical")
+                        .show(ui, |ui| {
+                            for line in self.model.technical_lines(self.app, self.api_port) {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(line).monospace().size(12.0).color(pal.text2),
+                                    )
+                                    .wrap(),
+                                );
+                            }
+                        });
+                if technical.header_response.has_focus() {
+                    theme::focus_ring(ui, pal, technical.header_response.rect, 6);
+                }
                 ui.add_space(6.0);
             })
             .bars(ui.ctx());

@@ -392,6 +392,9 @@ pub fn apply(ctx: &egui::Context, app: AppKind) {
             };
             v.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, outline);
             v.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, pal.text3);
+            // egui draws a keyboard-focused stock button (and a pressed one) with the "active"
+            // style: give it the shared ink ring so focus is visible, not just a fill change.
+            v.widgets.active.bg_stroke = Stroke::new(2.0_f32, focus_color(&pal));
             v.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, pal.separator);
             v.widgets.noninteractive.corner_radius = radius;
             v.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, pal.text2);
@@ -434,6 +437,11 @@ pub fn semibold(text: impl Into<String>, size: f32) -> RichText {
 }
 pub fn secondary(pal: &Palette, text: impl Into<String>) -> RichText {
     RichText::new(text.into()).color(pal.text2)
+}
+/// Placeholder text of a stock text field. egui would draw it at half-strength ink (3.5:1 in the
+/// light theme); this is the secondary text colour, which is held to 4.5:1 on every surface.
+pub fn hint(ui: &Ui, text: &str) -> RichText {
+    RichText::new(text).color(palette(AppKind::Calls, ui.visuals().dark_mode).text3)
 }
 pub fn caption(pal: &Palette, text: impl Into<String>) -> RichText {
     secondary(pal, text).size(12.0)
@@ -528,6 +536,13 @@ pub fn focus_ring(ui: &Ui, pal: &Palette, rect: egui::Rect, radius: impl Into<Co
         Stroke::new(2.0_f32, focus_color(pal)),
         StrokeKind::Outside,
     );
+}
+
+/// Draws the focus ring around a frameless text field (stock fields draw their own outline).
+pub fn ring_when_focused(ui: &Ui, pal: &Palette, response: &Response) {
+    if response.has_focus() {
+        focus_ring(ui, pal, response.rect, 8);
+    }
 }
 
 /// [`focus_ring`] for round controls.
@@ -701,7 +716,8 @@ pub fn round_button(
     response
 }
 
-/// macOS-style segmented control. Returns true when the selection changed.
+/// macOS-style segmented control. Returns true when the selection changed. Each segment is
+/// 26 pt tall (WCAG 2.2 target size minimum is 24 px at 100% scale).
 pub fn segmented<T: PartialEq + Copy>(
     ui: &mut Ui,
     pal: &Palette,
@@ -717,15 +733,15 @@ pub fn segmented<T: PartialEq + Copy>(
         })
         .collect();
     let seg_w = galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max) + 26.0;
-    let total = vec2(seg_w * options.len() as f32 + 4.0, 26.0);
+    let total = vec2(seg_w * options.len() as f32 + 4.0, 30.0);
     let (rect, _) = ui.allocate_exact_size(total, Sense::hover());
-    let track = CornerRadius::same(13);
+    let track = CornerRadius::same(15);
     ui.painter().rect_filled(rect, track, pal.control);
     let mut changed = false;
     for (i, ((option, label), galley)) in options.iter().zip(galleys).enumerate() {
         let seg = egui::Rect::from_min_size(
             egui::pos2(rect.left() + 2.0 + seg_w * i as f32, rect.top() + 2.0),
-            vec2(seg_w, 22.0),
+            vec2(seg_w, 26.0),
         );
         let id = ui.id().with(("segment", i));
         let response = ui.interact(seg, id, Sense::click());
@@ -736,22 +752,22 @@ pub fn segmented<T: PartialEq + Copy>(
             } else {
                 Color32::WHITE
             };
-            ui.painter().rect_filled(seg, CornerRadius::same(11), fill);
+            ui.painter().rect_filled(seg, CornerRadius::same(13), fill);
             ui.painter().rect_stroke(
                 seg,
-                CornerRadius::same(11),
+                CornerRadius::same(13),
                 Stroke::new(1.0_f32, pal.separator),
                 StrokeKind::Inside,
             );
         } else if response.hovered() {
             ui.painter().rect_filled(
                 seg,
-                CornerRadius::same(11),
+                CornerRadius::same(13),
                 pal.control_hover.gamma_multiply(0.6),
             );
         }
         if response.has_focus() {
-            focus_ring(ui, pal, seg, CornerRadius::same(11));
+            focus_ring(ui, pal, seg, CornerRadius::same(13));
         }
         let color = if selected { pal.text } else { pal.text2 };
         ui.painter().galley(
@@ -925,6 +941,84 @@ mod contrast_tests {
             assert!(ratio(p.selected_fg, p.selected_bg) >= 4.5);
         }
         assert_eq!(palette(AppKind::Calls, true).content, Color32::BLACK);
+    }
+
+    /// The colours egui derives on its own (placeholder text in stock fields, disabled controls,
+    /// links, the outline of a text field), judged from the installed style like ThemeContrastTest
+    /// does on Android. Placeholder and disabled text are held to 4.5:1 here too: a hint is the
+    /// only label a sighted user has on an empty field.
+    #[test]
+    fn derived_text_and_control_outlines_meet_aa_in_both_themes() {
+        for (theme_choice, dark) in [(Theme::Light, false), (Theme::Dark, true)] {
+            let ctx = egui::Context::default();
+            apply(&ctx, AppKind::Calls);
+            let style = ctx.style_of(theme_choice);
+            let v = &style.visuals;
+            let p = palette(AppKind::Calls, dark);
+            for (bg_name, bg) in [("content", p.content), ("field", v.extreme_bg_color)] {
+                let hint = p.text3;
+                let r = ratio(hint, bg);
+                assert!(
+                    r >= 4.5,
+                    "dark={dark} placeholder (theme::hint) on {bg_name}: {r:.2}"
+                );
+                let link = ratio(v.hyperlink_color, bg);
+                assert!(link >= 4.5, "dark={dark} link on {bg_name}: {link:.2}");
+            }
+            // Non-text: the outline that finds a text field's edge (WCAG 1.4.11, 3:1).
+            for bg in [p.content, p.sidebar, v.extreme_bg_color] {
+                let r = ratio(v.widgets.inactive.bg_stroke.color, bg);
+                assert!(r >= 3.0, "dark={dark} field outline on {bg:?}: {r:.2}");
+            }
+            // The text of a selection stays readable on the selection fill.
+            let sel = v.selection.bg_fill;
+            let blended = Color32::from_rgb(
+                ((u16::from(sel.r()) * u16::from(sel.a())
+                    + u16::from(p.content.r()) * (255 - u16::from(sel.a())))
+                    / 255) as u8,
+                ((u16::from(sel.g()) * u16::from(sel.a())
+                    + u16::from(p.content.g()) * (255 - u16::from(sel.a())))
+                    / 255) as u8,
+                ((u16::from(sel.b()) * u16::from(sel.a())
+                    + u16::from(p.content.b()) * (255 - u16::from(sel.a())))
+                    / 255) as u8,
+            );
+            let r = ratio(p.text, blended);
+            assert!(r >= 4.5, "dark={dark} text on selection: {r:.2}");
+        }
+    }
+
+    /// egui's default placeholder colour is half-strength ink (3.46:1 in light): every hint must
+    /// name a colour, through `theme::hint` or an explicit `.color(..)`.
+    #[test]
+    fn placeholders_never_use_egui_default_weak_colour() {
+        let files: [(&str, &str); 6] = [
+            ("connection.rs", include_str!("connection.rs")),
+            ("share_app.rs", include_str!("share_app.rs")),
+            ("apps/contacts.rs", include_str!("apps/contacts.rs")),
+            ("apps/calendar.rs", include_str!("apps/calendar.rs")),
+            ("apps/messages.rs", include_str!("apps/messages.rs")),
+            ("apps/clipboard.rs", include_str!("apps/clipboard.rs")),
+        ];
+        for (name, src) in files {
+            assert!(
+                !src.contains(".hint_text(\""),
+                "{name}: a plain-string hint_text draws at egui's 3.5:1 weak colour"
+            );
+        }
+    }
+
+    #[test]
+    fn disabled_controls_keep_a_readable_label() {
+        // Disabled text is exempt from WCAG contrast, but a blocked button must still be legible
+        // enough to read why (the reason is written beside it). Held at 3:1 for text3, the colour
+        // `pill_button`/`round_button` use for it, on the surfaces they sit on.
+        for dark in [false, true] {
+            let p = palette(AppKind::Calls, dark);
+            for bg in [p.content, p.control, p.tile] {
+                assert!(ratio(p.text3, bg) >= 3.0);
+            }
+        }
     }
 
     #[test]

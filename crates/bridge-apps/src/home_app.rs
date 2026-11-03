@@ -1099,6 +1099,7 @@ impl HomeApp {
             )
             .show(ctx, |ui| {
                 ScrollArea::vertical()
+                    .drag_to_scroll(false)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         // A Wayland surface can be configured at 0x0 before its first real size.

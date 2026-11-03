@@ -165,6 +165,7 @@ impl Calls {
             ),
             "Phone number",
         );
+        theme::ring_when_focused(ui, pal, &edit);
         if edit.changed() {
             self.number = input::sanitize_dial(&self.number);
         }

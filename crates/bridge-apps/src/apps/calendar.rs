@@ -387,6 +387,7 @@ impl Calendar {
                     Stroke::new(1.0_f32, pal.separator),
                 );
                 egui::ScrollArea::vertical()
+                    .drag_to_scroll(false)
                     .id_salt("cal-side")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -940,7 +941,7 @@ impl Calendar {
             .fixed_size(vec2(420.0, 0.0))
             .show(ctx, |ui| {
                 let f = &mut ed.fields;
-                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.title).hint_text("Title").desired_width(f32::INFINITY)), "Event title");
+                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.title).hint_text(crate::theme::hint(ui, "Title")).desired_width(f32::INFINITY)), "Event title");
                 crate::input::limit_chars(&mut f.title, 200);
                 ui.add_space(8.0);
                 if creating {
@@ -967,15 +968,15 @@ impl Calendar {
                 ui.add_space(4.0);
                 egui::Grid::new("editor-times").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
                     ui.label(theme::caption(pal, "Starts"));
-                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.start_date).hint_text("YYYY-MM-DD")), "Start date, YYYY-MM-DD");
+                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.start_date).hint_text(crate::theme::hint(ui, "YYYY-MM-DD"))), "Start date, YYYY-MM-DD");
                     if !f.all_day {
-                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.start_time).hint_text("HH:MM")), "Start time, HH:MM");
+                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.start_time).hint_text(crate::theme::hint(ui, "HH:MM"))), "Start time, HH:MM");
                     }
                     ui.end_row();
                     ui.label(theme::caption(pal, if f.all_day { "Last day" } else { "Ends" }));
-                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.end_date).hint_text("YYYY-MM-DD")), "End date, YYYY-MM-DD");
+                    crate::a11y::named(ui.add_sized([120.0, 24.0], egui::TextEdit::singleline(&mut f.end_date).hint_text(crate::theme::hint(ui, "YYYY-MM-DD"))), "End date, YYYY-MM-DD");
                     if !f.all_day {
-                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.end_time).hint_text("HH:MM")), "End time, HH:MM");
+                        crate::a11y::named(ui.add_sized([64.0, 24.0], egui::TextEdit::singleline(&mut f.end_time).hint_text(crate::theme::hint(ui, "HH:MM"))), "End time, HH:MM");
                     }
                     ui.end_row();
                 });
@@ -993,10 +994,10 @@ impl Calendar {
                     ui.add(egui::Label::new(theme::caption(pal, note)).wrap());
                 }
                 ui.add_space(8.0);
-                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.location).hint_text("Location").desired_width(f32::INFINITY)), "Event location");
+                crate::a11y::named(ui.add(egui::TextEdit::singleline(&mut f.location).hint_text(crate::theme::hint(ui, "Location")).desired_width(f32::INFINITY)), "Event location");
                 crate::input::limit_chars(&mut f.location, 200);
                 ui.add_space(6.0);
-                crate::a11y::named(ui.add(egui::TextEdit::multiline(&mut f.notes).hint_text("Notes").desired_rows(3).desired_width(f32::INFINITY)), "Event notes");
+                crate::a11y::named(ui.add(egui::TextEdit::multiline(&mut f.notes).hint_text(crate::theme::hint(ui, "Notes")).desired_rows(3).desired_width(f32::INFINITY)), "Event notes");
                 crate::input::limit_chars(&mut f.notes, model_notes_limit());
                 ui.add_space(6.0);
                 egui::ComboBox::from_id_salt("editor-reminder")
@@ -1337,6 +1338,7 @@ impl Calendar {
         }
         theme::hairline(ui, pal);
         let mut area = egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
             .id_salt("timeline-scroll")
             .auto_shrink([false, false]);
         if let Some(h) = self.scroll_to_hour.take() {
@@ -1495,6 +1497,7 @@ impl Calendar {
     ) {
         let first = self.shown(now);
         egui::ScrollArea::vertical()
+            .drag_to_scroll(false)
             .id_salt("agenda-list")
             .auto_shrink([false, false])
             .show(ui, |ui| {

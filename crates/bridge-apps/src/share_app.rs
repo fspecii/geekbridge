@@ -543,6 +543,7 @@ impl ShareApp {
             )
             .show(ctx, |ui| {
                 ScrollArea::vertical()
+                    .drag_to_scroll(false)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if let Some(e) = &self.view.error {
@@ -661,7 +662,7 @@ impl ShareApp {
                     egui::TextEdit::singleline(&mut self.text)
                         .desired_width(ui.available_width() - 190.0)
                         .margin(Margin::symmetric(8, 4))
-                        .hint_text("Paste a link or type a note"),
+                        .hint_text(crate::theme::hint(ui, "Paste a link or type a note")),
                 ),
                 "Link or note to send",
             );

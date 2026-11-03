@@ -60,7 +60,7 @@ impl AppView for Clipboard {
             link.send(Action::Pull);
         }
         central(ctx, pal, Margin::symmetric(20, 16), |ui| {
-            ScrollArea::vertical()
+            ScrollArea::vertical().drag_to_scroll(false)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let now = ui.input(|i| i.time);
@@ -87,6 +87,7 @@ impl AppView for Clipboard {
                                 .desired_rows(rows as usize)
                                 .desired_width(f32::INFINITY),
                         ), "Text to send to the phone");
+                        theme::ring_when_focused(ui, pal, &edit);
                         if edit.changed() {
                             input::limit_chars(&mut self.text, input::MAX_CLIPBOARD_CHARS);
                         }
