@@ -16,7 +16,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
 | `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02, with the tray; 5 172 248 B without) | 5 800 000 B (raised from 5.6 MB after the first real CI run: the GitHub runner built 5 577 488 B (older commit) and 5 657 360 B (release candidate), a dev box 5 663 032 B) |
-| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 300 000 B (CI runner 1 211 496 B and 1 247 056 B, dev box 1 244 496 B) |
+| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02) | 1 350 000 B (raised from 1.3 MB on 2026-11-03: CI runner 1 211 496 B and 1 247 056 B, then 1 310 112 B at d669c2109 after 8e9c976fa added the plain-words "why the phone is not connected" reason codes and sentences to `status`/`ctl`/waybar; +63 kB over the earlier build is consistent with that added text and formatting (no new dependency; not bisected); 40 kB headroom kept) |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B | not budgeted |
 | UI idle RSS (`--ui`, warm GL shader cache) | 67-68 MB | 65.1 MB (2026-11-02, was 68.5 MB on the same machine) | 75 MB |
 | GUI binaries with AccessKit (2026-11-02, `accesskit` feature, default) | n/a | messages 6.16 -> 8.05 MB (+1.9 MB), idle RSS +1.5-2.5 MB, +3 threads, ~+2 wakeups/s | not budgeted. On the 2026-11-02 machine the UI idle RSS is 105-124 MB with or without it (budget 90 MB exceeded by the GL stack, not AccessKit); see `docs/accessibility.md` |
