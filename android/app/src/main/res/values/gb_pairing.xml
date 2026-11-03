@@ -10,6 +10,7 @@
     <string name="qr_paste_header">Or paste the pairing link</string>
     <string name="qr_link_hint">geekbridge://pair?…</string>
     <string name="qr_paste">Paste from clipboard</string>
+    <string name="qr_reading">Reading the pairing link…</string>
     <string name="qr_continue">Continue</string>
     <string name="qr_confirm_title2">Connect to a computer?</string>
     <string name="qr_confirm_body2">Another app or web page opened this pairing link. Nothing connects until you tap Continue, and you still approve the pairing after that. Only continue if you just chose “Pair with QR code” on your own computer.</string>

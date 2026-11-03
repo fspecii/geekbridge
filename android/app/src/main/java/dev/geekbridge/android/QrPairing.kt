@@ -148,3 +148,35 @@ object QrReplay {
     /** A fresh start always does; a recreation only if the confirmation of the link was still waiting. */
     fun shouldHandle(hasSavedState: Boolean, wasWaiting: Boolean): Boolean = !hasSavedState || wasWaiting
 }
+
+/**
+ * Which pairing link the screen is waiting on. The core reads a link off the main thread, so its answer arrives
+ * later. Until it does the screen must not show the paste form (its buttons would take taps meant for nothing yet),
+ * and an answer for a link the user has already moved past (cancelled, or replaced by a newer link) must not
+ * switch the screen back to a confirmation they have left. Pure, so the order is unit-tested.
+ */
+class QrLinkGate {
+    private var latest = 0
+    private var open = false
+
+    /** True while a link has been handed to the core and its answer has not arrived: show "reading", no form. */
+    val reading: Boolean get() = open
+
+    /** A link is being read. Returns the ticket its answer must present; older tickets are void from now on. */
+    fun start(): Int { latest++; open = true; return latest }
+
+    /** The user moved on (cancelled, began pairing): any answer still on its way is void. */
+    fun supersede() { latest++; open = false }
+
+    /** The answer for [ticket] arrived. True if it is still the one being waited on (and closes the wait). */
+    fun accept(ticket: Int): Boolean {
+        if (!open || ticket != latest) return false
+        open = false
+        return true
+    }
+}
+
+/** What a tap on the confirmation's Continue may do. Only a shown confirmation starts pairing, once. */
+object QrContinue {
+    fun mayBegin(onConfirmOrForm: Boolean, alreadyConnecting: Boolean): Boolean = onConfirmOrForm && !alreadyConnecting
+}

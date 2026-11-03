@@ -35,6 +35,8 @@ class QrPairActivity : Activity() {
 
     private sealed interface Mode {
         data object Entry : Mode
+        /** A link was handed to the core and its answer has not arrived: no form yet, so no stray taps. */
+        data object Reading : Mode
         data class Confirm(val target: QrTarget) : Mode
         data class Connecting(val target: QrTarget) : Mode
         data class Done(val name: String) : Mode
@@ -48,6 +50,7 @@ class QrPairActivity : Activity() {
     private var linkField: android.widget.EditText? = null
     private var message: String? = null
     private var linkPending = false
+    private val gate = QrLinkGate()
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -100,6 +103,7 @@ class QrPairActivity : Activity() {
     private fun handleIntent(i: Intent?) {
         val text = QrProtocol.linkText(i?.dataString) ?: return
         linkPending = true
+        mode = Mode.Reading
         parse(text, confirm = true)
     }
 
@@ -107,7 +111,10 @@ class QrPairActivity : Activity() {
 
     private fun parse(text: String, confirm: Boolean) {
         message = null
+        val ticket = gate.start()
         controller.raw(QrProtocol.parseRequest(text)) { o ->
+            // The user may have cancelled, or a newer link replaced this one, while the core was reading it.
+            if (!gate.accept(ticket)) return@raw
             linkPending = false
             when (o) {
                 is CoreOutcome.Ok -> {
@@ -169,6 +176,9 @@ class QrPairActivity : Activity() {
     // ------------------------------------------------------------------ pairing
 
     private fun begin(t: QrTarget) {
+        // One tap starts pairing: a second tap on a stale Continue (or a late callback) must not restart it.
+        if (!QrContinue.mayBegin(mode is Mode.Confirm || mode is Mode.Entry, mode is Mode.Connecting)) return
+        gate.supersede()
         plan = QrPlan(t)
         report = null
         mode = Mode.Connecting(t)
@@ -240,12 +250,17 @@ class QrPairActivity : Activity() {
         root.addView(DotText(this, getString(R.string.qr_title), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8); bottomMargin = kit.dp(16) })
         when (val m = mode) {
             Mode.Entry -> entry(root)
+            Mode.Reading -> reading(root)
             is Mode.Confirm -> confirm(root, m.target)
             is Mode.Connecting -> connecting(root, m.target)
             is Mode.Done -> done(root, m.name)
             is Mode.Failed -> failedView(root, m)
         }
         screen.requestInsets()
+    }
+
+    private fun reading(root: LinearLayout) {
+        kit.panel(root).addView(kit.text(getString(R.string.qr_reading), 15f))
     }
 
     private fun entry(root: LinearLayout) {
@@ -285,7 +300,7 @@ class QrPairActivity : Activity() {
         card.addView(kit.ui.mono(QrConfirmText.fingerprintPrefix(t.certSha256), 16f, bold = true))
         card.addView(kit.text(getString(R.string.qr_confirm_fp_hint), 12f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
         kit.button(card, getString(R.string.qr_continue), BtnStyle.Primary) { begin(t) }
-        kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) { mode = Mode.Entry; render() }
+        kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) { gate.supersede(); mode = Mode.Entry; render() }
     }
 
     private fun connecting(root: LinearLayout, t: QrTarget) {
@@ -293,6 +308,7 @@ class QrPairActivity : Activity() {
         card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(t.name.ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
         card.addView(kit.text(getString(R.string.qr_connecting_hint), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) {
+            gate.supersede()
             plan = null
             mode = Mode.Entry
             render()

@@ -175,4 +175,37 @@ class PairingHelpTest {
         assertTrue(QrReplay.shouldHandle(hasSavedState = true, wasWaiting = true))
         assertFalse(QrReplay.shouldHandle(hasSavedState = true, wasWaiting = false))
     }
+
+    @Test fun screenReadsTheLinkWithoutAFormUntilTheCoreAnswers() {
+        val g = QrLinkGate()
+        assertFalse(g.reading)
+        val t = g.start()
+        assertTrue("no paste form while the link is being read", g.reading)
+        assertTrue(g.accept(t))
+        assertFalse(g.reading)
+        assertFalse("an answer counts once", g.accept(t))
+    }
+
+    @Test fun answerForALinkTheUserHasLeftIsIgnored() {
+        val g = QrLinkGate()
+        val t = g.start()
+        g.supersede() // Cancel, or Continue on a newer confirmation
+        assertFalse(g.reading)
+        assertFalse("a late answer must not bring the confirmation back", g.accept(t))
+    }
+
+    @Test fun newerLinkReplacesTheOneStillBeingRead() {
+        val g = QrLinkGate()
+        val old = g.start()
+        val newer = g.start()
+        assertFalse(g.accept(old))
+        assertTrue(g.reading)
+        assertTrue(g.accept(newer))
+    }
+
+    @Test fun continueStartsPairingOnceAndOnlyFromTheConfirmationOrForm() {
+        assertTrue(QrContinue.mayBegin(onConfirmOrForm = true, alreadyConnecting = false))
+        assertFalse("a second tap during the connection", QrContinue.mayBegin(onConfirmOrForm = true, alreadyConnecting = true))
+        assertFalse("a stale button on a screen that moved on", QrContinue.mayBegin(onConfirmOrForm = false, alreadyConnecting = false))
+    }
 }

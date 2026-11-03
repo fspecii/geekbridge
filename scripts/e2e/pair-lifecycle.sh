@@ -95,7 +95,7 @@ qr_pair() { # -> 0 when the phone reached "What to do next" and the PC lists the
   [[ "$p" == geekbridge://pair?* ]] || return 1
   scan "$p"
   ui wait "Connect to a computer" 20 >/dev/null || { pshot "$TAG-qr-no-confirm"; return 2; }
-  ui tap Continue >/dev/null
+  tap_to Continue >/dev/null
   # The phone asks for approval ("Computer identity") unless it already trusts this exact certificate (B: only the
   # computer forgot), in which case it pairs straight away.
   local i seen=0 dump

@@ -76,6 +76,10 @@ rec() { # stage name PASS|FAIL|SKIP detail
 shot() { $ADB exec-out screencap -p > "$SHOTS/e2e-$1.png" 2>/dev/null; }
 ui() { timeout 90 "$UI" "$@"; }
 tap() { ui tap "$@"; }
+# tap_to TEXT [--expect TEXT2] [--tries N]: a tap that cannot be lost to timing. Waits until the node is enabled and
+# clickable, its window has input focus and it holds still, taps, then checks the screen moved on (TEXT gone or TEXT2
+# visible); otherwise logs the focus state and taps again. Use it for the first tap on a freshly shown screen.
+tap_to() { timeout 240 "$UI" tapto "$@"; }
 waitui() { ui wait "$@"; }
 wake() { $ADB shell input keyevent KEYCODE_WAKEUP; $ADB shell wm dismiss-keyguard >/dev/null 2>&1; }
 ctl() { timeout 20 "${CTL[@]}" "$@"; }
