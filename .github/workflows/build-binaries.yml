@@ -47,18 +47,20 @@ jobs:
           fi
           run() { if [[ "$TARGET" == x86_64-apple-darwin ]]; then arch -x86_64 "$@"; else "$@"; fi; }
           run "$rel/geekbridge-ctl$ext" --version || fail=1
-          run "$rel/geekbridge-ctl$ext" --help | head -n 3 || fail=1
-          run "$rel/geekbridge-service$ext" --help | head -n 3 || fail=1
+          run "$rel/geekbridge-ctl$ext" --help >"$RUNNER_TEMP/h.out" 2>&1 || fail=1; head -n 3 "$RUNNER_TEMP/h.out"
+          run "$rel/geekbridge-service$ext" --help >"$RUNNER_TEMP/h.out" 2>&1 || fail=1; head -n 3 "$RUNNER_TEMP/h.out"
           # The GUI binaries are windowed programs: only --help (prints and exits) is safe on a headless runner.
           # On Windows they are GUI-subsystem and print nothing to a console, so only the exit code counts.
           for b in geekbridge geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
             if run "$rel/$b$ext" --help >/tmp/help.out 2>&1 || [[ -s /tmp/help.out ]]; then note "$b --help ok (exit $?)"; else note "$b --help produced nothing"; fi
             head -n 2 /tmp/help.out
           done
-          state="$(mktemp -d)"
+          # A directory that does not exist yet: the service creates it private. (A pre-made mktemp dir
+          # inherits its parent's ACL on Windows and is rightly refused as "not private enough".)
+          state="$(mktemp -d)/state"
           # Native Windows programs need a Windows path, not Git Bash's /tmp/... form.
           [[ "$RUNNER_OS" == "Windows" ]] && state="$(cygpath -m "$state")"
-          run "$rel/geekbridge-service$ext" --state-dir "$state" --no-tray --no-announce --no-listen-inbound \
+          run "$rel/geekbridge-service$ext" --state-dir "$state" --no-tray --no-announce \
             --api-port 18380 --control-port 18381 --discovery-port 18382 >"$RUNNER_TEMP/service.log" 2>&1 &
           svc=$!
           ok=0

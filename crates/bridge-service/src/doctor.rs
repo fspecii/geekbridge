@@ -162,7 +162,21 @@ fn firewall_check(fw: &Firewall) -> Check {
 }
 
 fn session_check(s: &SessionEnv) -> Check {
+    session_check_on(s, cfg!(all(unix, not(target_os = "macos"))))
+}
+
+/// `x11_or_wayland`: this OS has Wayland/X11 sessions at all. Windows and macOS have neither
+/// `WAYLAND_DISPLAY` nor `DISPLAY`, so the variables say nothing there.
+fn session_check_on(s: &SessionEnv, x11_or_wayland: bool) -> Check {
     let title = "Desktop session";
+    if !x11_or_wayland {
+        return check(
+            Level::Ok,
+            title,
+            "Native desktop session (no Wayland/X11 variables needed on this system).",
+            None,
+        );
+    }
     if !s.wayland_display && !s.display {
         return check(
             Level::Warn,
@@ -479,6 +493,13 @@ mod tests {
 
     const BOTH: &str = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT\n-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT\n";
 
+    #[test]
+    fn native_desktops_do_not_need_wayland_or_x11_variables() {
+        let none = SessionEnv::default();
+        assert_eq!(session_check_on(&none, false).level, Level::Ok);
+        assert_eq!(session_check_on(&none, true).level, Level::Warn);
+    }
+
     fn status() -> Status {
         serde_json::from_value(serde_json::json!({
             "ipc_version": 1, "service_version": "0.1.0", "device_id": "me", "device_name": "pc",
@@ -730,7 +751,7 @@ mod tests {
     fn session_without_display_warns_and_hyprland_needs_its_signature() {
         let none = SessionEnv::default();
         assert!(
-            session_check(&none)
+            session_check_on(&none, true)
                 .detail
                 .contains("neither WAYLAND_DISPLAY nor DISPLAY")
         );
@@ -741,7 +762,7 @@ mod tests {
             ..SessionEnv::default()
         };
         assert!(
-            session_check(&hypr)
+            session_check_on(&hypr, true)
                 .detail
                 .contains("HYPRLAND_INSTANCE_SIGNATURE")
         );
@@ -749,7 +770,7 @@ mod tests {
             hyprland_signature: true,
             ..hypr
         };
-        assert_eq!(session_check(&ok).level, Level::Ok);
+        assert_eq!(session_check_on(&ok, true).level, Level::Ok);
     }
 
     #[test]
