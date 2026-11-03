@@ -137,6 +137,147 @@ class AndroidContactLookup(context: Context) : ContactLookup {
     }
 }
 
+/** The active SIMs (slot, eSIM flag) and the default voice subscription. Needs READ_PHONE_STATE; empty without it. */
+object SubscriptionReader {
+    @SuppressLint("MissingPermission") // READ_PHONE_STATE is checked by the callers; a SecurityException gives an empty list
+    fun active(ctx: Context): List<ActiveSim> {
+        val sm = ctx.applicationContext.getSystemService(android.telephony.SubscriptionManager::class.java) ?: return emptyList()
+        return try {
+            sm.activeSubscriptionInfoList.orEmpty().map { ActiveSim(it.subscriptionId, it.simSlotIndex, Build.VERSION.SDK_INT >= 28 && it.isEmbedded) }
+        } catch (_: SecurityException) {
+            emptyList()
+        } catch (_: RuntimeException) {
+            emptyList()
+        }
+    }
+
+    fun defaultVoiceId(): Int? = try {
+        android.telephony.SubscriptionManager.getDefaultVoiceSubscriptionId()
+    } catch (_: RuntimeException) {
+        null
+    }
+
+    fun summary(ctx: Context): String = SimText.summary(active(ctx), defaultVoiceId())
+}
+
+/**
+ * Every place Android reports a call state: the default subscription's callback, one callback per active SIM
+ * (re-made when the SIM set changes), and the phone-state broadcast, which covers all SIMs. A listener on the default
+ * subscription alone can miss a call that rings on the other SIM (dual SIM / eSIM).
+ */
+@Suppress("UseRequiresApi", "DEPRECATION")
+class AndroidCallSources(
+    context: Context,
+    private val sdk: Int = Build.VERSION.SDK_INT,
+    private val ledger: CallListenerLedger,
+) : CallSourceRegistrar {
+    private val app = context.applicationContext
+    private val registrar = TelephonyRegistrar(app, sdk)
+
+    @android.annotation.TargetApi(30)
+    private fun addWithExecutor(
+        sm: android.telephony.SubscriptionManager,
+        executor: java.util.concurrent.Executor,
+        l: android.telephony.SubscriptionManager.OnSubscriptionsChangedListener,
+    ) = sm.addOnSubscriptionsChangedListener(executor, l)
+
+    override fun register(
+        executor: java.util.concurrent.Executor,
+        onSource: (String, Int) -> Unit,
+        onGone: (String) -> Unit,
+    ): AutoCloseable {
+        val lock = Any()
+        var closed = false
+        val subs = LinkedHashMap<Int, Pair<String, AutoCloseable>>()
+        val base = registrar.telephony ?: throw IllegalStateException("No telephony service")
+
+        val defaultHandle = registrar.registerOn(base, executor) { onSource("default", it) }
+
+        fun closeQuietly(c: AutoCloseable) = try { c.close() } catch (_: RuntimeException) { }
+
+        fun sync() {
+            val sims = SubscriptionReader.active(app)
+            synchronized(lock) {
+                if (closed) return
+                val want = sims.associateBy { it.subId }
+                for ((id, entry) in subs.toList()) {
+                    if (id in want) continue
+                    closeQuietly(entry.second)
+                    subs.remove(id)
+                    ledger.sourceGone(entry.first)
+                    onGone(entry.first)
+                }
+                for (sim in sims) {
+                    if (sim.subId in subs) continue
+                    try {
+                        val tm = base.createForSubscriptionId(sim.subId)
+                        subs[sim.subId] = sim.sourceName to registrar.registerOn(tm, executor) { onSource(sim.sourceName, it) }
+                    } catch (e: RuntimeException) {
+                        ledger.sourceFailed(sim.sourceName, e.javaClass.simpleName)
+                    }
+                }
+                ledger.subscriptions(SimText.summary(sims, SubscriptionReader.defaultVoiceId()))
+            }
+        }
+
+        var subListener: android.telephony.SubscriptionManager.OnSubscriptionsChangedListener? = null
+        val sm = app.getSystemService(android.telephony.SubscriptionManager::class.java)
+        try {
+            if (sm != null) {
+                if (sdk >= 30) {
+                    val l = object : android.telephony.SubscriptionManager.OnSubscriptionsChangedListener() {
+                        override fun onSubscriptionsChanged() = sync()
+                    }
+                    addWithExecutor(sm, executor, l)
+                    subListener = l
+                } else {
+                    // Below 30 the listener is bound to the creating thread's Looper: the main thread, from onStart.
+                    val l = object : android.telephony.SubscriptionManager.OnSubscriptionsChangedListener() {
+                        override fun onSubscriptionsChanged() = sync()
+                    }
+                    sm.addOnSubscriptionsChangedListener(l)
+                    subListener = l
+                }
+            }
+        } catch (e: RuntimeException) {
+            ledger.sourceFailed("subscriptions", e.javaClass.simpleName)
+        }
+        sync() // the listener also fires once on registration; this makes the first read certain
+
+        var receiver: BroadcastReceiver? = null
+        try {
+            val r = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    if (intent.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
+                    val raw = SimText.fromBroadcast(intent.getStringExtra(TelephonyManager.EXTRA_STATE)) ?: return
+                    onSource("broadcast", raw)
+                }
+            }
+            val filter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
+            if (sdk >= 33) {
+                app.registerReceiver(r, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                // Exported below Android 13: accept only broadcasts from a sender holding the system-only permission.
+                app.registerReceiver(r, filter, CallRules.PHONE_STATE_SENDER_PERMISSION, null)
+            }
+            receiver = r
+        } catch (e: RuntimeException) {
+            ledger.sourceFailed("broadcast", e.javaClass.simpleName)
+        }
+
+        return AutoCloseable {
+            synchronized(lock) {
+                closed = true
+                for (entry in subs.values) closeQuietly(entry.second)
+                subs.clear()
+            }
+            closeQuietly(defaultHandle)
+            subListener?.let { l -> try { sm?.removeOnSubscriptionsChangedListener(l) } catch (_: RuntimeException) { } }
+            receiver?.let { r -> try { app.unregisterReceiver(r) } catch (_: IllegalArgumentException) { } }
+        }
+    }
+}
+
 object CallPermissionsReader {
     fun read(ctx: Context): CallPermissions {
         fun has(p: String) = ctx.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
@@ -168,6 +309,10 @@ object CallControlRuntime {
     private val main = Handler(Looper.getMainLooper())
     private val core: CoreClient by lazy { CoreClient.native() }
     private var monitor: CallStateMonitor? = null
+    private var monitorExecutor: java.util.concurrent.ExecutorService? = null
+
+    /** Debug aid: what the call-state listener did (registration, callbacks, reports). Codes and counts only. */
+    val ledger = CallListenerLedger()
     private var receiver: BroadcastReceiver? = null
     private var waiter: Thread? = null
     private var linkRunning = false
@@ -191,6 +336,7 @@ object CallControlRuntime {
             lookup = AndroidContactLookup(a),
             sdk = Build.VERSION.SDK_INT,
             strings = ResStrings(a.resources),
+            onReport = { ledger.reported(it) },
             prompts = AndroidDialPrompts(a),
         )
     }
@@ -227,7 +373,7 @@ object CallControlRuntime {
         if (on) {
             if (linkRunning) startObserving(e)
         } else {
-            stopObserving()
+            stopObserving("calls_off")
             async { e.reset() }
         }
     }
@@ -241,11 +387,15 @@ object CallControlRuntime {
         // The status observer fires every couple of seconds with the same phase. A repeat must not reset the engine:
         // that wiped the state of a ringing call and made every Answer fail with "no such call" (soak finding).
         if (running == was) {
-            if (running && settings.enabled) ensureWaiter(e)
+            if (running && settings.enabled) {
+                ensureWaiter(e)
+                // A registration that failed or was lost is not final: try again, spaced, while it is wanted.
+                if (monitor == null && ListenerRetry.due(ledger.lastAttemptAt(), System.currentTimeMillis())) ensureMonitor(e, "retry")
+            }
             return
         }
         if (!running) {
-            stopObserving()
+            stopObserving("link_down")
             async { e.reset() }
         } else if (settings.enabled) {
             startObserving(e)
@@ -256,7 +406,7 @@ object CallControlRuntime {
     fun onPermissionsChanged() {
         val e = engine ?: return
         if (!settings.enabled || !linkRunning) return
-        stopObserving()
+        stopObserving("permissions_changed")
         startObserving(e)
         async { e.permissionsChanged() }
     }
@@ -267,17 +417,43 @@ object CallControlRuntime {
         async { e.reset() }
         async { core.transportAction(CallsProtocol.configRequest(true)) } // the core forgets the opt-in when the process dies
         val perms = CallPermissionsReader.read(a)
-        if (monitor == null && perms.readPhoneState) {
-            val m = CallStateMonitor(
-                registrar = TelephonyRegistrar(a),
-                executor = CallStateExecutor.create(),
-                postToMain = { main.post(it) },
-                onState = { s -> WidgetUpdater.onCall(s == CallState.Ringing); async { e.onState(s) } },
-            )
-            if (m.start() !is MonitorStart.Failed) monitor = m
-        }
+        ensureMonitor(e, "link or setting")
         if (receiver == null && perms.readCallLog && perms.readPhoneState) registerNumberReceiver(a, e)
         ensureWaiter(e)
+    }
+
+    @Synchronized
+    private fun ensureMonitor(e: CallControlEngine, why: String) {
+        val a = app ?: return
+        if (monitor != null) return
+        if (!CallPermissionsReader.read(a).readPhoneState) {
+            ledger.notRegistered("no_read_phone_state")
+            return
+        }
+        val exec = CallStateExecutor.create()
+        val m = CallStateMonitor(
+            registrar = MergingCallRegistrar(AndroidCallSources(a, ledger = ledger)) { name, raw -> ledger.source(name, raw) },
+            executor = exec,
+            postToMain = { main.post(it) },
+            onState = { s ->
+                ledger.delivered(s)
+                WidgetUpdater.onCall(s == CallState.Ringing)
+                async { e.onState(s) }
+            },
+            onRawSeen = { ledger.raw(it) },
+        )
+        when (val r = m.start()) {
+            is MonitorStart.Failed -> {
+                exec.shutdownNow()
+                ledger.notRegistered(r.code)
+            }
+            else -> {
+                monitor = m
+                monitorExecutor = exec
+                ledger.registered(ListenerStrategy.forSdk(Build.VERSION.SDK_INT))
+                GbLog.i("calls", "registration trigger: $why")
+            }
+        }
     }
 
     private fun ensureWaiter(e: CallControlEngine) {
@@ -287,9 +463,12 @@ object CallControlRuntime {
     }
 
     @Synchronized
-    private fun stopObserving() {
+    private fun stopObserving(why: String) {
+        if (monitor != null) ledger.notRegistered(why)
         monitor?.stop()
         monitor = null
+        monitorExecutor?.shutdownNow() // one thread per registration, not one per link restart
+        monitorExecutor = null
         val a = app
         receiver?.let { r -> try { a?.unregisterReceiver(r) } catch (_: IllegalArgumentException) { } }
         receiver = null

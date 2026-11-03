@@ -172,7 +172,28 @@ data class StateModel(
     val logBytes: Int,
     val streamingTo: Int,
     val linkHealth: List<String> = emptyList(),
+    /** [CallListenerLedger.lines]: is the call-state listener registered, and what it last saw. */
+    val callListener: List<String> = emptyList(),
+    /** [ProcessStateText.describe]: how Android ranks this process right now. */
+    val processState: String = "unknown",
 )
+
+/** How Android ranks this app's process, in words (a frozen or cached process gets no callbacks). */
+object ProcessStateText {
+    fun importance(i: Int): String = when {
+        i <= 100 -> "foreground ($i)"
+        i <= 125 -> "foreground service ($i)"
+        i <= 200 -> "visible/top sleeping ($i)"
+        i <= 230 -> "perceptible ($i)"
+        i <= 300 -> "service ($i)"
+        i <= 325 -> "cached-top ($i)"
+        i <= 400 -> "cached ($i)"
+        else -> "empty/gone ($i)"
+    }
+
+    fun describe(importance: Int?, serviceRunning: Boolean): String =
+        "process importance: ${importance?.let(::importance) ?: "unknown"}; link service running: $serviceRunning"
+}
 
 /** The last time a link closed: why (the core's reason code), on which network, and how long the computer had been silent. */
 data class DropNote(val atMs: Long, val code: String, val network: String, val quietMs: Long?)
@@ -250,6 +271,11 @@ object DebugStateText {
         appendLine("link: ${m.linkPhase}")
         appendLine("network: ${m.network}")
         appendLine("doze: ${if (m.dozing) "IDLE (dozing)" else "not idle"}; power saver: ${on(m.powerSave)}; standby bucket: ${m.standbyBucket}")
+        appendLine()
+        appendLine("== Calls ==")
+        appendLine(m.processState)
+        m.callListener.ifEmpty { listOf("call state listener: not tracked") }.forEach(::appendLine)
+        appendLine("(a call state callback is logged as 'GB calls: source <name> reported ringing'; none after a call means Android did not call the app)")
         appendLine()
         appendLine("== Link health ==")
         m.linkHealth.ifEmpty { listOf("not tracked") }.forEach(::appendLine)
@@ -390,7 +416,17 @@ object DebugStateCollector {
             linkPhase = c.phase.name + (c.snapshot?.let { s -> ", ${s.connections.count { it.trusted }} trusted connection(s)" } ?: ""),
             linkHistory = linkHistory, exceptions = exceptions,
             logLines = ring.size(), logBytes = ring.byteSize(), streamingTo = streamingTo, linkHealth = linkHealth,
+            callListener = CallControlRuntime.ledger.lines() + ("subscriptions now: " + SubscriptionReader.summary(ctx)),
+            processState = ProcessStateText.describe(myImportance(), LinkService.isRunning),
         )
+    }
+
+    private fun myImportance(): Int? = try {
+        val st = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(st)
+        st.importance
+    } catch (_: RuntimeException) {
+        null
     }
 
     private fun specKeys() = listOf("sms", "contacts", "calendar", "calendar_edit", "calls", "clipboard", "share", "debug")

@@ -226,3 +226,160 @@ class CallStateExecutorTest {
         }
     }
 }
+
+class CallListenerLedgerTest {
+    private val lines = ArrayList<String>()
+    private var now = 0L
+    private val ledger = CallListenerLedger(clock = { now }, log = { lines.add(it) })
+
+    @Test
+    fun startsAsNeverAttempted() {
+        assertFalse(ledger.isRegistered())
+        assertTrue(ledger.lines().first().contains("not registered (never_attempted)"))
+    }
+
+    @Test
+    fun recordsRegistrationCallbacksAndReports() {
+        now = 1_000
+        ledger.registered(ListenerStrategy.TelephonyCallback)
+        ledger.raw(1)
+        ledger.delivered(CallState.Ringing)
+        ledger.reported("ringing -> sent queued=1")
+        val text = ledger.lines().joinToString("\n")
+        assertTrue(ledger.isRegistered())
+        for (n in listOf("registered via TelephonyCallback", "merged state changes since the app started: 1; last ringing", "last ringing at", "ringing -> sent queued=1"))
+            assertTrue("missing '$n' in:\n$text", n in text)
+        assertTrue(lines.any { it == "callback #1 merged=ringing" })
+    }
+
+    @Test
+    fun notRegisteredKeepsTheReasonAndTheAttemptTime() {
+        now = 5_000
+        ledger.registered(ListenerStrategy.TelephonyCallback)
+        ledger.notRegistered("link_down")
+        assertFalse(ledger.isRegistered())
+        assertEquals(5_000L, ledger.lastAttemptAt())
+        assertTrue(ledger.lines().first().contains("not registered (link_down)"))
+    }
+
+    @Test
+    fun logLinesNeverCarryAnythingButCodes() {
+        ledger.raw(7)
+        ledger.notRegistered("runtime_exception:IllegalStateException")
+        assertTrue(lines.contains("callback #1 merged=unknown(7)"))
+    }
+
+    @Test
+    fun failedStartHasAClassOnlyCode() {
+        assertEquals("security_exception", MonitorStart.Failed(R.string.call_state_refused).code)
+        assertEquals("runtime_exception:IllegalStateException", MonitorStart.Failed(R.string.call_state_unavailable, "IllegalStateException").code)
+    }
+
+    @Test
+    fun retriesAreSpaced() {
+        assertTrue(ListenerRetry.due(null, 0))
+        assertFalse(ListenerRetry.due(1_000, 1_000 + ListenerRetry.SPACING_MS - 1))
+        assertTrue(ListenerRetry.due(1_000, 1_000 + ListenerRetry.SPACING_MS))
+    }
+
+    @Test
+    fun monitorReportsEveryRawStateIncludingUnknownOnes() {
+        val seen = ArrayList<Int>()
+        var raw: ((Int) -> Unit)? = null
+        val m = CallStateMonitor(
+            { _, cb -> raw = cb; AutoCloseable { } }, Executor { it.run() }, { it.run() }, {}, onRawSeen = { seen.add(it) },
+        )
+        m.start()
+        raw!!(1); raw!!(9)
+        assertEquals(listOf(1, 9), seen)
+    }
+}
+
+class CallSourceMergerTest {
+    private val m = CallSourceMerger()
+
+    @Test fun ringingWinsOverOffHookWhichWinsOverIdle() {
+        assertEquals(0, m.update("default", 0))
+        assertEquals(1, m.update("sub2/slot1", 1))
+        assertNull("offhook on another source does not hide ringing", m.update("broadcast", 2))
+        assertNull(m.update("default", 0))
+        assertEquals(2, m.update("sub2/slot1", 0)) // offhook still held by the broadcast source
+        assertEquals(0, m.update("broadcast", 0))
+    }
+
+    @Test fun idleOnlyWhenEverySourceIsIdle() {
+        m.update("a", 1); m.update("b", 0)
+        assertNull(m.update("b", 0))
+        assertEquals(0, m.update("a", 0))
+    }
+
+    @Test fun anotherSourceSeeingTheRingingCallIsEnoughWhenTheDefaultStaysIdle() {
+        assertEquals(0, m.update("default", 0))
+        assertEquals(1, m.update("sub5/slot1", 1)) // the eSIM that is not the default
+        assertEquals(0, m.update("sub5/slot1", 0))
+    }
+
+    @Test fun aRemovedSourceNoLongerCounts() {
+        m.update("a", 1); m.update("b", 0)
+        assertEquals(0, m.remove("a"))
+        assertNull(m.remove("a"))
+        assertNull(m.merged().takeIf { it != 0 })
+    }
+
+    @Test fun unknownRawStatesAreIgnored() {
+        assertNull(m.update("a", 9))
+        assertNull(m.merged())
+    }
+
+    @Test fun mergingRegistrarForwardsOnlyMergedChangesAndReportsEverySource() {
+        val got = ArrayList<Int>()
+        val seen = ArrayList<String>()
+        var emit: ((String, Int) -> Unit)? = null
+        var gone: ((String) -> Unit)? = null
+        var closed = 0
+        val reg = MergingCallRegistrar(
+            { _, onSource, onGone -> emit = onSource; gone = onGone; AutoCloseable { closed++ } },
+            { n, r -> seen.add("$n=$r") },
+        )
+        val h = reg.register(Executor { it.run() }) { got.add(it) }
+        emit!!("default", 0); emit!!("sub3/slot1", 0); emit!!("sub3/slot1", 1); emit!!("default", 0); emit!!("sub3/slot1", 0)
+        gone!!("sub3/slot1")
+        assertEquals(listOf(0, 1, 0), got)
+        assertEquals(5, seen.size)
+        h.close()
+        assertEquals(1, closed)
+    }
+
+    @Test fun broadcastExtrasMapToRawStates() {
+        assertEquals(1, SimText.fromBroadcast("RINGING"))
+        assertEquals(2, SimText.fromBroadcast("OFFHOOK"))
+        assertEquals(0, SimText.fromBroadcast("IDLE"))
+        assertNull(SimText.fromBroadcast(null))
+        assertNull(SimText.fromBroadcast("ringing"))
+    }
+
+    @Test fun subscriptionSummaryHasSlotsEsimFlagAndDefaultVoiceButNoIdentifiers() {
+        val sims = listOf(ActiveSim(3, 0, false), ActiveSim(7, 1, true))
+        assertEquals(
+            "active subscriptions: 2 [sub3 slot 0 physical, sub7 slot 1 eSIM]; default voice subscription: sub3 (slot 0)",
+            SimText.summary(sims, 3),
+        )
+        assertTrue(SimText.summary(sims, 9).contains("sub9 (not among the active ones)"))
+        assertTrue(SimText.summary(emptyList(), -1).endsWith("default voice subscription: none"))
+        assertEquals("sub7/slot1", sims[1].sourceName)
+    }
+
+    @Test fun ledgerShowsSourcesAndSubscriptions() {
+        val lines = ArrayList<String>()
+        val l = CallListenerLedger(clock = { 0L }, log = { lines.add(it) })
+        l.subscriptions("active subscriptions: 1 [sub7 slot 1 eSIM]; default voice subscription: none")
+        l.source("sub7/slot1", 1)
+        l.source("default", 0)
+        l.sourceGone("default")
+        val text = l.lines().joinToString("\n")
+        assertTrue("sub7/slot1=ringing" in text)
+        assertTrue("active subscriptions: 1 [sub7 slot 1 eSIM]" in text)
+        assertTrue(lines.contains("source sub7/slot1 reported ringing"))
+        assertFalse("default=" in text)
+    }
+}

@@ -19,10 +19,16 @@ class TelephonyRegistrar(
     context: Context,
     private val sdk: Int = Build.VERSION.SDK_INT,
 ) : CallStateRegistrar {
-    private val telephony: TelephonyManager? = context.applicationContext.getSystemService(TelephonyManager::class.java)
+    /** The default-subscription manager; per-subscription ones are derived from it. */
+    val telephony: TelephonyManager? = context.applicationContext.getSystemService(TelephonyManager::class.java)
 
     override fun register(executor: Executor, onRaw: (Int) -> Unit): AutoCloseable {
         val tm = telephony ?: throw IllegalStateException("No telephony service")
+        return registerOn(tm, executor, onRaw)
+    }
+
+    /** Observe [tm]: the default subscription, or one made with `createForSubscriptionId`. */
+    fun registerOn(tm: TelephonyManager, executor: Executor, onRaw: (Int) -> Unit): AutoCloseable {
         return when (ListenerStrategy.forSdk(sdk)) {
             ListenerStrategy.TelephonyCallback -> registerCallback(tm, executor, onRaw)
             ListenerStrategy.ListenerWithExecutor -> registerListener(tm, onRaw) { legacyWithExecutor(executor, it) }

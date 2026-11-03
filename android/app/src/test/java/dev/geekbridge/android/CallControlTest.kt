@@ -205,8 +205,10 @@ class CallControlTest {
             sdk = sdk,
             strings = TestStrings,
             clock = { now },
+            onReport = { reports += it },
             prompts = prompts,
         )
+        val reports = ArrayList<String>()
         fun actions() = sent.map { it.getString("action") }
         fun lastResult() = sent.last { it.getString("action") == "transport_calls_result" }
     }
@@ -223,6 +225,18 @@ class CallControlTest {
         assertEquals(listOf("dial"), h.telecom.log)
         assertFalse(h.lastResult().has("failure"))
         assertTrue(h.prompts.asked.isEmpty())
+    }
+
+    @Test fun everyReportAttemptLeavesAReasonForTheDebugLog() {
+        val h = Harness(may)
+        h.engine.onState(CallState.Ringing)
+        h.engine.onState(CallState.Ringing)
+        h.coreOk = false
+        h.engine.onState(CallState.Idle)
+        h.enabled = false
+        h.engine.onState(CallState.Ringing)
+        assertEquals(listOf("ringing -> sent queued=-1", "unchanged", "idle -> core unavailable", "skipped_calls_off"), h.reports)
+        assertTrue(h.reports.none { it.contains("+1") })
     }
 
     @Test fun aDialThatCannotBePlacedIsNotAnnounced() {

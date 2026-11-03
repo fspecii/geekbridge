@@ -304,6 +304,7 @@ class CallControlEngine(
     private val sdk: Int,
     private val strings: Strings,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val onReport: (String) -> Unit = {},
     private val prompts: DialPrompts = object : DialPrompts {
         override fun announce(text: String) {}
         override fun ask(requestId: String, text: String) = false
@@ -473,12 +474,20 @@ class CallControlEngine(
         }
     }
 
+    private fun outcomeCode(o: CoreOutcome): String = when (o) {
+        is CoreOutcome.Ok -> "sent" + ((o.result as? org.json.JSONObject)?.let { " queued=${it.optInt("queued", -1)}" } ?: "")
+        is CoreOutcome.Rejected -> "refused ${o.code}"
+        is CoreOutcome.Unavailable -> "core unavailable"
+        is CoreOutcome.Malformed -> "malformed reply"
+    }
+
     private fun send() {
         val s = state ?: return
-        if (!settings().enabled) return
+        if (!settings().enabled) return onReport("skipped_calls_off")
         val report = CallRules.report(s, number, name, sdk, permissions())
-        if (report == lastSent) return
+        if (report == lastSent) return onReport("unchanged")
         val outcome = core(CallsProtocol.reportRequest(report))
+        onReport("${CallsProtocol.wire(report.state)} -> ${outcomeCode(outcome)}")
         // Only remember what the core accepted; a not-yet-running core is retried on the next change.
         if (outcome is CoreOutcome.Ok) lastSent = report
     }

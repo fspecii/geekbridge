@@ -357,6 +357,27 @@ class DebugDiagnosticsTest {
         )) assertTrue("missing '$needle' in:\n$text", needle in text)
     }
 
+    @Test fun stateDumpShowsTheCallListenerAndProcessState() {
+        val ledger = CallListenerLedger(clock = { 0L }, log = {})
+        ledger.notRegistered("no_read_phone_state")
+        val text = DebugStateText.render(
+            model(emptyList(), emptyList()).copy(
+                callListener = ledger.lines(), processState = ProcessStateText.describe(125, true),
+            ),
+        )
+        for (needle in listOf(
+            "== Calls ==", "call state listener: not registered (no_read_phone_state)", "merged state changes since the app started: 0", "active subscriptions: not read yet", "sources: none yet",
+            "process importance: foreground service (125); link service running: true",
+        )) assertTrue("missing '$needle' in:\n$text", needle in text)
+    }
+
+    @Test fun processImportanceIsNamed() {
+        assertTrue(ProcessStateText.importance(100).startsWith("foreground ("))
+        assertTrue(ProcessStateText.importance(400).startsWith("cached"))
+        assertTrue(ProcessStateText.importance(1000).startsWith("empty"))
+        assertTrue(ProcessStateText.describe(null, false).contains("unknown"))
+    }
+
     @Test fun linkHealthExplainsTheLastDrop() {
         val drop = DropNote(atMs = 1_000_000, code = "ping_timeout", network = "wifi, internet validated, unmetered", quietMs = 74_000)
         val lines = LinkHealthText.render(drop, 3, nowMs = 1_000_000 + 300_000)
