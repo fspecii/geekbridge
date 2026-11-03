@@ -8,8 +8,8 @@ object ServicePolicy {
      * pairing in progress ([pairing]): the user is on the other computer approving a code, so the phone screen may
      * lock or the app may leave the foreground before it is paired, and the link must survive that.
      */
-    fun shouldRun(pairedCount: Int, keepConnected: Boolean, pairing: Boolean = false): Boolean =
-        (pairedCount > 0 && keepConnected) || pairing
+    fun shouldRun(pairedCount: Int, keepConnected: Boolean, pairing: Boolean = false, sharing: Boolean = false): Boolean =
+        (pairedCount > 0 && (keepConnected || sharing)) || pairing
 
     /** How long a pairing may keep the link alive in the background (code compare on the computer takes a minute or two). */
     const val PAIRING_GRACE_MS = 3 * 60_000L

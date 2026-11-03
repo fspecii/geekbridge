@@ -116,13 +116,25 @@ object ShareProtocol {
     }
 }
 
+object ShareSessionLogic {
+    /** How long a started transfer may stay missing from the snapshot before it counts as gone. */
+    const val UNSEEN_GRACE_MS = 15_000L
+
+    /** Does this item of a share session still need the session (and the link) to stay open? */
+    fun itemOpen(transferId: Long?, inSnapshot: Transfer?, seen: Boolean, ageMs: Long): Boolean = when {
+        transferId == null -> false
+        inSnapshot != null -> !inSnapshot.state.finished
+        else -> !seen && ageMs <= UNSEEN_GRACE_MS // not listed yet (the answer comes before the next poll), or pruned once finished
+    }
+}
+
 object NameRules {
     private const val MAX_BYTES = 120
 
     /** One safe path component: no separators, control characters or leading dots; bounded; never empty. */
     fun sanitize(raw: String?): String {
         var s = (raw ?: "").substringAfterLast('/').substringAfterLast('\\')
-        s = s.map { c -> if (Character.isISOControl(c) || c in "<>:\"|?*") '_' else c }.joinToString("")
+        s = s.map { c -> if (Character.isISOControl(c) || isBidiControl(c) || c in "<>:\"|?*") '_' else c }.joinToString("")
         s = s.trim().trimEnd('.', ' ').trimStart('.')
         if (s.isEmpty()) s = "file"
         while (Bounds.utf8Size(s) > MAX_BYTES) {
@@ -132,6 +144,14 @@ object NameRules {
         }
         return s
     }
+
+    /**
+     * Bidirectional controls and line separators: "photo<RLO>gpj.exe" reads as "photoexe.jpg" in a file manager, on the
+     * Share screen and in a notification. The same set the computer's core replaces (bridge-kde `sanitize_filename`).
+     */
+    fun isBidiControl(c: Char): Boolean =
+        c == '\u061C' || c == '\u200E' || c == '\u200F' || c == '\u2028' || c == '\u2029' ||
+            c in '\u202A'..'\u202E' || c in '\u2066'..'\u2069'
 
     /** Removes the last character, both halves of a surrogate pair together (a lone half is not valid UTF-8). */
     private fun dropLastCodePoint(t: String): String =
@@ -276,7 +296,7 @@ object ProgressText {
             TransferState.Done -> s.get(R.string.share_state_done)
             TransferState.Cancelled -> s.get(R.string.share_state_cancelled)
             TransferState.Declined -> s.get(R.string.share_state_declined)
-            TransferState.Failed -> t.code?.let { s.get(R.string.share_state_failed_code, it) } ?: s.get(R.string.share_state_failed)
+            TransferState.Failed -> t.code?.let { s.get(R.string.share_state_failed_code, if (ShareText.knownFailure(it)) ShareText.failure(it, s) else it) } ?: s.get(R.string.share_state_failed)
         }
         return s.get(R.string.share_line, what, state)
     }
@@ -295,6 +315,11 @@ object ShareText {
         else -> s.get(R.string.err_core_refused, code)
     }
 
+    private val known = setOf("cancelled", "timeout", "too_large", "pin_mismatch", "tls_failed", "truncated", "expired", "link_lost", "io_error", "port_rejected", "no_port", "busy")
+
+    /** A code that has wording of its own (shown in words on the Share screen instead of the raw code). */
+    fun knownFailure(code: String): Boolean = code in known
+
     fun failure(code: String?, s: Strings): String = when (code) {
         "cancelled" -> s.get(R.string.share_fail_cancelled)
         "timeout" -> s.get(R.string.share_fail_timeout)
@@ -303,6 +328,10 @@ object ShareText {
         "tls_failed" -> s.get(R.string.share_fail_tls)
         "truncated" -> s.get(R.string.share_fail_truncated)
         "expired" -> s.get(R.string.share_fail_expired)
+        "link_lost" -> s.get(R.string.share_fail_link_lost)
+        "io_error" -> s.get(R.string.share_fail_io)
+        "port_rejected", "no_port" -> s.get(R.string.share_fail_no_port)
+        "busy" -> s.get(R.string.share_fail_busy)
         null -> s.get(R.string.share_state_failed)
         else -> s.get(R.string.share_state_failed_code, code)
     }

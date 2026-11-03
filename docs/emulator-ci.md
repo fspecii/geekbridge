@@ -45,6 +45,7 @@ Measured on the runs in [reports/emulator-ci.md](reports/emulator-ci.md).
 | `pair-background` | `scripts/e2e/pair-background.sh` | 6 min | **non-blocking** |
 | `sms` | `scripts/e2e/sms.sh` (Messages: incoming text, send, short-code refusal, phone limiter and notice, MMS placeholder, SIM list, no crash/ANR; report: [reports/sms-emulator-e2e.md](reports/sms-emulator-e2e.md)) | 8 min | **non-blocking** until a few nightly runs agree |
 | `contacts-calendar-cases` | `scripts/scale-e2e.sh env,battery,pair,cases` (recurrence, exceptions, all-day, invitations, unicode contacts, edit conflict, consent withdrawal) | 10 min | **non-blocking** until a few nightly runs pass; exits non-zero when any case fails |
+| `share` | `scripts/e2e/share.sh` (Share sheet target, desktop offers, cancel, offline, names, 200 MiB memory; needs the test sender app built by `scripts/e2e/share-sender/build.sh`, packed in the build artifact) | ~20 min | **non-blocking** (new, see [reports/share-e2e.md](reports/share-e2e.md)) |
 
 ### Known limits on the runner
 

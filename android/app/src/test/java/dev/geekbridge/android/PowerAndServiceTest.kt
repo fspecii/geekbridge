@@ -89,6 +89,10 @@ class PowerAndServiceTest {
         assertFalse(ServicePolicy.shouldRun(0, true))
         assertFalse(ServicePolicy.shouldRun(2, false))
         assertTrue(ServicePolicy.shouldRun(1, true))
+        // A share in progress keeps the process alive even with "Stay connected" off (Android may kill a background
+        // process with no foreground service mid-transfer), but never without a paired computer.
+        assertTrue(ServicePolicy.shouldRun(1, false, sharing = true))
+        assertFalse(ServicePolicy.shouldRun(0, false, sharing = true))
     }
 
     @Test fun aPairingInProgressKeepsTheServiceEvenBeforeAnyComputerIsPaired() {

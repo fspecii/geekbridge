@@ -85,6 +85,32 @@ class ShareProtocolTest {
     }
 }
 
+class ShareSessionTest {
+    private fun transfer(state: TransferState): Transfer =
+        ShareProtocol.parseTransfers(
+            org.json.JSONArray().put(
+                org.json.JSONObject().put("transfer_id", 1).put("connection_id", 1).put("device_id", "a".repeat(32)).put("peer_name", "pc")
+                    .put("direction", "outgoing").put("kind", "file").put("name", "a.bin").put("size", 10).put("bytes", 0).put("state", state.name.lowercase()),
+            ),
+        ).single()
+
+    @Test fun aTransferTheSnapshotHasNotShownYetKeepsTheSessionOpen() {
+        // Regression (emulator share suite): the core answers "started" before the next poll lists the transfer; the
+        // session ended at once, so the Share screen offered only "Done" (no Cancel, no Hide) while the file was moving.
+        assertTrue(ShareSessionLogic.itemOpen(transferId = 7, inSnapshot = null, seen = false, ageMs = 500))
+        // Listed and moving, or waiting for the computer: open. Finished: closed.
+        assertTrue(ShareSessionLogic.itemOpen(1, transfer(TransferState.Active), seen = true, ageMs = 5_000))
+        assertTrue(ShareSessionLogic.itemOpen(1, transfer(TransferState.Waiting), seen = true, ageMs = 5_000))
+        assertFalse(ShareSessionLogic.itemOpen(1, transfer(TransferState.Done), seen = true, ageMs = 5_000))
+        // Seen once and gone: pruned after it finished.
+        assertFalse(ShareSessionLogic.itemOpen(1, null, seen = true, ageMs = 5_000))
+        // Never listed at all: not waited for forever.
+        assertFalse(ShareSessionLogic.itemOpen(1, null, seen = false, ageMs = ShareSessionLogic.UNSEEN_GRACE_MS + 1))
+        // No transfer id (text, a failed open): nothing to wait for.
+        assertFalse(ShareSessionLogic.itemOpen(null, null, seen = false, ageMs = 0))
+    }
+}
+
 class ShareLogicTest {
     @Test fun sanitisesNames() {
         assertEquals("passwd", NameRules.sanitize("../../etc/passwd"))
@@ -97,6 +123,16 @@ class ShareLogicTest {
         assertEquals("tab_x.txt", NameRules.sanitize("tab\tx.txt"))
         val long = NameRules.sanitize("é".repeat(300) + ".jpeg")
         assertTrue(Bounds.utf8Size(long) <= 120); assertTrue(long.endsWith(".jpeg"))
+    }
+
+    @Test fun bidirectionalControlsNeverSurviveInAName() {
+        // "photo<RLO>gpj.exe" reads as "photoexe.jpg" in a file manager and on the Share screen.
+        assertEquals("photo_gpj.exe", NameRules.sanitize("photo\u202Egpj.exe"))
+        for (c in listOf('\u061C', '\u200E', '\u200F', '\u2028', '\u2029', '\u202A', '\u202B', '\u202C', '\u202D', '\u202E', '\u2066', '\u2067', '\u2068', '\u2069')) {
+            assertEquals("U+${c.code.toString(16)}", "a_b.txt", NameRules.sanitize("a${c}b.txt"))
+        }
+        // Real right-to-left text is not touched.
+        assertEquals("نص عربي.txt", NameRules.sanitize("نص عربي.txt"))
     }
 
     @Test fun truncationNeverSplitsASurrogatePair() {
@@ -182,7 +218,9 @@ class ShareLogicTest {
         assertEquals("report.pdf — 50% (500 B)", ProgressText.line(t, TestStrings))
         assertEquals("1.5 MiB", ProgressText.bytes(1_572_864, TestStrings, java.util.Locale.ENGLISH))
         val failed = ShareProtocol.parseTransfers(JSONArray().put(transfer(state = "failed").put("code", "timeout")))[0]
-        assertEquals("report.pdf — failed (timeout)", ProgressText.line(failed, TestStrings))
+        assertEquals("report.pdf — failed (timed out)", ProgressText.line(failed, TestStrings))
+        val unknown = ShareProtocol.parseTransfers(JSONArray().put(transfer(state = "failed").put("code", "brand_new")))[0]
+        assertEquals("report.pdf — failed (brand_new)", ProgressText.line(unknown, TestStrings))
         assertTrue(failed.state.finished); assertFalse(TransferState.Active.finished)
     }
 }

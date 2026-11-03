@@ -15,6 +15,8 @@ the stock KDE Connect apps; **nothing here has been run against a real phone or 
 | Receive on the computer | Turn on *Allow this phone to send me files, links and text* for that phone (off by default), then accept each file in the window or notification, or turn on *Accept its files without asking* for that phone only. Files land in `~/Downloads/GeekBridge` (the XDG download folder on Linux if configured). |
 | Receive on the phone | Incoming files show an Accept / Decline prompt; the per-computer switch *Auto-accept files from this computer* skips it. Files are saved to *Downloads/GeekBridge* through MediaStore. |
 
+A second share started while one is still running joins it (same computer). Leaving the Share screen keeps the task alive until every shared file has been opened, because Android's temporary read grant ends with that screen; a running share also keeps the background service up even when *Stay connected* is off. With auto-accept on, files beyond the concurrency limit wait for a free slot instead of expiring.
+
 `geekbridge-ctl share` lists transfers and permissions; `share accept|decline|cancel|dismiss ID`,
 `share allow DEVICE on|off` and `share auto-accept DEVICE on|off` do what they say.
 

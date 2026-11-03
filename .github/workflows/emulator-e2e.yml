@@ -54,9 +54,11 @@ jobs:
           find target/ci/release -maxdepth 1 -type f -name 'geekbridge*' ! -name '*.d' -perm -u+x -exec cp {} pack/target/release/ \;
           cp dist/android/geekbridge-debug.apk pack/scratch/dist/
           cp -r android/app/src/main/jniLibs pack/jniLibs
+          # test-only "other app" for the share suite (content provider + trampoline activity)
+          scripts/e2e/share-sender/build.sh "$PWD/pack/sender"
           find pack/jniLibs -name '*.so'
           ls -l pack/target/release pack/scratch/dist
-          tar -C pack -czf e2e-build.tar.gz target scratch jniLibs
+          tar -C pack -czf e2e-build.tar.gz target scratch jniLibs sender/share-sender.apk
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-build
@@ -91,6 +93,7 @@ jobs:
           - { name: photos, run: 'scripts/e2e/photos.sh', adb_port: 16170, setup: light, experimental: true }
           - { name: sms, run: 'scripts/e2e/sms.sh', adb_port: 16188, setup: light, experimental: true }
           - { name: contacts-calendar-cases, run: 'SCALE_TARGET="$E2E_TARGET" SCALE_SCRATCH="$E2E_SCRATCH" SCALE_PREBUILT=1 scripts/scale-e2e.sh env,battery,pair,cases', adb_port: 16150, setup: light, experimental: true }
+          - { name: share, run: 'scripts/e2e/share.sh', adb_port: 16190, setup: light, experimental: true }
           - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: true }
           - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
     env:
@@ -129,6 +132,7 @@ jobs:
             echo "E2E_TARGET=$HOME/ci-e2e/target"
             echo "E2E_SCRATCH=$HOME/ci-e2e/scratch"
             echo "E2E_UPD_DESK_TARGET=$HOME/ci-e2e/target"
+            echo "SHARE_SENDER_APK=$HOME/ci-e2e/sender/share-sender.apk"
             echo "GB_BASE_AVD=gb36"
             echo "GB_MIN_FREE_GB=6"
             echo "ADB_PORT=${{ matrix.adb_port }}"
@@ -175,6 +179,7 @@ jobs:
             ~/.cache/gb-tmp/feat-e2e/run/**/*.log
             ~/.cache/gb-tmp/photos-e2e/run/**/*.log
             ~/.cache/gb-tmp/sms-e2e/run/**/*.log
+            ~/.cache/gb-tmp/share-e2e/run/**/*.log
             .tools/gbcall/*.log
           retention-days: 7
           if-no-files-found: ignore

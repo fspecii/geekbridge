@@ -155,6 +155,10 @@ class ShareParserAbuseTest {
         }
         val failed = ShareProtocol.parseTransfers(list(entry(state = "failed").put("code", "timeout"))).single()
         assertTrue(ProgressText.line(failed, strings).contains("${R.string.share_state_failed_code}"))
+        // The Share screen speaks words, not codes: "failed (the connection to the computer was lost)".
+        val lost = ShareProtocol.parseTransfers(list(entry(state = "failed").put("code", "link_lost"))).single()
+        assertTrue(ProgressText.line(lost, strings).contains("${R.string.share_fail_link_lost}"))
+        assertFalse(ProgressText.line(lost, strings).contains("link_lost"))
         val noName = ShareProtocol.parseTransfers(list(entry().put("name", ""))).single()
         assertTrue(ProgressText.line(noName, strings).contains("${R.string.share_what_file}"))
         val link = ShareProtocol.parseTransfers(list(entry(kind = "url"))).single()
@@ -165,7 +169,7 @@ class ShareParserAbuseTest {
             assertNotEquals("error $code", generic, ShareText.error(code, strings).substringBefore('|'))
         }
         val failure = ShareText.failure("brand_new", strings)
-        for (code in listOf("cancelled", "timeout", "too_large", "pin_mismatch", "tls_failed", "truncated", "expired", null)) {
+        for (code in listOf("cancelled", "timeout", "too_large", "pin_mismatch", "tls_failed", "truncated", "expired", "link_lost", "io_error", "port_rejected", "no_port", "busy", null)) {
             assertNotEquals("failure $code", failure.substringBefore('|'), ShareText.failure(code, strings).substringBefore('|'))
         }
     }

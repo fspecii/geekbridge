@@ -11,14 +11,19 @@ package dev.geekbridge.android
 class EarlyOpen<T : AutoCloseable>(private val open: () -> T) {
     private var held: T? = null
     private var discarded = false
+    @Volatile private var settled = false
+
+    /** True once the descriptor was opened, or opening it was tried (and failed), or it was taken: the read grant no longer matters. */
+    fun isSettled(): Boolean = settled
 
     /** Opens ahead of time; failures are left for [take] to report when the file is really needed. */
     fun prefetch() {
-        try { synchronized(this) { if (held == null && !discarded) held = open() } } catch (_: Exception) { }
+        try { synchronized(this) { if (held == null && !discarded) held = open() } } catch (_: Exception) { } finally { settled = true }
     }
 
     @Synchronized
     fun take(): T {
+        settled = true
         val h = held
         if (h != null) { held = null; return h }
         check(!discarded) { "discarded" }

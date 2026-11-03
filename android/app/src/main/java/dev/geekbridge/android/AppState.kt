@@ -71,7 +71,10 @@ object AppState {
     }
 
     /** Should the foreground service hold the link right now? */
-    fun wantService(): Boolean = ServicePolicy.shouldRun(pairedCount, keepConnected, pairingGrace())
+    fun wantService(): Boolean = ServicePolicy.shouldRun(pairedCount, keepConnected, pairingGrace(), sharing)
+
+    /** A share to a computer is running: the foreground service holds the process until it is over, whatever "Stay connected" says. */
+    @Volatile var sharing = false
 
     /** Why the foreground service could not start last time (shown in Diagnostics); null if it did. */
     @Volatile var serviceError: String? = null

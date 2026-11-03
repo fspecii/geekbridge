@@ -30,6 +30,9 @@ class ShareActivity : Activity() {
     private var uris: List<Uri> = emptyList()
     private val connectTried = HashSet<String>()
     private var asked = false
+
+    /** This screen's own request has been given to the coordinator (a second screen may open while a share runs). */
+    private var handedOff = false
     private var restartedAfterStop = false
     private lateinit var hold: ShareHold
     private var multicast: WifiManager.MulticastLock? = null
@@ -38,6 +41,7 @@ class ShareActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = Ui(this)
+        handedOff = savedInstanceState?.getBoolean("handed_off") ?: false
         coordinator = ShareCoordinator.get(this)
         // After a rotation the previous instance hands over its hold; a fresh start makes a new one.
         hold = lastNonConfigurationInstance as? ShareHold
@@ -58,11 +62,11 @@ class ShareActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (!coordinator.sessionActive) {
-            parse(intent)
-            if (request !is ShareRequest.Invalid) coordinator.forgetFinishedSession()
-            render()
-        }
+        // Another share while one is running joins it (the coordinator appends); a finished one is replaced.
+        parse(intent)
+        handedOff = false
+        if (request !is ShareRequest.Invalid) coordinator.forgetFinishedSession()
+        render()
     }
 
     override fun onStart() {
@@ -77,8 +81,40 @@ class ShareActivity : Activity() {
         super.onStop()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean("handed_off", handedOff)
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onRetainNonConfigurationInstance(): Any = hold
+
+    private var leaving = false
+    private val leaveCheck = object : Runnable {
+        override fun run() { if (leaving) finish() }
+    }
+    private var leaveDeadline = 0L
+
+    /**
+     * Android's temporary read grant on the shared files ends with this screen's task. Every file is opened right after
+     * the send starts, but a provider can be slow (Photos, Drive): leaving earlier would fail the files not yet opened.
+     * The screen therefore goes to the back (task alive) and finishes as soon as all files are open, or after 60 s.
+     */
+    override fun finish() {
+        val waiting = coordinator.sessionActive && !coordinator.filesOpened()
+        if (waiting && !leaving) {
+            leaving = true
+            leaveDeadline = android.os.SystemClock.uptimeMillis() + 60_000
+        }
+        if (leaving && waiting && android.os.SystemClock.uptimeMillis() < leaveDeadline) {
+            moveTaskToBack(true)
+            main.postDelayed(leaveCheck, 200)
+            return
+        }
+        leaving = false
+        main.removeCallbacks(leaveCheck)
+        super.finish()
+    }
 
     override fun onDestroy() {
         if (!isChangingConfigurations) hold.giveBack()
@@ -120,7 +156,7 @@ class ShareActivity : Activity() {
         val cached = names[uri]
         if (cached == null) resolveNamesSoon()
         val raw = cached?.takeIf { it.isNotEmpty() }
-        val name = (raw ?: uri.lastPathSegment ?: getString(R.string.share_unnamed_file)).filter { !Character.isISOControl(it) }
+        val name = (raw ?: uri.lastPathSegment ?: getString(R.string.share_unnamed_file)).filter { !Character.isISOControl(it) }.map { if (NameRules.isBidiControl(it)) '_' else it }.joinToString("")
         return Bounds.clip(name, 80)
     }
 
@@ -179,7 +215,31 @@ class ShareActivity : Activity() {
         }
     }
 
+    private var lastSignature: String? = null
+
+    /** Everything [render] shows, as one string: the same answer means the same screen. */
+    private fun renderSignature(): String = buildString {
+        append(request.toString()).append('|').append(uris.size).append('|')
+        append(coordinator.sessionActive).append(handedOff).append('|')
+        for (u in uris.take(5)) append(names[u]).append(',')
+        for (i in coordinator.items) {
+            val (text, tone) = coordinator.itemLine(i)
+            append(text).append(tone).append(';')
+            val t = i.transferId?.let { id -> coordinator.controller.snapshot?.transfers?.firstOrNull { it.id == id } }
+            append(t?.takeIf { it.state == TransferState.Active }?.let { ProgressText.percent(it) }).append(';')
+        }
+        val c = coordinator.controller
+        append(c.phase).append(c.snapshot == null).append('|')
+        for (t in TargetPicker.targets(c.snapshot)) append(t.deviceId).append(t.name).append(t.connectionId != null).append(t.reachableAt != null).append(',')
+        append('|').append(c.snapshot?.transfers.orEmpty().count { it.direction == TransferDirection.Outgoing && !it.state.finished })
+    }
+
     private fun render() {
+        // The Share screen is redrawn on every poll (twice a second while a transfer runs). Rebuilding identical views
+        // makes TalkBack lose its place and floods the accessibility event stream (uiautomator never sees an idle UI).
+        val sig = renderSignature()
+        if (sig == lastSignature && box.childCount > 0) return
+        lastSignature = sig
         box.removeAllViews()
         // The dialog window already shows "Send to computer" as its title (and TalkBack reads it); no second heading.
         box.addView(DotText(this, getString(R.string.share_dot_title), maxPitchDp = 5f, maxLines = 1, accentDot = true, decorative = true))
@@ -199,7 +259,7 @@ class ShareActivity : Activity() {
                 Tone.Muted,
             ),
         )
-        if (coordinator.sessionActive || coordinator.items.isNotEmpty()) return renderSession()
+        if (handedOff && (coordinator.sessionActive || coordinator.items.isNotEmpty())) return renderSession()
 
         val c = coordinator.controller
         val targets = TargetPicker.targets(c.snapshot)
@@ -244,6 +304,7 @@ class ShareActivity : Activity() {
     private fun send(t: ShareTarget) {
         val conn = t.connectionId ?: return
         askNotificationPermission()
+        handedOff = true
         when (val r = request) {
             is ShareRequest.Files -> coordinator.sendFiles(conn, uris)
             is ShareRequest.Text -> coordinator.sendText(conn, r.kind, r.text)

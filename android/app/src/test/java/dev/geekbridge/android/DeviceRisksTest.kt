@@ -102,4 +102,17 @@ class DeviceRisksTest {
         e.prefetch() // must not throw
         try { e.take(); fail() } catch (_: java.io.IOException) { }
     }
+
+    @Test fun earlyOpenSaysWhenTheGrantNoLongerMatters() {
+        // The Share screen may only go away once every file has been opened (or has failed to): the temporary read
+        // grant ends with its task, and a file opened later than that cannot be read any more.
+        val ok = EarlyOpen { Handle(1) }
+        val bad = EarlyOpen<Handle> { throw java.io.IOException("provider died") }
+        assertFalse(ok.isSettled()); assertFalse(bad.isSettled())
+        ok.prefetch(); bad.prefetch()
+        assertTrue(ok.isSettled()); assertTrue(bad.isSettled())
+        val taken = EarlyOpen { Handle(2) }
+        taken.take()
+        assertTrue(taken.isSettled())
+    }
 }

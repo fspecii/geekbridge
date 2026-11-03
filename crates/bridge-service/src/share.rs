@@ -1252,7 +1252,19 @@ impl ShareManager {
         Ok(())
     }
 
-    fn finish(&self, id: u64, device: &str, result: Result<Option<PathBuf>, &'static str>) {
+    fn finish(
+        self: &Arc<Self>,
+        id: u64,
+        device: &str,
+        result: Result<Option<PathBuf>, &'static str>,
+    ) {
+        self.settle(id, device, result);
+        // A slot is free again: files that arrived while the limit was reached and that this phone may send without
+        // asking (auto-accept) go next. Without this the third file of a batch sat "offered" until it expired.
+        self.accept_waiting();
+    }
+
+    fn settle(&self, id: u64, device: &str, result: Result<Option<PathBuf>, &'static str>) {
         let ok = result.is_ok();
         let received = result.as_ref().ok().and_then(Clone::clone);
         {
@@ -1308,6 +1320,47 @@ impl ShareManager {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
             notifier.received_file(&path);
+        }
+    }
+
+    /// Ids of offers that wait only for a free slot: oldest first, from phones with auto-accept on (or answering a
+    /// photo the user asked for).
+    fn waiting_for_a_slot(&self) -> Vec<u64> {
+        let candidates: Vec<(u64, String, bool)> = self
+            .inner()
+            .items
+            .iter()
+            .filter(|t| {
+                t.info.state == TransferState::Offered
+                    && t.info.direction == TransferDirection::Incoming
+            })
+            .map(|t| {
+                (
+                    t.info.transfer_id,
+                    t.info.device_id.clone(),
+                    t.fetch.is_some(),
+                )
+            })
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|(_, device, fetch)| {
+                let p = self.perm(device);
+                *fetch || (p.receive && p.auto_accept)
+            })
+            .map(|(id, _, _)| id)
+            .collect()
+    }
+
+    fn accept_waiting(self: &Arc<Self>) {
+        for id in self.waiting_for_a_slot() {
+            // Busy: no slot yet, the next finish tries again. Anything else is about that one offer only.
+            if let Err(e) = self.decide(id, true)
+                && e.code == ErrorCode::Busy
+                && e.message.contains("too many")
+            {
+                break;
+            }
         }
     }
 
@@ -1438,7 +1491,7 @@ impl ShareManager {
                 .find(|t| t.info.transfer_id == transfer_id)
                 .map(|t| t.info.device_id.clone());
             if let Some(device) = device {
-                self.finish(transfer_id, &device, Err("link_lost"));
+                self.settle(transfer_id, &device, Err("link_lost"));
             }
         }
     }
@@ -1853,6 +1906,58 @@ mod tests {
             m.store_text("d", "Phone", TransferKind::Text, text),
             Disposition::Handled
         ));
+    }
+
+    fn offered_item(id: u64, device: &str, fetch: Option<u64>) -> Transfer {
+        let now = Instant::now();
+        Transfer {
+            fetch,
+            info: TransferInfo {
+                transfer_id: id,
+                device_id: device.to_owned(),
+                device_name: "Phone".into(),
+                direction: TransferDirection::Incoming,
+                kind: TransferKind::File,
+                name: format!("f{id}.bin"),
+                size: Some(10),
+                bytes: 0,
+                state: TransferState::Offered,
+                code: None,
+                path: None,
+                text: None,
+                expires_in_ms: None,
+                at_unix_ms: 0,
+            },
+            bytes: Arc::new(AtomicU64::new(0)),
+            cancel: CancelToken::new(),
+            offer: None,
+            created: now,
+            finished: None,
+        }
+    }
+
+    #[test]
+    fn offers_over_the_limit_wait_for_a_slot_only_when_the_phone_may_send_without_asking() {
+        // Regression (emulator share suite): three files shared at once with auto-accept on: the third stayed
+        // "offered" after the first two finished and expired after two minutes.
+        let m = ShareManager::new(ShareOptions::default());
+        m.set_settings("auto", Some(true), Some(true)).unwrap();
+        m.set_settings("ask", Some(true), Some(false)).unwrap();
+        {
+            let mut inner = m.inner();
+            inner.items.push(offered_item(1, "auto", None));
+            inner.items.push(offered_item(2, "ask", None));
+            inner.items.push(offered_item(3, "auto", None));
+            inner.items.push(offered_item(4, "stranger", None));
+            inner.items.push(offered_item(5, "stranger", Some(9)));
+            let mut done = offered_item(6, "auto", None);
+            done.info.state = TransferState::Done;
+            inner.items.push(done);
+        }
+        assert_eq!(m.waiting_for_a_slot(), vec![1, 3, 5]);
+        // Turning auto-accept off drops the phone from the list again.
+        m.set_settings("auto", None, Some(false)).unwrap();
+        assert_eq!(m.waiting_for_a_slot(), vec![5]);
     }
 
     #[tokio::test]

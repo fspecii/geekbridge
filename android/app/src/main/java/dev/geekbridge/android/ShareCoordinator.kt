@@ -21,8 +21,13 @@ class OpenedShare(val pfd: android.os.ParcelFileDescriptor, val name: String?, v
 /** One file (or text) of the current outgoing share and how it is going. */
 class ShareItem(val label: String) {
     var transferId: Long? = null
+    var seen = false
+    var startedAtMs = 0L
     var error: String? = null
     var inFlight = false
+
+    /** A text or link the core handed to the connection: the computer sends no answer, so this is all that is known. */
+    var handedOver = false
 
     /** The file descriptor opened up front; null for text items. */
     var source: EarlyOpen<OpenedShare>? = null
@@ -104,6 +109,7 @@ class ShareCoordinator private constructor(app: Context) {
                 t.direction == TransferDirection.Incoming -> incomingText(t)
             }
         }
+        for (i in items) if (!i.seen && i.transferId != null && transfers.any { it.id == i.transferId }) i.seen = true
         pump()
         outgoingNotification(transfers)
         if (controller.needsLink()) schedule()
@@ -218,21 +224,25 @@ class ShareCoordinator private constructor(app: Context) {
      * screen only for the Share screen that ran them (this object outlives it); otherwise every later share in this
      * process would just show the old result and never send.
      */
+    fun filesOpened(): Boolean = items.all { it.source?.isSettled() != false }
+
     fun forgetFinishedSession() {
         if (!sessionActive) items = emptyList()
     }
 
     /** Starts sending [uris] (content:// only, checked by the caller) to [connectionId]. */
     fun sendFiles(connectionId: Long, uris: List<Uri>) {
-        if (sessionActive) return
-        beginSession(connectionId)
+        // A second share while one is running joins it (same computer) instead of being dropped without a word.
+        val joining = sessionActive && connectionId == sessionConn
+        if (sessionActive && !joining) return
+        if (!joining) beginSession(connectionId)
         val list = uris.take(ShareLimits.MAX_FILES).map { uri ->
             uri to ShareItem(uri.lastPathSegment?.let { s -> NameRules.sanitize(s) } ?: ctx.getString(R.string.share_what_file)).also { item ->
                 item.source = EarlyOpen { openShared(uri) }
             }
         }
-        items = list.map { it.second }
-        queue.clear()
+        items = (if (joining) items else emptyList()) + list.map { it.second }
+        if (!joining) queue.clear()
         queue.addAll(list)
         // Open every file now, while the Share screen's temporary read grant is certain to be alive (Photos, Gallery,
         // Chrome): a later file of a long queue would otherwise be opened after the screen is gone.
@@ -242,13 +252,14 @@ class ShareCoordinator private constructor(app: Context) {
     }
 
     fun sendText(connectionId: Long, kind: TransferKind, text: String) {
-        if (sessionActive) return
-        beginSession(connectionId)
+        val joining = sessionActive && connectionId == sessionConn
+        if (sessionActive && !joining) return
+        if (!joining) beginSession(connectionId)
         val item = ShareItem(ctx.getString(if (kind == TransferKind.Url) R.string.share_what_link else R.string.share_what_text)).also { it.inFlight = true }
-        items = listOf(item)
+        items = (if (joining) items else emptyList()) + item
         controller.raw(ShareProtocol.sendText(connectionId, kind, text)) { o ->
             item.inFlight = false
-            if (o !is CoreOutcome.Ok) item.error = describe(o)
+            if (o !is CoreOutcome.Ok) item.error = describe(o) else item.handedOver = true
             endIfDone()
             onChange()
         }
@@ -258,6 +269,8 @@ class ShareCoordinator private constructor(app: Context) {
     private fun beginSession(conn: Long) {
         sessionActive = true
         sessionConn = conn
+        AppState.sharing = true
+        LinkService.sync(ctx) // the Share screen is in front: Android lets a foreground service start now
         if (!sessionHeld) { controller.hold(); sessionHeld = true }
         schedule()
     }
@@ -316,7 +329,10 @@ class ShareCoordinator private constructor(app: Context) {
                         }
                         else -> {
                             runCatching { pfd.close() } // the core duplicated the descriptor during the call
-                            if (o is CoreOutcome.Ok) item.transferId = (o.result as? JSONObject)?.optLong("transfer_id", -1)?.takeIf { it >= 0 } else item.error = describe(o)
+                            if (o is CoreOutcome.Ok) {
+                                item.transferId = (o.result as? JSONObject)?.optLong("transfer_id", -1)?.takeIf { it >= 0 }
+                                item.startedAtMs = android.os.SystemClock.elapsedRealtime()
+                            } else item.error = describe(o)
                         }
                     }
                     controller.poll()
@@ -339,9 +355,12 @@ class ShareCoordinator private constructor(app: Context) {
     private fun endIfDone() {
         if (!sessionActive || queue.isNotEmpty() || items.any { it.inFlight }) return
         val ts = controller.snapshot?.transfers.orEmpty()
-        val open = items.any { i -> i.transferId != null && ts.any { it.id == i.transferId && !it.state.finished } }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val open = items.any { i -> ShareSessionLogic.itemOpen(i.transferId, ts.firstOrNull { it.id == i.transferId }, i.seen, now - i.startedAtMs) }
         if (open) return
         sessionActive = false
+        AppState.sharing = false
+        LinkService.sync(ctx)
         if (sessionHeld) { controller.release(); sessionHeld = false }
         notifications.cancel(ShareNotifications.ID_PROGRESS)
     }
@@ -360,6 +379,7 @@ class ShareCoordinator private constructor(app: Context) {
             return ProgressText.line(t, ctx.strings) to tone
         }
         return when {
+            i.handedOver -> ctx.getString(R.string.share_item_text_sent, i.label) to Tone.Normal
             i.inFlight -> ctx.getString(R.string.share_item_starting, i.label) to Tone.Muted
             i.transferId != null -> ctx.getString(R.string.share_item_done, i.label) to Tone.Ok // already pruned from the snapshot
             else -> ctx.getString(R.string.share_item_queued, i.label) to Tone.Muted

@@ -32,6 +32,10 @@
     <string name="share_fail_tls">secure channel failed</string>
     <string name="share_fail_truncated">connection ended early</string>
     <string name="share_fail_expired">offer expired</string>
+    <string name="share_fail_link_lost">the connection to the computer was lost</string>
+    <string name="share_fail_io">interrupted; the computer stopped it or the file could not be read</string>
+    <string name="share_fail_no_port">the computer could not be reached for the transfer</string>
+    <string name="share_fail_busy">the computer is busy with other transfers</string>
     <string name="share_link_stopped_done">Link stopped: the transfers finished and the app is in the background.</string>
     <string name="share_err_finish_saving">Could not finish saving %1$s.</string>
     <string name="share_failed_named">%1$s: %2$s</string>
@@ -43,6 +47,7 @@
     <string name="share_err_open">Could not open this file (%1$s).</string>
     <string name="share_item_starting">%1$s — starting…</string>
     <string name="share_item_done">%1$s — done</string>
+    <string name="share_item_text_sent">%1$s — sent. It only shows up if the computer lets this phone send it text and links (Share files > Allow this phone to send me files, links and text).</string>
     <string name="share_item_queued">%1$s — queued</string>
     <string name="share_item_error">%1$s — %2$s</string>
     <string name="share_channel_name">File sharing</string>
