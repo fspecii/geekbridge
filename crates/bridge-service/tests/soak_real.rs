@@ -1096,6 +1096,8 @@ fn unsafe_term(pid: u32) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+// /proc and smaps_rollup exist only on Linux; the Windows and macOS runners have nothing to read.
+#[cfg(target_os = "linux")]
 #[test]
 fn stall_diagnostics_and_smaps_are_readable() {
     let pid = std::process::id();
