@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use bridge_core::ipc::{NotificationItem, NotificationsView};
 use bridge_core::notification_link::Mirrored;
+use bridge_i18n::{tr, tr_args};
 
 /// Most notifications kept per phone; the oldest go first.
 pub const MAX_PER_DEVICE: usize = 50;
@@ -255,7 +256,7 @@ impl Mirror {
         MirrorBanner {
             device_name: device_name.to_owned(),
             app: if n.app.is_empty() {
-                "Phone".to_owned()
+                tr("banner.phone").to_owned()
             } else {
                 n.app.clone()
             },
@@ -289,7 +290,7 @@ impl NotifySendMirror {
             "--wait".into(),
         ];
         if b.clearable {
-            args.push("--action=dismiss=Dismiss".into());
+            args.push(format!("--action=dismiss={}", tr("banner.dismiss")));
         }
         for (i, a) in b
             .actions
@@ -300,7 +301,7 @@ impl NotifySendMirror {
             // The key is an index, never the phone's text; the label is cleaned and has no `=`.
             let label = clean(a, 32).replace('=', "-");
             let label = if label.trim().is_empty() {
-                "Action".to_owned()
+                tr("banner.action").to_owned()
             } else {
                 label
             };
@@ -310,9 +311,18 @@ impl NotifySendMirror {
         args.push(clean(&b.app, 48));
         let body = match &b.text {
             // Each phone-chosen piece is isolated so an Arabic or Hebrew title cannot reorder the colon and text.
-            Some(t) if !t.is_empty() => format!("{}: {}", isolate(&b.title, 80), isolate(t, 160)),
+            Some(t) if !t.is_empty() => tr_args(
+                "banner.mirror_body",
+                &[
+                    ("title", &isolate(&b.title, 80)),
+                    ("text", &isolate(t, 160)),
+                ],
+            ),
             Some(_) => clean(&b.title, 160),
-            None => format!("New notification on {}", isolate(&b.device_name, 48)),
+            None => tr_args(
+                "banner.new_notification",
+                &[("device", &isolate(&b.device_name, 48))],
+            ),
         };
         args.push(body);
         args
@@ -524,6 +534,27 @@ mod tests {
         );
         assert_eq!(NotifySendMirror::choice("a9", &b.actions), None);
         assert_eq!(NotifySendMirror::choice("", &b.actions), None);
+    }
+
+    #[test]
+    fn notify_send_body_isolates_title_and_text_in_order() {
+        let arabic = "\u{645}\u{643}\u{62a}\u{628}";
+        let mut b = MirrorBanner {
+            device_name: "Pixel\u{202e}".into(),
+            app: "Chat".into(),
+            title: arabic.into(),
+            text: Some("5 min <b>".into()),
+            clearable: false,
+            actions: vec![],
+            slot: "1".into(),
+        };
+        let body = |b: &MirrorBanner| NotifySendMirror::args(b).pop().unwrap();
+        assert_eq!(
+            body(&b),
+            format!("\u{2068}{arabic}\u{2069}: \u{2068}5 min \u{2039}b\u{203A}\u{2069}")
+        );
+        b.text = None;
+        assert_eq!(body(&b), "New notification on \u{2068}Pixel\u{2069}");
     }
 
     #[test]

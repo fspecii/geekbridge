@@ -14,7 +14,7 @@ in the release notes and the git history.
 | Part | English source | Translation goes in |
 | --- | --- | --- |
 | Android app | `android/app/src/main/res/values/*.xml` | `android/app/src/main/res/values-<qualifier>/` with the same file names |
-| Desktop apps (Home, Calls, Messages, Contacts, Calendar, Clipboard, Share) | `crates/bridge-apps/i18n/en.properties` | `crates/bridge-apps/i18n/<tag>.properties` |
+| Desktop apps (Home, Calls, Messages, Contacts, Calendar, Clipboard, Share), desktop banners (`banner.*`) and the tray menu (`tray.*`) | `crates/bridge-i18n/i18n/en.properties` | `crates/bridge-i18n/i18n/<tag>.properties` |
 | Docs, changelog, `geekbridge-ctl` output, log lines, diagnostics reports | | not translated (they are for bug reports and developers) |
 
 The desktop still has English text in a few screens that are on the allowlist in
@@ -56,7 +56,7 @@ Lint fails the build on `HardcodedText` and `SetTextI18n` so new ones do not sli
 
 ## Desktop
 
-The desktop apps read one catalogue: `crates/bridge-apps/i18n/en.properties`, loaded by `crates/bridge-apps/src/i18n.rs`.
+The desktop apps and the service (banners, tray) read one catalogue: `crates/bridge-i18n/i18n/en.properties`, loaded by `crates/bridge-i18n/src/lib.rs`. The crate `bridge-i18n` has no dependencies, so the service does not pull in the UI toolkit.
 
 ### File format
 
@@ -82,11 +82,11 @@ report.no_browser = No browser could be opened.\n{url}
 
 ### Adding a language
 
-1. Copy `en.properties` to `crates/bridge-apps/i18n/<tag>.properties`, where `<tag>` is `de`, `pt-BR`, ... (language,
+1. Copy `en.properties` to `crates/bridge-i18n/i18n/<tag>.properties`, where `<tag>` is `de`, `pt-BR`, ... (language,
    optionally `-REGION`). `pt-BR` falls back to `pt`, then to English.
-2. Register it in `BUNDLED` in `crates/bridge-apps/src/i18n.rs`: `("de", include_str!("../i18n/de.properties"))`.
+2. Register it in `BUNDLED` in `crates/bridge-i18n/src/lib.rs`: `("de", include_str!("../i18n/de.properties"))`.
 3. Run `cargo test -p bridge-apps`. The catalogue tests check keys and placeholders.
-4. Try it without rebuilding: `GEEKBRIDGE_I18N_DIR=crates/bridge-apps/i18n GEEKBRIDGE_LANG=de geekbridge`.
+4. Try it without rebuilding: `GEEKBRIDGE_I18N_DIR=crates/bridge-i18n/i18n GEEKBRIDGE_LANG=de geekbridge`.
 
 The language is chosen from `GEEKBRIDGE_LANG`, then `LC_ALL`, `LC_MESSAGES`, `LANG`. Dates, month and weekday names
 and the 12/24 hour clock come from `localtime.rs` (English, German, French, Spanish, Portuguese, Italian today, from
@@ -148,7 +148,7 @@ needs a hosted service today.
 | Component | File format in Weblate | File mask | Template (source) |
 | --- | --- | --- | --- |
 | Android, one component per source file (`gb_ui`, `gb_home`, `gb_pairing`, `gb_phonedata`, `gb_widgets`, `gb_clipboard`, `strings`) | Android String Resource | `android/app/src/main/res/values-*/gb_ui.xml` | `android/app/src/main/res/values/gb_ui.xml` |
-| Desktop | Java Properties (UTF-8) | `crates/bridge-apps/i18n/*.properties` | `crates/bridge-apps/i18n/en.properties` |
+| Desktop | Java Properties (UTF-8) | `crates/bridge-i18n/i18n/*.properties` | `crates/bridge-i18n/i18n/en.properties` |
 
 Notes: both are monolingual (a template file with keys, one file per language). Android's own qualifier names
 (`values-pt-rBR`) differ from the desktop tags (`pt-BR`); Weblate maps them with its language-code settings. Desktop

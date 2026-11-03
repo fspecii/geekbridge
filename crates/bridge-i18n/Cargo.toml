@@ -1,0 +1,16 @@
+[package]
+name = "bridge-i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# The desktop text catalogue, shared by the egui apps (bridge-apps) and the service (bridge-service:
+# notification banners, tray). No dependencies at all, so neither side pulls in the other's graph.
+[dependencies]
+
+[features]
+# `current()` always answers English, whatever the environment says. Enabled by the dev-dependencies of
+# the crates that assert on exact English strings in their tests.
+force-english = []

@@ -16,6 +16,7 @@ path = "src/bin/geekbridge-ctl.rs"
 
 [dependencies]
 bridge-core.workspace = true
+bridge-i18n = { path = "../bridge-i18n" }
 bridge-kde = { path = "../bridge-kde" }
 bridge-calls = { path = "../bridge-calls" }
 bridge-calls-windows = { path = "../bridge-calls-windows" }
@@ -57,6 +58,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 
 [dev-dependencies]
 tempfile = "3"
+bridge-i18n = { path = "../bridge-i18n", features = ["force-english"] }
 bridge-chaos = { path = "../bridge-chaos" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal", "time"] }
 

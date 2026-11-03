@@ -374,6 +374,15 @@ fn the_screen_state_needs_no_running_transport_and_rejects_bad_input() {
 }
 
 #[test]
+fn heartbeat_now_needs_no_running_transport_and_takes_no_arguments() {
+    let d = Dispatcher::new();
+    let v = parse(&d.handle(&request("transport_heartbeat_now", json!({})).to_string()));
+    assert_eq!(ok(&v)["nudged"], true);
+    let v = parse(&d.handle(&request("transport_heartbeat_now", json!({ "x": 1 })).to_string()));
+    assert_eq!(v["ok"], false);
+}
+
+#[test]
 fn nothing_starts_before_transport_start() {
     let d = Dispatcher::new();
     let dir = tempfile::tempdir().unwrap();

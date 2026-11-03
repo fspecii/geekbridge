@@ -49,7 +49,7 @@ change the UI and it goes red, look at `dist/golden-diff/`; update with `scripts
 
 ## Translations and UI text
 
-User-visible text lives in string resources (Android) and the catalogue `crates/bridge-apps/i18n/en.properties` (desktop), never
+User-visible text lives in string resources (Android) and the catalogue `crates/bridge-i18n/i18n/en.properties` (desktop), never
 in a literal; tests and lint enforce it. To add a language, see `docs/translating.md`. Translations are GPL contributions.
 
 ## Code style

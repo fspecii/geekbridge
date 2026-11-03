@@ -6,6 +6,7 @@
 //! Privacy: a tray icon sits on screen all day, so nothing here carries a caller's name or number,
 //! message text or clipboard content. Phone names are the user's own labels and are sanitised.
 use crate::notify_text::plain;
+use bridge_i18n::{tr, tr_args, tr_n};
 
 /// The five states the icon can show, most urgent first in [`TrayInput::icon_state`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -85,9 +86,12 @@ impl TrayInput {
     /// First menu line: the phone, or the product name when there is none.
     pub fn headline(&self) -> String {
         match self.connected.as_slice() {
-            [] => "GeekBridge".to_owned(),
+            [] => "GeekBridge".to_owned(), // i18n-ok: product name
             [one] => plain(one, 40),
-            [first, rest @ ..] => format!("{} +{}", plain(first, 32), rest.len()),
+            [first, rest @ ..] => tr_args(
+                "tray.more_phones",
+                &[("first", &plain(first, 32)), ("rest", &rest.len())],
+            ),
         }
     }
 
@@ -95,29 +99,28 @@ impl TrayInput {
     pub fn status_line(&self) -> String {
         let n = self.connected.len();
         if self.ringing {
-            "Incoming call".to_owned()
+            tr("tray.incoming_call").to_owned()
         } else if self.transfers_live > 0 {
-            match self.transfers_live {
-                1 => "1 file transfer in progress".to_owned(),
-                k => format!("{k} file transfers in progress"),
-            }
+            tr_n("tray.transfers", self.transfers_live as u64, &[])
         } else if n > 0 {
-            let mut line = if self.paused {
-                "Connected \u{b7} clipboard sync paused".to_owned()
+            let line = tr(if self.paused {
+                "tray.connected_paused"
             } else {
-                "Connected".to_owned()
-            };
-            if let Some(b) = &self.battery {
-                line.push_str(" \u{b7} ");
-                line.push_str(&b.text());
+                "tray.connected"
+            });
+            match &self.battery {
+                Some(b) => tr_args(
+                    "tray.with_battery",
+                    &[("status", &line), ("battery", &b.text())],
+                ),
+                None => line.to_owned(),
             }
-            line
         } else if self.paired == 0 {
-            "No phone paired yet".to_owned()
+            tr("tray.no_phone_paired").to_owned()
         } else if let Some(w) = &self.why {
             bridge_core::why_disconnected::one_line(w)
         } else {
-            "No phone connected".to_owned()
+            tr("tray.no_phone_connected").to_owned()
         }
     }
 
@@ -125,7 +128,7 @@ impl TrayInput {
     pub fn update_line(&self) -> Option<String> {
         self.update
             .as_ref()
-            .map(|v| format!("Update {} available", plain(v, 24)))
+            .map(|v| tr_args("tray.update_available", &[("version", &plain(v, 24))]))
     }
 
     /// Tooltip title and body.
@@ -134,7 +137,8 @@ impl TrayInput {
         if self.connected.is_empty()
             && let Some(w) = &self.why
         {
-            body.push_str(&format!("\nTry: {}", w.fix));
+            body.push('\n');
+            body.push_str(&tr_args("tray.try", &[("fix", &w.fix)]));
         }
         (self.headline(), body)
     }
@@ -144,9 +148,9 @@ impl TrayInput {
     /// icon could not open the app.
     pub fn sni_status(&self) -> &'static str {
         if self.ringing {
-            "NeedsAttention"
+            "NeedsAttention" // i18n-ok: SNI protocol value
         } else {
-            "Active"
+            "Active" // i18n-ok: SNI protocol value
         }
     }
 }
@@ -236,30 +240,30 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
         MenuItem::action(
             5,
             TrayAction::Answer,
-            "Answer",
+            tr("tray.answer"),
             input.can_answer,
             input.ringing,
         ),
         MenuItem::action(
             6,
             TrayAction::Decline,
-            "Decline",
+            tr("tray.decline"),
             input.can_decline,
             input.ringing,
         ),
         MenuItem::separator(7),
-        MenuItem::action(8, TrayAction::Open, "Open GeekBridge", true, true),
+        MenuItem::action(8, TrayAction::Open, tr("tray.open"), true, true),
         MenuItem::action(
             9,
             TrayAction::PasteFromPhone,
-            "Paste clipboard from phone",
+            tr("tray.paste"),
             input.can_paste && !input.paused,
             true,
         ),
         MenuItem::action(
             10,
             TrayAction::SendFile,
-            "Send file\u{2026}",
+            tr("tray.send_file"),
             connected,
             true,
         ),
@@ -268,9 +272,9 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
             12,
             TrayAction::TogglePause,
             if input.paused {
-                "Resume sync"
+                tr("tray.resume_sync")
             } else {
-                "Pause sync"
+                tr("tray.pause_sync")
             },
             input.paused || input.can_paste,
             true,
@@ -279,9 +283,9 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
             16,
             TrayAction::ToggleMirror,
             if input.mirror_on {
-                "Stop showing phone notifications"
+                tr("tray.mirror_stop")
             } else {
-                "Show phone notifications"
+                tr("tray.mirror_start")
             },
             input.mirror_on || input.mirror_available,
             input.mirror_on || input.mirror_available,
@@ -289,12 +293,12 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
         MenuItem::action(
             13,
             TrayAction::CheckUpdates,
-            "Check for updates",
+            tr("tray.check_updates"),
             true,
             true,
         ),
         MenuItem::separator(14),
-        MenuItem::action(15, TrayAction::Quit, "Quit", true, true),
+        MenuItem::action(15, TrayAction::Quit, tr("tray.quit"), true, true),
     ]
 }
 

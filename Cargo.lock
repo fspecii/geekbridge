@@ -616,6 +616,7 @@ name = "bridge-apps"
 version = "0.1.0"
 dependencies = [
  "bridge-core",
+ "bridge-i18n",
  "bridge-kde",
  "eframe",
  "qrcode",
@@ -702,6 +703,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "bridge-i18n"
+version = "0.1.0"
+
+[[package]]
 name = "bridge-kde"
 version = "0.1.0"
 dependencies = [
@@ -751,6 +756,7 @@ dependencies = [
  "bridge-calls-windows",
  "bridge-chaos",
  "bridge-core",
+ "bridge-i18n",
  "bridge-kde",
  "bridge-update",
  "futures-lite",

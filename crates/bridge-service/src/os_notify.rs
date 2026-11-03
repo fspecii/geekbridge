@@ -13,6 +13,7 @@
 use crate::call_control::{CallNotifier, RingChoice};
 use crate::notify_text::{banner_safe, isolate};
 use crate::share::Notifier;
+use bridge_i18n::{tr, tr_args};
 use std::path::Path;
 
 /// Which banner helper to build a command for.
@@ -54,7 +55,7 @@ pub fn banner(os: Os, title: &str, body: &str) -> Banner {
                 "-NoProfile",
                 "-NonInteractive",
                 "-ExecutionPolicy",
-                "Bypass",
+                "Bypass", // i18n-ok: PowerShell policy name
                 "-Command",
                 TOAST_SCRIPT,
             ]
@@ -67,9 +68,9 @@ pub fn banner(os: Os, title: &str, body: &str) -> Banner {
             program: "osascript",
             args: vec![
                 "-e".into(),
-                "on run argv".into(),
+                "on run argv".into(), // i18n-ok: script
                 "-e".into(),
-                "display notification (item 2 of argv) with title \"GeekBridge\" subtitle (item 1 of argv)"
+                "display notification (item 2 of argv) with title \"GeekBridge\" subtitle (item 1 of argv)" // i18n-ok: script
                     .into(),
                 "-e".into(),
                 "end run".into(),
@@ -124,8 +125,8 @@ impl CallNotifier for BannerNotifier {
         _reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
         show(
-            "Incoming call",
-            &format!("{}: open GeekBridge Calls to answer", isolate(caller, 80)),
+            tr("banner.incoming_call"),
+            &tr_args("banner.call_body", &[("caller", &isolate(caller, 80))]),
         );
     }
 }
@@ -139,22 +140,46 @@ impl Notifier for BannerNotifier {
         _reply: Box<dyn FnOnce(bool) + Send>,
     ) {
         show(
-            &format!("{} wants to send a file", isolate(device, 48)),
-            &format!("{}: open GeekBridge Share to accept", isolate(file, 80)),
+            &tr_args(
+                "banner.file_offer_title",
+                &[("device", &isolate(device, 48))],
+            ),
+            &tr_args("banner.file_offer_body", &[("file", &isolate(file, 80))]),
         );
     }
     fn received_text(&self, device: &str, is_url: bool) {
-        let what = if is_url { "a link" } else { "text" };
+        let title = tr(if is_url {
+            "banner.received_link"
+        } else {
+            "banner.received_text"
+        });
         show(
-            &format!("Received {what}"),
-            &format!("From {}", isolate(device, 48)),
+            title,
+            &tr_args("banner.received_from", &[("device", &isolate(device, 48))]),
         );
     }
     fn received_file(&self, path: &Path) {
         let name = path
             .file_name()
             .map_or(String::new(), |n| n.to_string_lossy().into_owned());
-        show("File received", &name);
+        show(tr("banner.file_received"), &name);
+    }
+}
+
+/// The banner body of a mirrored phone notification: `title: text` with each phone-chosen piece isolated.
+fn mirror_body(b: &crate::mirror::MirrorBanner) -> String {
+    match &b.text {
+        Some(t) if !t.is_empty() => tr_args(
+            "banner.mirror_body",
+            &[
+                ("title", &isolate(&b.title, 80)),
+                ("text", &isolate(t, 160)),
+            ],
+        ),
+        _ => tr_args(
+            "banner.on_device",
+            &[("device", &isolate(&b.device_name, 48))],
+        ),
     }
 }
 
@@ -165,10 +190,7 @@ impl crate::mirror::MirrorNotifier for BannerNotifier {
         _reply: Box<dyn FnOnce(crate::mirror::Choice) + Send>,
     ) {
         // No buttons in a plain banner: dismiss and buttons are `geekbridge-ctl notifications`.
-        let body = match &b.text {
-            Some(t) if !t.is_empty() => format!("{}: {}", isolate(&b.title, 80), isolate(t, 160)),
-            _ => format!("On {}", isolate(&b.device_name, 48)),
-        };
+        let body = mirror_body(b);
         show(&isolate(&b.app, 48), &body);
     }
 }
@@ -176,19 +198,23 @@ impl crate::mirror::MirrorNotifier for BannerNotifier {
 impl crate::phone_data::SmsNotifier for BannerNotifier {
     fn received(&self, device: &str, sender: &str) {
         show(
-            &format!("New message from {}", isolate(sender, 60)),
-            &format!("On {}", isolate(device, 48)),
+            &tr_args("banner.new_message", &[("sender", &isolate(sender, 60))]),
+            &tr_args("banner.on_device", &[("device", &isolate(device, 48))]),
         );
     }
     fn event_soon(&self, device: &str, title: &str, minutes: u32) {
-        let when = if minutes == 0 {
-            "Now".to_owned()
+        let title = isolate(title, 70);
+        let head = if minutes == 0 {
+            tr_args("banner.event_now", &[("title", &title)])
         } else {
-            format!("In {minutes} min")
+            tr_args(
+                "banner.event_in",
+                &[("minutes", &minutes), ("title", &title)],
+            )
         };
         show(
-            &format!("{when}: {}", isolate(title, 70)),
-            &format!("Calendar on {}", isolate(device, 48)),
+            &head,
+            &tr_args("banner.calendar_on", &[("device", &isolate(device, 48))]),
         );
     }
 }
@@ -218,6 +244,28 @@ mod tests {
         assert_eq!(b.env[0].0, "GB_TITLE");
         assert!(b.env[0].1.contains("Remove-Item")); // as inert text
         assert!(!b.env[1].1.contains('&'));
+    }
+
+    #[test]
+    fn mirrored_body_keeps_title_and_text_in_order_with_each_isolated() {
+        let arabic = "\u{645}\u{643}\u{62a}\u{628}";
+        let b = crate::mirror::MirrorBanner {
+            device_name: "Pixel".into(),
+            app: "Chat".into(),
+            title: arabic.into(),
+            text: Some("\u{202e}5 min".into()),
+            clearable: false,
+            actions: vec![],
+            slot: "1".into(),
+        };
+        let body = banner_safe(&mirror_body(&b), 300);
+        assert_eq!(
+            body,
+            format!("\u{2068}{arabic}\u{2069}: \u{2068}5 min\u{2069}")
+        );
+        // Without content the body names the phone, isolated, never the title.
+        let hidden = crate::mirror::MirrorBanner { text: None, ..b };
+        assert_eq!(mirror_body(&hidden), "On \u{2068}Pixel\u{2069}");
     }
 
     #[test]

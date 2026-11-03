@@ -255,6 +255,11 @@ progress, or a trusted link). Result `{disconnected:true}`; `unknown_connection`
   heartbeat ping slows from 20 s to 60 s and the core skips UDP announcements while every paired computer is linked
   (`bridge_core::heartbeat::IDLE_EVERY`). It needs no running transport and survives a restart.
 
+* `transport_heartbeat_now {}`: sends the heartbeat ping on every link at once. The Android service calls it when Doze
+  opens a maintenance window or ends (`ACTION_DEVICE_IDLE_MODE_CHANGED`, `isDeviceIdleMode` false): the timer behind the
+  60 s screen-off ping runs on a monotonic clock that stands still while the CPU sleeps, so it would not fire until
+  well after the window. A write to a dead link fails, which starts the redial. It needs no running transport.
+
 ### `version`
 
 Unchanged, plus `transport_actions` (the list above) and `limits.max_transport_request_bytes`.

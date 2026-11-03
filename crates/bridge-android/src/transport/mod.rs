@@ -31,7 +31,7 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 30] = [
+pub(crate) const ACTIONS: [&str; 31] = [
     "pairing_parse_qr",
     "transport_start",
     "transport_status",
@@ -62,6 +62,7 @@ pub(crate) const ACTIONS: [&str; 30] = [
     "transport_data_send",
     "transport_permits",
     "transport_screen",
+    "transport_heartbeat_now",
 ];
 
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
@@ -524,6 +525,16 @@ pub(crate) fn screen_off() -> bool {
     SCREEN_OFF.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Counter every link loop watches: a change means "send your heartbeat ping now". The phone raises it when Doze
+/// opens a maintenance window or the device leaves idle: the monotonic clock behind the heartbeat timer stands
+/// still while the CPU sleeps, so without it the 60 s screen-off ping could slip past the window.
+static HEARTBEAT_NOW: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+pub(crate) fn heartbeat_now_receiver() -> tokio::sync::watch::Receiver<u64> {
+    HEARTBEAT_NOW.subscribe()
+}
+
 pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, ApiError> {
     match action {
         "transport_screen" => {
@@ -531,6 +542,11 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             f.finish()?;
             SCREEN_OFF.store(!on, std::sync::atomic::Ordering::Relaxed);
             Ok(json!({ "screen_on": on }))
+        }
+        "transport_heartbeat_now" => {
+            f.finish()?;
+            HEARTBEAT_NOW.send_modify(|n| *n = n.wrapping_add(1));
+            Ok(json!({ "nudged": true }))
         }
         "transport_start" => host.start(parse_start(f)?),
         "transport_status" => {

@@ -1124,6 +1124,8 @@ async fn run_trusted(
     let mut beat = Heartbeat::new(std::time::Instant::now());
     let mut tick = interval_at(Instant::now() + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut nudge = super::heartbeat_now_receiver();
+    nudge.borrow_and_update();
     let exit: Option<(&'static str, Option<&'static str>)> = loop {
         tokio::select! {
             biased;
@@ -1231,6 +1233,16 @@ async fn run_trusted(
                     break Some(("link_closed", Some("protocol")));
                 }
                 Err(e) => break Some(("link_closed", Some(kde_code(&e)))),
+            },
+            // The phone left Doze or opened a maintenance window: the timer below may not run again for a long
+            // while (its clock stops while the CPU sleeps), so ping now and let a dead link show itself.
+            changed = nudge.changed() => {
+                if changed.is_ok() && heartbeat_peer {
+                    if let Err(e) = link.send(&Packet::new(PING, Map::new())).await {
+                        break Some(("link_closed", Some(kde_code(&e))));
+                    }
+                    beat.sent(std::time::Instant::now());
+                }
             },
             // Last in the biased order: after a long sleep, packets already queued win over this check.
             _ = tick.tick() => {

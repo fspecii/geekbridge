@@ -18,22 +18,38 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn sources() -> Vec<(String, String)> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = Vec::new();
-    rs_files(&root, &mut files);
-    files.sort();
-    files
-        .into_iter()
-        .map(|p| {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    for (root, prefix) in [
+        (manifest.join("src"), ""),
+        (manifest.join("../bridge-service/src"), "service/"),
+    ] {
+        let mut files = Vec::new();
+        rs_files(&root, &mut files);
+        files.sort();
+        for p in files {
             let rel = p
                 .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            (rel, std::fs::read_to_string(&p).unwrap())
-        })
-        .collect()
+            out.push((
+                format!("{prefix}{rel}"),
+                std::fs::read_to_string(&p).unwrap(),
+            ));
+        }
+    }
+    out
 }
+
+/// The service files whose banner and tray text lives in the catalogue (the rest of `bridge-service`
+/// is terminal output and protocol text). They are guarded like the window code, with no allowlist.
+const GUARDED_SERVICE: &[&str] = &[
+    "service/os_notify.rs",
+    "service/desktop_notify.rs",
+    "service/mirror.rs",
+    "service/tray/model.rs",
+];
 
 /// Code before the first `#[cfg(test)] mod ...` (test modules sit at the end of each file). A
 /// `#[cfg(test)]` on an `impl` or `fn` mid-file is a test helper, not the start of the tests.
@@ -54,7 +70,7 @@ fn non_test(src: &str) -> &str {
 }
 
 fn english() -> BTreeMap<String, String> {
-    i18n::parse_catalogue(include_str!("../i18n/en.properties"))
+    i18n::parse_catalogue(include_str!("../../bridge-i18n/i18n/en.properties"))
         .into_iter()
         .collect()
 }
@@ -130,6 +146,9 @@ const SKIP_LINE: &[&str] = &[
 fn offenders() -> BTreeMap<String, Vec<(usize, String)>> {
     let mut out = BTreeMap::new();
     for (rel, src) in sources() {
+        if rel.starts_with("service/") && !GUARDED_SERVICE.contains(&rel.as_str()) {
+            continue;
+        }
         // Terminal output (usage, --status, diagnostics counters), date tables and screen-reader
         // plumbing are outside the window UI catalogue.
         if matches!(

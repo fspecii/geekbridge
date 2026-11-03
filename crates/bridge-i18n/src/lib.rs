@@ -331,9 +331,9 @@ impl Catalogue {
 pub fn current() -> &'static Catalogue {
     static CURRENT: OnceLock<Catalogue> = OnceLock::new();
     CURRENT.get_or_init(|| {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "force-english"))]
         let tag = "en".to_owned();
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "force-english")))]
         let tag = {
             let var = |k: &str| std::env::var(k).ok();
             tag_from_env_values(

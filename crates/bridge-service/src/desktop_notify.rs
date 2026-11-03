@@ -9,6 +9,7 @@
 //! notification just expires, so a daemon without action support degrades to a plain notification.
 //! Text that came from a phone goes through [`crate::notify_text::plain`] and after `--`.
 use crate::notify_text::plain;
+use bridge_i18n::{tr, tr_args};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -86,12 +87,12 @@ pub fn received_args(name: &str) -> Vec<String> {
         "--wait".into(),
         "--category=transfer.complete".into(),
         "--expire-time=20000".into(),
-        "--action=open=Open".into(),
-        "--action=folder=Show in folder".into(),
+        format!("--action=open={}", tr("banner.open")),
+        format!("--action=folder={}", tr("banner.show_in_folder")),
         // A click on the body (mako: no buttons) reveals the file; opening it needs a deliberate choice.
-        "--action=default=Show in folder".into(),
+        format!("--action=default={}", tr("banner.show_in_folder")),
         "--".into(),
-        "File received".into(),
+        tr("banner.file_received").into(),
         plain(name, 80),
     ]
 }
@@ -146,11 +147,11 @@ pub fn update_args(version: &str) -> Vec<String> {
         "--wait".into(),
         "--category=update".into(),
         "--expire-time=30000".into(),
-        "--action=update=Update".into(),
-        "--action=default=Update".into(),
+        format!("--action=update={}", tr("banner.update")),
+        format!("--action=default={}", tr("banner.update")),
         "--".into(),
-        "GeekBridge update available".into(),
-        format!("Version {} is ready to download.", plain(version, 24)),
+        tr("banner.update_available").into(),
+        tr_args("banner.update_body", &[("version", &plain(version, 24))]),
     ]
 }
 

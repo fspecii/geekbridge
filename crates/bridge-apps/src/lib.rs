@@ -13,7 +13,7 @@ pub mod connection;
 pub mod dot_calendar;
 pub mod dotmatrix;
 pub mod home_app;
-pub mod i18n;
+pub use bridge_i18n as i18n;
 pub mod icons;
 pub mod identity;
 pub mod input;

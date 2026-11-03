@@ -69,15 +69,15 @@ adb shell cmd locale set-app-locales dev.geekbridge.android --locales ar-XB
 
 ## Desktop
 
-1. Copy `crates/bridge-apps/i18n/en.properties` to `crates/bridge-apps/i18n/eo.properties` (or only the keys you
+1. Copy `crates/bridge-i18n/i18n/en.properties` to `crates/bridge-i18n/i18n/eo.properties` (or only the keys you
    translate). The file name is the language tag: `eo`, `pt-BR`.
 2. Translate the values. Never change keys. `{name}` placeholders must stay, but can move; `{n}` is the count in
    plurals; `key.one` / `key.other` (and `zero two few many` where needed) are separate keys, `other` is required.
-   If your language's plural rule is missing from `plural_category` in `crates/bridge-apps/src/i18n.rs`, add it in the
+   If your language's plural rule is missing from `plural_category` in `crates/bridge-i18n/src/lib.rs`, add it in the
    same pull request.
 3. Do not paste invisible direction characters (LRM, RLM, embeddings, isolates): the test rejects them.
 4. Register the file in `BUNDLED` in `i18n.rs`: `("eo", include_str!("../i18n/eo.properties"))`.
-5. Try it without rebuilding: `GEEKBRIDGE_I18N_DIR=crates/bridge-apps/i18n GEEKBRIDGE_LANG=eo cargo run -p bridge-apps --bin geekbridge`.
+5. Try it without rebuilding: `GEEKBRIDGE_I18N_DIR=crates/bridge-i18n/i18n GEEKBRIDGE_LANG=eo cargo run -p bridge-apps --bin geekbridge`.
    `GEEKBRIDGE_LANG=en-XA` shows the pseudo-locale: unaccented text is a literal that is not in the catalogue.
 6. `cargo test -p bridge-apps --test i18n_catalogue` must pass.
 
