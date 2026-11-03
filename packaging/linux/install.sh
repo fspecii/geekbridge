@@ -25,7 +25,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 if [[ $purge -eq 1 && $uninstall -ne 1 ]]; then echo "--purge-data only makes sense with --uninstall" >&2; exit 64; fi
-statedir="${XDG_STATE_HOME:-$HOME/.local/state}/geekbridge"
+# The service keeps pairings, identity and settings under $XDG_DATA_HOME/geekbridge; the updater keeps its
+# notes under $XDG_STATE_HOME/geekbridge.
+statedir="${XDG_DATA_HOME:-$HOME/.local/share}/geekbridge"
+updatedir="${XDG_STATE_HOME:-$HOME/.local/state}/geekbridge"
 case "$mode" in
   user) prefix="${HOME}/.local"; unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
         autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart";;
@@ -51,6 +54,7 @@ if [[ $uninstall -eq 1 ]]; then
   user_systemd && systemctl --user daemon-reload || true
   if [[ $purge -eq 1 ]]; then
     # Only ever the one directory this program owns; never an empty or relative path.
+    if [[ "$updatedir" == /*/geekbridge && -d "$updatedir" ]]; then rm -rf -- "$updatedir"; fi
     if [[ "$statedir" == /*/geekbridge && -d "$statedir" ]]; then rm -rf -- "$statedir"; echo "Removed. Pairing data and settings in $statedir were deleted (--purge-data)."
     else echo "Removed. No pairing data found in $statedir."; fi
   else

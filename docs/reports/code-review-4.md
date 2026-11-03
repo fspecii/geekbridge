@@ -18,6 +18,12 @@ Kotlin QrPairActivity, BatteryReport, SmsReadiness, dial, LinkService screen rec
 2. **Stale battery level.** A stock phone that reports `currentCharge: -1` (level unknown) left the previous
    percentage on screen as current. `shown_battery` now maps `Unknown` to nothing.
 
+3. **`install.sh --purge-data` did not delete pairings.** It removed `$XDG_STATE_HOME/geekbridge`, which holds only
+   updater notes; the service keeps pairings, identity and settings in `$XDG_DATA_HOME/geekbridge/service`
+   (`ipc::default_state_dir`). The message claimed otherwise, and so did the Arch `post_remove` text and the sandbox
+   e2e (which tested the wrong directory). Fixed: purge removes both directories, messages and e2e name the data
+   directory (verified in a throw-away HOME; the full sandbox e2e needs release binaries and was not run).
+
 ## Checked, no bug
 
 * **Heartbeat arithmetic.** Phone idle ping every 60 s (ticks of 20 s, `ping_due_idle` with 1 s slack, `last_sent`
@@ -46,10 +52,7 @@ Kotlin QrPairActivity, BatteryReport, SmsReadiness, dial, LinkService screen rec
   them in the reverse order.
 * **Hostile input.** Battery, call-state, doctor ufw parsing and debug sanitising use checked parsing; no slicing or
   unwraps on remote data. Device names are sanitised at identity parse before they reach `doctor`.
-* **install.sh.** `--purge-data` only deletes `$XDG_STATE_HOME/geekbridge` and only when the path matches
-  `/*/geekbridge`; all expansions are quoted; no eval. The service data is under `XDG_DATA_HOME` for the daemon
-  (see `ipc.rs`) while the script purges the state directory: the message names the directory it removes, but check
-  that pairing data (`~/.local/share/geekbridge`) is what users expect to be purged (open question below).
+* **install.sh shell safety.** All expansions quoted, no eval, `rm -rf` only on paths matching `/*/geekbridge`.
 * **Android.** QrPairActivity replays the launch link only while a confirmation was pending and keeps the one-time
   token out of saved state; LinkService unregisters the screen receiver and restores "screen on"; `BatteryReporter` is
   event driven, with a single trailing send guarded by `pending`; `driftAtLinkUp` cannot loop because `declared` is
@@ -57,8 +60,5 @@ Kotlin QrPairActivity, BatteryReport, SmsReadiness, dial, LinkService screen rec
 
 ## Open
 
-* `install.sh --purge-data` deletes the state directory only; pairing and identity live under
-  `$XDG_DATA_HOME/geekbridge` (`~/.local/share/geekbridge`), so the purge may not remove pairings as its message says.
-  Left alone: needs a decision on which directories the installer owns.
 * The phone stops announcing while every paired computer is linked; a new, unpaired computer is found because it
   announces itself and the phone dials it, so pairing still works, but this was not exercised on a device.

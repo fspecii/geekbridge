@@ -92,7 +92,7 @@ check tarball-has-installer $([[ -x "$T/install.sh" && -f "$T/LICENSE" && -f "$T
 check tarball-no-absolute-or-dotdot-paths $([[ -z "$(tar -tzf "$TGZ" | grep -E '^/|\.\./')" ]]; echo $?)
 
 # ---- 4. fresh per-user install
-STATE="$XDG_STATE_HOME/geekbridge"
+STATE="$XDG_DATA_HOME/geekbridge"; mkdir -p "$STATE/service" "$XDG_STATE_HOME/geekbridge"; echo x >"$STATE/service/trust.json"; echo x >"$XDG_STATE_HOME/geekbridge/update.json"
 "$T/install.sh" >"$S/install1.log" 2>&1; check install-user-exit $? "$(tail -1 "$S/install1.log")"
 L="$HOME/.local"; U="$XDG_CONFIG_HOME/systemd/user/geekbridge-service.service"; A="$XDG_CONFIG_HOME/autostart/geekbridge-service.desktop"
 miss=""; for b in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share geekbridge-service-launch; do [[ -x "$L/bin/$b" ]] || miss+=" $b"; done
@@ -177,15 +177,15 @@ pkill -f "gb-install-sandbox/home/.*geekbridge-service" 2>/dev/null; sleep 0.5
 # ---- 7. uninstall keeps user data unless asked
 : >"$S/systemctl.log"; s_before="$(state_sum)"
 "$T/install.sh" --uninstall >"$S/uninstall.log" 2>&1; check uninstall-exit $? "$(tail -1 "$S/uninstall.log")"
-left="$(find "$L" "$XDG_CONFIG_HOME" -type f ! -path "$XDG_CONFIG_HOME/geekbridge/*" 2>/dev/null | grep -v -e "^$STATE/" -e '/\.old-marker$' -e '/mimeinfo.cache$' -e '/icon-theme.cache$')"
+left="$(find "$L" "$XDG_CONFIG_HOME" -type f ! -path "$XDG_CONFIG_HOME/geekbridge/*" 2>/dev/null | grep -v -e "^$STATE/" -e "^$XDG_STATE_HOME/geekbridge/" -e '/\.old-marker$' -e '/mimeinfo.cache$' -e '/icon-theme.cache$')"
 check uninstall-removes-everything-installed $([[ -z "$left" ]]; echo $?) "${left:-clean}"
 check uninstall-disables-service $(grep -q 'disable --now geekbridge-service.service' "$S/systemctl.log"; echo $?)
 check uninstall-keeps-user-data $([[ "$(state_sum)" == "$s_before" ]]; echo $?)
-check uninstall-message-names-real-state-dir $(grep -q "$STATE\|XDG_STATE_HOME\|.local/state/geekbridge" "$S/uninstall.log"; echo $?) "$(tail -1 "$S/uninstall.log")"
+check uninstall-message-names-real-state-dir $(grep -q "$STATE\|XDG_DATA_HOME\|.local/share/geekbridge" "$S/uninstall.log"; echo $?) "$(tail -1 "$S/uninstall.log")"
 "$T/install.sh" --uninstall >"$S/uninstall2.log" 2>&1; check uninstall-idempotent $?
 "$T/install.sh" >/dev/null 2>&1
 "$T/install.sh" --uninstall --purge-data >"$S/purge.log" 2>&1; check purge-exit $?
-check purge-removes-state $([[ ! -e "$STATE" ]]; echo $?)
+check purge-removes-state $([[ ! -e "$STATE" && ! -e "$XDG_STATE_HOME/geekbridge" ]]; echo $?)
 check purge-only-sandbox $([[ -d "$HOME" ]]; echo $?)
 check real-config-untouched-at-end $([[ "$(find "$REAL_HOME_CFG/systemd" "$REAL_HOME_CFG/autostart" -maxdepth 2 2>/dev/null | sort | sha256sum)" == "$cfg_before" ]]; echo $?)
 
