@@ -238,7 +238,11 @@ async fn packets_we_never_declared_are_dropped_unread_and_the_link_survives() {
     // Mirrored notifications are negotiated with a stock phone but only read with the `notifications`
     // consent: without it they are dropped unread and are not misbehaviour (stock sends one per
     // notification, far more than the budget).
-    for i in 0..150 {
+    let mirrored = gate::negotiated_incoming(&stock_identity())
+        .iter()
+        .any(|k| k == "kdeconnect.notification");
+    // Not negotiated (mirroring not built in): one stray packet, counted like any other.
+    for i in 0..if mirrored { 150 } else { 1 } {
         let mut b = Map::new();
         b.insert("id".into(), format!("n{i}").into());
         b.insert("appName".into(), "App".into());
@@ -261,7 +265,7 @@ async fn packets_we_never_declared_are_dropped_unread_and_the_link_survives() {
     }
     let s = rig
         .wait("dropped", |s| {
-            link_of(s, &phone.id()).is_some_and(|l| l.rejected_packets == 4)
+            link_of(s, &phone.id()).is_some_and(|l| l.rejected_packets == 4 + u64::from(!mirrored))
         })
         .await;
     assert_eq!(
