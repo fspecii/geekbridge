@@ -954,3 +954,311 @@ fn a_release_without_checksum_is_not_pinned_behind_its_etag() {
     up.check(true).unwrap();
     assert!(rig.mock.header(LATEST, "if-none-match").is_none());
 }
+
+// ---------------------------------------------------------------------------------------------
+// Realistic GitHub payloads: `fixtures/github_release_v0.1.0-rc.1.json` is the verbatim entry
+// `gh api repos/fspecii/geekbridge/releases` returned for the published v0.1.0-rc.1 (every field
+// GitHub sends: id, node_id, uploader, assets[].digest/size/url/content_type, ...).
+// ---------------------------------------------------------------------------------------------
+
+const LIST: &str = "/repos/fspecii/geekbridge/releases?per_page=30";
+const RC1_FIXTURE: &str = include_str!("fixtures/github_release_v0.1.0-rc.1.json");
+
+fn rc1_release() -> serde_json::Value {
+    serde_json::from_str(RC1_FIXTURE).unwrap()
+}
+
+fn list_ok(releases: &[serde_json::Value]) -> Reply {
+    Reply::Ok {
+        headers: vec![("ETag".into(), "\"list\"".into())],
+        body: serde_json::to_vec(releases).unwrap(),
+    }
+}
+
+/// The names `release.yml` / `build-binaries.yml` / `release-local.sh` publish for a stable tag.
+const STABLE_ASSETS: &[&str] = &[
+    "geekbridge-0.1.0-linux-x86_64-installer.tar.gz",
+    "geekbridge-0.1.0-1-x86_64.pkg.tar.zst",
+    "geekbridge-android-arm64.apk",
+    "geekbridge-android.apk",
+    "geekbridge-linux-x86_64.tar.gz",
+    "geekbridge_0.1.0_amd64.deb",
+    "geekbridge-windows-x86_64.zip",
+    "geekbridge-macos-aarch64.tar.gz",
+    "geekbridge-macos-x86_64.tar.gz",
+    "geekbridge-sbom.cdx.json",
+];
+
+/// A stable release shaped like the real rc.1 one: its JSON with tag, flags, URLs and assets
+/// replaced. `digests` adds GitHub's `digest` field (`sha256:<hex>`) per asset.
+fn stable_like_real(mock: &Mock, tag: &str, payload: &[u8], digests: bool) -> (Vec<u8>, String) {
+    let mut rel = rc1_release();
+    rel["tag_name"] = tag.into();
+    rel["prerelease"] = false.into();
+    rel["draft"] = false.into();
+    rel["html_url"] = format!("{}/release/{tag}", mock.url()).into();
+    let template = rel["assets"][0].clone();
+    let mut assets = Vec::new();
+    let mut sums = String::new();
+    for name in STABLE_ASSETS {
+        // Every file has different content in a real release; only the Linux tarball is served.
+        let hash = if *name == "geekbridge-linux-x86_64.tar.gz" {
+            sha_hex(payload)
+        } else {
+            sha_hex(name.as_bytes())
+        };
+        let mut a = template.clone();
+        a["name"] = (*name).into();
+        a["size"] = (if *name == "geekbridge-linux-x86_64.tar.gz" {
+            payload.len()
+        } else {
+            4096
+        })
+        .into();
+        a["browser_download_url"] = format!("{}/dl/{name}", mock.url()).into();
+        a["digest"] = if digests {
+            format!("sha256:{hash}").into()
+        } else {
+            serde_json::Value::Null
+        };
+        assets.push(a);
+        sums.push_str(&format!("{hash}  {name}\n"));
+    }
+    let mut sums_asset = template;
+    sums_asset["name"] = "SHA256SUMS".into();
+    sums_asset["size"] = sums.len().into();
+    sums_asset["browser_download_url"] = format!("{}/dl/SHA256SUMS", mock.url()).into();
+    sums_asset["digest"] = serde_json::Value::Null;
+    assets.push(sums_asset);
+    rel["assets"] = assets.into();
+    (serde_json::to_vec(&rel).unwrap(), sums)
+}
+
+fn serve_stable(rig: &Rig, tag: &str, payload: &[u8], digests: bool, tamper_sums: bool) {
+    let (json, mut sums) = stable_like_real(&rig.mock, tag, payload, digests);
+    if tamper_sums {
+        sums = sums.replace(&sha_hex(payload), &"f".repeat(64));
+    }
+    rig.mock.set(LATEST, json_ok(json));
+    rig.mock.set(
+        "/dl/geekbridge-linux-x86_64.tar.gz",
+        Reply::Ok {
+            headers: vec![],
+            body: payload.to_vec(),
+        },
+    );
+    rig.mock.set(
+        "/dl/SHA256SUMS",
+        Reply::Ok {
+            headers: vec![],
+            body: sums.into_bytes(),
+        },
+    );
+}
+
+#[test]
+fn real_release_json_parses_and_only_prereleases_published_means_up_to_date() {
+    // The real situation today: /releases/latest is a 404 (GitHub never returns pre-releases
+    // there) while the release list shows v0.1.0-rc.1. That is a public repository that simply
+    // has no stable release: "up to date", not "no public release found".
+    let rig = Rig::new();
+    rig.mock.set(LIST, list_ok(&[rc1_release()]));
+    for current in ["0.1.0-rc.1", "0.0.9", "0.1.0-beta.2"] {
+        let up = rig.updater(current);
+        up.check(true).unwrap();
+        let st = up.status();
+        assert_eq!(st.state, UpdateState::UpToDate, "{current}");
+        assert!(
+            st.latest.is_none() && !st.newer && !st.downloadable,
+            "{current}"
+        );
+        assert!(st.error.is_none(), "{current}: {:?}", st.error);
+    }
+}
+
+#[test]
+fn empty_release_list_is_up_to_date_and_unreachable_list_is_no_public_release() {
+    let rig = Rig::new();
+    rig.mock.set(LIST, list_ok(&[]));
+    let up = rig.updater("0.1.0-rc.1");
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::UpToDate);
+    // 404 on both (private repository or wrong name) stays its own state.
+    let rig = Rig::new();
+    let up = rig.updater("0.1.0-rc.1");
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::NoPublicRelease);
+    assert_eq!(rig.mock.hits(LIST), 1);
+}
+
+#[test]
+fn a_rate_limited_release_list_is_a_rate_limit_not_no_public_release() {
+    let rig = Rig::new();
+    rig.mock.set(
+        LIST,
+        Reply::Status {
+            code: 403,
+            headers: vec![("Retry-After".into(), "120".into())],
+        },
+    );
+    let up = rig.updater("0.1.0-rc.1");
+    assert!(matches!(
+        up.check(true),
+        Err(Error::RateLimited {
+            retry_after_secs: 120
+        })
+    ));
+    assert_ne!(up.status().state, UpdateState::NoPublicRelease);
+    assert!(up.status().error.unwrap().contains("rate limit"));
+}
+
+#[test]
+fn realistic_stable_release_picks_the_right_asset_per_platform_and_verifies_digests() {
+    let payload = vec![3_u8; 5000];
+    let cases = [
+        ("linux", "x86_64", Some("geekbridge-linux-x86_64.tar.gz")),
+        ("windows", "x86_64", Some("geekbridge-windows-x86_64.zip")),
+        ("windows", "aarch64", Some("geekbridge-windows-x86_64.zip")),
+        ("macos", "aarch64", Some("geekbridge-macos-aarch64.tar.gz")),
+        ("macos", "x86_64", Some("geekbridge-macos-x86_64.tar.gz")),
+        // Not published: Linux on ARM gets nothing (and certainly not the Android or Arch files).
+        ("linux", "aarch64", None),
+    ];
+    for (os, arch, want) in cases {
+        let rig = Rig::new();
+        serve_stable(&rig, "v0.1.0", &payload, true, false);
+        let mut cfg = rig.config("0.1.0-rc.1");
+        cfg.platform = Platform {
+            os: os.into(),
+            arch: arch.into(),
+        };
+        let up = Updater::new(cfg).unwrap();
+        up.check(true).unwrap();
+        let st = up.status();
+        assert!(st.newer, "{os}/{arch}");
+        let latest = st.latest.unwrap();
+        assert_eq!(latest.asset_name.as_deref(), want, "{os}/{arch}");
+        assert_eq!(st.downloadable, want.is_some(), "{os}/{arch}");
+        if let Some(name) = want {
+            assert_eq!(
+                latest.sha256,
+                Some(if name == "geekbridge-linux-x86_64.tar.gz" {
+                    sha_hex(&payload)
+                } else {
+                    sha_hex(name.as_bytes())
+                })
+            );
+        }
+    }
+    // Download on Linux, with the GitHub digests present and agreeing with SHA256SUMS.
+    let rig = Rig::new();
+    serve_stable(&rig, "v0.1.0", &payload, true, false);
+    let up = rig.updater("0.1.0-rc.1");
+    up.check(true).unwrap();
+    let file = up.download().unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), payload);
+    assert_eq!(up.status().state, UpdateState::Downloaded);
+}
+
+#[test]
+fn a_github_digest_that_disagrees_with_sha256sums_is_never_offered() {
+    let payload = vec![3_u8; 5000];
+    let rig = Rig::new();
+    // SHA256SUMS lies about the Linux tarball; the API digest (what GitHub computed) says otherwise.
+    serve_stable(&rig, "v0.1.0", &payload, true, true);
+    let up = rig.updater("0.1.0-rc.1");
+    assert!(up.check(true).is_err());
+    let st = up.status();
+    assert!(!st.downloadable);
+    assert!(st.error.unwrap().contains("disagree"));
+    assert!(up.download().is_err());
+}
+
+#[test]
+fn retry_after_on_429_pauses_checks_and_the_error_says_when() {
+    let rig = Rig::new();
+    rig.mock.set(
+        LATEST,
+        Reply::Status {
+            code: 429,
+            headers: vec![("Retry-After".into(), "1800".into())],
+        },
+    );
+    let up = rig.updater("0.1.0");
+    assert!(matches!(
+        up.check(false),
+        Err(Error::RateLimited {
+            retry_after_secs: 1800
+        })
+    ));
+    assert!(up.status().error.unwrap().contains("30 min"));
+    for _ in 0..3 {
+        assert!(up.check(false).is_err());
+        assert!(up.check(true).is_err());
+    }
+    assert_eq!(rig.mock.hits(LATEST), 1);
+}
+
+#[test]
+fn offline_keeps_the_known_offer_and_says_so_then_recovers() {
+    let rig = Rig::new();
+    let payload = vec![6_u8; 64];
+    serve_stable(&rig, "v0.1.0", &payload, true, false);
+    rig.updater("0.1.0-rc.1").check(true).unwrap();
+    // The network goes away: a closed loopback port refuses connections.
+    let mut offline = rig.config("0.1.0-rc.1");
+    offline.base_url = "http://127.0.0.1:1".into();
+    let up = Updater::new(offline).unwrap();
+    assert_eq!(
+        up.status().state,
+        UpdateState::Available,
+        "last answer is remembered"
+    );
+    assert!(up.check(true).is_err());
+    let st = up.status();
+    assert_eq!(
+        st.state,
+        UpdateState::Available,
+        "an outage must not turn into 'up to date' or hide the offer"
+    );
+    assert!(st.newer);
+    let msg = st.error.unwrap();
+    assert!(
+        msg.contains("Couldn't reach") && msg.contains("internet connection"),
+        "{msg}"
+    );
+    // And a first-ever check while offline is an error, never "up to date".
+    let fresh = Rig::new();
+    let mut cfg = fresh.config("0.1.0-rc.1");
+    cfg.base_url = "http://127.0.0.1:1".into();
+    let up = Updater::new(cfg).unwrap();
+    assert!(up.check(true).is_err());
+    assert_ne!(up.status().state, UpdateState::UpToDate);
+    assert!(up.status().error.is_some());
+    // The network is back: the same updater (not a restart) works again at once.
+    let mut back = fresh.config("0.1.0-rc.1");
+    back.base_url = rig.mock.url();
+    assert!(Updater::new(back).unwrap().check(true).is_ok());
+}
+
+#[test]
+fn drafts_and_flagged_prereleases_in_a_realistic_payload_are_never_offered() {
+    let payload = vec![1_u8; 64];
+    for (draft, pre) in [(true, false), (false, true), (true, true)] {
+        let rig = Rig::new();
+        let (json, _) = stable_like_real(&rig.mock, "v0.9.0", &payload, true);
+        let mut v: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        v["draft"] = draft.into();
+        v["prerelease"] = pre.into();
+        rig.mock
+            .set(LATEST, json_ok(serde_json::to_vec(&v).unwrap()));
+        let up = rig.updater("0.1.0-rc.1");
+        up.check(true).unwrap();
+        let st = up.status();
+        assert!(
+            !st.newer && !st.downloadable && st.latest.is_none(),
+            "draft={draft} pre={pre}"
+        );
+        assert_eq!(st.state, UpdateState::UpToDate);
+    }
+}

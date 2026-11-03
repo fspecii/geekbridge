@@ -318,7 +318,7 @@ impl Client {
     ) -> Result<(BufReader<Box<dyn Stream>>, TcpStream), Error> {
         let addrs: Vec<_> = (url.host.as_str(), url.port)
             .to_socket_addrs()
-            .map_err(io_err)?
+            .map_err(|e| unreachable_err(&url.host, e))?
             .collect();
         let mut last = Error::Io("no address".into());
         for addr in addrs {
@@ -344,7 +344,7 @@ impl Client {
                     };
                     return Ok((BufReader::with_capacity(16 * 1024, stream), ctl));
                 }
-                Err(e) => last = io_err(e),
+                Err(e) => last = unreachable_err(&url.host, e),
             }
         }
         Err(last)
@@ -384,6 +384,16 @@ impl std::fmt::Display for TooLarge {
 }
 impl std::error::Error for TooLarge {}
 const TOO_LARGE_MARK: &str = "response too large";
+
+/// Name resolution or connecting failed: almost always no network. Says so in words a person can act on.
+fn unreachable_err(host: &str, e: io::Error) -> Error {
+    match io_err(e) {
+        Error::Io(m) => Error::Io(format!(
+            "Couldn't reach {host} ({m}). Check your internet connection."
+        )),
+        other => other,
+    }
+}
 
 pub(crate) fn io_err(e: io::Error) -> Error {
     match e.kind() {

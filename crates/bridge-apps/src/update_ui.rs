@@ -484,6 +484,37 @@ mod tests {
     }
 
     #[test]
+    fn rc1_with_only_prereleases_published_reads_up_to_date_and_offers_no_banner() {
+        // The state after a check on v0.1.0-rc.1 while the repository's only release is that rc.
+        let mut s = status(false, false);
+        s.current_version = "0.1.0-rc.1".into();
+        s.latest = None;
+        let line = summary_line(&s);
+        assert_eq!(line, "GeekBridge v0.1.0-rc.1 is up to date.");
+        assert_eq!(banner_version(&s, None), None);
+    }
+
+    #[test]
+    fn downloaded_banner_says_how_to_install_and_errors_stay_visible() {
+        let mut s = status(true, false);
+        s.state = UpdateState::Downloaded;
+        s.downloaded_path = Some("/tmp/x/geekbridge-linux-x86_64.tar.gz".into());
+        let detail = banner_detail(&s);
+        assert!(
+            detail.contains("checked against the published SHA-256")
+                && detail.contains("Open it to install"),
+            "{detail}"
+        );
+        // An outage keeps the offer and appends the reason to the summary.
+        let mut s = status(true, false);
+        s.error = Some("Couldn't reach GitHub".into());
+        assert!(
+            summary_line(&s).contains("v0.2.0 is available") && summary_line(&s).contains("reach")
+        );
+        assert!(banner_detail(&s).contains("reach"));
+    }
+
+    #[test]
     fn summary_and_progress_text() {
         assert!(summary_line(&status(true, false)).contains("v0.2.0 is available"));
         assert!(summary_line(&status(false, false)).contains("up to date"));

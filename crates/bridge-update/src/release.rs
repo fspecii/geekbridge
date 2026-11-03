@@ -36,6 +36,17 @@ pub struct Asset {
     pub url: Option<String>,
     #[serde(default)]
     pub size: u64,
+    /// GitHub's own `sha256:<hex>` of the upload (null for old assets).
+    #[serde(default)]
+    pub digest: Option<String>,
+}
+
+impl Asset {
+    /// The lowercase SHA-256 from GitHub's `digest` field, when present and well formed.
+    pub fn api_digest(&self) -> Option<String> {
+        let hex = self.digest.as_deref()?.strip_prefix("sha256:")?;
+        is_hex64(hex).then(|| hex.to_ascii_lowercase())
+    }
 }
 
 impl Release {
@@ -228,6 +239,7 @@ mod tests {
             browser_download_url: format!("https://github.com/x/y/releases/download/v1/{name}"),
             url: None,
             size,
+            digest: None,
         }
     }
 

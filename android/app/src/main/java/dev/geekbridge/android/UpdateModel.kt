@@ -205,7 +205,16 @@ object UpdateModel {
             .minWithOrNull(compareBy({ if (it.first == "geekbridge-android.apk") 0 else 1 }, { it.first }))
 
     /** Parsed `releases/latest` payload; throws [IllegalArgumentException] for anything malformed. */
-    class Release(val tag: String, val htmlUrl: String, val body: String, val assets: List<Triple<String, String, Long>>)
+    class Release(
+        val tag: String,
+        val htmlUrl: String,
+        val body: String,
+        val assets: List<Triple<String, String, Long>>,
+        /** A draft or a pre-release: never offered, and not an error either (it means "nothing to offer"). */
+        val unpublished: Boolean = false,
+        /** GitHub's own `digest` (`sha256:<hex>`, lowercase hex here) per asset name, where present and well formed. */
+        val digests: Map<String, String> = emptyMap(),
+    )
 
     class ReleaseFormatException(val text: UpdateText) : IllegalArgumentException("malformed release")
 
@@ -217,15 +226,19 @@ object UpdateModel {
         }
         val tag = o.optString("tag_name", "")
         if (!(tag.isNotEmpty() && tag.length <= 64)) throw ReleaseFormatException(UpdateText(R.string.upd_err_no_tag))
-        if (o.optBoolean("draft", false) || o.optBoolean("prerelease", false)) throw ReleaseFormatException(UpdateText(R.string.upd_err_not_published))
         val arr: JSONArray = o.optJSONArray("assets") ?: JSONArray()
         if (arr.length() > 200) throw ReleaseFormatException(UpdateText(R.string.upd_err_too_many_files))
         val assets = ArrayList<Triple<String, String, Long>>()
+        val digests = HashMap<String, String>()
         for (i in 0 until arr.length()) {
             val a = arr.optJSONObject(i) ?: continue
-            assets += Triple(a.optString("name", ""), a.optString("browser_download_url", ""), a.optLong("size", 0))
+            val name = a.optString("name", "")
+            assets += Triple(name, a.optString("browser_download_url", ""), a.optLong("size", 0))
+            val digest = a.optString("digest", "").removePrefix("sha256:")
+            if (a.optString("digest", "").startsWith("sha256:") && isHex64(digest)) digests[name] = digest.lowercase(Locale.ROOT)
         }
-        return Release(tag, o.optString("html_url", ""), o.optString("body", ""), assets)
+        val unpublished = o.optBoolean("draft", false) || o.optBoolean("prerelease", false)
+        return Release(tag, o.optString("html_url", ""), o.optString("body", ""), assets, unpublished, digests)
     }
 
     /**
@@ -239,6 +252,7 @@ object UpdateModel {
         sums: (String) -> String?,
         allowLoopback: Boolean = false,
     ): UpdateCheckResult {
+        if (release.unpublished) return UpdateCheckResult.UpToDate(null)
         val remote = AppVersion.parse(release.tag) ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_tag_not_version))
         val local = AppVersion.parse(currentName) ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_app_version))
         if (remote.isPrerelease) return UpdateCheckResult.UpToDate(remote.toString())
@@ -249,8 +263,14 @@ object UpdateModel {
         val url = release.assets.first { it.first == apk.first }.second
         if (!urlAllowed(url, allowLoopback)) return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_addr_not_trusted))
         val page = if (urlAllowed(release.htmlUrl, allowLoopback)) release.htmlUrl else ""
+        val published = sums(apk.first)
+        // GitHub computes its own digest for every upload; two sources that disagree mean one is tampered with or stale.
+        val api = release.digests[apk.first]
+        if (published != null && api != null && published != api) {
+            return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_digest_disagree))
+        }
         return UpdateCheckResult.Available(
-            UpdateOffer(remote.toString(), release.tag, cleanNotes(release.body), page, apk.first, url, apk.second, sums(apk.first)),
+            UpdateOffer(remote.toString(), release.tag, cleanNotes(release.body), page, apk.first, url, apk.second, published),
         )
     }
 }

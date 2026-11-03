@@ -87,9 +87,11 @@ class UpdateCheckerTest {
         fun release(tag: String, pre: Boolean) = """{"tag_name":"$tag","prerelease":$pre,"html_url":"$base/rel","body":"",
             "assets":[{"name":"geekbridge-android.apk","size":10,"browser_download_url":"$base/dl/geekbridge-android.apk"}]}""".toByteArray()
         reply(latest, release("v0.9.0-rc.1", true))
-        assertTrue(checker().check(null) !is UpdateCheckResult.Available)
+        assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
         reply(latest, release("v0.9.0", true)) // flagged prerelease on the server even with a clean tag
-        assertTrue(checker().check(null) !is UpdateCheckResult.Available)
+        assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
+        reply(latest, release("v0.9.0", false).decodeToString().replace("\"prerelease\":false", "\"draft\":true").toByteArray())
+        assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
         reply(latest, release("v0.0.5", false)) // older than the installed 0.1.0
         assertTrue(checker().check(null) is UpdateCheckResult.UpToDate)
         reply(latest, release("v0.2.0", false)) // newer semver, but not newer than the installed versionCode
@@ -241,6 +243,100 @@ class UpdateCheckerTest {
             ex.sendResponseHeaders(302, -1)
         }
         assertNotNull(checker().download(offer, File(tmp.root, "u")))
+    }
+
+    // ---- realistic GitHub payloads: the verbatim v0.1.0-rc.1 release entry (src/test/resources)
+
+    private val list = "/repos/fspecii/geekbridge/releases?per_page=30"
+
+    private fun rc1() = org.json.JSONObject(javaClass.getResource("/github_release_v0.1.0-rc.1.json")!!.readText())
+
+    private fun checkerFor(name: String, code: Int) =
+        UpdateChecker(name, code, baseUrl = base, allowLoopback = true, readTimeoutMs = 3_000)
+
+    @Test fun onlyAPrereleasePublished_isUpToDate_notNoPublicRelease() {
+        // GitHub's /releases/latest never returns a pre-release: 404 while the list shows v0.1.0-rc.1.
+        reply(latest, """{"message":"Not Found"}""".toByteArray(), 404)
+        reply(list, "[${rc1()}]".toByteArray())
+        for ((name, code) in listOf("0.1.0-rc.1" to 10051, "0.0.9" to 9, "0.1.0-beta.2" to 10027)) {
+            val r = checkerFor(name, code).check(null)
+            assertTrue("$name: $r", r is UpdateCheckResult.UpToDate)
+        }
+        reply(list, "[]".toByteArray())
+        assertTrue(checkerFor("0.1.0-rc.1", 10051).check(null) is UpdateCheckResult.UpToDate)
+        // Nothing readable at all: private or misspelt.
+        routes.remove(list)
+        assertEquals(UpdateCheckResult.NoPublicRelease, checkerFor("0.1.0-rc.1", 10051).check(null))
+        // A rate-limited list is a rate limit, not 'no public release'.
+        reply(list, ByteArray(0), 403, "Retry-After" to "60")
+        val limited = checkerFor("0.1.0-rc.1", 10051).check(null)
+        assertTrue((limited as UpdateCheckResult.Failed).reason.text(TestStrings).contains("rate"))
+    }
+
+    private fun stableLikeRealRc1(apk: ByteArray, apkDigest: String?): ByteArray {
+        val rel = rc1()
+        rel.put("tag_name", "v0.1.0")
+        rel.put("prerelease", false)
+        rel.put("html_url", "$base/rel")
+        val assets = rel.getJSONArray("assets")
+        for (i in 0 until assets.length()) {
+            val a = assets.getJSONObject(i)
+            val name = a.getString("name")
+            a.put("browser_download_url", "$base/dl/$name")
+            if (name == "geekbridge-android.apk") {
+                a.put("size", apk.size)
+                if (apkDigest != null) a.put("digest", "sha256:$apkDigest") else a.remove("digest")
+            }
+        }
+        return rel.toString().toByteArray()
+    }
+
+    @Test fun realisticStableReleaseOffersThePhoneApkOverRc1_andChecksGithubsDigest() {
+        val apk = ByteArray(3000) { 3 }
+        reply("/dl/geekbridge-android.apk", apk)
+        reply("/dl/SHA256SUMS", (sha(apk) + "  geekbridge-android.apk\n" + sha(byteArrayOf(1)) + "  geekbridge-android-arm64.apk\n").toByteArray())
+        reply(latest, stableLikeRealRc1(apk, sha(apk)), 200, "ETag" to "\"s1\"")
+        // The phone runs rc.1: versionCode 10051 < 10099 for the final 0.1.0.
+        val offer = (checkerFor("0.1.0-rc.1", 10051).check(null) as UpdateCheckResult.Available).offer
+        assertEquals("geekbridge-android.apk", offer.apkName) // not the arm64 split
+        assertEquals("0.1.0", offer.version)
+        assertEquals(sha(apk), offer.sha256)
+        assertNotNull(checkerFor("0.1.0-rc.1", 10051).download(offer, File(tmp.root, "u")))
+        // 0.1.0 itself is current.
+        assertTrue(checkerFor("0.1.0", 10099).check(null) is UpdateCheckResult.UpToDate)
+        // GitHub's own digest disagrees with SHA256SUMS: nothing is offered.
+        reply(latest, stableLikeRealRc1(apk, sha(byteArrayOf(7))))
+        val bad = checkerFor("0.1.0-rc.1", 10051).check(null)
+        assertTrue((bad as UpdateCheckResult.Failed).reason.text(TestStrings).contains("disagree"))
+        // No digest at all (older assets): SHA256SUMS alone decides.
+        reply(latest, stableLikeRealRc1(apk, null))
+        assertTrue(checkerFor("0.1.0-rc.1", 10051).check(null) is UpdateCheckResult.Available)
+    }
+
+    @Test fun anInterruptedDownloadLeavesNothingAndARetryStartsCleanly() {
+        val apk = ByteArray(40_000) { (it % 13).toByte() }
+        publish(apk)
+        val offer = (checker().check(null) as UpdateCheckResult.Available).offer
+        val dir = File(tmp.root, "u")
+        // The connection dies half way (no Range resume: the file is small and a half file is never kept).
+        routes["/dl/geekbridge-android.apk"] = { ex ->
+            ex.sendResponseHeaders(200, apk.size.toLong())
+            ex.responseBody.write(apk, 0, 10_000)
+        }
+        assertFails { checker().download(offer, dir) }
+        assertEquals(0, dir.listFiles()!!.size)
+        reply("/dl/geekbridge-android.apk", apk)
+        val file = checker().download(offer, dir)
+        assertTrue(file.readBytes().contentEquals(apk))
+        // A stale file from an earlier attempt never survives a new download.
+        File(dir, "leftover.part").writeBytes(ByteArray(5))
+        checker().download(offer, dir)
+        assertEquals(listOf(UpdateChecker.UPDATE_FILE_NAME), dir.list()!!.toList())
+    }
+
+    @Test fun offlineIsAnErrorNotUpToDate() {
+        val r = UpdateChecker("0.1.0", 10099, baseUrl = "http://127.0.0.1:1", allowLoopback = true, connectTimeoutMs = 500).check(null)
+        assertTrue((r as UpdateCheckResult.Failed).reason.text(TestStrings).contains("reach"))
     }
 
     private fun assertFails(block: () -> Unit) {

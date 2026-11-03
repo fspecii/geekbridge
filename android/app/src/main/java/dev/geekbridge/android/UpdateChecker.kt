@@ -49,9 +49,9 @@ class UpdateChecker(
             403, 429 -> if (response.rateLimited || response.status == 429) {
                 throw UpdateException(R.string.upd_err_rate_limit)
             } else {
-                return UpdateCheckResult.NoPublicRelease
+                return probeReleaseList()
             }
-            404 -> return UpdateCheckResult.NoPublicRelease
+            404 -> return probeReleaseList()
             else -> throw UpdateException(R.string.upd_err_http, response.status)
         }
         val release = try {
@@ -66,6 +66,26 @@ class UpdateChecker(
         UpdateCheckResult.Failed(e.text)
     } catch (e: IOException) {
         UpdateCheckResult.Failed(UpdateText(R.string.upd_err_unreachable, Bounds.clip(e.javaClass.simpleName, 40)))
+    }
+
+    /**
+     * `releases/latest` answered 404/403. It never returns a pre-release, so a repository whose only release is
+     * `v0.1.0-rc.1` answers 404 too. One more request tells that apart from a private repository: a readable
+     * release list (even empty, or only pre-releases) means "nothing stable to offer" = up to date.
+     */
+    private fun probeReleaseList(): UpdateCheckResult {
+        val r = get("${baseUrl.trimEnd('/')}/repos/$repo/releases?per_page=30", "application/vnd.github+json", MAX_API_BYTES, null)
+        return when {
+            r.status == 200 -> try {
+                org.json.JSONArray(String(r.body, Charsets.UTF_8))
+                UpdateCheckResult.UpToDate(null)
+            } catch (_: org.json.JSONException) {
+                throw UpdateException(R.string.upd_err_release_unclear)
+            }
+            r.rateLimited || r.status == 429 -> throw UpdateException(R.string.upd_err_rate_limit)
+            r.status == 403 || r.status == 404 -> UpdateCheckResult.NoPublicRelease
+            else -> throw UpdateException(R.string.upd_err_http, r.status)
+        }
     }
 
     private fun fetchSums(release: UpdateModel.Release, apkName: String): String? {

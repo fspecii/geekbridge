@@ -55,3 +55,18 @@ class UpdateFileProvider : ContentProvider() {
             Uri.Builder().scheme("content").authority("${context.packageName}.updates").path(URI_PATH).build()
     }
 }
+
+/** Housekeeping for the one pending update APK in `cache/updates/`. */
+object UpdateStorage {
+    /** Removes files in [dir] last modified at least [olderThanMs] before [nowMs]; returns how many went. */
+    fun purge(dir: File, olderThanMs: Long, nowMs: Long): Int {
+        var removed = 0
+        for (f in dir.listFiles().orEmpty()) {
+            if (f.isFile && nowMs - f.lastModified() >= olderThanMs && f.delete()) removed++
+        }
+        return removed
+    }
+
+    /** An abandoned download (the card forgets its offer when the app restarts) is not kept for more than a day. */
+    const val STALE_MS = 24L * 60 * 60 * 1000
+}

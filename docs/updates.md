@@ -8,6 +8,7 @@ Both the desktop apps and the Android app can tell you when a newer GeekBridge r
 | Request | Purpose |
 | --- | --- |
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases/latest` | the newest published, non-prerelease release |
+| `GET https://api.github.com/repos/fspecii/geekbridge/releases?per_page=30` | only when `releases/latest` answered 404/403: tells "no stable release yet" from "private repository" |
 | `GET <SHA256SUMS asset URL>` (`github.com` / `*.githubusercontent.com`, https only) | published digests, fetched only when a newer release has an installer for this system |
 | `GET <installer asset URL>` | only after you click Download (desktop) or "Download and verify" (Android) |
 
@@ -29,6 +30,19 @@ public releases-only repository. At run time:
 * Desktop: `GEEKBRIDGE_UPDATE_REPO=owner/name` for `geekbridge-service` (malformed values are ignored).
 * Android: debug builds only, the `updates` preference `debug_repo`
   (`adb shell run-as dev.geekbridge.android` and edit `shared_prefs/updates.xml`), like `debug_base_url`.
+
+### Only pre-releases published (the state of `v0.1.0-rc.1`)
+
+`releases/latest` never returns a pre-release or draft, so while the only release is `v0.1.0-rc.1` it answers
+**404**. The checkers then read the release list once; a readable list (even empty, or only pre-releases)
+means "no stable release to offer", shown as **"GeekBridge vX is up to date."** (desktop Details panel; Android
+card; `geekbridge-ctl update status`: "no stable release published - you are up to date"). A release candidate
+is never offered to a release candidate (`rc.1` does not see `rc.2`), but the stable `0.1.0` is offered to
+`0.1.0-rc.1` (semver: a pre-release sorts below its release; Android version codes 10051 < 10099). Only when
+the list is unreadable too is it the "No public release found" state below. Both requests are 404/200 answers
+that count against GitHub's 60 requests/hour for anonymous callers, which is why the second one happens only
+in this case and a manual re-check inside 5 minutes is answered from memory. GitHub also publishes a
+`digest` (`sha256:<hex>`) per asset; when it disagrees with `SHA256SUMS` nothing is offered.
 
 ### Private repository, 404 and 403
 
@@ -71,8 +85,8 @@ Single version source: see [builds.md](builds.md#releases-and-versioning).
 * The apps show a banner "Update available: vX.Y.Z" with **Download**, **Release notes**, **Skip this version**
   and **Later**. **Download** is offered only when the release lists an installer for this OS/architecture
   *and* a `SHA256SUMS` line for it.
-* The download goes into a fresh `geekbridge-update-<random>` directory (mode 0700 on Unix) under the OS temp
-  directory, is hashed while written, and is deleted if the size or SHA-256 differs from the published value.
+* The download goes into a fresh `geekbridge-update-<random>` directory (mode 0700 on Unix) under the per-user state
+  directory (`$XDG_STATE_HOME/geekbridge/updates`, never the shared temp dir), is hashed while written, and is deleted if the size or SHA-256 differs from the published value.
   On success the file is made read-only and the app offers **Show file**. You then open/extract it yourself.
   No installer is executed, no files are replaced, no privileges are requested.
 * TLS is rustls with the bundled Mozilla root set (`webpki-roots`); the operating system trust store and proxy
@@ -103,6 +117,9 @@ exactly these names.
 * **Download and verify** fetches `geekbridge-android.apk` into the app-private cache (`cache/updates/`),
   verifies size and SHA-256 from `SHA256SUMS`, and deletes it on any mismatch. The download is abandoned if the
   app leaves the foreground.
+* Downloads are not resumed: an interrupted one is deleted (never a half file) and the next tap starts over; the
+  APK is about 6 MB. The pending file lives in `cache/updates/`; a new download replaces it, the app deletes it
+  after an update (`MY_PACKAGE_REPLACED`) and when it is older than a day at process start.
 * **Install update** re-hashes the file and hands it to Android's package installer through `UpdateFileProvider`
   (a minimal, non-exported, read-only `ContentProvider` standing in for AndroidX `FileProvider`) with a one-time
   read grant. If "Install unknown apps" is not allowed for GeekBridge, the button first opens that Android

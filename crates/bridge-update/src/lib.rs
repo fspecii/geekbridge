@@ -597,9 +597,10 @@ impl Updater {
                     retry_after_secs: fetched.retry_after.unwrap_or(3600),
                 });
             }
-            // A private repository answers 404 to anonymous callers (403 when a token lacks
-            // access): report it as such, neither "up to date" nor a failure.
-            403 | 404 => return Ok(Fetch::NotPublic),
+            // `releases/latest` never returns a pre-release, so a repository whose only release is
+            // `v0.1.0-rc.1` answers 404 as well. One more request tells that apart from a private
+            // repository (404/403 for anonymous callers): "up to date" versus "no public release".
+            403 | 404 => return self.probe_release_list(),
             status => return Err(Error::Http(status)),
         }
         let release = Release::parse(&body)?;
@@ -651,6 +652,16 @@ impl Updater {
                         .ok()
                         .and_then(|t| find_checksum(t, &asset.name));
                 }
+                // GitHub computes its own `digest` for every upload. Two sources that disagree
+                // mean one of them was tampered with or is stale: offer nothing.
+                if let (Some(sums), Some(api)) = (&cached.sha256, asset.api_digest())
+                    && *sums != api
+                {
+                    return Err(Error::Malformed(
+                        "GitHub's digest for the installer and SHA256SUMS disagree; not offered"
+                            .into(),
+                    ));
+                }
             }
         }
         // Without the checksum the offer is unusable. Do not pin it behind an ETag: a later
@@ -661,6 +672,30 @@ impl Updater {
             fetched.etag
         };
         Ok(Fetch::Fresh { etag, cached })
+    }
+
+    /// `releases/latest` said 404/403: is the repository reachable at all? A readable release
+    /// list (even an empty one, or one holding only pre-releases) means there is simply no stable
+    /// release to offer; an unreadable one means private or misspelt.
+    fn probe_release_list(&self) -> Result<Fetch, Error> {
+        let url = format!(
+            "{}/repos/{}/releases?per_page=30",
+            self.cfg.base_url.trim_end_matches('/'),
+            self.cfg.repo
+        );
+        let (fetched, body) =
+            self.get_bytes(&url, "application/vnd.github+json", MAX_API_BYTES, None)?;
+        match fetched.status {
+            200 => match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(serde_json::Value::Array(_)) => Ok(Fetch::NoRelease),
+                _ => Err(Error::Malformed("release list is not understood".into())),
+            },
+            _ if fetched.rate_limited => Err(Error::RateLimited {
+                retry_after_secs: fetched.retry_after.unwrap_or(3600),
+            }),
+            403 | 404 => Ok(Fetch::NotPublic),
+            status => Err(Error::Http(status)),
+        }
     }
 
     /// Where to fetch `asset` from. With a token (private repository) the API URL is used: it

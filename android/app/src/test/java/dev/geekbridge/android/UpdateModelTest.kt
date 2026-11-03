@@ -141,12 +141,21 @@ class UpdateModelTest {
     fun missingApkAndMalformedJsonFail() {
         val noApk = """{"tag_name":"v0.2.0","assets":[{"name":"x.zip","browser_download_url":"https://github.com/x","size":1}]}"""
         assertTrue(UpdateModel.evaluate(UpdateModel.parseRelease(noApk), "0.1.0", 1_000, sums) is UpdateCheckResult.Failed)
-        for (bad in listOf("", "<html>", "{}", """{"tag_name":""}""", """{"tag_name":"v1.0.0","draft":true}""", """{"tag_name":"v1.0.0","prerelease":true}""")) {
+        for (bad in listOf("", "<html>", "{}", """{"tag_name":""}""")) {
             try {
                 UpdateModel.parseRelease(bad)
                 error("should have thrown for: $bad")
             } catch (_: IllegalArgumentException) {
             }
+        }
+    }
+
+    @Test
+    fun draftsAndPrereleasesAreUpToDateNotErrors() {
+        for (flag in listOf("draft", "prerelease")) {
+            val r = UpdateModel.parseRelease("""{"tag_name":"v9.0.0","$flag":true,"assets":[]}""")
+            assertTrue(r.unpublished)
+            assertTrue(UpdateModel.evaluate(r, "0.1.0", 10099, sums) is UpdateCheckResult.UpToDate)
         }
     }
 

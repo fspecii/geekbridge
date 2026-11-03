@@ -32,6 +32,7 @@ class GeekBridgeApp : Application() {
             filesDir
             cacheDir
             for (name in PrefsWarmup.FILES) getSharedPreferences(name, MODE_PRIVATE)
+            UpdateStorage.purge(UpdateFileProvider.dir(this), UpdateStorage.STALE_MS, System.currentTimeMillis())
             WidgetUpdater.onProcessStart(this)
         }, "geekbridge-warm").apply { isDaemon = true; start() }
     }

@@ -236,6 +236,9 @@ class H(BaseHTTPRequestHandler):
         rx = re.fullmatch(r"/repos/([^/]+)/([^/]+)/releases/latest", p)
         if rx:
             return self.latest(rx, m)
+        rx = re.fullmatch(r"/repos/([^/]+)/([^/]+)/releases", p)
+        if rx:
+            return self.release_list(rx, m)
         rx = re.fullmatch(r"/repos/([^/]+)/([^/]+)/releases/assets/(\d+)", p)
         if rx:
             return self.api_asset(rx, m)
@@ -282,6 +285,23 @@ class H(BaseHTTPRequestHandler):
         if inm and "noetag" not in m and inm.removeprefix("W/") == etag.removeprefix("W/"):
             return self.reply(304, b"", headers=self.api_headers(False) + base_h, tag=tag)
         self.reply(200, body, "application/json; charset=utf-8", headers=self.api_headers(True) + base_h, tag=tag)
+
+    def release_list(self, rx, m):
+        """GET /repos/o/n/releases: every published release (pre-releases included, drafts only for the owner,
+        so never here), newest first. The updater asks for it when /latest is 404 to tell 'only pre-releases'
+        from 'private repository'."""
+        if (rx.group(1).lower(), rx.group(2).lower()) != (OWNER.lower(), NAME.lower()):
+            return self.json_error(404, "Not Found")
+        for mode, status, extra in (("ratelimit", 403, []), ("secondary", 429, [("Retry-After", "120")])):
+            if mode in m:
+                return self.json_error(status, "API rate limit exceeded", extra)
+        if "error502" in m:
+            return self.reply(502, b"<html>Bad Gateway</html>", "text/html")
+        if "notfound" in m or not self.authorized():
+            return self.json_error(404, "Not Found")
+        rels = [r for r in load_releases(m) if not r[1]["draft"]]
+        body = json.dumps([release_json(t, mt, f, m, release_id(t)) for t, mt, f in rels], indent=1).encode()
+        self.reply(200, body, "application/json; charset=utf-8", headers=self.api_headers(True))
 
     def api_asset(self, rx, m):
         if not self.authorized():

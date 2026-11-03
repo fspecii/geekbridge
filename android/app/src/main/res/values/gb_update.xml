@@ -23,7 +23,7 @@
     <string name="upd_err_unreachable">Couldn\'t reach GitHub: %1$s.</string>
     <string name="upd_no_public_release">No public release found: the project repository may be private or has no releases yet.</string>
     <string name="upd_err_no_tag">The release has no usable tag.</string>
-    <string name="upd_err_not_published">Not a published release.</string>
+    <string name="upd_err_digest_disagree">GitHub\'s checksum for the app and the release\'s SHA256SUMS disagree, so the update is not offered.</string>
     <string name="upd_err_too_many_files">The release lists too many files.</string>
     <string name="upd_err_tag_not_version">The release tag is not a version.</string>
     <string name="upd_err_app_version">This app\'s version is not recognised.</string>
