@@ -27,7 +27,7 @@
     </plurals>
     <string name="setup_detail_none_paired">No computer paired yet</string>
     <string name="setup_detail_notif_na">Not needed on this Android version</string>
-    <string name="setup_detail_sms">Optional · contacts, calendar and texts for your computer, off until you switch them on</string>
+    <string name="setup_detail_sms">Optional · battery, notifications, contacts, calendar and texts for your computer, off until you switch them on</string>
     <string name="setup_detail_allowed">Allowed</string>
     <string name="setup_detail_not_allowed">Not allowed yet</string>
     <string name="setup_detail_denied">Denied · you can allow it again</string>

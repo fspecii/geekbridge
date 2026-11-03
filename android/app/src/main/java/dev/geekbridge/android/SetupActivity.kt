@@ -131,7 +131,12 @@ class SetupActivity : Activity() {
 
     // ------------------------------------------------------------------ rendering
 
+    private var renderedPage = -1
+
     private fun render() {
+        // A switch or a dialog answer re-renders the same page: keep the reading position instead of jumping to the top.
+        val keepY = if (renderedPage == page) screen.scroll.scrollY else 0
+        renderedPage = page
         refresh()
         // Re-render keeps the pairing panel alive while it stays on the pair page.
         val onPair = page < steps.size && steps[page].id == StepId.Pair
@@ -149,6 +154,7 @@ class SetupActivity : Activity() {
         )
         screen.requestInsets()
         screen.scroll.scrollTo(0, 0)
+        if (keepY > 0) screen.scroll.post { screen.scroll.scrollTo(0, keepY) }
     }
 
     private fun header(): View {
@@ -217,6 +223,7 @@ class SetupActivity : Activity() {
     /** The permission, plus the opt-in switch: nothing about calls leaves the phone until it is on. */
     private fun answerCallsStep(panel: LinearLayout, s: StepInfo) {
         permissionStep(panel, s)
+        panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
         kit.divider(panel)
         kit.row(
             panel, R.drawable.ic_call, getString(R.string.setup_calls_toggle),
@@ -228,10 +235,14 @@ class SetupActivity : Activity() {
             },
         )
         if (CallControlRuntime.settings.enabled) GrantsUi.add(this, kit, panel, GrantFeature.Calls) { render() }
+        panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
+        kit.divider(panel)
+        panel.addView(kit.text(getString(R.string.setup_dial_title), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
         if (checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
-            panel.addView(kit.text(getString(R.string.setup_dial_done), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+            panel.addView(kit.text(getString(R.string.setup_dial_done), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
         } else {
-            kit.button(panel, getString(R.string.setup_dial_allow), BtnStyle.Plain) { request(Manifest.permission.CALL_PHONE) }
+            panel.addView(kit.text(getString(R.string.setup_dial_off), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            kit.button(panel, getString(R.string.setup_dial_allow), BtnStyle.Tonal) { request(Manifest.permission.CALL_PHONE) }
         }
         kit.row(
             panel, R.drawable.ic_call, getString(R.string.setup_dial_confirm_toggle),

@@ -5,7 +5,7 @@
 #   scripts/golden-android.sh --check    install the debug APK, render each screen, compare with tests/golden/android/
 #   scripts/golden-android.sh --update   overwrite the goldens. ONLY after a visual review (CONTRIBUTING.md "Golden images").
 #   ONLY='^status' scripts/golden-android.sh --check    just matching screens
-# Screens: the debug-only DesignGalleryActivity pages (status, controls, calendar) and the real Home screen (MainActivity,
+# Screens: the debug-only DesignGalleryActivity pages (status, controls, calendar, shareoff, shareon, dial: the new Share-with-computer and call switches) and the real Home screen (MainActivity,
 # unpaired). Each in light and dark, at font scale 1.0 and 2.0 -> NAME-{light,dark}-fs{10,20}.png (50 %, 256 colours).
 # Fixed state: demo mode (clock 12:00, full battery, wifi, no notification icons), animations off, rotation locked,
 # en-US, UTC, date pinned to 2026-06-15 (needs `adb root`, which the google_apis image allows), screencaps cropped
@@ -119,6 +119,9 @@ shoot() { # name am-start-args...
 shoot status dev.geekbridge.android/.DesignGalleryActivity --es page status
 shoot controls dev.geekbridge.android/.DesignGalleryActivity --es page controls
 shoot calendar dev.geekbridge.android/.DesignGalleryActivity --es page calendar
+shoot shareoff dev.geekbridge.android/.DesignGalleryActivity --es page shareoff
+shoot shareon dev.geekbridge.android/.DesignGalleryActivity --es page shareon
+shoot dial dev.geekbridge.android/.DesignGalleryActivity --es page dial
 shoot home dev.geekbridge.android/.MainActivity
 demo exit; $ADB shell cmd uimode night no >/dev/null; $ADB shell settings put system font_scale 1.0
 

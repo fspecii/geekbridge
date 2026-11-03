@@ -6,7 +6,7 @@
     <string name="pd_calendar">Share calendar</string>
     <string name="pd_calendar_sub">Read-only by default: events (with calendar, reminders and attendee names) from the calendars you tick, from 7 days back to 90 days ahead. Includes Google Calendar accounts that sync on this phone.</string>
     <string name="pd_calendar_edit">Let the computer edit my calendar</string>
-    <string name="pd_calendar_edit_sub">Off by default. Lets a paired computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
+    <string name="pd_calendar_edit_sub">Lets a paired computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
     <string name="pd_calendar_google">GeekBridge never signs in to Google. Edits are written to this phone\'s calendar and Google Calendar receives them through the phone\'s own sync. Remove the permission here or in Android settings to stop it at any time.</string>
     <string name="pd_calendar_pick">Choose calendars…</string>
     <string name="pd_calendar_none">No calendar ticked: nothing is shared yet</string>
@@ -14,9 +14,9 @@
     <string name="pd_sms">Share text messages (SMS)</string>
     <string name="pd_sms_sub">Lets the computer list your SMS conversations, show new ones, and send a text through this phone.</string>
     <string name="pd_battery">Share battery level</string>
-    <string name="pd_battery_sub">Sends only the charge percentage, whether the phone is charging and a low-battery flag to the computers you allow. No permission is needed; nothing is sent while the link is down, and it is kept in memory on the computer.</string>
+    <string name="pd_battery_sub">Sends only the charge percentage, whether the phone is charging and a low-battery flag to the computers you allow, while they are connected. No permission needed. The computer keeps it in memory only.</string>
     <string name="pd_notifications">Show phone notifications on the computer</string>
-    <string name="pd_notifications_sub">Off by default. Shows notifications of the apps you pick on the computers you allow, and lets that computer dismiss them or press their buttons (never type a reply). Needs Notification access. Ongoing, foreground-service, call, secret and GeekBridge\'s own notifications are never sent; icons are not sent; nothing is kept on this phone.</string>
+    <string name="pd_notifications_sub">Shows notifications of the apps you pick on the computers you allow, and lets that computer dismiss them or press their buttons (never type a reply). Needs Notification access, which Android asks you to switch on in its own settings.</string>
     <string name="mirror_open_access">Open Notification access settings</string>
     <string name="mirror_pick_apps">Choose apps…</string>
     <string name="mirror_apps_none">No app chosen: nothing is shown yet</string>
@@ -25,11 +25,11 @@
         <item quantity="other">%d apps chosen</item>
     </plurals>
     <string name="mirror_restricted_help">Android 13+ greys out Notification access for apps installed outside a store. Open app settings, tap ⋮ (top right) › Allow restricted settings (on Samsung: Settings › Apps › GeekBridge › ⋮), confirm with your PIN, then open Notification access again and switch GeekBridge on.</string>
-    <string name="mirror_honest">Only the title and text Android shows, the app name, the time and up to three buttons that need no typing are sent, only while the computer is linked and allowed, and only to the computers ticked above. Text is never logged here. The computer holds at most 50 per phone, in memory, for 3 hours; it shows a banner with the app name (and the text only if you turned that on there). Withdrawing the switch, the computer, the app or the access stops it at once.</string>
+    <string name="mirror_honest">Ongoing, call, secret and GeekBridge\'s own notifications and app icons are never sent. Only the title and text Android shows, the app name, the time and up to three buttons that need no typing are sent, only while the computer is linked and allowed, and only to the computers ticked above. Text is never logged here. The computer holds at most 50 per phone, in memory, for 3 hours; it shows a banner with the app name (and the text only if you turned that on there). Withdrawing the switch, the computer, the app or the access stops it at once.</string>
     <string name="mirror_state_ready">Ready: allowed computers show notifications of the apps you chose.</string>
     <string name="mirror_state_turn_on">Switched off. Nothing about your notifications leaves this phone.</string>
     <string name="mirror_state_access">Android still needs your OK. Tap “Open Notification access settings” and switch GeekBridge on.</string>
-    <string name="mirror_state_restricted">Android blocks Notification access for apps installed outside a store (“restricted setting”). Open app settings, tap ⋮ › Allow restricted settings, then open Notification access settings and switch GeekBridge on.</string>
+    <string name="mirror_state_restricted">Android blocks Notification access for apps installed outside a store (a “restricted setting”). Follow the steps below.</string>
     <string name="mirror_state_apps">Choose which apps may be shown. None are chosen, so nothing is sent.</string>
     <string name="mirror_state_pair">No computer is paired. Pair a computer first.</string>
     <string name="mirror_state_choose">No computer is allowed yet. Tap “Allowed computers…” to allow one.</string>
@@ -41,7 +41,7 @@
     <string name="sms_perm_send">send texts</string>
     <string name="sms_perm_receive">see new texts</string>
     <string name="sms_state_ready">Ready: an allowed computer can use Messages.</string>
-    <string name="sms_state_turn_on">Messages is switched off. Turn on “Share text messages (SMS)” below.</string>
+    <string name="sms_state_turn_on">Switched off. No text message leaves this phone. Use the switch above to turn it on.</string>
     <string name="sms_state_allow">Android still needs your OK for SMS. Missing: %1$s. Tap “Allow access” and choose Allow.</string>
     <string name="sms_state_settings">Android will not ask for SMS again. Missing: %1$s. Open app settings › Permissions › SMS and choose Allow.</string>
     <string name="sms_state_restricted">Android blocks SMS for apps installed outside a store (“restricted setting”). Missing: %1$s. Open app settings, tap ⋮ (top right) › Allow restricted settings, then Permissions › SMS › Allow. If ⋮ has no such item yet, tap “Allow access” once and look again.</string>

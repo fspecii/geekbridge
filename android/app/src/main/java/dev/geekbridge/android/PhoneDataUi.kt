@@ -26,6 +26,12 @@ object PhoneDataUi {
         else -> s.get(R.string.pd_state_waiting)
     }
 
+    /** A hairline between two switches, with room above it so it does not touch the button or note before it. */
+    private fun separator(kit: UiKit, parent: LinearLayout) {
+        parent.addView(android.view.View(parent.context), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
+        kit.divider(parent)
+    }
+
     fun addSection(a: Activity, kit: UiKit, parent: LinearLayout, rerender: () -> Unit) {
         PhoneDataRuntime.init(a)
         val s = PhoneDataRuntime.settings
@@ -49,7 +55,7 @@ object PhoneDataUi {
                 // Say exactly what is missing (switch / which permission / restricted setting / computer) in plain words.
                 val r = SmsReadinessAndroid.evaluate(a)
                 parent.addView(
-                    kit.text(SmsReadinessLogic.message(r, a.strings), 13.5f, if (r.ready) Tone.Ok else Tone.Warn)
+                    kit.text(SmsReadinessLogic.message(r, a.strings), 13.5f, if (r.ready) Tone.Ok else if (r.step == SmsStep.TurnOn) Tone.Muted else Tone.Warn)
                         .apply { setPadding(0, kit.dp(6), 0, 0) },
                 )
             }
@@ -63,7 +69,7 @@ object PhoneDataUi {
             }
         }
         feature(R.drawable.ic_person, R.string.pd_contacts, R.string.pd_contacts_sub, s.contacts, contactsPerms, GrantFeature.Contacts, PhoneDataRuntime::setContacts)
-        kit.divider(parent)
+        separator(kit, parent)
         feature(R.drawable.ic_calendar, R.string.pd_calendar, R.string.pd_calendar_sub, s.calendar, calendarPerms, GrantFeature.Calendar, PhoneDataRuntime::setCalendar)
         if (s.calendar && granted(a, calendarPerms)) {
             val n = s.calendarIds.size
@@ -71,18 +77,18 @@ object PhoneDataUi {
                 (if (n == 0) a.getString(R.string.pd_calendar_none) else a.resources.getQuantityString(R.plurals.pd_calendar_shared_count, n, n)), BtnStyle.Tonal) {
                 pickCalendars(a, rerender)
             }
-            kit.divider(parent)
+            separator(kit, parent)
             feature(
                 R.drawable.ic_calendar, R.string.pd_calendar_edit, R.string.pd_calendar_edit_sub,
                 s.calendarEdit, calendarEditPerms, GrantFeature.CalendarEdit, PhoneDataRuntime::setCalendarEdit,
             )
             parent.addView(kit.text(a.getString(R.string.pd_calendar_google), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
         }
-        kit.divider(parent)
+        separator(kit, parent)
         feature(R.drawable.ic_battery, R.string.pd_battery, R.string.pd_battery_sub, s.battery, emptyArray(), GrantFeature.Battery, PhoneDataRuntime::setBattery)
-        kit.divider(parent)
+        separator(kit, parent)
         notificationsSection(a, kit, parent, s, rerender)
-        kit.divider(parent)
+        separator(kit, parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, GrantFeature.Sms, PhoneDataRuntime::setSms)
         if (s.sms) {
             kit.row(

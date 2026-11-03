@@ -73,9 +73,11 @@
     <string name="setup_dial_confirm_toggle">Ask me before placing a call for a computer</string>
     <string name="setup_dial_confirm_toggle_sub">Always shown on the phone as “Dialing … requested by …”, and a computer can place only a few calls per 10 minutes. Turn this on to also approve each call here.</string>
     <string name="setup_calls_toggle">Share call status with my computer</string>
-    <string name="setup_calls_toggle_sub">Paired computers you allow “Calls” for see ringing and in-call, and can answer, decline or end. Off by default.</string>
+    <string name="setup_calls_toggle_sub">Paired computers you allow “Calls” for see ringing and in-call, and can answer, decline or end.</string>
+    <string name="setup_dial_title">Place calls from my computer</string>
+    <string name="setup_dial_off">Off by default. If you allow it, a computer you paired and allowed “Calls” for can ask this phone to dial a number. Android asks for the Phone permission only when you tap below.</string>
     <string name="setup_dial_allow">Allow placing calls from my computer</string>
-    <string name="setup_dial_done">Your computer can ask this phone to place a call (you confirm each one on the computer).</string>
+    <string name="setup_dial_done">Allowed. A paired computer you allowed “Calls” for can ask this phone to dial a number. Switch “Ask me before placing a call” on to approve each call here too.</string>
     <string name="setup_calls_audio_note">Call audio does not travel through GeekBridge. It stays on the phone unless your computer is also paired with this phone over Bluetooth as a hands-free device. Needs the Phone state step; declining and ending a call needs Android 9 or newer.</string>
     <string name="setup_battery_optimised">Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.</string>
     <string name="setup_battery_allow">Allow unrestricted battery</string>
@@ -109,11 +111,11 @@
     <string name="setup_why_contacts">Lets this phone show names instead of numbers for calls and messages, and, if you share contacts, fills the Contacts app on your computer. Read on this phone; nothing is uploaded.</string>
     <string name="setup_why_calendar">Lets you share your calendars (including Google Calendar accounts that sync on this phone) with the Calendar app on your computer. Read-only; the computer can only add or change events if you separately switch on editing later, in Share with computer.</string>
     <string name="setup_why_phone_state">Lets GeekBridge know whether the phone is idle, ringing or in a call. It never sees phone numbers or call history.</string>
-    <string name="setup_why_answer">Lets a paired computer you trust answer, decline or end a call on this phone, so a ringing call can be handled from your desk. GeekBridge cannot hear the call: audio stays on the phone unless the computer is also its Bluetooth hands-free device.</string>
+    <string name="setup_why_answer">Lets a paired computer you trust answer, decline or end a call on this phone, so a ringing call can be handled from your desk. You can also let it start a call from this phone. GeekBridge cannot hear the call: audio stays on the phone unless the computer is also its Bluetooth hands-free device.</string>
     <string name="setup_why_caller">Android only gives an app a caller\'s number if it holds the “Call logs” permission (this is the smallest permission that does it; Contacts alone cannot). Allow it to show the number on your computer; with Contacts also allowed, it shows the name too. Without it the computer says the caller is unknown, and so does a hidden or private number. The call log is never read or sent.</string>
     <string name="home_caller_shown">Your computer shows the caller\'s number when Android provides it.</string>
     <string name="home_caller_hidden">Your computer can\'t show who is calling, only that a call is ringing. Allow Call logs to show the number.</string>
-    <string name="setup_why_sms">Optionally share your contacts, calendar and text messages with a paired computer. Everything is off until you switch it on here, and each part needs its own Android permission. Text messages are limited by Android and Google Play; the notes below explain how.</string>
+    <string name="setup_why_sms">Optionally share your battery level, phone notifications, contacts, calendar and text messages with a paired computer. Everything is off until you switch it on here, and each part needs its own Android permission. Text messages are limited by Android and Google Play; the notes below explain how.</string>
     <string name="setup_why_battery">Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late.</string>
 
     <!-- Pairing panel and prompt -->

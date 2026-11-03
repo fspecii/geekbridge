@@ -20,6 +20,9 @@ class DesignGalleryActivity : Activity() {
         when (intent.getStringExtra("page")) {
             "calendar" -> calendar(kit, root)
             "controls" -> controls(kit, root)
+            "shareoff" -> share(kit, root, on = false)
+            "shareon" -> share(kit, root, on = true)
+            "dial" -> dial(kit, root)
             else -> status(kit, root)
         }
     }
@@ -61,6 +64,45 @@ class DesignGalleryActivity : Activity() {
             "No events", add = {},
         )
         a.contentDescription = null
+    }
+
+    private fun note(kit: UiKit, c: LinearLayout, id: Int, tone: Tone, size: Float = 13.5f, vararg args: Any) {
+        c.addView(kit.text(getString(id, *args), size, tone).apply { setPadding(0, kit.dp(6), 0, 0) })
+    }
+
+    /** The battery and notification switches of the "Share with computer" step, switched off and switched on without access. */
+    private fun share(kit: UiKit, root: LinearLayout, on: Boolean) {
+        root.addView(DotText(this, getString(R.string.setup_title_sms), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3))
+        val c = kit.panel(root, 16).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(16) }
+        kit.row(c, R.drawable.ic_battery, getString(R.string.pd_battery), getString(R.string.pd_battery_sub) + "\n" + getString(if (on) R.string.pd_state_on else R.string.pd_state_off), kit.toggle(on) {})
+        if (on) {
+            note(kit, c, R.string.grant_allowed, Tone.Muted, 13f, "Desk")
+            kit.button(c, getString(R.string.grant_choose), BtnStyle.Tonal) {}
+        }
+        kit.divider(c)
+        kit.row(c, R.drawable.ic_message, getString(R.string.pd_notifications), getString(R.string.pd_notifications_sub), kit.toggle(on) {})
+        if (!on) {
+            note(kit, c, R.string.mirror_state_turn_on, Tone.Muted)
+        } else {
+            note(kit, c, R.string.mirror_state_access, Tone.Warn)
+            kit.button(c, getString(R.string.mirror_open_access), BtnStyle.Tonal) {}
+            kit.button(c, getString(R.string.setup_open_app_settings), BtnStyle.Plain) {}
+            note(kit, c, R.string.mirror_restricted_help, Tone.Muted, 13f)
+            kit.button(c, getString(R.string.mirror_pick_apps) + " · " + getString(R.string.mirror_apps_none), BtnStyle.Tonal) {}
+            note(kit, c, R.string.mirror_honest, Tone.Muted, 13f)
+        }
+    }
+
+    /** The calls step: answer permission, the call-status switch and the dial and confirm-dial rows. */
+    private fun dial(kit: UiKit, root: LinearLayout) {
+        root.addView(DotText(this, getString(R.string.setup_title_answercalls), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3))
+        val c = kit.panel(root, 16).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(16) }
+        kit.row(c, R.drawable.ic_call, getString(R.string.setup_calls_toggle), getString(R.string.setup_calls_toggle_sub), kit.toggle(true) {})
+        kit.divider(c)
+        c.addView(kit.text(getString(R.string.setup_dial_title), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+        note(kit, c, R.string.setup_dial_off, Tone.Muted)
+        kit.button(c, getString(R.string.setup_dial_allow), BtnStyle.Tonal) {}
+        kit.row(c, R.drawable.ic_call, getString(R.string.setup_dial_confirm_toggle), getString(R.string.setup_dial_confirm_toggle_sub), kit.toggle(true) {})
     }
 
     private fun controls(kit: UiKit, root: LinearLayout) {
