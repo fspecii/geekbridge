@@ -128,15 +128,17 @@ jobs:
         run: |
           shopt -s nullglob
           for f in dist/android/logs/*results*.tsv target/e2e-update/and-results.tsv; do
+            [[ -f "$f" ]] || continue
             { echo "### $f"; echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
       - name: Collect logcat
         if: failure()
+        timeout-minutes: 3
         run: |
           source scripts/android-env.sh >/dev/null 2>&1
           mkdir -p dist/android/logs
-          ANDROID_ADB_SERVER_PORT="$ADB_PORT" adb logcat -d > dist/android/logs/logcat-final.txt 2>&1 || true
-          ANDROID_ADB_SERVER_PORT="$ADB_PORT" adb devices -l > dist/android/logs/adb-devices.txt 2>&1 || true
+          ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 60 adb logcat -d > dist/android/logs/logcat-final.txt 2>&1 || true
+          ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 30 adb devices -l > dist/android/logs/adb-devices.txt 2>&1 || true
       - name: Upload logs, screenshots and logcat
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
