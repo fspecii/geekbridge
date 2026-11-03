@@ -215,6 +215,7 @@ class PhoneDataEngine(
     private var calCounter = 0
     private var calSent: Map<String, String> = emptyMap()
     private var calLastPush = Long.MIN_VALUE / 2
+    private var calOwed = false
 
     private var smsRequested = false
     /** Last status sent per request id, so a repeated request is answered with it (bounded, memory only). */
@@ -245,6 +246,7 @@ class PhoneDataEngine(
         calToken = null
         calCounter = 0
         calSent = emptyMap()
+        calOwed = false
         smsRequested = false
         // The request-id ledger, the last statuses and the per-computer guard are kept on purpose: a replay or a
         // reconnect must neither send again nor hand the computer a fresh allowance.
@@ -359,9 +361,21 @@ class PhoneDataEngine(
         if (!features().calendar) return false
         val token = calToken ?: return false
         val now = clock()
-        if (now - calLastPush < PhoneDataLimits.CALENDAR_PUSH_SPACING_MS) return false
+        if (now - calLastPush < PhoneDataLimits.CALENDAR_PUSH_SPACING_MS) {
+            calOwed = true
+            return false
+        }
         return pushCalendar(token, null)
     }
+
+    /**
+     * Milliseconds until a change that came in too soon after the last push may be sent, or null if no change is owed.
+     * Every push reads the provider afresh, so any push (a request, an applied edit, the retry itself) pays the debt;
+     * the caller keeps retrying while this is not null, so a change can never be lost to a push that happened in between.
+     */
+    @Synchronized
+    fun calendarRetryInMs(): Long? =
+        if (calOwed) maxOf(0L, calLastPush + PhoneDataLimits.CALENDAR_PUSH_SPACING_MS - clock()) else null
 
     private fun pushCalendar(since: String?, requestId: String?): Boolean {
         val now = clock()
@@ -426,6 +440,7 @@ class PhoneDataEngine(
             calCounter++
             calSent = current.associate { it.getString("id") to it.getString("rev") }
             calLastPush = now
+            calOwed = false
         }
         return ok
     }

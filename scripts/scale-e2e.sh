@@ -20,9 +20,13 @@
 # Isolation: AVD gb36z (console 5700, adb server 16150), control port 17591, Xvfb :96, cargo target
 # target/scale-e2e. Create the AVD once by copying any gb36* AVD (see docs/phone-data-link.md, "Emulator run").
 # Results: dist/android/logs/scale-results.tsv and dist/android/logs/scale-measure.txt
-# One invocation = one emulator session: the emulator and service are stopped when the script exits, so give every
-# stage you want in one go, e.g. `scripts/scale-e2e.sh env,battery,pair,cases`.
-# Every name and port can be overridden (SCALE_AVD, SCALE_EMU_PORT, SCALE_ADB_PORT, SCALE_CTRL_PORT, SCALE_TAG, ...).
+# The emulator (a transient systemd unit) and the service keep running after the script ends: stop them with
+# `scripts/scale-e2e.sh --stop`. Stages that follow each other need the same session, e.g.
+# `scripts/scale-e2e.sh env,battery,pair,cases` (about 10 minutes: the cases stage itself takes about 2 minutes). Start from a
+# freshly started emulator (--stop first): a re-seeded calendar provider is not a clean one.
+# Every name and port can be overridden (SCALE_AVD, SCALE_EMU_PORT, SCALE_ADB_PORT, SCALE_CTRL_PORT, SCALE_TAG, ...), and
+# so can the desktop cargo dir (SCALE_TARGET) and the APK scratch dir (SCALE_SCRATCH); SCALE_PREBUILT=1 skips the desktop
+# build (CI). The desktop service is rebuilt on every `env` otherwise, so a run never measures a stale binary.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
@@ -33,12 +37,20 @@ set --
 # run can sit next to another emulator job without sharing a thing.
 export E2E_SOURCE_ONLY=1 E2E_AVD="${SCALE_AVD:-gb36z}" E2E_EMU_PORT="${SCALE_EMU_PORT:-5700}" E2E_ADB_PORT="${SCALE_ADB_PORT:-16150}" \
   E2E_TAG="${SCALE_TAG:--scale}" \
-  E2E_RUN="$ROOT/target/scale-run${SCALE_TAG:-}" E2E_SCRATCH="$ROOT/target/scale-android" E2E_TARGET="$ROOT/target/scale-e2e" \
+  E2E_RUN="$ROOT/target/scale-run${SCALE_TAG:-}" E2E_SCRATCH="${SCALE_SCRATCH:-$ROOT/target/scale-android}" E2E_TARGET="${SCALE_TARGET:-$ROOT/target/scale-e2e}" \
   E2E_RESULTS="$ROOT/dist/android/logs/scale-results${SCALE_TAG:-}.tsv" E2E_XDISP="${SCALE_XDISP:-:96}" \
   E2E_CTRL_PORT="${SCALE_CTRL_PORT:-17591}" E2E_API_PORT="${SCALE_API_PORT:-17590}" E2E_DISC_PORT="${SCALE_DISC_PORT:-17526}" \
   E2E_LISTEN_PORT="${SCALE_LISTEN_PORT:-1732}" E2E_REDIR_PORT="${SCALE_REDIR_PORT:-17271}"
 # shellcheck disable=SC1091
 source scripts/e2e-android.sh
+# e2e-android.sh only builds the desktop service when the binary is missing, and E2E_TARGET under target/ is redirected to a
+# cargo dir shared by every e2e job: a stale service from another checkout would be measured instead of this one. Always
+# run the (incremental) cargo build, so the run tests the checkout it is run from.
+build_desktop() {
+  [[ "${SCALE_PREBUILT:-}" == 1 ]] && return 0   # CI hands over the binaries and the APK it built once (docs/emulator-ci.md)
+  log "building desktop service/ctl ($E2E_TARGET)"
+  CARGO_TARGET_DIR="$E2E_TARGET" cargo build --release -p bridge-service --bins >"$LOGS/e2e-build-desktop.log" 2>&1
+}
 OUT="$ROOT/dist/android/logs/scale-measure${SCALE_TAG:-}.txt"
 CONTACTS="${SCALE_CONTACTS:-5000}" EVENTS="${SCALE_EVENTS:-20000}" THREADS="${SCALE_THREADS:-800}"
 now_ms() { date +%s%3N; }
@@ -264,9 +276,10 @@ XML
   rec case_edit_from_current_version_applies "$([[ "$title" == Mine ]] && echo PASS || echo FAIL)" "phone title=$title"
   # ---- invitation (not organiser): refused; read-only calendar: refused before anything is sent
   local INV; INV="$(python3 -c "import json;d=json.load(open('$CASES_OUT/jul.json'));print([e['event_id'] for e in d['events'] if e['title']=='CC Invitation'][0])")"
-  ctl calendar-update "$PHONE_ID" "$INV" "Hijack" "$(ms 2027 7 6 10 Europe/Stockholm)" 60 >/dev/null 2>&1; sleep 4
-  agenda_to "" 2027-06-28 14 "$CASES_OUT/jul.json"
+  local inv_out; inv_out="$(ctl calendar-update "$PHONE_ID" "$INV" "Hijack" "$(ms 2027 7 6 10 Europe/Stockholm)" 60 2>&1 | tr '\n' ' ')"
+  for _ in $(seq 10); do agenda_to "" 2027-06-28 14 "$CASES_OUT/jul.json"; grep -q not_organizer "$CASES_OUT/jul.json" && break; sleep 1; done
   chk invitation_not_organiser_refused "any(x.get('reason')=='not_organizer' for x in d['edits'])" "$CASES_OUT/jul.json"
+  say "invitation update: $inv_out"
   RIDE="$(python3 -c "import json;d=json.load(open('$CASES_OUT/jul.json'));print([e['event_id'] for e in d['events'] if e['title']=='CC Shared title' and e['calendar_id']=='$RO'][0])")"
   if ctl calendar-update "$PHONE_ID" "$RIDE" "Hijack" "$sjul" 60 >/dev/null 2>&1; then rec case_readonly_refused FAIL "accepted"; else rec case_readonly_refused PASS ""; fi
   # ---- deletion both ways
@@ -282,7 +295,7 @@ XML
   # ---- consent withdrawn on the desktop: the data is gone from memory at once
   ctl consent "$PHONE_ID" contacts off >/dev/null; ctl consent "$PHONE_ID" calendar off >/dev/null
   agenda_to "" 2027-03-14 28 "$CASES_OUT/off.json"
-  chk desktop_consent_off_erases "d['people_total']==0 and d['events']==[] and d['devices'][0]['contacts_count']==0 and d['devices'][0]['events_count']==0" "$CASES_OUT/off.json"
+  chk desktop_consent_off_erases "d['people_total']==0 and d['events']==[] and all(x['contacts_count']==0 and x['events_count']==0 for x in d['devices'])" "$CASES_OUT/off.json"
   # ---- consent withdrawn on the phone (feature switched off there): the next link must leave nothing on the desktop
   for f in contacts calendar; do ctl consent "$PHONE_ID" $f on >/dev/null; done
   for _ in $(seq 40); do n="$(count_of 'd["devices"][0]["events_count"]')"; [[ "${n:-0}" -ge 5 ]] 2>/dev/null && break; sleep 1; done
@@ -294,7 +307,7 @@ XML
 XML
   goto_home; sleep 2; ensure_link || true; desk_dial; wait_for 30 is_connected; sleep 6
   agenda_to "" 2027-03-14 28 "$CASES_OUT/withdrawn.json"
-  chk phone_withdrawal_erases_desktop_copy "d['people_total']==0 and d['events']==[] and d['devices'][0]['contacts_count']==0 and d['devices'][0]['events_count']==0" "$CASES_OUT/withdrawn.json"
+  chk phone_withdrawal_erases_desktop_copy "d['people_total']==0 and d['events']==[] and all(x['contacts_count']==0 and x['events_count']==0 for x in d['devices'])" "$CASES_OUT/withdrawn.json"
   # ---- logs carry no contact or event content
   local leaks; leaks=$( { $ADB logcat -d; cat "$LOGS/e2e-service.log" 2>/dev/null; } | grep -cE "CC Weekly|CC Allday|CC Conflict|CC Invitation|CC Multi|CC Longnote|Mine|CCv[12]|محمد|boss@example|multi@example|m@example|\+46 70|070-123" )
   rec case_logs_free_of_content "$([[ "$leaks" == 0 ]] && echo PASS || echo FAIL)" "matching log lines: $leaks"
@@ -308,6 +321,13 @@ main_scale() {
     systemctl --user stop "gbe2e-emulator${E2E_TAG:-}" >/dev/null 2>&1; pkill -f "Xvfb $XDISP" 2>/dev/null; return 0
   fi
   IFS=, read -r -a st <<<"$STAGES"
-  for s in "${st[@]}"; do log "== stage $s"; "stage_$s" || log "stage $s reported a failure"; done
+  local before; before="$(wc -l <"$RESULTS" 2>/dev/null || echo 0)"
+  for s in "${st[@]}"; do
+    log "== stage $s"
+    [[ "$s" == env ]] && { build_desktop || { rec env FAIL "desktop build failed, see dist/android/logs/e2e-build-desktop.log"; continue; }; }
+    "stage_$s" || log "stage $s reported a failure"
+  done
+  # Exit status for CI: non-zero if any result line written by this run says FAIL.
+  ! tail -n +"$((before + 1))" "$RESULTS" 2>/dev/null | awk -F'\t' '$2 == "FAIL" || $2 == 0 {f = 1} END {exit !f}'
 }
 main_scale

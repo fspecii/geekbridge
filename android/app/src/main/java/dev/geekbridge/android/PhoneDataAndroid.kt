@@ -974,12 +974,21 @@ object PhoneDataRuntime {
         }
     }
 
+    /**
+     * A change that came in inside the 30 s spacing is sent as soon as the spacing allows. The retry asks the engine how
+     * long is left and goes again until nothing is owed: another push in between (an applied edit, a request) moves the
+     * spacing, and a retry that simply gave up then left the change unsent until the next unrelated change.
+     */
     private fun scheduleCalendarRetry(e: PhoneDataEngine) {
+        val wait = e.calendarRetryInMs() ?: return
         synchronized(this) { if (retryScheduled) return; retryScheduled = true }
         main.postDelayed({
             synchronized(this) { retryScheduled = false }
-            worker.execute { e.onCalendarChanged() }
-        }, PhoneDataLimits.CALENDAR_PUSH_SPACING_MS + 1000)
+            worker.execute {
+                e.onCalendarChanged()
+                scheduleCalendarRetry(e)
+            }
+        }, wait + 1000)
     }
 
     private var mmsObserver: ContentObserver? = null

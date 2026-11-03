@@ -90,6 +90,7 @@ jobs:
           - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
           - { name: photos, run: 'scripts/e2e/photos.sh', adb_port: 16170, setup: light, experimental: true }
           - { name: sms, run: 'scripts/e2e/sms.sh', adb_port: 16188, setup: light, experimental: true }
+          - { name: contacts-calendar-cases, run: 'SCALE_TARGET="$E2E_TARGET" SCALE_SCRATCH="$E2E_SCRATCH" SCALE_PREBUILT=1 scripts/scale-e2e.sh env,battery,pair,cases', adb_port: 16150, setup: light, experimental: true }
           - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: true }
           - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
     env:

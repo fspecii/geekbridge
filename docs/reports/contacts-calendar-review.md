@@ -76,3 +76,5 @@ The emulator `cases` run (DST series, exception, EXDATE, conflict, invitation, d
 withdrawal, log grep) could not complete: the host fell below the 10 GB free-disk limit (other jobs were filling it),
 the AVD clone was removed and everything stopped. The stage is in the script, un-run. The Android-side revision
 recomputation (`currentRevision`) and guest detection are therefore verified by JVM tests with fakes only.
+
+Update: the `cases` stage has since been run on an emulator; see [contacts-calendar-emulator.md](contacts-calendar-emulator.md).

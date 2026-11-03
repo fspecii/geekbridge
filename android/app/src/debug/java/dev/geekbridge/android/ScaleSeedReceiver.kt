@@ -85,18 +85,22 @@ class ScaleSeedReceiver : BroadcastReceiver() {
         }
         // 1. Weekly Monday 09:00 Stockholm, 4 times, 15 Mar 2027 .. 5 Apr 2027: the clocks change on 28 Mar.
         val s0 = at(2027, 3, 15, 9)
-        val master = insert(own, "cc1", ev("CC Weekly", s0, null).apply {
+        insert(own, "cc1", ev("CC Weekly", s0, null).apply {
             put(CalendarContract.Events.RRULE, "FREQ=WEEKLY;COUNT=4"); put(CalendarContract.Events.DURATION, "PT1H")
+            // A sync adapter names a series by its server id and its exceptions refer to that id; the provider then
+            // resolves the exceptions itself and drops the replaced / cancelled occurrences from Instances. (Linking
+            // exceptions by ORIGINAL_ID alone, which no real sync adapter does, made the provider lose the series.)
+            put(CalendarContract.Events._SYNC_ID, "cc-weekly")
         })
         // 2. The second occurrence (22 Mar) moved one hour later and renamed: an exception row.
         val s1 = at(2027, 3, 22, 9)
         insert(own, "cc1", ev("CC Weekly moved", s1 + 3_600_000, s1 + 7_200_000).apply {
-            put(CalendarContract.Events.ORIGINAL_ID, master); put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, s1)
+            put(CalendarContract.Events.ORIGINAL_SYNC_ID, "cc-weekly"); put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, s1)
         })
         // 3. The third occurrence (29 Mar, after the change) cancelled.
         val s2 = at(2027, 3, 29, 9)
         insert(own, "cc1", ev("CC Weekly", s2, s2 + 3_600_000).apply {
-            put(CalendarContract.Events.ORIGINAL_ID, master); put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, s2)
+            put(CalendarContract.Events.ORIGINAL_SYNC_ID, "cc-weekly"); put(CalendarContract.Events.ORIGINAL_INSTANCE_TIME, s2)
             put(CalendarContract.Events.STATUS, CalendarContract.Events.STATUS_CANCELED)
         })
         // 4. A series with an EXDATE (second of three removed).

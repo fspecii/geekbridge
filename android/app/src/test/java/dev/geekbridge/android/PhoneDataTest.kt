@@ -277,6 +277,36 @@ class PhoneDataTest {
         assertFalse(core.of(PhoneDataKinds.CALENDAR_SYNC).last().getBoolean("full"))
     }
 
+    @Test fun aChangeSeenTooSoonIsRememberedUntilSomePushCoversIt() {
+        var now = 1_000_000_000L
+        val cal = FakeCal(listOf(inst("1", now + 1000)))
+        val core = FakeCore(); val e = engine(core, cal = cal, clock = { now })
+        assertNull("nothing waits before any change", e.calendarRetryInMs())
+        e.onEvents(listOf(ev(PhoneDataKinds.CALENDAR_REQ)))
+        now += 5_000
+        // A change lands 5 s after the last push: too soon, but it must not be forgotten.
+        assertFalse(e.onCalendarChanged())
+        assertEquals(PhoneDataLimits.CALENDAR_PUSH_SPACING_MS - 5_000, e.calendarRetryInMs())
+        // A retry that fires while another push (an applied edit, a request) is still inside the spacing must not drop
+        // the change: it is still owed.
+        now += 10_000
+        assertFalse(e.onCalendarChanged())
+        assertEquals(PhoneDataLimits.CALENDAR_PUSH_SPACING_MS - 15_000, e.calendarRetryInMs())
+        now += PhoneDataLimits.CALENDAR_PUSH_SPACING_MS
+        assertTrue(e.onCalendarChanged())
+        assertNull("the push read the provider afresh, nothing is owed", e.calendarRetryInMs())
+    }
+
+    @Test fun anyPushClearsTheOwedChange() {
+        var now = 1_000_000_000L
+        val core = FakeCore(); val e = engine(core, cal = FakeCal(listOf(inst("1", now + 1000))), clock = { now })
+        e.onEvents(listOf(ev(PhoneDataKinds.CALENDAR_REQ)))
+        now += 5_000
+        assertFalse(e.onCalendarChanged()); assertNotNull(e.calendarRetryInMs())
+        e.onEvents(listOf(ev(PhoneDataKinds.CALENDAR_REQ)))
+        assertNull(e.calendarRetryInMs())
+    }
+
     // ------------------------------------------------------------------ SMS
 
     private fun row(id: Long, thread: Long, date: Long, type: Int = 1) = SmsRow(id, thread, "+15551234567", "hi $id", date, type, false, 1)

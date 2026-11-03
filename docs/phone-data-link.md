@@ -254,6 +254,12 @@ status, notifications of what is shared. Sensitive content (contacts, event text
   thread -> desktop send reaches the phone's own status). Its phone-side switch and per-computer grant are written by
   the script itself (`geekbridge_grants.xml`, guarded by `scripts/tests/e2e-grants-test.sh`). The self-contained SMS suite
   is `scripts/e2e/sms.sh` (report: [reports/sms-emulator-e2e.md](reports/sms-emulator-e2e.md)).
+* Emulator, correctness on small named data: stage `cases` of `scripts/scale-e2e.sh` (`scripts/scale-e2e.sh env,battery,pair,cases`,
+  about 10 minutes, own AVD / ports, `--stop` afterwards; report docs/reports/contacts-calendar-emulator.md). It seeds a weekly series across a
+  DST change with a moved and a cancelled occurrence, an EXDATE series, all-day events, a Tokyo event, an invitation, a read-only
+  calendar and unicode / right-to-left / override-character contacts, and checks the instances on the desktop, the edit-conflict reply
+  (`changed`), `not_organizer`, deletes both ways, consent withdrawn on either side and logs free of content. Nightly as the
+  non-blocking `contacts-calendar-cases` suite (docs/emulator-ci.md).
 * Emulator: `scripts/e2e-phonedata.sh` (injects contacts, calendar events and SMS with `adb`, drives the real
   Agenda and Messages windows under a private Xvfb, screenshots in `dist/screenshots/phonedata/`).
 
