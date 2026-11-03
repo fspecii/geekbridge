@@ -189,6 +189,12 @@ pub fn edit_reason_text(code: &str) -> &'static str {
         "not_writable" => "That calendar is read-only on the phone.",
         "not_found" => "The event no longer exists on the phone.",
         "recurring" => "Repeating events cannot be changed from the computer.",
+        "changed" => {
+            "The event was changed on the phone in the meantime. Nothing was overwritten; the phone's version is shown now."
+        }
+        "not_organizer" => {
+            "You were invited to this event; only the organiser can change it. Your change would be lost at the next sync."
+        }
         "invalid" => "The phone rejected the event details.",
         "calendar_missing" => "That calendar is not available on the phone.",
         _ => "The phone could not write the change.",

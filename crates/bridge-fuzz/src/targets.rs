@@ -486,9 +486,101 @@ fn vcard(input: &[u8]) {
     });
     if let Ok(c) = phone_link::contact_from_vcard(&s) {
         bounded(&format!("{:?}", c.display_name), input.len(), "contact");
+        // What the list shows must carry no control characters and no bidi embeddings / overrides (U+202A..E),
+        // and one number or address is never listed twice.
+        let shown = std::iter::once(&c.display_name)
+            .chain(c.organization.iter())
+            .chain(c.phones.iter())
+            .chain(c.emails.iter());
+        for t in shown {
+            no_control(t, "contact text", true);
+            oracle(
+                !t.chars().any(|ch| matches!(ch, '\u{202A}'..='\u{202E}')),
+                || format!("bidi override in contact text {t:?}"),
+            );
+        }
+        let key = |p: &String| {
+            p.chars()
+                .filter(|c| c.is_ascii_digit() || *c == '+')
+                .collect::<String>()
+        };
+        let mut keys: Vec<String> = c.phones.iter().map(key).collect();
+        let n = keys.len();
+        keys.sort();
+        keys.dedup();
+        oracle(keys.len() == n, || {
+            format!("duplicate phone numbers {:?}", c.phones)
+        });
+        oracle(c.phones.len() <= 64 && c.emails.len() <= 64, || {
+            "too many points".into()
+        });
     }
     let _ = phone_link::contact_revision(Some(&s), &s);
     let _ = bridge_core::agenda::vcard_rev(&s);
+}
+
+/// The stored agenda records (what a persisted or imported record could hold): hostile JSON for contacts, events and
+/// recurrences, RRULE / RDATE text, ISO dates, and `When::from_android` with arbitrary numbers. There is no iCalendar
+/// text parser in GeekBridge (the phone expands series; the computer never reads an .ics file), so the recurrence
+/// strings are fuzzed where they are validated.
+fn agenda(input: &[u8]) {
+    use bridge_core::agenda::{CalendarEvent, Contact, Date, Recurrence, Validate, When};
+    let s = text(input);
+    if let Ok(c) = serde_json::from_str::<Contact>(&s) {
+        let _ = c.validate();
+    }
+    if let Ok(r) = serde_json::from_str::<Recurrence>(&s) {
+        let _ = r.validate();
+    }
+    if let Ok(e) = serde_json::from_str::<CalendarEvent>(&s)
+        && e.validate().is_ok()
+    {
+        for off in [-720, 0, 345, 840] {
+            let d = Date::new(2026, 3, 29).expect("date");
+            let _ = e.when.covers_day(d, off);
+            let _ = e.when.overlaps_days(d, 42, off);
+        }
+        let _ = e.when.start_ms();
+    }
+    let series = Recurrence::Series {
+        rrule: Some(s.clone()),
+        rdates: vec![s.clone()],
+        exdates: vec![s.clone()],
+    };
+    let _ = series.validate();
+    if let Ok(d) = s.trim().parse::<Date>() {
+        oracle(d.to_string().parse::<Date>() == Ok(d), || {
+            format!("date {d} does not survive a round trip")
+        });
+    }
+    let n = |at: usize| {
+        let mut b = [0u8; 8];
+        for (i, slot) in b.iter_mut().enumerate() {
+            *slot = input.get(at + i).copied().unwrap_or(0);
+        }
+        i64::from_le_bytes(b)
+    };
+    let all_day = input.first().is_some_and(|b| b & 1 == 1);
+    if let Ok(w) = When::from_android(n(1), n(9), all_day, &s) {
+        oracle(w.validate().is_ok(), || {
+            "accepted a When that does not validate".into()
+        });
+        let _ = w.covers_day(Date::new(2026, 10, 25).expect("date"), 60);
+    }
+}
+
+fn agenda_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"display_name":"Ada","phones":["+1 555"],"emails":["a@b.c"],"organization":null,"vcard":null}"#,
+        r#"{"kind":"series","rrule":"FREQ=WEEKLY;BYDAY=MO,TU;UNTIL=20271231T235959Z","rdates":["20270101"],"exdates":["20260105T090000Z"]}"#,
+        r#"{"kind":"exception","master_id":"7","original_start_utc_ms":1700000000000}"#,
+        r#"{"title":"Holiday","when":{"kind":"all_day","start":"2026-12-24","end_exclusive":"2026-12-27"},"location":null,"description":null,"recurrence":null,"meta":{}}"#,
+        "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29",
+        "2024-02-29",
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
 }
 
 fn calls_wire(input: &[u8]) {
@@ -1432,6 +1524,7 @@ pub static TARGETS: &[Target] = &[
         none
     ),
     t!("vcard", vcard, &[], &[], vcard_seeds),
+    t!("agenda", agenda, &[], &[], agenda_seeds),
     t!(
         "calls_wire",
         calls_wire,

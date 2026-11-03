@@ -33,7 +33,8 @@ deterministic mode, which needs nothing extra.
 | `share` | `parse_share`, `sanitize_filename`, `is_openable_url`, `reserve_unique` | file name: one path component, no control characters, no `/ \ < > : " \| ? *`, not `.`/`..`/hidden, ≤ 200 bytes, no trailing space or dot, not a Windows device name; text/URL: no control characters, size caps; reserved path stays in the directory |
 | `sms` | `parse_messages`, `parse_unread`, `parse_sims` | output size bounded by input size |
 | `phone_wire` | `parse_uids`, `parse_vcards`, `parse_calendar_sync`, `parse_write_result`, `parse_sms_status`, `contact_from_vcard` | count caps; output size bounded by input size (amplification) |
-| `vcard` | `contact_from_vcard`, `strip_vcard_blobs`, `contact_revision`, `vcard_rev` | blob stripping never grows text |
+| `vcard` | `contact_from_vcard`, `strip_vcard_blobs`, `contact_revision`, `vcard_rev` | blob stripping never grows text; shown text has no control characters or bidi overrides; a number is never listed twice |
+| `agenda` | `Contact` / `CalendarEvent` / `Recurrence` JSON, `Validate`, RRULE / RDATE / EXDATE text, `Date::from_str`, `When::from_android`, `covers_day` / `overlaps_days` | dates round-trip; an accepted `When` validates. There is no iCalendar text parser: the phone expands series |
 | `calls_wire` | `LinkCallReport::parse`, `parse_request`, `parse_result` | – |
 | `notification_wire` | `notification_link::parse`, `parse_request` | id, app, title and text within their caps and free of control characters; at most 3 action titles |
 | `photos_wire` | `photos_link::parse_list`, `parse_thumb`, `parse_request` | at most 24 photos with unique valid ids; names within their cap and free of control and bidi characters; a thumbnail within 24 KiB, 256 px and starting like a JPEG; list limit 1..=24 |

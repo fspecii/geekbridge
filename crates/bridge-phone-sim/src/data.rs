@@ -616,6 +616,15 @@ impl PhoneScript {
                 match self.events.iter().position(|e| e.event_id == eid) {
                     None => fail("not_found"),
                     Some(i) if self.events[i].recurring => fail("recurring"),
+                    // The desktop edited a version this phone no longer has: refuse, overwrite nothing.
+                    Some(i)
+                        if body
+                            .get("baseRev")
+                            .and_then(Value::as_str)
+                            .is_some_and(|b| b != self.events[i].rev) =>
+                    {
+                        fail("changed")
+                    }
                     Some(i) if action == "delete" => {
                         self.events.remove(i);
                         obj(json!({"opId": op, "state": "applied", "eventId": eid}))
@@ -897,6 +906,33 @@ mod tests {
             json!({"opId": "op4", "action": "delete", "eventId": "18"}),
         );
         assert_eq!(rec[0].1["reason"], "recurring");
+
+        // An edit made from an older version is refused and changes nothing; the current one goes through.
+        let made = write(
+            &mut p,
+            json!({"version": 1, "opId": "op6", "action": "create", "calendarId": "1",
+                "event": {"title": "Sync", "allDay": false, "startMs": 1000, "endMs": 5000, "tz": "UTC"}}),
+        );
+        let mid = made[0].1["eventId"].as_str().unwrap().to_owned();
+        let at = p.events.iter().position(|e| e.event_id == mid).unwrap();
+        let rev = p.events[at].rev.clone();
+        let stale = write(
+            &mut p,
+            json!({"opId": "op7", "action": "update", "eventId": mid, "baseRev": "old",
+                "event": {"title": "Mine", "startMs": 1000, "endMs": 5000}}),
+        );
+        assert_eq!(
+            (stale[0].1["state"].as_str(), stale[0].1["reason"].as_str()),
+            (Some("failed"), Some("changed"))
+        );
+        assert_eq!(p.events[at].title, "Sync");
+        let fresh = write(
+            &mut p,
+            json!({"opId": "op8", "action": "update", "eventId": mid, "baseRev": rev,
+                "event": {"title": "Mine", "startMs": 1000, "endMs": 5000}}),
+        );
+        assert_eq!(fresh[0].1["state"], "applied");
+        assert_eq!(p.events[at].title, "Mine");
 
         p.silent_writes = true;
         let quiet = json!({"opId": "op5", "action": "create", "calendarId": "1",

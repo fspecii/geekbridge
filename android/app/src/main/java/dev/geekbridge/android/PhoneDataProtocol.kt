@@ -230,14 +230,36 @@ object PhoneDataProtocol {
         return out.toString()
     }
 
-    /** vCard as the desktop expects: no binary properties, one trailing `REV:<timestamp>` before END:VCARD. */
+    /**
+     * vCard as the desktop expects: no binary properties, one trailing `REV:<timestamp>` before END:VCARD. A card over
+     * [PhoneDataLimits.MAX_VCARD_BYTES] (a huge note, a pasted document) keeps its identity: properties over 2 KB are
+     * dropped, and a card with no name, number or address left is skipped.
+     */
     fun finishVcard(vcard: String, timestamp: String): String? {
         val stripped = stripBinaryProperties(vcard).lines().filterNot { it.startsWith("REV:", ignoreCase = true) }
             .joinToString("\r\n").trim()
         val endAt = stripped.lastIndexOf("END:VCARD", ignoreCase = true)
         if (!stripped.startsWith("BEGIN:VCARD", ignoreCase = true) || endAt < 0) return null
-        val out = stripped.substring(0, endAt).trimEnd() + "\r\nREV:" + clean(timestamp, 40) + "\r\nEND:VCARD\r\n"
-        return out.takeIf { Bounds.utf8Size(it) <= PhoneDataLimits.MAX_VCARD_BYTES }
+        fun finish(body: String) = body.substring(0, body.lastIndexOf("END:VCARD", ignoreCase = true)).trimEnd() +
+            "\r\nREV:" + clean(timestamp, 40) + "\r\nEND:VCARD\r\n"
+        val whole = finish(stripped)
+        if (Bounds.utf8Size(whole) <= PhoneDataLimits.MAX_VCARD_BYTES) return whole
+        val slim = finish(dropLongProperties(stripped, 2048))
+        val identity = slim.lineSequence().any {
+            val n = it.substringBefore(':').substringBefore(';').substringAfterLast('.').uppercase()
+            n == "FN" || n == "N" || n == "TEL" || n == "EMAIL"
+        }
+        return slim.takeIf { identity && Bounds.utf8Size(it) <= PhoneDataLimits.MAX_VCARD_BYTES }
+    }
+
+    /** Removes every property whose logical (unfolded) line is longer than [max] chars, with its folded lines. */
+    private fun dropLongProperties(vcard: String, max: Int): String {
+        val props = ArrayList<StringBuilder>()
+        for (line in vcard.split("\r\n", "\n")) {
+            if (line.isNotEmpty() && (line[0] == ' ' || line[0] == '\t') && props.isNotEmpty()) props.last().append("\r\n").append(line)
+            else props += StringBuilder(line)
+        }
+        return props.filter { it.length <= max }.joinToString("\r\n")
     }
 
     // ------------------------------------------------------------------ contacts

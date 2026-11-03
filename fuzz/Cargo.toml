@@ -90,6 +90,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "agenda"
+path = "fuzz_targets/agenda.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "calls_wire"
 path = "fuzz_targets/calls_wire.rs"
 test = false

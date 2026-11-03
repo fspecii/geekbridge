@@ -47,6 +47,9 @@ Commands:
                                       Contacts/Calendar consent is on (prints personal data; memory only)
   calendar-add DEVICE_ID CALENDAR_ID TITLE START_MS MINUTES [LOCATION]
                                       create an event on the phone (needs the calendar_edit consent)
+  calendar-update DEVICE_ID EVENT_ID TITLE START_MS MINUTES [LOCATION]
+                                      change a one-off event on the phone; refused as changed if the phone's copy
+                                      moved on since this computer last synced it (calendar_edit consent)
   calendar-delete DEVICE_ID EVENT_ID  delete a one-off event on the phone (calendar_edit consent)
   calendar-retry DEVICE_ID OP_ID      send an uncertain edit again under the same operation id
   agenda-refresh [DEVICE_ID]          ask the phone(s) for fresh contacts and calendar data
@@ -338,6 +341,33 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 action: bridge_core::phone_view::CalendarEditAction::Create,
                 calendar_id: Some(arg(2, "CALENDAR_ID")?),
                 event_id: None,
+                draft: Some(Box::new(bridge_core::phone_view::EventDraft {
+                    title: arg(3, "TITLE")?,
+                    all_day: false,
+                    start_ms: start,
+                    end_ms: start + minutes * 60_000,
+                    tz: "UTC".into(),
+                    location: arg(6, "LOCATION").ok(),
+                    description: None,
+                    reminder_min: Some(10),
+                })),
+            }
+        }
+        "calendar-update" => {
+            let start: i64 = arg(4, "START_MS")?
+                .parse()
+                .map_err(|_| "START_MS must be epoch milliseconds")?;
+            let minutes: i64 = arg(5, "MINUTES")?
+                .parse()
+                .map_err(|_| "MINUTES must be a number")?;
+            let op_id = op_id();
+            eprintln!("operation id: {op_id}");
+            Request::CalendarEdit {
+                device_id: arg(1, "DEVICE_ID")?,
+                op_id,
+                action: bridge_core::phone_view::CalendarEditAction::Update,
+                calendar_id: None,
+                event_id: Some(arg(2, "EVENT_ID")?),
                 draft: Some(Box::new(bridge_core::phone_view::EventDraft {
                     title: arg(3, "TITLE")?,
                     all_day: false,

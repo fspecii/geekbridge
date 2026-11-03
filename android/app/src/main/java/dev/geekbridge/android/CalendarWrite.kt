@@ -26,8 +26,9 @@ sealed interface WriteRequest {
     val opId: String
 
     data class Create(override val opId: String, val calendarId: String, val draft: EventDraft) : WriteRequest
-    data class Update(override val opId: String, val eventId: String, val draft: EventDraft) : WriteRequest
-    data class Delete(override val opId: String, val eventId: String) : WriteRequest
+    /** [baseRev]: the revision the computer's copy had (the `rev` this phone sent); null from an older computer. */
+    data class Update(override val opId: String, val eventId: String, val draft: EventDraft, val baseRev: String? = null) : WriteRequest
+    data class Delete(override val opId: String, val eventId: String, val baseRev: String? = null) : WriteRequest
 }
 
 sealed interface WriteParse {
@@ -40,6 +41,7 @@ data class WriteOutcome(val state: String, val reason: String? = null, val event
 
 object CalendarWriteProtocol {
     private val idPattern = Regex("[0-9]{1,18}")
+    private val revPattern = Regex("[A-Za-z0-9_.:-]{1,64}")
     private val zonePattern = Regex("[A-Za-z0-9_+\\-/:]{1,64}")
     private const val DAY_MS = 86_400_000L
     private const val MAX_TIME_MS = 4_102_444_800_000L
@@ -65,6 +67,8 @@ object CalendarWriteProtocol {
         if (body.optInt("version", 0) != 1) return WriteParse.Bad(op, "invalid")
         val action = body.optString("action", "")
         fun id(key: String) = (body.opt(key) as? String)?.takeIf { idPattern.matches(it) }
+        // Absent = an older computer (no conflict check). Present but malformed is refused, never ignored.
+        val rev = if (body.has("baseRev")) ((body.opt("baseRev") as? String)?.takeIf { revPattern.matches(it) } ?: return WriteParse.Bad(op, "invalid")) else null
         fun draft(): EventDraft? {
             val e = body.optJSONObject("event") ?: return null
             val title = (e.opt("title") as? String) ?: return null
@@ -86,9 +90,9 @@ object CalendarWriteProtocol {
             "update" -> {
                 val ev = id("eventId") ?: return WriteParse.Bad(op, "invalid")
                 val d = draft() ?: return WriteParse.Bad(op, "invalid")
-                WriteParse.Ok(WriteRequest.Update(op, ev, d))
+                WriteParse.Ok(WriteRequest.Update(op, ev, d, rev))
             }
-            "delete" -> WriteParse.Ok(WriteRequest.Delete(op, id("eventId") ?: return WriteParse.Bad(op, "invalid")))
+            "delete" -> WriteParse.Ok(WriteRequest.Delete(op, id("eventId") ?: return WriteParse.Bad(op, "invalid"), rev))
             else -> WriteParse.Bad(op, "invalid")
         }
     }
@@ -134,9 +138,27 @@ data class ReminderPlan(
     }
 }
 
+/** Whether an event is somebody else's invitation, from the columns the provider keeps for it. */
+object CalendarGuest {
+    /**
+     * A guest event has attendees, an organiser who is not the calendar's owner, and does not let guests modify it.
+     * Missing data means "not a guest": the edit is then allowed and the provider is the judge, as before.
+     */
+    fun isGuest(organizer: String?, ownerAccount: String?, hasAttendees: Boolean, guestsCanModify: Boolean): Boolean {
+        if (!hasAttendees || guestsCanModify) return false
+        val org = organizer?.trim().orEmpty()
+        val owner = ownerAccount?.trim().orEmpty()
+        return org.isNotEmpty() && owner.isNotEmpty() && !org.equals(owner, ignoreCase = true)
+    }
+}
+
 /** What the provider says about one calendar / event; the writer decides from this, never from the packet. */
 data class CalendarAccess(val writable: Boolean)
-data class ExistingEvent(val calendarId: String, val recurring: Boolean)
+/**
+ * [rev] is the revision [PhoneDataProtocol.calendarEvent] would report for the event right now (null = could not be
+ * worked out). [guest]: the user was invited and is not the organiser, so the organiser's copy wins at the next sync.
+ */
+data class ExistingEvent(val calendarId: String, val recurring: Boolean, val rev: String? = null, val guest: Boolean = false)
 
 interface CalendarWriteStore {
     fun calendar(id: String): CalendarAccess?
@@ -182,6 +204,12 @@ class OpLedger(private val blob: BlobStore, private val max: Int = PhoneDataLimi
 
     fun known(op: String) = entries.containsKey(op)
 
+    /** Forgets every operation (editing was switched off or the computer was unpaired). */
+    fun clear() {
+        entries.clear()
+        blob.write("[]")
+    }
+
     /** The recorded outcome; an interrupted attempt reads as `unknown`. */
     fun outcome(op: String): WriteOutcome? =
         if (!entries.containsKey(op)) null else entries[op] ?: WriteOutcome("unknown", "interrupted")
@@ -226,6 +254,9 @@ class CalendarWriter(
     private val ledger: OpLedger,
     private val sharedIds: () -> Set<String>,
 ) {
+    /** Editing was switched off: the remembered operation ids and event ids go with the permission. */
+    fun forget() = ledger.clear()
+
     /** The answer to send back: the outcome and whether it is a repeat of an earlier answer. */
     fun handle(req: WriteRequest): Pair<WriteOutcome, Boolean> {
         ledger.outcome(req.opId)?.let { return it to true }
@@ -255,14 +286,19 @@ class CalendarWriter(
 
     private fun precheck(req: WriteRequest): String? = when (req) {
         is WriteRequest.Create -> CalendarWriteProtocol.validate(req.draft) ?: writable(req.calendarId)
-        is WriteRequest.Update -> CalendarWriteProtocol.validate(req.draft) ?: existing(req.eventId)
-        is WriteRequest.Delete -> existing(req.eventId)
+        is WriteRequest.Update -> CalendarWriteProtocol.validate(req.draft) ?: existing(req.eventId, req.baseRev, editing = true)
+        is WriteRequest.Delete -> existing(req.eventId, req.baseRev, editing = false)
     }
 
-    private fun existing(eventId: String): String? {
+    private fun existing(eventId: String, baseRev: String?, editing: Boolean): String? {
         val e = store.event(eventId) ?: return "not_found"
         if (e.recurring) return "recurring"
-        return writable(e.calendarId)
+        writable(e.calendarId)?.let { return it }
+        // Edited on the phone (or by its sync) since the computer looked: overwriting would silently lose that.
+        if (baseRev != null && e.rev != baseRev) return "changed"
+        // Changing an invitation only changes the local copy; the organiser's version returns at the next sync.
+        if (editing && e.guest) return "not_organizer"
+        return null
     }
 
     private fun apply(req: WriteRequest): WriteOutcome = when (req) {

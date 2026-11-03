@@ -123,9 +123,28 @@ class PhoneDataTest {
         assertTrue(out.trimEnd().endsWith("REV:123\r\nEND:VCARD"))
         assertNull(PhoneDataProtocol.finishVcard("garbage", "1"))
         assertNull(PhoneDataProtocol.finishVcard("BEGIN:VCARD\r\nNOTE:" + "x".repeat(70_000) + "\r\nEND:VCARD", "1"))
+        // A huge note must not make the whole contact vanish: the big line goes, the name and numbers stay.
+        val big = PhoneDataProtocol.finishVcard("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\nTEL:+4670123\r\nNOTE:" + "x".repeat(70_000) + "\r\nEND:VCARD", "9")!!
+        assertTrue(big.contains("FN:Ada") && big.contains("TEL:+4670123") && big.contains("REV:9") && !big.contains("NOTE"))
+        assertTrue(Bounds.utf8Size(big) <= PhoneDataLimits.MAX_VCARD_BYTES)
     }
 
     // ------------------------------------------------------------------ contacts
+
+    @Test fun theContactListingCacheIsDroppedWhenTheSessionEnds() {
+        class Port : ContactsPort {
+            var cached = false
+            override fun listUids(max: Int): List<Pair<String, String>> { cached = true; return listOf("k1" to "1") }
+            override fun vcard(uid: String): Pair<String, String>? = null
+            override fun forget() { cached = false }
+        }
+        val port = Port()
+        val e = engine(contacts = port)
+        e.onEvents(listOf(ev(PhoneDataKinds.CONTACTS_REQ_UIDS)))
+        assertTrue(port.cached)
+        e.reset() // link down, a consent withdrawn, or the calendar selection changed
+        assertFalse("lookup keys of the contacts must not outlive the session", port.cached)
+    }
 
     @Test fun contactsListingAndVcardsAreBounded() {
         val core = FakeCore()

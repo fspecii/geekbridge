@@ -73,6 +73,12 @@ fn clean(s: &str, max: usize) -> String {
         if out.len() + c.len_utf8() > max {
             break;
         }
+        // Bidi embeddings and overrides (U+202A..U+202E) can make "gpj.exe" read as "exe.jpg" or reorder a
+        // whole row of the list; a phone's text never needs them, so they are dropped. Marks (U+200E/F) and
+        // isolates, which stay balanced, are kept for genuine right-to-left names.
+        if matches!(c, '\u{202A}'..='\u{202E}') {
+            continue;
+        }
         out.push(if c.is_control() && !matches!(c, '\n' | '\t') {
             ' '
         } else {
@@ -170,7 +176,8 @@ fn unfold(vcard: &str) -> Vec<String> {
     lines
 }
 
-fn qp_decode(s: &str) -> String {
+/// Quoted-printable to raw bytes (`=XX` escapes; anything else is kept as is).
+fn qp_bytes(s: &str) -> Vec<u8> {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -189,7 +196,69 @@ fn qp_decode(s: &str) -> String {
             i += 1;
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
+}
+
+/// The 0x80..0x9F block of Windows-1252 (ISO-8859-1 has C1 controls there). `\0` marks the five unassigned.
+const CP1252_HIGH: [char; 32] = [
+    '\u{20AC}', '\0', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}', '\u{2021}',
+    '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\0', '\u{017D}', '\0', '\0',
+    '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}',
+    '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\0', '\u{017E}', '\u{0178}',
+];
+
+/// Single-byte legacy charsets a vCard 2.1 file may name next to `ENCODING=QUOTED-PRINTABLE`.
+fn is_latin1(params: &[String]) -> bool {
+    params.iter().any(|p| {
+        p.strip_prefix("CHARSET=").is_some_and(|c| {
+            matches!(
+                c.trim_matches('"'),
+                "ISO-8859-1"
+                    | "ISO8859-1"
+                    | "LATIN1"
+                    | "LATIN-1"
+                    | "WINDOWS-1252"
+                    | "CP1252"
+                    | "US-ASCII"
+            )
+        })
+    })
+}
+
+/// Decodes quoted-printable bytes in the named charset (UTF-8 unless a Latin-1 family one is named).
+fn qp_decode(s: &str, latin1: bool) -> String {
+    let bytes = qp_bytes(s);
+    if !latin1 {
+        return String::from_utf8_lossy(&bytes).into_owned();
+    }
+    bytes
+        .iter()
+        .map(|&b| match b {
+            0x80..=0x9F => match CP1252_HIGH[usize::from(b - 0x80)] {
+                '\0' => '\u{FFFD}',
+                c => c,
+            },
+            _ => char::from(b),
+        })
+        .collect()
+}
+
+/// Splits on `sep` that is not preceded by a backslash (vCard escapes `\;` and `\,` inside a value).
+fn split_unescaped(v: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut start, mut escaped) = (0, false);
+    for (i, c) in v.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == sep {
+            out.push(&v[start..i]);
+            start = i + c.len_utf8();
+        }
+    }
+    out.push(&v[start..]);
+    out
 }
 
 fn unescape(v: &str) -> String {
@@ -209,8 +278,14 @@ fn unescape(v: &str) -> String {
     out
 }
 
-/// Removes `PHOTO`/`LOGO`/`SOUND` properties (large base64 blobs) from a vCard, keeping the rest
-/// verbatim. Folded continuation lines of a removed property go with it.
+/// Name of a property line without its group prefix (`item1.PHOTO;...` -> `PHOTO`), upper-cased.
+fn property_name(line: &str) -> String {
+    let head = line.split([';', ':']).next().unwrap_or("");
+    head.rsplit('.').next().unwrap_or("").to_ascii_uppercase()
+}
+
+/// Removes `PHOTO`/`LOGO`/`SOUND` properties (large base64 blobs, also when grouped as `item1.PHOTO`) from a
+/// vCard, keeping the rest verbatim. Folded continuation lines of a removed property go with it.
 pub fn strip_vcard_blobs(vcard: &str) -> String {
     let mut out = String::with_capacity(vcard.len().min(8 * 1024));
     let mut skipping = false;
@@ -221,12 +296,7 @@ pub fn strip_vcard_blobs(vcard: &str) -> String {
                 continue;
             }
         } else {
-            let name = t
-                .split([';', ':'])
-                .next()
-                .unwrap_or("")
-                .to_ascii_uppercase();
-            skipping = matches!(name.as_str(), "PHOTO" | "LOGO" | "SOUND");
+            skipping = matches!(property_name(t).as_str(), "PHOTO" | "LOGO" | "SOUND");
             if skipping {
                 continue;
             }
@@ -236,7 +306,14 @@ pub fn strip_vcard_blobs(vcard: &str) -> String {
     out
 }
 
-/// Builds a [`Contact`] from a phone vCard (2.1 or 3.0, quoted-printable aware). The stored raw
+/// A phone number without punctuation, for telling two spellings of one number apart.
+fn phone_key(p: &str) -> String {
+    p.chars()
+        .filter(|c| c.is_ascii_digit() || *c == '+')
+        .collect()
+}
+
+/// Builds a [`Contact`] from a phone vCard (2.1 or 3.0, quoted-printable and Latin-1 aware). The stored raw
 /// vCard has photos removed. Fails if the card has no name, phone or email.
 pub fn contact_from_vcard(vcard: &str) -> Result<Contact, AgendaError> {
     if vcard.len() > crate::agenda::MAX_VCARD_BYTES {
@@ -245,48 +322,73 @@ pub fn contact_from_vcard(vcard: &str) -> Result<Contact, AgendaError> {
     let mut c = Contact::default();
     let (mut fn_name, mut n_name) = (None::<String>, None::<String>);
     for line in unfold(&strip_vcard_blobs(vcard)) {
-        let Some((head, value)) = line.split_once(':') else {
+        let Some((head, raw)) = line.split_once(':') else {
             continue;
         };
         let mut parts = head.split(';');
-        let name = parts.next().unwrap_or("").to_ascii_uppercase();
+        let name = property_name(parts.next().unwrap_or(""));
         let params: Vec<String> = parts.map(str::to_ascii_uppercase).collect();
-        let value = if params.iter().any(|p| p.contains("QUOTED-PRINTABLE")) {
-            qp_decode(value)
-        } else {
-            value.to_owned()
+        let qp = params.iter().any(|p| p.contains("QUOTED-PRINTABLE"));
+        let latin1 = is_latin1(&params);
+        // Split on the raw text first, then decode each piece: an encoded `=3B` is a literal `;`, not a separator.
+        let decode = |v: &str| {
+            if qp {
+                unescape(&qp_decode(v, latin1))
+            } else {
+                unescape(v)
+            }
         };
-        // Strip a group prefix such as `item1.TEL`.
-        let name = name.rsplit('.').next().unwrap_or("").to_owned();
         match name.as_str() {
-            "FN" => fn_name = Some(unescape(&value)),
+            "FN" => fn_name = Some(decode(raw)),
             "N" => {
-                let f: Vec<&str> = value.split(';').collect();
-                let joined = [f.get(3), f.get(1), f.get(2), f.first()]
-                    .into_iter()
-                    .flatten()
-                    .map(|s| unescape(s))
-                    .filter(|s| !s.trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                n_name = Some(joined);
+                // family;given;additional;prefix;suffix -> "prefix given additional family suffix"
+                let f = split_unescaped(raw, ';');
+                n_name = Some(
+                    [f.get(3), f.get(1), f.get(2), f.first(), f.get(4)]
+                        .into_iter()
+                        .flatten()
+                        .map(|s| decode(s))
+                        .filter(|s| !s.trim().is_empty())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
             }
             "TEL" => {
-                let v = unescape(value.trim());
-                if !v.is_empty() && c.phones.len() < 64 && !c.phones.contains(&v) {
-                    c.phones.push(clean(&v, 64));
+                let v = decode(raw.trim());
+                let v = v.trim();
+                let v = v
+                    .get(..4)
+                    .filter(|p| p.eq_ignore_ascii_case("tel:"))
+                    .map_or(v, |_| v[4..].trim());
+                // Compare what is stored (cut to 64 bytes), or a long tail could make a duplicate look new.
+                let v = clean(v, 64);
+                let key = phone_key(&v);
+                if !v.trim().is_empty()
+                    && c.phones.len() < 64
+                    && !c.phones.iter().any(|p| phone_key(p) == key)
+                {
+                    c.phones.push(v);
                 }
             }
             "EMAIL" => {
-                let v = unescape(value.trim());
-                if !v.is_empty() && c.emails.len() < 64 && !c.emails.contains(&v) {
-                    c.emails.push(clean(&v, 320));
+                let v = decode(raw.trim());
+                let v = v.trim();
+                let v = v
+                    .get(..7)
+                    .filter(|p| p.eq_ignore_ascii_case("mailto:"))
+                    .map_or(v, |_| v[7..].trim());
+                let v = clean(v, 320);
+                if !v.trim().is_empty()
+                    && c.emails.len() < 64
+                    && !c.emails.iter().any(|e| e.eq_ignore_ascii_case(&v))
+                {
+                    c.emails.push(v);
                 }
             }
             "ORG" => {
-                let v = value
-                    .split(';')
-                    .map(unescape)
+                let v = split_unescaped(raw, ';')
+                    .into_iter()
+                    .map(decode)
                     .filter(|s| !s.trim().is_empty())
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -454,7 +556,17 @@ fn parse_event(v: &Value) -> Option<(String, Revision, CalendarEvent)> {
     let all_day = o.get("allDay").and_then(Value::as_bool)?;
     let start = o.get("startMs").and_then(Value::as_i64)?;
     let mut end = o.get("endMs").and_then(Value::as_i64)?;
-    if !all_day && end <= start {
+    let mut start = start;
+    if all_day {
+        // Android writes all-day events on UTC midnights, but some sync adapters leave a time of day or an end
+        // equal to the start. Snap to whole days (outwards) rather than losing the event.
+        const DAY: i64 = 86_400_000;
+        start = start.div_euclid(DAY).checked_mul(DAY)?;
+        end = end.checked_add(DAY - 1)?.div_euclid(DAY).checked_mul(DAY)?;
+        if end <= start {
+            end = start.checked_add(DAY)?;
+        }
+    } else if end <= start {
         end = start.checked_add(60_000)?; // instantaneous reminder-style event
     }
     let tz = str_field(o, "tz")
@@ -685,13 +797,16 @@ pub fn validate_draft(d: &EventDraft) -> Result<(), DraftError> {
 }
 
 /// Body of `geekbridge.calendar.write`. `op_id` is the idempotency key: the phone answers a
-/// repeated one with the first outcome instead of writing again.
+/// repeated one with the first outcome instead of writing again. `base_rev` (update / delete) is the
+/// revision of the event as this computer last saw it; a phone whose copy has moved on since refuses
+/// with `changed` instead of overwriting what was edited there.
 pub fn calendar_write_body(
     op_id: &str,
     action: CalendarEditAction,
     calendar_id: Option<&str>,
     event_id: Option<&str>,
     draft: Option<&EventDraft>,
+    base_rev: Option<&str>,
 ) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("version".into(), json!(1));
@@ -709,6 +824,9 @@ pub fn calendar_write_body(
     }
     if let Some(e) = event_id {
         m.insert("eventId".into(), json!(e));
+    }
+    if let Some(r) = base_rev.filter(|_| action != CalendarEditAction::Create) {
+        m.insert("baseRev".into(), json!(r));
     }
     if let Some(d) = draft {
         let mut e = Map::new();
@@ -830,6 +948,7 @@ pub fn parse_sms_status(body: &Map<String, Value>) -> Result<SmsStatus, WireErro
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agenda::Date;
 
     fn obj(v: Value) -> Map<String, Value> {
         v.as_object().unwrap().clone()
@@ -869,6 +988,100 @@ mod tests {
         assert_eq!(c.phones, vec!["555 0100"]);
     }
 
+    fn card(lines: &str) -> String {
+        format!("BEGIN:VCARD\r\nVERSION:3.0\r\n{lines}END:VCARD\r\n")
+    }
+
+    #[test]
+    fn latin1_quoted_printable_is_decoded_in_its_charset() {
+        let v = "BEGIN:VCARD\nVERSION:2.1\nN;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:M=FCller;J=FCrgen;;;\nORG;CHARSET=WINDOWS-1252;ENCODING=QUOTED-PRINTABLE:Caf=E9 =80uro\nEND:VCARD\n";
+        let c = contact_from_vcard(v).unwrap();
+        assert_eq!(c.display_name, "Jürgen Müller");
+        assert_eq!(c.organization.as_deref(), Some("Café €uro"));
+    }
+
+    #[test]
+    fn escaped_separators_stay_inside_their_field() {
+        let c = contact_from_vcard(&card(concat!(
+            r"N:Smith\;Jones;Ann;;Dr.;PhD",
+            "\r\n",
+            r"ORG:A\;B;Dept\, X",
+            "\r\nTEL:1\r\n"
+        )))
+        .unwrap();
+        assert_eq!(c.display_name, "Dr. Ann Smith;Jones PhD");
+        assert_eq!(c.organization.as_deref(), Some("A;B, Dept, X"));
+        // An encoded semicolon is a letter of the name, not the field separator.
+        let q = "BEGIN:VCARD\nVERSION:2.1\nN;ENCODING=QUOTED-PRINTABLE:A=3BB;Cy;;;\nEND:VCARD\n";
+        assert_eq!(contact_from_vcard(q).unwrap().display_name, "Cy A;B");
+    }
+
+    #[test]
+    fn one_number_or_address_written_two_ways_is_listed_once() {
+        let c = contact_from_vcard(&card(
+            "FN:Ada\r\nTEL;VALUE=uri:tel:+46 70-123 45 67\r\nTEL:+46701234567\r\nTEL:070 123 45 67\r\n\
+             EMAIL:Ada@Example.org\r\nEMAIL:mailto:ada@example.ORG\r\nEMAIL:other@example.org\r\n",
+        ))
+        .unwrap();
+        assert_eq!(c.phones, vec!["+46 70-123 45 67", "070 123 45 67"]);
+        assert_eq!(c.emails, vec!["Ada@Example.org", "other@example.org"]);
+    }
+
+    #[test]
+    fn a_number_is_compared_as_stored_so_a_long_tail_cannot_duplicate_it() {
+        // Found by the vcard fuzz target: the second spelling differed only past the 64-byte cut.
+        let long = format!("+1 555 0100 {}", "1".repeat(80));
+        let c = contact_from_vcard(&card(&format!(
+            "FN:A\r\nTEL:+1 555 0100 {}\r\nTEL:{long}\r\n",
+            "1".repeat(60)
+        )))
+        .unwrap();
+        assert_eq!(c.phones.len(), 1, "{:?}", c.phones);
+    }
+
+    #[test]
+    fn grouped_photos_are_stripped_with_their_folded_lines() {
+        let v = card(
+            "item1.PHOTO;ENCODING=b;TYPE=JPEG:AAAA\r\n BBBB\r\n\tCCCC\r\nitem2.LOGO:data:x\r\nFN:Ada\r\n",
+        );
+        let stripped = strip_vcard_blobs(&v);
+        assert!(
+            !stripped.contains("AAAA") && !stripped.contains("CCCC") && !stripped.contains("LOGO")
+        );
+        assert!(stripped.contains("FN:Ada"));
+        assert!(
+            !contact_from_vcard(&v)
+                .unwrap()
+                .vcard
+                .unwrap()
+                .contains("BBBB")
+        );
+    }
+
+    #[test]
+    fn right_to_left_names_survive_and_overrides_do_not() {
+        let c = contact_from_vcard(&card("FN:محمد علي\r\nTEL:1\r\n")).unwrap();
+        assert_eq!(c.display_name, "محمد علي");
+        let c = contact_from_vcard(&card(
+            "FN:\u{202E}gpj.exe\u{202C} \u{200F}שלום\r\nTEL:1\r\n",
+        ))
+        .unwrap();
+        assert_eq!(c.display_name, "gpj.exe \u{200F}שלום");
+        // CJK and emoji pass through, in the N order family-last too.
+        let c = contact_from_vcard(&card("N:山田;太郎;;;\r\nTEL:1\r\n")).unwrap();
+        assert_eq!(c.display_name, "太郎 山田");
+    }
+
+    #[test]
+    fn folded_lines_of_every_kind_join_without_loss() {
+        // 3.0 fold (CRLF + space), tab fold, LF-only line ends, and a fold inside a multi-byte name.
+        let v = "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Love\n lace\nNOTE:x\n\ty\nTEL:5\u{0}5\nEMAIL:a@b.c\nEND:VCARD\n";
+        let c = contact_from_vcard(v).unwrap();
+        assert_eq!(c.display_name, "Ada Lovelace");
+        let v = "BEGIN:VCARD\r\nFN:日本\r\n 語の名前\r\nTEL:1\r\nEND:VCARD\r\n";
+        assert_eq!(contact_from_vcard(v).unwrap().display_name, "日本語の名前");
+    }
+
     #[test]
     fn vcard_without_identity_is_rejected() {
         assert!(contact_from_vcard("BEGIN:VCARD\nVERSION:3.0\nEND:VCARD\n").is_err());
@@ -897,6 +1110,29 @@ mod tests {
     fn ev(id: &str, rev: &str, title: &str) -> Value {
         json!({"id": id, "rev": rev, "title": title, "allDay": false,
                "startMs": 1_730_500_000_000_i64, "endMs": 1_730_503_600_000_i64, "tz": "Europe/Berlin"})
+    }
+
+    #[test]
+    fn all_day_events_off_midnight_are_snapped_to_whole_days_not_dropped() {
+        let day = 86_400_000_i64;
+        let d0 = 20_000 * day;
+        let sync = |start: i64, end: i64| {
+            let e = json!({"id": "1@1", "rev": "r", "title": "Holiday", "allDay": true, "startMs": start, "endMs": end, "tz": "UTC"});
+            parse_calendar_sync(&sync_body(true, None, "t", json!([e]), json!([]))).unwrap()
+        };
+        let when = |s: &CalendarSync| s.events[0].2.when.clone();
+        let want = |a: i64, b: i64| When::AllDay {
+            start: Date::from_epoch_day(a).unwrap(),
+            end_exclusive: Date::from_epoch_day(b).unwrap(),
+        };
+        // Normal, a time of day left on both ends (UTC+2 midnight), and end == start.
+        assert_eq!(when(&sync(d0, d0 + day)), want(20_000, 20_001));
+        assert_eq!(
+            when(&sync(d0 - 7_200_000, d0 + day - 7_200_000)),
+            want(19_999, 20_001)
+        );
+        assert_eq!(when(&sync(d0, d0)), want(20_000, 20_001));
+        assert_eq!(sync(d0, d0).skipped, 0);
     }
 
     #[test]
@@ -1010,19 +1246,20 @@ mod tests {
             parse_calendar_sync(&sync_body(true, None, "t", json!(many), json!([]))),
             Err(WireError::TooLarge)
         );
-        // Invalid events are skipped, not fatal; instantaneous timed events get a minute.
+        // Invalid events (here: past year 9999) are skipped, not fatal; instantaneous timed events get a minute.
         let s = parse_calendar_sync(&sync_body(
             true,
             None,
             "t",
             json!([
+                {"id": "a", "rev": "r", "title": "t", "allDay": true, "startMs": 9_000_000_000_000_000_i64, "endMs": 9_000_000_000_086_400_i64},
                 {"id": "a", "rev": "r", "title": "t", "allDay": true, "startMs": 5, "endMs": 7},
                 {"id": "b", "rev": "r", "title": "t", "allDay": false, "startMs": 1_730_500_000_000_i64, "endMs": 1_730_500_000_000_i64, "tz": ""},
             ]),
             json!([]),
         ))
         .unwrap();
-        assert_eq!((s.events.len(), s.skipped), (1, 1));
+        assert_eq!((s.events.len(), s.skipped), (2, 1));
     }
 
     #[test]
@@ -1132,6 +1369,11 @@ mod tests {
             Some("3"),
             None,
             Some(&draft()),
+            Some("ignored-for-create"),
+        );
+        assert!(
+            b.get("baseRev").is_none(),
+            "a new event has no earlier version"
         );
         assert_eq!(b["opId"], "op-1");
         assert_eq!(b["action"], "create");
@@ -1147,10 +1389,19 @@ mod tests {
             None,
             Some("9"),
             Some(&all_day),
+            Some("a1b2"),
         );
         assert_eq!(b["event"]["tz"], "UTC");
-        let b = calendar_write_body("op-3", CalendarEditAction::Delete, None, Some("9"), None);
-        assert!(b.get("event").is_none());
+        assert_eq!(b["baseRev"], "a1b2");
+        let b = calendar_write_body(
+            "op-3",
+            CalendarEditAction::Delete,
+            None,
+            Some("9"),
+            None,
+            None,
+        );
+        assert!(b.get("event").is_none() && b.get("baseRev").is_none());
 
         let r = parse_write_result(&obj(
             json!({"opId": "op-1", "state": "applied", "eventId": "77", "duplicate": true}),

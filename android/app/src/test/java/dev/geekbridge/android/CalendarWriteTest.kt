@@ -20,7 +20,10 @@ class CalendarWriteTest {
     /** A pretend Calendar Provider that records every write. */
     private class FakeStore : CalendarWriteStore {
         val calendars = mutableMapOf("1" to CalendarAccess(true), "2" to CalendarAccess(false))
-        val events = mutableMapOf("10" to ExistingEvent("1", false), "11" to ExistingEvent("1", true), "12" to ExistingEvent("2", false))
+        val events = mutableMapOf(
+            "10" to ExistingEvent("1", false, rev = "rev10"), "11" to ExistingEvent("1", true), "12" to ExistingEvent("2", false),
+            "13" to ExistingEvent("1", false, rev = "rev13", guest = true), "14" to ExistingEvent("1", false), // 14: rev unknown
+        )
         val writes = ArrayList<String>()
         var next = 100
         var denied = false
@@ -136,6 +139,55 @@ class CalendarWriteTest {
         assertEquals(listOf("update:10:Moved", "delete:10"), store.writes)
     }
 
+    // ------------------------------------------------------------------ edit conflicts and invitations
+
+    @Test fun anEditMadeFromAnOlderVersionIsRefusedAndNothingIsOverwritten() {
+        val (w, store, blob) = writer()
+        val stale = w.handle(WriteRequest.Update("a", "10", draft, baseRev = "old")).first
+        assertEquals(WriteOutcome("failed", "changed"), stale)
+        assertEquals("changed", w.handle(WriteRequest.Delete("b", "10", baseRev = "old")).first.reason)
+        // A phone that cannot tell what its current version is must not guess: refuse.
+        assertEquals("changed", w.handle(WriteRequest.Update("c", "14", draft, baseRev = "rev10")).first.reason)
+        assertTrue(store.writes.isEmpty())
+        // The refusal is the operation's answer: a retry with the same id says the same and still writes nothing.
+        val (again, dup) = w.handle(WriteRequest.Update("a", "10", draft, baseRev = "rev10"))
+        assertTrue(dup); assertEquals("changed", again.reason)
+        assertTrue(store.writes.isEmpty() && blob.text.isNotEmpty())
+        // The current version goes through; so does an older desktop that sends no version at all.
+        assertEquals("applied", w.handle(WriteRequest.Update("d", "10", draft, baseRev = "rev10")).first.state)
+        assertEquals("applied", w.handle(WriteRequest.Update("e", "10", draft.copy(title = "Legacy"))).first.state)
+        assertEquals(listOf("update:10:Lunch", "update:10:Legacy"), store.writes)
+    }
+
+    @Test fun theBaseVersionIsParsedAndKeptToASafeShape() {
+        val up = CalendarWriteProtocol.parse(body("update") { put("eventId", "10"); put("event", event()); put("baseRev", "a1b2c3d4e5f60718") })
+        assertEquals("a1b2c3d4e5f60718", ((up as WriteParse.Ok).request as WriteRequest.Update).baseRev)
+        val del = CalendarWriteProtocol.parse(body("delete") { put("eventId", "10"); put("baseRev", "r1") })
+        assertEquals("r1", ((del as WriteParse.Ok).request as WriteRequest.Delete).baseRev)
+        assertNull((((CalendarWriteProtocol.parse(body("update") { put("eventId", "10"); put("event", event()) })) as WriteParse.Ok).request as WriteRequest.Update).baseRev)
+        for (bad in listOf("", "x".repeat(65), "a b", "a\nb", 42)) {
+            val p = CalendarWriteProtocol.parse(body("delete") { put("eventId", "10"); put("baseRev", bad) })
+            assertTrue("$bad", p is WriteParse.Bad)
+        }
+    }
+
+    @Test fun anInvitationYouDoNotOrganiseCannotBeEditedButCanBeDeclinedAway() {
+        // Google would overwrite the local change at the next sync, so the user would see it silently undone.
+        val (w, store, _) = writer()
+        assertEquals("not_organizer", w.handle(WriteRequest.Update("a", "13", draft, baseRev = "rev13")).first.reason)
+        assertEquals("applied", w.handle(WriteRequest.Delete("b", "13", baseRev = "rev13")).first.state)
+        assertEquals(listOf("delete:13"), store.writes)
+    }
+
+    @Test fun guestIsDecidedFromTheProvidersOrganiserColumns() {
+        assertTrue(CalendarGuest.isGuest("boss@corp.com", "me@gmail.com", hasAttendees = true, guestsCanModify = false))
+        assertFalse(CalendarGuest.isGuest("ME@gmail.com", "me@gmail.com", true, false))      // my own event
+        assertFalse(CalendarGuest.isGuest("boss@corp.com", "me@gmail.com", true, true))      // guests may modify
+        assertFalse(CalendarGuest.isGuest("boss@corp.com", "me@gmail.com", false, false))    // no attendees: a plain event
+        assertFalse(CalendarGuest.isGuest(null, "me@gmail.com", true, false))                // unknown organiser: let the provider judge
+        assertFalse(CalendarGuest.isGuest("boss@corp.com", "", true, false))
+    }
+
     @Test fun androidDenyingTheWriteIsReportedNotHidden() {
         val (w, store, _) = writer(FakeStore().apply { denied = true })
         val (o, _) = w.handle(WriteRequest.Create("a", "1", draft))
@@ -163,6 +215,19 @@ class CalendarWriteTest {
         assertEquals(done, again); assertTrue(dup)
         assertEquals(1, store.writes.size)
         assertFalse("the ledger must not hold event text", blob.text.contains("Lunch"))
+    }
+
+    @Test fun withdrawingEditingForgetsEveryRememberedOperation() {
+        val blob = Mem()
+        val (w, store, _) = writer(blob = blob)
+        w.handle(WriteRequest.Create("op1", "1", draft))
+        assertTrue(blob.text.contains("op1"))
+        w.forget()
+        assertEquals("[]", blob.text)
+        assertFalse(OpLedger(blob).known("op1"))
+        // After a fresh grant the same id is a new operation, not a replay.
+        assertFalse(w.handle(WriteRequest.Create("op1", "1", draft)).second)
+        assertEquals(2, store.writes.size)
     }
 
     @Test fun theLedgerIsBounded() {

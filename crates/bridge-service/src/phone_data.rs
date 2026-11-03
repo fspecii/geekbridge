@@ -543,9 +543,11 @@ impl Dev {
             if !self.inflight.remove(&uid) {
                 continue; // never asked for it
             }
-            let Ok(contact) = wire::contact_from_vcard(&vcard) else {
+            let Ok(mut contact) = wire::contact_from_vcard(&vcard) else {
                 continue;
             };
+            // Nothing displays the raw card, and 5,000 of them held up to 64 KiB each. Keep the parsed fields only.
+            contact.vcard = None;
             let rev = wire::contact_revision(self.listing.get(&uid).map(String::as_str), &vcard);
             let sid = SourceId::new(source.clone(), uid);
             let base = self.agenda.contacts.get(&sid).map(|r| r.revision.clone());
@@ -823,8 +825,9 @@ impl Dev {
         if !self.edits.on_result(&r, now) {
             return Disposition::Ignored;
         }
-        if r.applied {
-            // Show the change right away instead of waiting for the phone's own push.
+        if r.applied || r.reason.as_deref() == Some("changed") {
+            // Show the change (or, after a refused stale edit, the phone's newer version) right away instead of
+            // waiting for the phone's own push.
             self.ask_calendar(now, false);
         }
         Disposition::Accepted
@@ -906,6 +909,14 @@ impl PhoneData {
         d.tx = Some(tx);
         d.caps = caps;
         d.consent = [consents.0, consents.1, consents.2];
+        // The phone no longer offers a feature (its owner switched it off, or took the permission away): what was
+        // held from the last session goes now, not at the next restart. The desktop's own consent is separate.
+        if !caps.contacts {
+            d.clear(CONTACTS);
+        }
+        if !caps.calendar {
+            d.clear(CALENDAR);
+        }
         // A new link is a new session: ask again from scratch.
         d.contacts_requested = false;
         d.calendar_requested = false;
@@ -1265,6 +1276,7 @@ impl PhoneData {
             return Err(err(ErrorCode::TooMany, "too many changes in a minute"));
         }
         let title: String;
+        let mut base_rev: Option<String> = None;
         match action {
             CalendarEditAction::Create => {
                 let cal = calendar_id.ok_or_else(|| bad("choose a calendar"))?;
@@ -1282,13 +1294,14 @@ impl PhoneData {
             }
             CalendarEditAction::Update | CalendarEditAction::Delete => {
                 let eid = event_id.ok_or_else(|| bad("missing event"))?;
-                let known = d
+                let (record, known) = d
                     .agenda
                     .events
                     .live()
-                    .map(|(_, e)| e)
-                    .find(|e| e.meta.event_id.as_deref() == Some(eid))
+                    .find(|(_, e)| e.meta.event_id.as_deref() == Some(eid))
                     .ok_or_else(|| bad("that event is not on the phone any more"))?;
+                // The version the user was looking at: the phone refuses when its copy has moved on since.
+                base_rev = Some(record.revision.0.clone());
                 if known.meta.recurring || known.recurrence.is_some() {
                     return Err(bad("repeating events cannot be changed from the computer"));
                 }
@@ -1307,7 +1320,14 @@ impl PhoneData {
                 }
             }
         }
-        let body = wire::calendar_write_body(op_id, action, calendar_id, event_id, draft);
+        let body = wire::calendar_write_body(
+            op_id,
+            action,
+            calendar_id,
+            event_id,
+            draft,
+            base_rev.as_deref(),
+        );
         if !d
             .edits
             .begin(device, op_id, action, &title, body.clone(), now)
@@ -2158,6 +2178,86 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_vcard_is_not_kept_in_memory_and_withdrawing_consent_leaves_nothing() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, false, false));
+        drain(&mut rx);
+        h.on_packet(
+            ID,
+            wire::CONTACTS_UIDS,
+            &obj(json!({"uids": ["a"], "a": "1"})),
+        );
+        let note = "n".repeat(50_000);
+        let card = format!("BEGIN:VCARD\nVERSION:3.0\nFN:Ada\nNOTE:{note}\nEND:VCARD\n");
+        h.on_packet(
+            ID,
+            wire::CONTACTS_VCARDS,
+            &obj(json!({"uids": ["a"], "a": card})),
+        );
+        {
+            let g = h.lock();
+            let dev = g.devices.get(ID).unwrap();
+            let held: Vec<_> = dev.agenda.contacts.live().collect();
+            assert_eq!(held.len(), 1);
+            assert!(
+                held[0].1.vcard.is_none(),
+                "5,000 raw cards of up to 64 KiB would be held for nothing"
+            );
+        }
+        h.set_enabled(ID, Feature::Contacts, false);
+        let g = h.lock();
+        let dev = g.devices.get(ID).unwrap();
+        assert!(dev.agenda.contacts.is_empty() && dev.listing.is_empty() && dev.pending.is_empty());
+    }
+
+    #[test]
+    fn a_phone_that_stops_offering_contacts_and_calendar_takes_its_data_with_it() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, true, false));
+        drain(&mut rx);
+        h.on_packet(
+            ID,
+            wire::CONTACTS_UIDS,
+            &obj(json!({"uids": ["a"], "a": "1"})),
+        );
+        h.on_packet(
+            ID,
+            wire::CONTACTS_VCARDS,
+            &obj(json!({"uids": ["a"], "a": "BEGIN:VCARD\nFN:Ada\nEND:VCARD\n"})),
+        );
+        h.on_packet(
+            ID,
+            wire::CALENDAR_SYNC,
+            &cal_sync(
+                json!([cal_ev("5@1", "5", "1", 1_800_000_000_000, false)]),
+                "t:1",
+                true,
+                None,
+            ),
+        );
+        let v = h.agenda_view_range("", "2027-01-15", 0, 42, 0).unwrap();
+        assert_eq!((v.people_total, v.events.len()), (1, 1));
+        // The phone comes back without the capabilities: the owner turned both off there.
+        let (_, generation) = h.link_up(ID, "Pixel", Caps::default(), (true, true, false));
+        let v = h.agenda_view_range("", "2027-01-15", 0, 42, 0).unwrap();
+        assert_eq!(
+            (v.people_total, v.events.len()),
+            (0, 0),
+            "nothing is shown from a phone that withdrew"
+        );
+        assert_eq!(v.devices[0].contacts, DataState::NotOffered);
+        h.link_down(ID, generation);
+        // ...and it is really gone, not just hidden: offering again starts from an empty store.
+        let g = h.lock();
+        let dev = g.devices.get(ID).unwrap();
+        assert!(
+            dev.agenda.contacts.is_empty()
+                && dev.agenda.events.is_empty()
+                && dev.cal_info.is_empty()
+        );
+    }
+
+    #[test]
     fn an_unanswered_vcard_batch_is_asked_for_again() {
         let h = PhoneData::new();
         let mut rx = up(&h, (true, false, false));
@@ -2676,6 +2776,48 @@ mod tests {
         assert_eq!(out.body["action"], "delete");
         assert_eq!(out.body["eventId"], "7");
         assert!(out.body.get("event").is_none());
+    }
+
+    #[test]
+    fn an_edit_names_the_version_it_was_made_from_and_a_refusal_refreshes_the_view() {
+        let (h, mut rx) = editing_hub(json!([cal_ev("7@1", "7", "1", 1_800_000_000_000, false)]));
+        drain(&mut rx);
+        h.calendar_edit(
+            ID,
+            "u7",
+            CalendarEditAction::Update,
+            None,
+            Some("7"),
+            Some(&draft()),
+        )
+        .unwrap();
+        let out = rx.try_recv().unwrap();
+        assert_eq!(out.body["baseRev"], "r1", "the revision the desktop holds");
+        h.calendar_edit(ID, "d7", CalendarEditAction::Delete, None, Some("7"), None)
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap().body["baseRev"], "r1");
+        h.calendar_edit(
+            ID,
+            "c1",
+            CalendarEditAction::Create,
+            Some("1"),
+            None,
+            Some(&draft()),
+        )
+        .unwrap();
+        assert!(rx.try_recv().unwrap().body.get("baseRev").is_none());
+        // The phone says its copy changed: the edit failed with that reason, and a delta is requested.
+        drain(&mut rx);
+        let res = obj(json!({"opId": "u7", "state": "failed", "reason": "changed"}));
+        assert_eq!(
+            h.on_packet(ID, wire::CALENDAR_WRITE_RESULT, &res),
+            Disposition::Accepted
+        );
+        assert_eq!(drain(&mut rx), vec![wire::CALENDAR_REQUEST]);
+        let v = h.agenda_view("", "2027-01-15", 0).unwrap();
+        let e = v.edits.iter().find(|e| e.op_id == "u7").unwrap();
+        assert_eq!(e.reason.as_deref(), Some("changed"));
+        assert_eq!(e.phase, bridge_core::phone_view::EditPhase::Failed);
     }
 
     #[test]

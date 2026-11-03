@@ -97,6 +97,10 @@ class AndroidContactsPort(context: Context, private val cancel: QueryCancel = Qu
         }
     }
 
+    override fun forget() {
+        listing = emptyMap()
+    }
+
     override fun vcard(uid: String): Pair<String, String>? = try {
         cancel.check()
         val ts = listing[uid] ?: resolver.query(
@@ -179,10 +183,15 @@ class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = Qu
     private fun query(calendarIds: Set<String>, fromMs: Long, toMs: Long, max: Int, descending: Boolean): List<CalInstance>? {
         val ids = calendarIds.filter { id -> id.all { it.isDigit() } && id.length in 1..18 }
         if (ids.isEmpty()) return emptyList()
+        val placeholders = ids.joinToString(",") { "?" }
+        return rows(fromMs, toMs, "${CalendarContract.Instances.CALENDAR_ID} IN ($placeholders)", ids.toTypedArray(), max, descending)
+    }
+
+    /** Streams the Instances cursor of a window; never reads past [max] rows, so a long series stays out of memory. */
+    private fun rows(fromMs: Long, toMs: Long, selection: String, args: Array<String>, max: Int, descending: Boolean): List<CalInstance>? {
         val builder = CalendarContract.Instances.CONTENT_URI.buildUpon()
         ContentUris.appendId(builder, fromMs)
         ContentUris.appendId(builder, toMs)
-        val placeholders = ids.joinToString(",") { "?" }
         val signal = CancellationSignal()
         return try {
             cancel.guard({ signal.cancel() }) {
@@ -196,7 +205,7 @@ class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = Qu
                         CalendarContract.Instances.DESCRIPTION, CalendarContract.Instances.CALENDAR_ID,
                         CalendarContract.Events.RRULE, CalendarContract.Events.RDATE, CalendarContract.Events.ORIGINAL_ID,
                     ),
-                    "${CalendarContract.Instances.CALENDAR_ID} IN ($placeholders)", ids.toTypedArray(),
+                    selection, args,
                     "${CalendarContract.Instances.BEGIN} ${if (descending) "DESC" else "ASC"}", signal,
                 )?.use { c ->
                     while (c.moveToNext() && out.size < max) {
@@ -217,6 +226,21 @@ class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = Qu
         } catch (_: android.os.OperationCanceledException) {
             throw QueryCancelled()
         }
+    }
+
+    /**
+     * The revision the sync would report for a one-off event right now, built by the same code that builds the sync
+     * (so the two can never disagree), or null if the event or its instance cannot be read.
+     */
+    fun currentRevision(eventId: String): String? {
+        val id = eventId.toLongOrNull() ?: return null
+        val (start, end) = resolver.query(
+            ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id),
+            arrayOf(CalendarContract.Events.DTSTART, CalendarContract.Events.DTEND), null, null, null,
+        )?.use { if (it.moveToFirst()) it.getLong(0) to (if (it.isNull(1)) it.getLong(0) else it.getLong(1)) else null } ?: return null
+        val one = rows(start, maxOf(end, start) + 1, "${CalendarContract.Instances.EVENT_ID} = ?", arrayOf(id.toString()), 1, false)
+            ?.let(::withDetails)?.firstOrNull() ?: return null
+        return PhoneDataProtocol.calendarEvent(one).getString("rev")
     }
 
     /** Adds reminders and attendees with one bounded query per [PhoneDataLimits.DETAIL_BATCH] distinct events. */
@@ -271,7 +295,7 @@ class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = Qu
 }
 
 /** Writes through the Calendar Provider as an ordinary app (not a sync adapter); the phone's own sync then uploads. */
-class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
+class AndroidCalendarWriteStore(private val context: Context) : CalendarWriteStore {
     private val resolver: ContentResolver = context.applicationContext.contentResolver
 
     override fun calendar(id: String): CalendarAccess? {
@@ -282,13 +306,17 @@ class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
         )?.use { if (it.moveToFirst()) CalendarAccess(it.getInt(0) >= CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) else null }
     }
 
+    private val reader by lazy { AndroidCalendarPort(context) }
+
     override fun event(id: String): ExistingEvent? {
         val eid = id.toLongOrNull() ?: return null
-        return resolver.query(
+        val found = resolver.query(
             ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eid),
             arrayOf(
                 CalendarContract.Events.CALENDAR_ID, CalendarContract.Events.RRULE, CalendarContract.Events.RDATE,
                 CalendarContract.Events.ORIGINAL_ID, CalendarContract.Events.DELETED,
+                CalendarContract.Events.ORGANIZER, CalendarContract.Events.OWNER_ACCOUNT,
+                CalendarContract.Events.HAS_ATTENDEE_DATA, CalendarContract.Events.GUESTS_CAN_MODIFY,
             ),
             null, null, null,
         )?.use {
@@ -296,8 +324,10 @@ class AndroidCalendarWriteStore(context: Context) : CalendarWriteStore {
             else ExistingEvent(
                 calendarId = it.getLong(0).toString(),
                 recurring = !it.getString(1).isNullOrBlank() || !it.getString(2).isNullOrBlank() || !it.isNull(3),
+                guest = CalendarGuest.isGuest(it.getString(5), it.getString(6), it.getInt(7) == 1, it.getInt(8) == 1),
             )
-        }
+        } ?: return null
+        return found.copy(rev = reader.currentRevision(id))
     }
 
     private fun values(d: EventDraft): ContentValues = ContentValues().apply {
@@ -688,8 +718,14 @@ object PhoneDataRuntime {
     }
 
     fun setContacts(on: Boolean) = update { it.copy(contacts = on) }
-    fun setCalendar(on: Boolean) = update { it.copy(calendar = on) }
-    fun setCalendarEdit(on: Boolean) = update { it.copy(calendarEdit = on) }
+    fun setCalendar(on: Boolean) {
+        update { it.copy(calendar = on) }
+        if (!on) worker.execute { engine?.forgetCalendarWrites() }
+    }
+    fun setCalendarEdit(on: Boolean) {
+        update { it.copy(calendarEdit = on) }
+        if (!on) worker.execute { engine?.forgetCalendarWrites() }
+    }
     fun setSms(on: Boolean) = update { it.copy(sms = on) }
     fun setBattery(on: Boolean) = update { it.copy(battery = on) }
     fun setNotifications(on: Boolean) = update { it.copy(notifications = on) }

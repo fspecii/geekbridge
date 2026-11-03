@@ -116,3 +116,30 @@ fn goodbye_and_port_hint_survive_hostile_values() {
         run("identity_line", line.as_bytes());
     }
 }
+
+#[test]
+fn contact_names_lose_bidi_overrides_and_one_number_is_listed_once() {
+    // Found by review rather than the fuzzer: an override in a name reordered the whole list row, and the same
+    // number in two spellings was listed twice. The vcard target's oracle now asserts both.
+    run(
+        "vcard",
+        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:\u{202E}gpj.exe\r\nTEL:+46 70-1\r\nTEL;VALUE=uri:tel:+46701\r\nEMAIL:A@b.c\r\nEND:VCARD\r\n"
+            .as_bytes(),
+    );
+}
+
+#[test]
+fn agenda_records_survive_hostile_numbers_and_recurrence_text() {
+    run(
+        "agenda",
+        b"\x01\xff\xff\xff\xff\xff\xff\xff\x7f\xff\xff\xff\xff\xff\xff\xff\x7f",
+    );
+    run(
+        "agenda",
+        b"\x00\x00\x00\x00\x00\x00\x00\x00\x80\x00\x00\x00\x00\x00\x00\x00\x80UTC",
+    );
+    run(
+        "agenda",
+        br#"{"kind":"series","rrule":"FREQ=\u0000","rdates":["x"],"exdates":[]}"#,
+    );
+}

@@ -11,6 +11,8 @@ interface ContactsPort {
     fun listUids(max: Int): List<Pair<String, String>>?
     /** Raw system vCard for [uid] and its timestamp, or null if it vanished. */
     fun vcard(uid: String): Pair<String, String>?
+    /** The session ended (link down, consent withdrawn): drop anything remembered from the last listing. */
+    fun forget() {}
 }
 
 interface CalendarPort {
@@ -163,10 +165,17 @@ class PhoneDataEngine(
      */
     fun cancelInFlight() = cancel.cancel()
 
+    /** The user withdrew editing or reading of the calendar: forget what was written (operation ids, event ids). */
+    @Synchronized
+    fun forgetCalendarWrites() {
+        calendarWriter?.forget()
+    }
+
     /** Link went down or features changed: the next link starts from scratch. */
     @Synchronized
     fun reset() {
         cancel.rearm()
+        contacts.forget()
         photos?.reset()
         calToken = null
         calCounter = 0
