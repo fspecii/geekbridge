@@ -32,6 +32,11 @@ object ClipboardRuntime {
         get() = prefs?.getBoolean("tile_added", false) == true
         set(v) { prefs?.edit()?.putBoolean("tile_added", v)?.apply() }
     private val waiter = WaiterSlot()
+
+    /** Whether the running link declared clipboard in its identity (decided when the transport started). */
+    @Volatile private var declaredEnabled = false
+    @Volatile private var linkUp = false
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val core: CoreClient by lazy { CoreClient.native() }
 
     /** Native calls that answer the computer or push settings, off the main thread, in order. */
@@ -82,6 +87,25 @@ object ClipboardRuntime {
             ?.apply()
         if (!next.enabled) engine?.reset()
         async { core.clipboardAction(ClipboardProtocol.configRequest(next.enabled, next.maxImageBytes)) }
+        if (CapabilityRedeclare.clipboardNeedsReconnect(declaredEnabled, next.enabled, linkUp)) reconnectToDeclare(0, first = true)
+    }
+
+    /** The settings the transport starts with; remembers whether clipboard goes into the identity packet. */
+    fun startSettings(): ClipSettings = settings.also { declaredEnabled = it.enabled }
+
+    /** Capabilities are declared in the identity packet at connect time: a link started with clipboard off must reconnect. */
+    private fun reconnectToDeclare(attempt: Int, first: Boolean = false) {
+        val a = app ?: return
+        main.post {
+            if (first) {
+                GbLog.i("capability", "clipboard switched on: reconnecting to re-declare")
+                LinkRuntime.controller().stop(R.string.clip_reconnecting)
+            }
+            main.postDelayed({
+                LinkService.sync(a)
+                if (attempt < 4 && LinkRuntime.controller().phase == LinkPhase.Stopped) reconnectToDeclare(attempt + 1)
+            }, 800)
+        }
     }
 
     /** The app has window focus: remember what is on the clipboard (nothing is sent). */
@@ -98,6 +122,7 @@ object ClipboardRuntime {
     /** Called (main thread) whenever the transport state changes. */
     @Synchronized
     fun onLinkChanged(running: Boolean) {
+        linkUp = running
         val e = engine ?: return
         if (!running) {
             e.reset()

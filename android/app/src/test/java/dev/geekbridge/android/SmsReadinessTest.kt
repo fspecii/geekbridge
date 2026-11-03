@@ -102,6 +102,13 @@ class SmsReadinessTest {
         assertFalse(CapabilityRedeclare.driftAtLinkUp(on, on))
     }
 
+    @Test fun clipboardSwitchedOnOnALinkThatDidNotDeclareItReconnects() {
+        assertTrue(CapabilityRedeclare.clipboardNeedsReconnect(declaredEnabled = false, nowEnabled = true, linkRunning = true))
+        assertFalse(CapabilityRedeclare.clipboardNeedsReconnect(declaredEnabled = true, nowEnabled = true, linkRunning = true)) // already declared
+        assertFalse(CapabilityRedeclare.clipboardNeedsReconnect(declaredEnabled = true, nowEnabled = false, linkRunning = true)) // off needs no new identity
+        assertFalse(CapabilityRedeclare.clipboardNeedsReconnect(declaredEnabled = false, nowEnabled = true, linkRunning = false)) // next start declares it
+    }
+
     @Test fun switchingTheSwitchOnWithoutPermissionsDeclaresNothingUntilGranted() {
         assertFalse(PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions()).sms)
         assertFalse(PhoneDataGate.active(PhoneDataSettings(sms = true), PhoneDataPermissions(readSms = true, sendSms = true, receiveSms = false)).sms)

@@ -68,7 +68,7 @@ object LinkRuntime {
         discoveryListen = discoveryListen,
         discoveryAnnounce = announce,
         allowLoopback = false,
-        clipboard = ClipboardRuntime.settings,
+        clipboard = ClipboardRuntime.startSettings(),
         calls = CallControlRuntime.settings,
         data = PhoneDataRuntime.startFeatures(),
     )

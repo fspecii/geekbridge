@@ -87,6 +87,7 @@
     <string name="pd_state_waiting">Waiting for permission</string>
     <string name="pd_calendar_fallback_name">Calendar %1$s</string>
     <string name="pd_reconnecting">Messages, contacts or calendar sharing changed; reconnecting.</string>
+    <string name="clip_reconnecting">Clipboard sync switched on; reconnecting.</string>
     <string name="local_contacts_unavailable">Contacts provider is not available.</string>
     <string name="local_calendar_unavailable">Calendar provider is not available.</string>
     <string name="local_access_refused">Android refused access; the permission may have been revoked.</string>

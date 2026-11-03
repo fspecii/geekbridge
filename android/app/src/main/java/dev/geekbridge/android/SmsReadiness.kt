@@ -143,4 +143,8 @@ object CapabilityRedeclare {
      * between, the computer was told the old set and must hear the new one.
      */
     fun driftAtLinkUp(declared: ActiveFeatures, now: ActiveFeatures) = needed(declared, now)
+
+    /** Clipboard sync was switched on while a link that did not declare it is up: the computer must hear it. */
+    fun clipboardNeedsReconnect(declaredEnabled: Boolean, nowEnabled: Boolean, linkRunning: Boolean) =
+        linkRunning && nowEnabled && !declaredEnabled
 }
