@@ -6,81 +6,18 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
-### Security
-- Recent photos review (docs/reports/security-review-6.md): a photo offer larger than any photo fails the request, a photo
-  claim is atomic, withdrawing photos cancels a download in progress and erases clipboard copies, the scratch folder is
-  re-made private (links replaced) and emptied at start, only picture-named files are listed, clipboard copies are
-  header-checked (type, 250 MP) first, ids are per computer and the phone ignores request floods, and file names lose
-  more bidirectional/line-separator characters.
+## [0.1.0] - 2026-11-03
 
-### Added
-- Recent phone photos on the computer (gap 6 of the parity list): a *Phone photos* tab in the Share window shows the newest
-  24 photos as small previews, with **Save** and **Copy to clipboard**, and `geekbridge-ctl photos`. GeekBridge-only packets
-  (`geekbridge.photos.request`, `.list`, `.thumb`), so a stock KDE Connect peer sees nothing. Off by default on both ends,
-  per computer on the phone; Android 14 partial photo access is supported; previews only (24 KiB each) until a full picture
-  is asked for, which then travels over the ordinary file-share channel; memory only on the computer. MMS attachments
-  (gap 5) are designed but not built. See docs/design/recent-photos.md and docs/reports/recent-photos.md.
-- A manual disconnect on the computer is no longer undone by the phone's redial: a GeekBridge-only `geekbridge.goodbye`
-  packet (reasons `user_disconnect`, `shutdown`, `unpair`) makes the phone stay off that computer for 5 minutes or until
-  either side connects; a service shutdown makes it redial with the normal back-off. The computer's secure identity also
-  carries its real listening port (`geekbridgePort`) so a phone that only knows its address no longer guesses 1716.
-  Stock KDE Connect peers see neither. See docs/reports/goodbye-and-port-hint.md.
-- Phone notification mirroring with dismiss and button presses (stock `kdeconnect.notification`, `.request` and `.action`
-  packets, so stock KDE Connect interoperates; typed replies are not offered). Off by default on both ends: a switch,
-  Android's Notification access (with guidance for the restricted-settings case), an app list that starts empty and a
-  per-computer allow on the phone, and a per-phone consent on the computer. Shown as desktop banners with a Dismiss
-  button, `geekbridge-ctl notifications`, a Home button and a tray item; kept in memory only (50 per phone, 3 hours).
-  See docs/reports/notification-mirroring.md.
-- `geekbridge-ctl doctor`: checks the service, the firewall rule for TCP and UDP 1716-1764 (ufw, firewalld), the desktop
-  session, paired phones, clipboard, calls and Messages, prints the fix for each problem and exits 1 if a check failed.
-- `geekbridge-ctl call dial NUMBER [--yes]` and a confirmation sheet behind the Calls keypad: the computer asks the phone
-  to place a call (digits and a leading `+` only; needs *Allow placing calls from my computer* on the phone). Tested
-  against a stand-in phone only. A PC without a Bluetooth controller is now reported as information: call control works,
-  the voice stays on the phone ([docs/call-audio-options.md](docs/call-audio-options.md)).
-- "Why is it disconnected": a reason code, a plain sentence and a suggested fix for every paired phone without a link, in
-  Home, the tray, waybar, `geekbridge-ctl status` and `doctor`.
-- Messages permission guidance on the phone for sideloaded Android 13+ ("Allow restricted settings") and the computer
-  picking up a permission change without a manual reconnect. Checked on an emulator and by analysis; not yet confirmed on
-  the real phone.
-- `install.sh --uninstall --purge-data` (Linux) deletes the pairing and settings directory; plain `--uninstall` keeps it.
-- Phone battery level and charging state on the computer (stock `kdeconnect.battery` packets, so stock KDE Connect
-  interoperates). Off by default on both ends: a "Share battery level" switch plus a per-computer allow on the phone,
-  and a per-phone consent on the computer. Shown in the tray tooltip, the Home phone card and
-  `geekbridge-ctl status` / `status --waybar`; kept in memory only. See docs/kdeconnect-interop.md.
-
-- Desktop first-run guide on Home while no phone is paired: install QR and link, the pairing steps, optional features,
-  this computer's name, update status, start at login, and the firewall fix to copy. Windows and macOS parity for
-  `doctor` and `geekbridge-ctl firewall`/`autostart`: Windows Defender Firewall and macOS application-firewall detection
-  with copyable commands (nothing is run elevated), autostart status parsing, and a hint when the state directory
-  inherited loose permissions.
-- Phone-side protection for dialing from the computer: at most 3 dial requests per computer per 10 minutes, a visible
-  notice when a call is placed, and an optional on-phone confirmation (off by default).
-
-### Changed
-- The service size budget is 6.0 MB (was 5.8); the Android libraries are linked with lld `--icf=all` (about -100 kB per
-  library); the idle service drops its idle code pages after start (RSS about 3.5 MB instead of 8 MB; mappings with a
-  privately written page are never touched).
-- When the phone and the computer dial each other at the same moment, the connection dialed by the smaller device id wins
-  on both ends (shared `bridge_kde::tiebreak`), so the two connections no longer cancel each other.
-- Switching Clipboard sync on while a link is up reconnects once if the link had not declared the clipboard packets.
-- The pairing trust record is written before the accept is sent.
-- While the phone's screen is off its heartbeat is every 60 s (20 s with the screen on) and it stops broadcasting while
-  every paired computer is linked. Code-audited and tested; no battery measurement on a real phone yet.
-- Docs: one real phone (Samsung SM-F946B) has been paired; Windows and macOS are CI-tested only and have no prebuilt
-  binaries. The Android update check never moves a debug build to a release build (uninstall once).
-
-## [0.1.0] - 2026-11-02
-
-First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Everything below is verified on
-Linux and an Android emulator with scripted peers; **no real phone has been paired yet** and Windows and macOS builds
-have not been run on real hardware (see "Known limitations").
-
+First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android
+emulator with scripted peers, and on one real phone (Samsung SM-F946B) for pairing and the link only; Windows and macOS
+builds have not been run on real hardware (see "Known limitations").
 
 ### Highlights
 - Copy on your phone, paste on your computer (and back), including images, with a hotkey you choose
 - Send files and links between phone and computer over Wi-Fi, straight from the Android Share sheet
 - Answer or decline phone calls from your computer
 - Read and send texts, see your contacts, and keep your Google Calendar in sync with the desktop
+- See recent photos, battery level and notifications from your phone on your computer, each off until you allow it
 - Pair by scanning a QR code; updates are checked against GitHub and verified before you install
 
 ### Added
@@ -168,6 +105,48 @@ have not been run on real hardware (see "Known limitations").
   calendar, share, update), chaos and soak scripts, real-device test plan and quickstart, release checklist.
 - User guide with symptom-keyed troubleshooting, architecture, protocol and per-feature docs under `docs/`.
 
+**Since the first release candidate**
+- Recent phone photos on the computer (gap 6 of the parity list): a *Phone photos* tab in the Share window shows the newest
+  24 photos as small previews, with **Save** and **Copy to clipboard**, and `geekbridge-ctl photos`. GeekBridge-only packets
+  (`geekbridge.photos.request`, `.list`, `.thumb`), so a stock KDE Connect peer sees nothing. Off by default on both ends,
+  per computer on the phone; Android 14 partial photo access is supported; previews only (24 KiB each) until a full picture
+  is asked for, which then travels over the ordinary file-share channel; memory only on the computer. MMS attachments
+  (gap 5) are designed but not built. See docs/design/recent-photos.md and docs/reports/recent-photos.md.
+- A manual disconnect on the computer is no longer undone by the phone's redial: a GeekBridge-only `geekbridge.goodbye`
+  packet (reasons `user_disconnect`, `shutdown`, `unpair`) makes the phone stay off that computer for 5 minutes or until
+  either side connects; a service shutdown makes it redial with the normal back-off. The computer's secure identity also
+  carries its real listening port (`geekbridgePort`) so a phone that only knows its address no longer guesses 1716.
+  Stock KDE Connect peers see neither. See docs/reports/goodbye-and-port-hint.md.
+- Phone notification mirroring with dismiss and button presses (stock `kdeconnect.notification`, `.request` and `.action`
+  packets, so stock KDE Connect interoperates; typed replies are not offered). Off by default on both ends: a switch,
+  Android's Notification access (with guidance for the restricted-settings case), an app list that starts empty and a
+  per-computer allow on the phone, and a per-phone consent on the computer. Shown as desktop banners with a Dismiss
+  button, `geekbridge-ctl notifications`, a Home button and a tray item; kept in memory only (50 per phone, 3 hours).
+  See docs/reports/notification-mirroring.md.
+- `geekbridge-ctl doctor`: checks the service, the firewall rule for TCP and UDP 1716-1764 (ufw, firewalld), the desktop
+  session, paired phones, clipboard, calls and Messages, prints the fix for each problem and exits 1 if a check failed.
+- `geekbridge-ctl call dial NUMBER [--yes]` and a confirmation sheet behind the Calls keypad: the computer asks the phone
+  to place a call (digits and a leading `+` only; needs *Allow placing calls from my computer* on the phone). Tested
+  against a stand-in phone only. A PC without a Bluetooth controller is now reported as information: call control works,
+  the voice stays on the phone ([docs/call-audio-options.md](docs/call-audio-options.md)).
+- "Why is it disconnected": a reason code, a plain sentence and a suggested fix for every paired phone without a link, in
+  Home, the tray, waybar, `geekbridge-ctl status` and `doctor`.
+- Messages permission guidance on the phone for sideloaded Android 13+ ("Allow restricted settings") and the computer
+  picking up a permission change without a manual reconnect. Checked on an emulator and by analysis; not yet confirmed on
+  the real phone.
+- `install.sh --uninstall --purge-data` (Linux) deletes the pairing and settings directory; plain `--uninstall` keeps it.
+- Phone battery level and charging state on the computer (stock `kdeconnect.battery` packets, so stock KDE Connect
+  interoperates). Off by default on both ends: a "Share battery level" switch plus a per-computer allow on the phone,
+  and a per-phone consent on the computer. Shown in the tray tooltip, the Home phone card and
+  `geekbridge-ctl status` / `status --waybar`; kept in memory only. See docs/kdeconnect-interop.md.
+- Desktop first-run guide on Home while no phone is paired: install QR and link, the pairing steps, optional features,
+  this computer's name, update status, start at login, and the firewall fix to copy. Windows and macOS parity for
+  `doctor` and `geekbridge-ctl firewall`/`autostart`: Windows Defender Firewall and macOS application-firewall detection
+  with copyable commands (nothing is run elevated), autostart status parsing, and a hint when the state directory
+  inherited loose permissions.
+- Phone-side protection for dialing from the computer: at most 3 dial requests per computer per 10 minutes, a visible
+  notice when a call is placed, and an optional on-phone confirmation (off by default).
+
 **Also in this release**
 - "What's new" after an update: a dismissible card at the top of Home on Android and the desktop (once per version, never on a fresh install), `geekbridge-ctl whats-new`, and a link to the full release notes. The text is generated from this file by `scripts/gen-whats-new.sh` and checked for drift by tests.
 - Tray / menu-bar icon in the service (Linux StatusNotifierItem + dbusmenu, Windows notification area; the macOS menu-bar
@@ -188,9 +167,29 @@ have not been run on real hardware (see "Known limitations").
 - Idle footprint: event-driven clipboard watching and UI poll back-off on the desktop; no wake locks or timers in the
   Android link service ([docs/performance.md](docs/performance.md)).
 
+### Changed
+- The service size budget is 6.0 MB (was 5.8); the Android libraries are linked with lld `--icf=all` (about -100 kB per
+  library); the idle service drops its idle code pages after start (RSS about 3.5 MB instead of 8 MB; mappings with a
+  privately written page are never touched).
+- When the phone and the computer dial each other at the same moment, the connection dialed by the smaller device id wins
+  on both ends (shared `bridge_kde::tiebreak`), so the two connections no longer cancel each other.
+- Switching Clipboard sync on while a link is up reconnects once if the link had not declared the clipboard packets.
+- The pairing trust record is written before the accept is sent.
+- While the phone's screen is off its heartbeat is every 60 s (20 s with the screen on) and it stops broadcasting while
+  every paired computer is linked. Code-audited and tested; no battery measurement on a real phone yet.
+- Docs: one real phone (Samsung SM-F946B) has been paired; Windows and macOS are CI-tested only and have no prebuilt
+  binaries. The Android update check never moves a debug build to a release build (uninstall once).
+
+### Security
+- Recent photos review (docs/reports/security-review-6.md): a photo offer larger than any photo fails the request, a photo
+  claim is atomic, withdrawing photos cancels a download in progress and erases clipboard copies, the scratch folder is
+  re-made private (links replaced) and emptied at start, only picture-named files are listed, clipboard copies are
+  header-checked (type, 250 MP) first, ids are per computer and the phone ignores request floods, and file names lose
+  more bidirectional/line-separator characters.
+
 ### Known limitations
-- No real phone has been paired. Everything is verified against an Android 16 emulator and scripted peers; real-device
-  steps are in [docs/real-device-quickstart.md](docs/real-device-quickstart.md). Emulator NAT drops UDP broadcast, so
+- One real phone (Samsung SM-F946B) has been paired, and only pairing and link behaviour were verified on it. Every other
+  feature is verified against an Android 16 emulator and scripted peers; real-device steps are in [docs/real-device-quickstart.md](docs/real-device-quickstart.md). Emulator NAT drops UDP broadcast, so
   LAN discovery itself is covered by unit and integration tests only.
 - Call answering has only been tested with simulated signalling. Bluetooth hands-free audio (SCO, codecs) is unverified
   on any hardware, and needs a Bluetooth controller on the computer.

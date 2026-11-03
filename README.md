@@ -200,7 +200,8 @@ Pairing pins both TLS certificates; discovery never grants trust; contacts, cale
 calls (including dialing) and file receiving are each off until you allow them for a specific phone on both sides, and
 nothing from the phone is stored on the computer (battery level and mirrored notifications are held in memory only). The only internet traffic is
 the optional update check to GitHub; there are no accounts and no GeekBridge servers. Report vulnerabilities privately as
-described in [SECURITY.md](SECURITY.md).
+described in [SECURITY.md](SECURITY.md). The full data-flow inventory, with what is stored where and how to erase it, is in
+[docs/privacy.md](docs/privacy.md).
 
 ## Documentation
 

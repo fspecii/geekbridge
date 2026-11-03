@@ -22,6 +22,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 - [Architecture](architecture.md) and [builds](builds.md): crates, data flow, how to build every target
 - [Service integration](service-integration.md): daemon, control API, client wiring
 - [State formats](state-formats.md): on-disk files and their versioning
+- [Privacy review](privacy.md): every kind of phone data, where it is kept, what leaves the LAN, how to erase it
 - [KDE Connect interoperability](kdeconnect-interop.md): protocol coverage and what stock peers do
 - [Running next to stock KDE Connect](coexistence.md): shared ports, discovery, QR/IP pairing, clipboard double sync
 - Android: [app](android-app.md), [native library](android-native.md), [contract](android-contract.md), [transport](android-transport.md), [runtime notes](android-runtime.md), [call state](android-calls.md), [performance](android-perf.md)

@@ -206,10 +206,11 @@ No accounts, no GeekBridge servers, no analytics. Everything stays on your local
 battery level, phone notifications, recent photos, clipboard, calls (answering and dialing) and file receiving are each **off until you allow them for a
 specific phone**, on both the phone and the computer, and can be switched off again at any time. Nothing from the phone is
 written to the computer's disk (contacts, calendar, messages, battery level, mirrored notifications and photo previews are held in memory and erased when the
-service stops); received files are the one thing you ask it to keep. Message text, and the text of mirrored phone notifications, is hidden in desktop banners by default, and
+service stops); received files and photos you save are what you ask it to keep (a photo copied to the clipboard sits in a private
+scratch folder for up to 10 minutes, and a debug-build phone's redacted log is written to the state directory). Message text, and the text of mirrored phone notifications, is hidden in desktop banners by default, and
 caller numbers and message text are masked in logs and in the redacted `diagnose` report. The only internet traffic is
 the optional update check to `api.github.com` (turn it off with `geekbridge-ctl update disable`). Reporting problems:
-[SECURITY.md](../SECURITY.md).
+[SECURITY.md](../SECURITY.md). The full data-flow review is [privacy.md](privacy.md).
 
 ## Troubleshooting
 
