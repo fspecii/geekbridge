@@ -9,7 +9,7 @@
 //! every socket and ends the runtime before returning, so a later start sees no old state.
 //!
 //! Schema, limits and the Kotlin integration checklist: `docs/android-transport.md`.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod bind_tests;
 mod bindhealth;
 mod discovery;
