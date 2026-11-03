@@ -368,6 +368,14 @@ fn capability_checks(i: &Inputs, status: &Status) -> Vec<Check> {
             ),
             Some("install wl-clipboard (Wayland, needs the data-control protocol; not stock GNOME) or xclip (X11), then restart the service"),
         )),
+        // Your shell is on Wayland but the service fell back to X11: it was most likely started (systemd --user,
+        // uwsm/Omarchy) before the compositor exported WAYLAND_DISPLAY, or wl-clipboard is not installed.
+        Some(c) if i.session.wayland_display && c.backend == "xclip" => out.push(check(
+            Level::Warn,
+            "Clipboard",
+            "This shell is on Wayland, but the service uses xclip (X11 only). It probably started before the session exported WAYLAND_DISPLAY, so it never saw the Wayland socket; Wayland-only apps then do not sync, and notifications and the hotkey may be missing too.",
+            Some("systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS && systemctl --user restart geekbridge-service (and install wl-clipboard if it is missing)"),
+        )),
         Some(c) => out.push(check(Level::Ok, "Clipboard", format!("Backend {} works.", c.backend), None)),
         None => {}
     }
@@ -1196,6 +1204,34 @@ mod tests {
             devices: vec![],
             other_sync_app: false,
         }
+    }
+
+    #[test]
+    fn a_wayland_shell_with_an_xclip_service_points_at_the_late_session_environment() {
+        let mut i = inputs(Ok(status()));
+        i.clipboard = Some(clip(true, None));
+        i.clipboard.as_mut().unwrap().backend = "xclip".into();
+        i.session.wayland_display = true;
+        let s = status();
+        let c = capability_checks(&i, &s);
+        let c = find(&c, "Clipboard");
+        assert_eq!(c[0].level, Level::Warn);
+        assert!(
+            c[0].detail
+                .contains("before the session exported WAYLAND_DISPLAY")
+        );
+        assert!(
+            c[0].fix
+                .as_deref()
+                .unwrap()
+                .contains("import-environment WAYLAND_DISPLAY")
+        );
+        // An X11 shell using xclip is fine.
+        i.session.wayland_display = false;
+        assert_eq!(
+            find(&capability_checks(&i, &s), "Clipboard")[0].level,
+            Level::Ok
+        );
     }
 
     #[test]

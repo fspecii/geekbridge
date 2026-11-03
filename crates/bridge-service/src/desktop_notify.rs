@@ -84,6 +84,7 @@ pub fn file_uri(path: &Path) -> String {
 pub fn received_args(name: &str) -> Vec<String> {
     vec![
         "--app-name=GeekBridge".into(),
+        "--icon=dev.geekbridge.Share".into(),
         "--wait".into(),
         "--category=transfer.complete".into(),
         "--expire-time=20000".into(),
@@ -144,6 +145,7 @@ pub fn show_in_folder(path: &Path) {
 pub fn update_args(version: &str) -> Vec<String> {
     vec![
         "--app-name=GeekBridge".into(),
+        "--icon=dev.geekbridge.GeekBridge".into(),
         "--wait".into(),
         "--category=update".into(),
         "--expire-time=30000".into(),

@@ -295,6 +295,7 @@ impl NotifySend {
         let size = size.map_or(String::new(), |n| format!(" ({})", human_size(n)));
         vec![
             "--app-name=GeekBridge".into(),
+            "--icon=dev.geekbridge.Share".into(),
             "--wait".into(),
             "--action=accept=Accept".into(),
             "--action=decline=Decline".into(),
@@ -344,6 +345,7 @@ impl Notifier for NotifySend {
         let _ = std::process::Command::new("notify-send")
             .args([
                 "--app-name=GeekBridge",
+                "--icon=dev.geekbridge.Share",
                 "--",
                 &format!("{device} sent {what}"),
                 "Open the Share window to view it.",

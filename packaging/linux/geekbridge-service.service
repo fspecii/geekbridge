@@ -1,7 +1,9 @@
 [Unit]
 Description=GeekBridge background service (phone pairing, clipboard, file share)
 Documentation=https://github.com/fspecii/geekbridge
-After=network-online.target
+# Ordering only (it does not pull the target in): on a systemd-managed graphical session (uwsm/Omarchy, GNOME, KDE)
+# the service starts after the compositor has exported its environment; elsewhere this line changes nothing.
+After=graphical-session.target network-online.target
 
 [Service]
 Type=simple

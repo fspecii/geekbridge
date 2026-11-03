@@ -5,12 +5,21 @@ if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/d
    && systemctl --user cat geekbridge-service.service >/dev/null 2>&1; then
     # Hand the graphical session's environment to the user manager first, so the unit sees the
     # Wayland socket, the Hyprland instance and the bus (Hyprland/uwsm sessions export them late).
+    # The unit is enabled for default.target, so on uwsm/Omarchy it can already be running from before the
+    # compositor existed, without a Wayland socket (clipboard falls back to xclip, no notifications/hotkey).
+    # `start` on a running unit is a no-op, so remember whether the user manager lacked the session.
+    had_wayland=0
+    systemctl --user show-environment 2>/dev/null | grep -q '^WAYLAND_DISPLAY=.' && had_wayland=1
     env_vars=""
     for v in WAYLAND_DISPLAY DISPLAY XAUTHORITY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DBUS_SESSION_BUS_ADDRESS; do
         eval "[ -n \"\${$v:-}\" ]" && env_vars="$env_vars $v"
     done
     # shellcheck disable=SC2086
     [ -n "$env_vars" ] && systemctl --user import-environment $env_vars
+    if [ "$had_wayland" = 0 ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        # The session just appeared: a service started earlier never saw it. Restart picks it up (once per login).
+        exec systemctl --user restart geekbridge-service.service
+    fi
     exec systemctl --user start geekbridge-service.service
 fi
 exec geekbridge-service

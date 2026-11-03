@@ -108,6 +108,7 @@ impl NotifySendCalls {
         let clean = crate::notify_text::plain(caller, 80);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
+            "--icon=dev.geekbridge.Calls".to_owned(),
             "--urgency=critical".to_owned(),
             "--category=call.incoming".to_owned(),
             "--expire-time=30000".to_owned(),

@@ -198,6 +198,9 @@ pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
         input.can_answer = row.answer.is_some();
         input.can_decline = row.reject.is_some();
     }
+    if let Response::Photos(p) = daemon.handle(Request::Photos { device_id: None }).await {
+        input.photos_available = !p.devices.is_empty() || !p.offered.is_empty();
+    }
     if let Response::Share(s) = daemon.handle(Request::ShareStatus).await {
         use bridge_core::share::TransferState::{Active, Waiting};
         input.transfers_live = s
@@ -226,6 +229,11 @@ async fn perform(daemon: &Arc<Daemon>, state_dir: &Path, action: TrayAction) {
     match action {
         TrayAction::Open => launch("geekbridge"),
         TrayAction::SendFile => launch("geekbridge-share"),
+        TrayAction::Photos => crate::desktop_notify::open_app_with_env(
+            &format!("geekbridge-share{}", std::env::consts::EXE_SUFFIX),
+            "GEEKBRIDGE_SHARE_TAB",
+            "photos",
+        ),
         TrayAction::PasteFromPhone => {
             let _ = daemon
                 .handle(Request::ClipboardPull { device_id: None })

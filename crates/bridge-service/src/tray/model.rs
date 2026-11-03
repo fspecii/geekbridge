@@ -66,6 +66,8 @@ pub struct TrayInput {
     pub mirror_available: bool,
     /// Mirroring is on for at least one connected phone.
     pub mirror_on: bool,
+    /// A connected phone offers recent photos (the Share window's Photos page exists).
+    pub photos_available: bool,
 }
 
 impl TrayInput {
@@ -161,6 +163,7 @@ pub enum TrayAction {
     Open,
     PasteFromPhone,
     SendFile,
+    Photos,
     Answer,
     Decline,
     TogglePause,
@@ -266,6 +269,13 @@ pub fn menu(input: &TrayInput) -> Vec<MenuItem> {
             tr("tray.send_file"),
             connected,
             true,
+        ),
+        MenuItem::action(
+            17,
+            TrayAction::Photos,
+            tr("tray.photos"),
+            input.photos_available,
+            input.photos_available,
         ),
         MenuItem::separator(11),
         MenuItem::action(
@@ -437,7 +447,38 @@ mod tests {
         assert_eq!(a, b);
         let mut expected: Vec<i32> = (1..=12).collect();
         expected.extend([16, 13, 14, 15]);
+        expected.insert(10, 17);
         assert_eq!(a, expected);
+    }
+
+    #[test]
+    fn the_photos_entry_follows_what_the_phone_offers_and_labels_stay_short() {
+        let item = |i: &TrayInput| menu(i).into_iter().find(|m| m.id == 17).unwrap();
+        assert!(!item(&phone()).visible && action_for(&phone(), 17).is_none());
+        let on = TrayInput {
+            photos_available: true,
+            ..phone()
+        };
+        assert!(item(&on).visible && item(&on).enabled);
+        assert_eq!(action_for(&on, 17), Some(TrayAction::Photos));
+        // Longest text of every line a shell may draw in a menu: fixed labels, and the worst-case phone-named lines.
+        let worst = TrayInput {
+            connected: vec!["P".repeat(100), "Q".into(), "R".into()],
+            paired: 3,
+            paused: true,
+            update: Some("9".repeat(100)),
+            battery: Some(bridge_core::ipc::BatteryStatus {
+                percent: 100,
+                charging: true,
+                low: false,
+            }),
+            photos_available: true,
+            mirror_available: true,
+            ..TrayInput::default()
+        };
+        for m in menu(&worst) {
+            assert!(m.label.chars().count() <= 64, "{:?}", m.label);
+        }
     }
 
     #[test]
@@ -489,9 +530,9 @@ mod tests {
     #[test]
     fn pause_toggles_label_and_blocks_paste() {
         let mut i = phone();
-        assert_eq!(menu(&i)[11].label, "Pause sync");
+        assert_eq!(menu(&i)[12].label, "Pause sync");
         i.paused = true;
-        assert_eq!(menu(&i)[11].label, "Resume sync");
+        assert_eq!(menu(&i)[12].label, "Resume sync");
         assert_eq!(action_for(&i, 9), None);
         // Resume must stay possible even though nothing is enabled while paused.
         i.can_paste = false;
@@ -510,13 +551,13 @@ mod tests {
     #[test]
     fn the_mirror_toggle_follows_what_the_phone_offers_and_never_turns_itself_on() {
         let mut i = phone();
-        assert_eq!(menu(&i)[12].label, "Show phone notifications");
+        assert_eq!(menu(&i)[13].label, "Show phone notifications");
         assert_eq!(action_for(&i, 16), None, "the phone did not offer it");
         i.mirror_available = true;
         assert_eq!(action_for(&i, 16), Some(TrayAction::ToggleMirror));
         i.mirror_on = true;
         i.mirror_available = false; // it can still be turned off
-        assert_eq!(menu(&i)[12].label, "Stop showing phone notifications");
+        assert_eq!(menu(&i)[13].label, "Stop showing phone notifications");
         assert_eq!(action_for(&i, 16), Some(TrayAction::ToggleMirror));
         let ids: Vec<i32> = menu(&i).iter().map(|m| m.id).collect();
         let mut sorted = ids.clone();

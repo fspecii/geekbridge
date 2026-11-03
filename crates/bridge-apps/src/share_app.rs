@@ -548,8 +548,14 @@ struct ShareApp {
     chosen: Option<String>,
     text: String,
     tab: Tab,
+    /// Asked to open on the photos page (`GEEKBRIDGE_SHARE_TAB=photos`, the tray entry): the page exists only once the
+    /// service has listed the phone, so the request waits for that for a few seconds instead of being dropped.
+    open_photos: Option<std::time::Instant>,
     photos: crate::photos_pane::PhotosPane,
 }
+
+/// How long a request to open on the photos page waits for the phone to be listed.
+const OPEN_PHOTOS_WAIT: std::time::Duration = std::time::Duration::from_secs(8);
 
 impl ShareApp {
     fn target<'a>(&self, list: &'a [Target]) -> Option<&'a Target> {
@@ -580,6 +586,16 @@ impl ShareApp {
         }
         self.photos.poll();
         let photos_offered = self.photos.available();
+        if let Some(since) = self.open_photos {
+            if photos_offered {
+                self.open_photos = None;
+                self.tab = Tab::Photos;
+            } else if since.elapsed() > OPEN_PHOTOS_WAIT {
+                self.open_photos = None;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
+        }
         if !photos_offered {
             self.tab = Tab::Share;
         }
@@ -1049,11 +1065,10 @@ pub fn run(theme_choice: ThemeChoice, files: Vec<String>) -> eframe::Result {
             let photos_ctx = cc.egui_ctx.clone();
             Ok(Box::new(ShareApp {
                 photos: crate::photos_pane::PhotosPane::new(move || photos_ctx.request_repaint()),
-                tab: if std::env::var("GEEKBRIDGE_SHARE_TAB").is_ok_and(|v| v == "photos") {
-                    Tab::Photos
-                } else {
-                    Tab::Share
-                },
+                tab: Tab::Share,
+                open_photos: std::env::var("GEEKBRIDGE_SHARE_TAB")
+                    .is_ok_and(|v| v == "photos")
+                    .then(std::time::Instant::now),
                 worker: Worker::spawn(move || ctx.request_repaint(), initial),
                 view: View::default(),
                 chosen: None,

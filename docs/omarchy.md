@@ -12,15 +12,26 @@ systemctl --user status geekbridge-service
 ```
 
 Omarchy starts the session through uwsm, which exports `WAYLAND_DISPLAY` to the systemd user manager a little *after*
-default.target. Two things make that harmless:
+default.target. Three things make that harmless:
 
+* the unit is ordered `After=graphical-session.target` (ordering only, it does not pull the target in, so i3/sway
+  sessions without the target still start it from `default.target`);
+* when the autostart launcher finds the manager had no `WAYLAND_DISPLAY` and the session now has one, it imports the
+  variables and **restarts** the unit once, because `systemctl start` on an already running unit does nothing and a
+  service that started early would keep falling back to xclip;
 * the autostart launcher (`geekbridge-service-launch`) runs `systemctl --user import-environment WAYLAND_DISPLAY
   HYPRLAND_INSTANCE_SIGNATURE DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS ...` before starting the unit;
 * the service itself looks in `$XDG_RUNTIME_DIR` for the newest `wayland-*` socket, the Hyprland instance
   (`hypr/<signature>/.socket.sock`) and the session bus when those variables are missing.
 
 The unit has no `PrivateTmp`: a private `/tmp` hides `/tmp/.X11-unix`, which the X11 clipboard tools need.
-Check what the service sees: `systemctl --user show-environment | grep -E 'WAYLAND|HYPR|DBUS'`.
+Check what the service sees: `systemctl --user show-environment | grep -E 'WAYLAND|HYPR|DBUS'`. `geekbridge-ctl doctor`
+warns when your shell is on Wayland but the service uses xclip, and prints the fix:
+`systemctl --user import-environment WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS && systemctl --user restart geekbridge-service`.
+(`PassEnvironment=` is not needed: units of the user manager already inherit what `import-environment` stored, and
+systemd has no `ImportEnvironment=` option.) Prefer `exec-once` / `hl.exec_cmd` only if you do not use the unit: the
+Omarchy default autostart already runs `systemctl --user import-environment $(env | cut -d= -f1)` at
+`hyprland.start`, so a unit started afterwards (or restarted by the launcher) sees the session.
 
 Launcher entries (walker, Omarchy's menu, rofi, fuzzel, ...) come from the installed `.desktop` files, with keywords:
 type "phone", "clipboard", "paste", "share" or "call". **Paste from Phone** is its own entry, and GeekBridge /
@@ -68,6 +79,11 @@ hl.window_rule({ match = { class = "^(dev\\.geekbridge\\.Calls)$" }, float = tru
 hl.window_rule({ match = { class = "^(dev\\.geekbridge\\.Share)$" }, float = true, center = true, size = { 480, 640 }, pin = true })
 ```
 
+Omarchy's defaults already float and centre anything whose class contains `Share` (its LocalSend rule), so the Share
+window, which now has a Photos page, floats even without these rules. Sizes are logical pixels: 480x640 is 59% of a
+1080p height and the same logical size on a 4K monitor scaled 2x (the window then renders 960x1280 physical); the
+window's own minimum is 380x460.
+
 Pinned floating windows follow you across workspaces; Hyprland draws them above a fullscreen window (this could not be
 checked live in the build sandbox, only that the rules parse: see Validation). `--no-pin` drops the pin (the window then stays on its
 workspace), `--no-bind` writes only the rules, `--legacy-rules` uses the pre-0.53 `windowrulev2` syntax in `.conf`
@@ -96,7 +112,15 @@ Calls, file offers, received files, new SMS, calendar reminders and updates use 
 
 Clicking the notification body runs the `default` action: it **opens** the Calls/Share window, it never answers or
 accepts. **mako** draws no buttons: use `makoctl menu` (or bind `makoctl invoke`) to pick Answer/Decline/Open;
-dunst, swaync, GNOME and KDE draw buttons. If the notification daemon ignores actions, `--wait` returns when the
+dunst, swaync, GNOME and KDE draw buttons. **Omarchy's own shell** (Quickshell `NotificationServer`, the
+`ambsd.notifications`-style plugins) draws **no buttons either**: only the `default` action runs when the card is
+clicked, so Answer/Decline/Accept/Dismiss are not reachable from the banner there; the Calls/Share windows, the tray
+and `geekbridge-ctl notifications` are the way. The shell silences everything but `notify-send`-named critical
+notifications during Do Not Disturb, so a GeekBridge call banner does not break through DND (the call still rings on the
+phone and shows in the tray). Banners carry `--app-name=GeekBridge` and a `--icon` (`dev.geekbridge.<Calls|Share|...>`).
+Phone-mirrored banners expire after 10 s and replace the previous banner of the same phone notification through both the
+`x-canonical-private-synchronous` hint (mako, dunst) and `--replace-id` (the id comes from `notify-send --print-id`;
+Quickshell ignores the hint). If the notification daemon ignores actions, `--wait` returns when the
 notification expires and nothing happens; the call keeps ringing on the phone and the in-app popup (the Calls window
 shows Answer/Decline while it is open) stays the fallback. Everything that came from a phone (names, files, titles) has
 markup, control and bidirectional characters neutralised and follows `--`, so it cannot become an option or HTML.
@@ -145,7 +169,8 @@ Add `"custom/geekbridge"` to `modules-right`.
 ### Tray icon (waybar `tray` module)
 
 The service also publishes a StatusNotifierItem with a menu (Open, Paste from phone, Send file, Answer/Decline, Pause
-sync, Check for updates, Quit). Waybar shows it when its `tray` module is in the bar:
+sync, Check for updates, Quit; "Phone photos…" opens the Share window on its Photos page while a connected phone offers photos; the battery is
+appended to the status line, "Show phone notifications" toggles mirroring). Waybar shows it when its `tray` module is in the bar:
 
 ```jsonc
 "modules-right": ["tray", "custom/geekbridge", ...],

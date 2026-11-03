@@ -1944,6 +1944,7 @@ impl NotifySendSms {
         let clean = |s: &str, max: usize| crate::notify_text::plain(s, max);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
+            "--icon=dev.geekbridge.Messages".to_owned(),
             "--expire-time=8000".into(),
         ];
         if !n.number.is_empty() {
@@ -1977,6 +1978,7 @@ impl NotifySendSms {
         let clean = |s: &str, n: usize| crate::notify_text::plain(s, n);
         vec![
             "--app-name=GeekBridge".into(),
+            "--icon=dev.geekbridge.Agenda".into(),
             "--expire-time=15000".into(),
             "--".into(),
             if minutes == 0 {
@@ -2749,8 +2751,8 @@ mod tests {
     fn event_notification_text_has_no_control_characters() {
         let a = NotifySendSms::event_args("Pi\nxel", "Den\ttist", 5);
         assert!(a.iter().all(|s| !s.contains('\n') && !s.contains('\t')));
-        assert!(a[3].starts_with("In 5 min"));
-        assert!(NotifySendSms::event_args("p", "t", 0)[3].starts_with("Now"));
+        assert!(a[4].starts_with("In 5 min"));
+        assert!(NotifySendSms::event_args("p", "t", 0)[4].starts_with("Now"));
     }
 
     // ------------------------------------------------------------ Messages experience

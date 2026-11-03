@@ -277,18 +277,29 @@ pub struct NotifySendMirror;
 
 impl NotifySendMirror {
     pub fn args(b: &MirrorBanner) -> Vec<String> {
+        Self::args_replacing(b, None)
+    }
+
+    /// Like [`Self::args`]; `replace` is the id a notification server gave the previous banner of the same slot.
+    /// The synchronous hint covers mako/dunst, `--replace-id` the servers that ignore it (Quickshell: Omarchy's shell).
+    pub fn args_replacing(b: &MirrorBanner, replace: Option<u32>) -> Vec<String> {
         let clean = |s: &str, max: usize| crate::notify_text::plain(s, max);
         let isolate = |s: &str, max: usize| crate::notify_text::isolate(s, max);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
+            "--icon=dev.geekbridge.GeekBridge".into(),
             "--expire-time=10000".into(),
             "--category=im.received".into(),
+            "--print-id".into(),
             format!(
                 "--hint=string:x-canonical-private-synchronous:geekbridge-mirror-{}",
                 b.slot
             ),
             "--wait".into(),
         ];
+        if let Some(id) = replace {
+            args.push(format!("--replace-id={id}"));
+        }
         if b.clearable {
             args.push(format!("--action=dismiss={}", tr("banner.dismiss")));
         }
@@ -330,7 +341,13 @@ impl NotifySendMirror {
 
     /// The button named by `notify-send`'s output.
     pub fn choice(stdout: &str, actions: &[String]) -> Option<Choice> {
-        let key = stdout.trim();
+        // `--print-id` puts the notification id on the first line; the chosen button follows it. Button keys are
+        // never numeric, so a stub or older tool that prints only the key works too.
+        let key = stdout
+            .lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty() && l.parse::<u32>().is_err())
+            .unwrap_or("");
         if key == "dismiss" {
             return Some(Choice::Dismiss);
         }
@@ -405,18 +422,109 @@ pub fn run_bounded(mut cmd: std::process::Command, limit: Duration) -> Option<St
     Some(out)
 }
 
+/// Ids the notification server gave the open banners, by slot, with a generation so a finished banner only
+/// forgets its own id. Bounded: a long-running service sees many slots.
+static BANNER_IDS: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, u64)>>> =
+    std::sync::Mutex::new(None);
+static BANNER_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const MAX_REMEMBERED_IDS: usize = 256;
+
+fn remembered_id(slot: &str) -> Option<u32> {
+    BANNER_IDS
+        .lock()
+        .ok()?
+        .as_ref()?
+        .get(slot)
+        .map(|(id, _)| *id)
+}
+
+fn remember_id(slot: &str, id: u32, generation: u64) {
+    if let Ok(mut g) = BANNER_IDS.lock() {
+        let m = g.get_or_insert_with(Default::default);
+        if m.len() >= MAX_REMEMBERED_IDS && !m.contains_key(slot) {
+            m.clear();
+        }
+        m.insert(slot.to_owned(), (id, generation));
+    }
+}
+
+fn forget_id(slot: &str, generation: u64) {
+    if let Ok(mut g) = BANNER_IDS.lock()
+        && let Some(m) = g.as_mut()
+        && m.get(slot).is_some_and(|(_, gen_)| *gen_ == generation)
+    {
+        m.remove(slot);
+    }
+}
+
+/// Run `notify-send --print-id --wait`, calling `on_id` as soon as the server's notification id is printed,
+/// and return everything it printed once it exits. Killed after `limit`.
+pub fn run_banner(
+    mut cmd: std::process::Command,
+    limit: Duration,
+    mut on_id: impl FnMut(u32),
+) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let out = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(out.take(512)).lines() {
+            let Ok(l) = line else { break };
+            if tx.send(l).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + limit;
+    let mut text = String::new();
+    let mut id_seen = false;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(line) => {
+                if !id_seen && let Ok(id) = line.trim().parse::<u32>() {
+                    id_seen = true;
+                    on_id(id);
+                }
+                text.push_str(&line);
+                text.push('\n');
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let _ = child.wait();
+    Some(text)
+}
+
 impl MirrorNotifier for NotifySendMirror {
     fn show(&self, b: &MirrorBanner, reply: Box<dyn FnOnce(Choice) + Send>) {
         let Some(slot) = OpenSlot::acquire(&OPEN_BANNERS, MAX_OPEN_BANNERS) else {
             return; // too many still open: this one is only listed (ctl, tray, Home)
         };
-        let args = Self::args(b);
+        let args = Self::args_replacing(b, remembered_id(&b.slot));
         let actions = b.actions.clone();
+        let banner_slot = b.slot.clone();
+        let generation = BANNER_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         std::thread::spawn(move || {
             let _slot = slot;
             let mut cmd = std::process::Command::new("notify-send");
             cmd.args(&args);
-            if let Some(out) = run_bounded(cmd, BANNER_LIFETIME)
+            let out = run_banner(cmd, BANNER_LIFETIME, |id| {
+                remember_id(&banner_slot, id, generation);
+            });
+            forget_id(&banner_slot, generation);
+            if let Some(out) = out
                 && let Some(c) = Self::choice(&out, &actions)
             {
                 reply(c);
@@ -603,6 +711,88 @@ mod tests {
             slot: "1".into(),
         };
         assert!(NotifySendMirror::args(&b).contains(&"--action=a0=Action".to_owned()));
+    }
+
+    fn banner() -> MirrorBanner {
+        MirrorBanner {
+            device_name: "P".into(),
+            app: "A".into(),
+            title: "t".into(),
+            text: None,
+            clearable: true,
+            actions: vec![],
+            slot: "dev-1".into(),
+        }
+    }
+
+    #[test]
+    fn a_banner_carries_icon_expiry_app_name_and_replaces_the_previous_one_of_its_slot() {
+        let a = NotifySendMirror::args(&banner());
+        for want in [
+            "--app-name=GeekBridge",
+            "--icon=dev.geekbridge.GeekBridge",
+            "--expire-time=10000",
+            "--print-id",
+            "--wait",
+            "--action=dismiss=Dismiss",
+            "--hint=string:x-canonical-private-synchronous:geekbridge-mirror-dev-1",
+        ] {
+            assert!(a.contains(&want.to_owned()), "{want}: {a:?}");
+        }
+        assert!(!a.iter().any(|x| x.starts_with("--replace-id")));
+        let r = NotifySendMirror::args_replacing(&banner(), Some(42));
+        assert!(r.contains(&"--replace-id=42".to_owned()));
+        // Options precede the separator; the replace id can never be phone text.
+        let dd = r.iter().position(|s| s == "--").unwrap();
+        assert!(r[..dd].contains(&"--replace-id=42".to_owned()));
+    }
+
+    #[test]
+    fn the_printed_id_is_not_mistaken_for_a_button() {
+        let acts = vec!["Reply".to_owned()];
+        assert_eq!(
+            NotifySendMirror::choice("7\ndismiss\n", &acts),
+            Some(Choice::Dismiss)
+        );
+        assert_eq!(
+            NotifySendMirror::choice("7\na0\n", &acts),
+            Some(Choice::Action("Reply".into()))
+        );
+        assert_eq!(NotifySendMirror::choice("7\n", &acts), None);
+        assert_eq!(
+            NotifySendMirror::choice("a0", &acts),
+            Some(Choice::Action("Reply".into()))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_banner_reports_the_id_while_the_banner_is_still_open() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "echo 5; sleep 0.3; echo dismiss"]);
+        let mut got = None;
+        let t = Instant::now();
+        let out = run_banner(cmd, Duration::from_secs(5), |id| {
+            got = Some((id, t.elapsed()));
+        });
+        let (id, at) = got.unwrap();
+        assert_eq!(id, 5);
+        assert!(at < Duration::from_millis(250), "{at:?}");
+        assert_eq!(out.as_deref(), Some("5\ndismiss\n"));
+        let mut slow = std::process::Command::new("sh");
+        slow.args(["-c", "sleep 5"]);
+        assert!(run_banner(slow, Duration::from_millis(200), |_| {}).is_none());
+    }
+
+    #[test]
+    fn remembered_ids_are_replaced_per_slot_and_only_the_owner_forgets() {
+        remember_id("s-test", 3, 10);
+        assert_eq!(remembered_id("s-test"), Some(3));
+        remember_id("s-test", 3, 11); // an update took over the same server id
+        forget_id("s-test", 10); // the replaced banner's process ends
+        assert_eq!(remembered_id("s-test"), Some(3));
+        forget_id("s-test", 11);
+        assert_eq!(remembered_id("s-test"), None);
     }
 
     #[test]

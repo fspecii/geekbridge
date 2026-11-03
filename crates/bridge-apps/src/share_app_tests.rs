@@ -120,6 +120,7 @@ fn app_with(view: View) -> (ShareApp, mpsc::Receiver<Cmd>) {
         chosen: None,
         text: String::new(),
         tab: Tab::Share,
+        open_photos: None,
         photos: crate::photos_pane::PhotosPane::for_test(Default::default()).0,
     };
     (app, rx)
@@ -420,4 +421,35 @@ fn clicking_through_the_window_only_sends_well_formed_commands() {
         }
     }
     assert!(seen > 0, "some control was activated by the sweep");
+}
+
+#[test]
+fn a_request_for_the_photos_page_waits_for_the_phone_to_be_listed_then_opens_it() {
+    use bridge_core::photos_view::{PhotoDevice, PhotosView};
+    let (mut app, _rx) = app_with(View::default());
+    app.open_photos = Some(std::time::Instant::now());
+    let mut rig = Rig::new(AppKind::Clipboard, 480.0, 640.0);
+    let _ = frame(&mut app, &mut rig, vec![]);
+    // Nothing offered yet: still on the share page, still waiting (the first frame used to drop the request).
+    assert_eq!(app.tab, Tab::Share);
+    assert!(app.open_photos.is_some());
+    let mut model = crate::photos_pane::Model::default();
+    model.photos = Some(PhotosView {
+        devices: vec![PhotoDevice {
+            device_id: "a".into(),
+            name: "Pixel".into(),
+            partial: false,
+            listed: true,
+        }],
+        ..PhotosView::default()
+    });
+    app.photos = crate::photos_pane::PhotosPane::for_test(model).0;
+    let _ = frame(&mut app, &mut rig, vec![]);
+    assert_eq!(app.tab, Tab::Photos);
+    assert!(app.open_photos.is_none());
+    // An expired request is forgotten and never switches the page later.
+    let (mut app, _rx) = app_with(View::default());
+    app.open_photos = Some(std::time::Instant::now() - std::time::Duration::from_secs(60));
+    let _ = frame(&mut app, &mut rig, vec![]);
+    assert!(app.open_photos.is_none() && app.tab == Tab::Share);
 }
