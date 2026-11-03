@@ -8,6 +8,9 @@ on:
       packages:
         description: Space-separated packages to test, one at a time
         default: bridge-kde bridge-service bridge-apps bridge-calls bridge-update
+      test_threads:
+        description: Test threads (1 serialises; empty uses the default parallelism like check.yml)
+        default: "1"
   push:
     branches: [ci-windows-debug]
 
@@ -28,12 +31,13 @@ jobs:
         timeout-minutes: 13
         shell: bash
         env:
+          TEST_THREADS: ${{ inputs.test_threads }}
           PACKAGES: ${{ inputs.packages || 'bridge-kde bridge-service bridge-apps bridge-calls bridge-update' }}
         run: |
           status=0
           for p in $PACKAGES; do
             echo "::group::cargo test -p $p"
-            cargo test -p "$p" --locked --no-fail-fast -- --nocapture --test-threads=1 || status=1
+            cargo test -p "$p" --locked --no-fail-fast -- --nocapture ${TEST_THREADS:+--test-threads=$TEST_THREADS} || status=1
             echo "::endgroup::"
           done
           exit $status

@@ -153,30 +153,41 @@ fn lock_serialises_read_modify_write_across_threads() {
     let counter = dir.join("counter");
     let lock = dir.join("counter.lock");
     atomic_write_private(&counter, b"0").unwrap();
-    let threads = 8;
-    let per = 10;
+    let (threads, per) = (8usize, 10usize);
     let barrier = Arc::new(Barrier::new(threads));
+    let started = Instant::now();
     let handles: Vec<_> = (0..threads)
         .map(|_| {
             let (counter, lock, barrier) = (counter.clone(), lock.clone(), barrier.clone());
             std::thread::spawn(move || {
                 barrier.wait();
+                let (mut max_wait, mut max_hold) = (Duration::ZERO, Duration::ZERO);
                 for _ in 0..per {
                     // Each iteration opens its own descriptor, like separate
                     // processes would, so this exercises the OS lock itself.
-                    let _g = lock_exclusive(&lock).unwrap();
+                    let t = Instant::now();
+                    let _g = lock_exclusive_timeout(&lock, Duration::from_secs(300)).unwrap();
+                    max_wait = max_wait.max(t.elapsed());
+                    let t = Instant::now();
                     let n: u64 = String::from_utf8(read_private_file(&counter).unwrap().unwrap())
                         .unwrap()
                         .parse()
                         .unwrap();
                     atomic_write_private(&counter, (n + 1).to_string().as_bytes()).unwrap();
+                    max_hold = max_hold.max(t.elapsed());
                 }
+                (max_wait, max_hold)
             })
         })
         .collect();
-    for h in handles {
-        h.join().unwrap();
-    }
+    let stats: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    eprintln!(
+        "threads: total {:?}, max wait {:?}, max hold {:?}, per-thread max wait {:?}",
+        started.elapsed(),
+        stats.iter().map(|s| s.0).max().unwrap(),
+        stats.iter().map(|s| s.1).max().unwrap(),
+        stats.iter().map(|s| s.0).collect::<Vec<_>>()
+    );
     assert_eq!(
         read_private_file(&counter).unwrap().unwrap(),
         (threads * per).to_string().as_bytes()
