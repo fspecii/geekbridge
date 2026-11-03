@@ -83,4 +83,16 @@ class SmsMmsTest {
         assertEquals("", MmsRows.pickAddress(emptyList(), incoming = true))
         assertEquals("", MmsRows.pickAddress(listOf("insert-address-token" to 137), incoming = true))
     }
+
+    // The computer refuses a message with no address, so one such picture message must not hide its whole thread.
+    @Test fun aPictureMessageWithoutAnAddressBorrowsTheThreadsTextAddressOrIsLeftOut() {
+        val text = sms(1, 5, 1_000)
+        val noAddr = mms(2, 5, 2_000).copy(address = "")
+        val orphan = mms(3, 9, 3_000).copy(address = "")
+        val out = MmsRows.fillAddress(listOf(noAddr, orphan, mms(4, 5, 4_000)), listOf(text))
+        assertEquals(listOf(2L, 4L), out.map { it.id })
+        assertEquals("+4915112345678", out[0].address)
+        assertTrue(out.all { it.address.isNotBlank() })
+        assertEquals(listOf(text), MmsRows.fillAddress(listOf(text), emptyList())) // texts are never touched
+    }
 }

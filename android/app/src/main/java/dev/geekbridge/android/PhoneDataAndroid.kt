@@ -512,12 +512,15 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
             }
             out
         }
-    } catch (_: SecurityException) {
+    } catch (e: SecurityException) {
+        GbLog.i("sms", "picture messages not read: ${e.javaClass.simpleName}")
         emptyList()
     } catch (_: android.os.OperationCanceledException) {
         throw QueryCancelled()
-    } catch (_: RuntimeException) {
-        emptyList() // an OEM provider without one of the columns: texts still work, pictures are missing
+    } catch (e: RuntimeException) {
+        // an OEM provider without one of the columns: texts still work, pictures are missing (the class only, never a row)
+        GbLog.i("sms", "picture messages not read: ${e.javaClass.simpleName}")
+        emptyList()
     }
 
     /** Fills in who an MMS is with (one small query per message shown). */
@@ -568,7 +571,7 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
             )
         }
         val pictures = mmsQuery(null, null, MMS_SCAN_ROWS)
-        return SmsMerge.latest(texts, pictures, max).map(::withAddress)
+        return MmsRows.fillAddress(SmsMerge.latest(texts, pictures, max).map(::withAddress), texts)
     }
 
     /** Distinct threads in the newest [PhoneDataLimits.SMS_SCAN_ROWS] rows; one narrow column, no bodies. */
@@ -596,7 +599,7 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         val pictures =
             if (rangeStartMs == null) mmsQuery("${Telephony.Mms.THREAD_ID} = ?", arrayOf(threadId.toString()), limit)
             else mmsQuery("${Telephony.Mms.THREAD_ID} = ? AND ${Telephony.Mms.DATE} <= ?", arrayOf(threadId.toString(), (rangeStartMs / 1000).toString()), limit)
-        return SmsMerge.thread(texts, pictures, limit).map(::withAddress)
+        return MmsRows.fillAddress(SmsMerge.thread(texts, pictures, limit).map(::withAddress), texts)
     }
 
     private companion object {

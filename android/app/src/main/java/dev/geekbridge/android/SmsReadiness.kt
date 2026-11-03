@@ -76,6 +76,28 @@ object SmsReadinessLogic {
     )
 }
 
+/** The SIM chooser of the Messages step; its permission (READ_PHONE_STATE) is separate from the three SMS ones. */
+enum class SimChoiceState { NotNeeded, Ask, Blocked, Granted }
+
+object SmsSimChoice {
+    /**
+     * Only a phone with two or more SIM slots has a choice to make, and only once Messages itself works. Without
+     * [phoneState] the phone reports no SIMs, the computer hides the chooser and every text uses the default SIM.
+     */
+    fun state(switchOn: Boolean, smsPermsGranted: Boolean, simSlots: Int, phoneState: PermissionStatus): SimChoiceState = when {
+        !switchOn || !smsPermsGranted || simSlots < 2 -> SimChoiceState.NotNeeded
+        phoneState == PermissionStatus.Granted -> SimChoiceState.Granted
+        phoneState == PermissionStatus.Blocked -> SimChoiceState.Blocked
+        else -> SimChoiceState.Ask
+    }
+
+    fun message(state: SimChoiceState, s: Strings): String = when (state) {
+        SimChoiceState.Ask -> s.get(R.string.sms_sim_ask)
+        SimChoiceState.Blocked -> s.get(R.string.sms_sim_blocked)
+        else -> ""
+    }
+}
+
 /** Whether "Allow restricted settings" can be what blocks SMS; pure so the wording choice is tested. */
 object SmsRestriction {
     /** Stores Android trusts: an app installed by one is never restricted. Everything else (adb, a file manager, a browser) is. */
@@ -107,6 +129,25 @@ object SmsReadinessAndroid {
         }
         return SmsRestriction.likely(Build.VERSION.SDK_INT, flagged, installer)
     }
+
+    /** SIM slots, which Android tells any app without a permission. */
+    fun simSlots(a: Activity): Int = try {
+        val t = a.getSystemService(android.telephony.TelephonyManager::class.java)
+        if (t == null) 0 else if (Build.VERSION.SDK_INT >= 30) t.activeModemCount else @Suppress("DEPRECATION") t.phoneCount
+    } catch (_: RuntimeException) {
+        0
+    }
+
+    fun simChoice(a: Activity): SimChoiceState = SmsSimChoice.state(
+        switchOn = PhoneDataRuntime.settings.sms,
+        smsPermsGranted = SmsPerm.entries.all { status(a, it) == PermissionStatus.Granted },
+        simSlots = simSlots(a),
+        phoneState = PermissionStatusLogic.compute(
+            granted = a.checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED,
+            askedBefore = AppState.wasAsked(Manifest.permission.READ_PHONE_STATE),
+            shouldShowRationale = a.shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE),
+        ),
+    )
 
     fun evaluate(a: Activity): SmsReadiness {
         ComputerGrantsRuntime.init(a)

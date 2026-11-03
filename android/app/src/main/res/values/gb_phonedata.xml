@@ -60,4 +60,7 @@
     <string name="sms_state_restricted">Android blocks SMS for apps installed outside a store (“restricted setting”). Missing: %1$s. Open app settings, tap ⋮ (top right) › Allow restricted settings, then Permissions › SMS › Allow. If ⋮ has no such item yet, tap “Allow access” once and look again.</string>
     <string name="sms_state_pair">SMS is allowed on this phone, but no computer is paired. Pair a computer first.</string>
     <string name="sms_state_choose">SMS is allowed on this phone, but no paired computer may use it. Tap “Allowed computers…” and tick your computer.</string>
+    <string name="sms_sim_ask">This phone has two SIM slots. To let your computer choose which SIM sends a text, GeekBridge must be allowed to see your SIM cards (Android calls this “Phone” access, the same one the call features use). It is optional: without it every text is sent from your phone’s default SIM.</string>
+    <string name="sms_sim_blocked">Choosing a SIM is off because Android will not ask again, so every text is sent from your phone’s default SIM. To change that, open app settings › Permissions › Phone and choose Allow.</string>
+    <string name="sms_sim_allow">Allow SIM choice</string>
 </resources>

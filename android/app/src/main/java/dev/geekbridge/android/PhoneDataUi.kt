@@ -95,6 +95,7 @@ object PhoneDataUi {
         photosSection(a, kit, parent, s, rerender)
         separator(kit, parent)
         feature(R.drawable.ic_message, R.string.pd_sms, R.string.pd_sms_sub, s.sms, smsPerms, GrantFeature.Sms, PhoneDataRuntime::setSms)
+        simChoice(a, kit, parent)
         if (s.sms) {
             kit.row(
                 parent, R.drawable.ic_message, a.getString(R.string.pd_sms_special), a.getString(R.string.pd_sms_special_sub),
@@ -102,6 +103,20 @@ object PhoneDataUi {
             )
         }
         parent.addView(kit.text(a.getString(R.string.pd_sms_honest), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
+    }
+
+    /** Which SIM a text leaves from needs READ_PHONE_STATE: asked here, where the user is already setting up Messages. */
+    private fun simChoice(a: Activity, kit: UiKit, parent: LinearLayout) {
+        val st = SmsReadinessAndroid.simChoice(a)
+        val words = SmsSimChoice.message(st, a.strings)
+        if (words.isEmpty()) return
+        parent.addView(kit.text(words, 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
+        if (st == SimChoiceState.Ask) {
+            kit.button(parent, a.getString(R.string.sms_sim_allow), BtnStyle.Tonal) {
+                AppState.markAsked(Manifest.permission.READ_PHONE_STATE)
+                a.requestPermissions(arrayOf(Manifest.permission.READ_PHONE_STATE), REQUEST_CODE)
+            }
+        } else kit.button(parent, a.getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(a) }
     }
 
     /**

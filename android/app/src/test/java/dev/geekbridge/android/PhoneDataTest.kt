@@ -374,6 +374,14 @@ class PhoneDataTest {
         assertFalse(core.of(PhoneDataKinds.SMS_MESSAGES).last().has("unread"))
     }
 
+    @Test fun aPhoneWithoutSimAccessSaysSoInsteadOfLeavingTheComputerWithAStaleList() {
+        // READ_PHONE_STATE revoked after the computer saw the SIMs: an empty list (not a missing one) replaces what it holds.
+        val core = FakeCore()
+        val e = engine(core, sms = FakeSms(listOf(row(1, 1, 1)), emptyList()))
+        e.onEvents(listOf(ev(PhoneDataKinds.SMS_REQ_CONVERSATIONS)))
+        assertEquals(0, core.of(PhoneDataKinds.SMS_MESSAGES).first().getJSONArray("sims").length())
+    }
+
     @Test fun messagePacketsCarryTheSimListAndOnlyListedSimsCanBeChosen() {
         val sims = listOf(SimInfo(3, 1, "Personal"), SimInfo(5, 2, "Work\u0007"))
         val core = FakeCore(); val sender = FakeSender()

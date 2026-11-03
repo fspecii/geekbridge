@@ -58,9 +58,22 @@ inject_events() {
   add_event "Team offsite" "$day" $(( day + 86400000 )) 1
   add_event "Dentist" $(( base + 26 * 3600000 )) $(( base + 27 * 3600000 )) 0 "Main St 4"
 }
+# Per-computer grants for the desktop's id (without them the phone offers nothing, whatever the switches say).
+write_grants() { # feature...
+  desk_id
+  local list="" f
+  for f in "$@"; do list+="${list:+,}&quot;$f&quot;"; done
+  $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_grants.xml'" <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="grants">{&quot;migrated&quot;:true,&quot;grants&quot;:{&quot;$DESK_ID&quot;:[$list]}}</string>
+</map>
+XML
+}
 write_prefs() { # enable the three features in the app (the switches live in app preferences)
   local ids="$1"
   $ADB shell am force-stop $PKG; sleep 1
+  write_grants contacts calendar sms
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -103,6 +116,9 @@ stage_messages() {
   load_ids; [[ -n "$PHONE_ID" ]] || { rec messages SKIP "not paired (run pair first)"; return 1; }
   is_connected || { desk_dial; wait_for 15 is_connected; } || { rec messages FAIL "link not connected"; return 1; }
   wake; grant_all
+  # `pm grant` can end the app's process (and with it the link); start it again and wait for the link before the first read.
+  if [[ -z "$($ADB shell pidof $PKG 2>/dev/null | tr -d '\r')" ]]; then goto_home; sleep 3; fi
+  is_connected || { desk_dial; wait_for 20 is_connected; } || { rec messages FAIL "link did not come back after granting the SMS permissions"; return 1; }
   ctl consent "$PHONE_ID" sms on >/dev/null
   local tag="gbmsg$RANDOM"
   $ADB emu sms send 5550142 "Hello from the emulator $tag" >/dev/null

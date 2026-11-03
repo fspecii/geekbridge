@@ -121,6 +121,16 @@ object MmsRows {
      * Who the message is with: the sender of an incoming one, the first recipient of an outgoing one. Android stores
      * the owner's own side as a placeholder token, which is skipped.
      */
+    /**
+     * The computer rejects a message without an address, which would leave its thread stale. A picture message whose
+     * address could not be read takes the address of a text in the same thread, and is left out when there is none.
+     */
+    fun fillAddress(rows: List<SmsRow>, texts: List<SmsRow>): List<SmsRow> {
+        val known = HashMap<Long, String>()
+        for (t in texts) if (!t.mms && t.address.isNotBlank()) known.putIfAbsent(t.threadId, t.address)
+        return rows.mapNotNull { r -> if (!r.mms || r.address.isNotBlank()) r else known[r.threadId]?.let { r.copy(address = it) } }
+    }
+
     fun pickAddress(addrs: List<Pair<String, Int>>, incoming: Boolean): String {
         val want = if (incoming) ADDRESS_FROM else ADDRESS_TO
         return addrs.firstOrNull { it.second == want && it.first != TOKEN && it.first.isNotBlank() }?.first.orEmpty()
@@ -453,10 +463,12 @@ class PhoneDataEngine(
         pushSms(sms.thread(thread, start, minOf(n, PhoneDataLimits.MAX_CONVERSATION_PAGE)))
     }
 
-    /** The SIM list rides on every message packet (a GeekBridge extension; stock desktops ignore it). */
+    /**
+     * The SIM list rides on every message packet (a GeekBridge extension; stock desktops ignore it). An empty list is
+     * sent too: it is how the computer learns that SIM access was withdrawn, so it stops offering a SIM chooser.
+     */
     private fun addSims(packet: JSONObject) {
-        val sims = PhoneDataProtocol.simsJson(sms.subscriptions())
-        if (sims.length() > 0) packet.put("sims", sims)
+        packet.put("sims", PhoneDataProtocol.simsJson(sms.subscriptions()))
     }
 
     /** Splits [rows] into packets of at most 100 messages / 900 KiB. An empty page still answers (end of history). */

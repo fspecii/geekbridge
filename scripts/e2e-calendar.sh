@@ -47,8 +47,21 @@ add_event() { # cal title start end allday [location] [rrule]
 }
 last_event_id() { sh_q "content query --uri content://com.android.calendar/events --projection _id --sort '_id DESC'" | sed -n 's/.*_id=\([0-9]*\).*/\1/p' | head -1; }
 grant() { for p in READ_CONTACTS READ_CALENDAR WRITE_CALENDAR; do $ADB shell pm grant $PKG android.permission.$p; done; }
+# Per-computer grants for the desktop's id (without them the phone offers nothing, whatever the switches say).
+write_grants() { # feature...
+  desk_id
+  local list="" f
+  for f in "$@"; do list+="${list:+,}&quot;$f&quot;"; done
+  $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_grants.xml'" <<XML
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="grants">{&quot;migrated&quot;:true,&quot;grants&quot;:{&quot;$DESK_ID&quot;:[$list]}}</string>
+</map>
+XML
+}
 write_prefs() { # calendar ids (space separated), edit on
   $ADB shell am force-stop $PKG; sleep 1
+  write_grants contacts calendar calendar_edit
   local ids=""; for i in $1; do ids+="<string>$i</string>"; done
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>

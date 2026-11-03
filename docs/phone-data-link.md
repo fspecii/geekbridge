@@ -220,7 +220,7 @@ status, notifications of what is shared. Sensitive content (contacts, event text
   may first need "Allow restricted settings" (App info, overflow menu) before the SMS permission can be granted.
 * **Not supported:** MMS attachments (listed without content as "MMS message — open on phone"; the phone sends only an `attachments` marker, never a caption or part), group messages (one
   recipient per send), RCS (the system messaging app keeps RCS outside the SMS provider), scheduled sends, marking
-  read on the phone. Dual SIM works only against a GeekBridge phone that lists its SIMs (needs `READ_PHONE_STATE`).
+  read on the phone. Dual SIM works only against a GeekBridge phone that lists its SIMs (needs `READ_PHONE_STATE`). On a phone with two SIM slots the Messages step offers that permission itself ("Allow SIM choice", optional); without it every text uses the default SIM and the chooser stays hidden.
 * **Delivery receipts** exist only if the carrier sends one and the phone app relays it; "sent" means Android
   handed the message on, not that the recipient has it.
 * **Incoming SMS push** needs the SMS provider to have stored the message: a non-default app receives
@@ -251,7 +251,9 @@ status, notifications of what is shared. Sensitive content (contacts, event text
   (SIM list in packets, unlisted SIM refused). Screenshots without an emulator:
   `scripts/screenshots-desktop-messages.sh` -> `dist/screenshots/desktop/messages-{list,search,compose,mms,emoji}-{light,dark}.png`.
   Emulator: stage `messages` of `scripts/e2e-phonedata.sh` (`adb emu sms send` -> conversation list with unread ->
-  thread -> desktop send reaches the phone's own status).
+  thread -> desktop send reaches the phone's own status). Its phone-side switch and per-computer grant are written by
+  the script itself (`geekbridge_grants.xml`, guarded by `scripts/tests/e2e-grants-test.sh`). The self-contained SMS suite
+  is `scripts/e2e/sms.sh` (report: [reports/sms-emulator-e2e.md](reports/sms-emulator-e2e.md)).
 * Emulator: `scripts/e2e-phonedata.sh` (injects contacts, calendar events and SMS with `adb`, drives the real
   Agenda and Messages windows under a private Xvfb, screenshots in `dist/screenshots/phonedata/`).
 
