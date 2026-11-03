@@ -30,11 +30,11 @@ use windows::{
             WindowsAndMessaging::{
                 AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
                 DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
-                GetMessageW, HICON, HMENU, HWND_MESSAGE, ICONINFO, MF_GRAYED, MF_SEPARATOR,
-                MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
-                RegisterWindowMessageW, SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-                TrackPopupMenu, TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY,
-                WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
+                GetMessageW, HICON, HMENU, ICONINFO, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG,
+                PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+                SetForegroundWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
+                TranslateMessage, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONUP,
+                WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_OVERLAPPED,
             },
         },
     },
@@ -133,6 +133,10 @@ fn tray_thread(
             ..Default::default()
         };
         RegisterClassW(&class);
+        // A hidden top-level window, never shown. Not a message-only window (HWND_MESSAGE parent): those
+        // receive no broadcast messages, so `TaskbarCreated` (explorer.exe restarted, icon must be added
+        // again) would never arrive, and SetForegroundWindow, which the popup menu needs to close on an
+        // outside click, does not work for them.
         let Ok(hwnd) = CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("GeekBridgeTray"),
@@ -142,7 +146,7 @@ fn tray_thread(
             0,
             0,
             0,
-            Some(HWND_MESSAGE),
+            None,
             None,
             Some(module.into()),
             None,

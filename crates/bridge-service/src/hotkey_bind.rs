@@ -65,10 +65,19 @@ pub fn paste_command(ctl: Option<&str>) -> String {
     )
 }
 
+/// File name of the control program on this OS (`geekbridge-ctl.exe` on Windows).
+fn ctl_file_name(windows: bool) -> &'static str {
+    if windows {
+        "geekbridge-ctl.exe"
+    } else {
+        "geekbridge-ctl"
+    }
+}
+
 /// `geekbridge-ctl` next to the running service binary, if it exists.
 pub fn sibling_ctl() -> Option<String> {
     let exe = std::env::current_exe().ok()?;
-    let ctl = exe.parent()?.join("geekbridge-ctl");
+    let ctl = exe.parent()?.join(ctl_file_name(cfg!(windows)));
     ctl.is_file().then(|| ctl.to_string_lossy().into_owned())
 }
 
@@ -137,12 +146,17 @@ mod windows_binder {
 
     fn spawn_paste() {
         let ctl = sibling_ctl().unwrap_or_else(|| "geekbridge-ctl".to_owned());
-        let _ = Command::new(ctl)
-            .args(["clipboard", "paste-from-phone"])
+        let mut cmd = Command::new(ctl);
+        cmd.args(["clipboard", "paste-from-phone"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
+            .stderr(Stdio::null());
+        {
+            // ctl is a console program: without this each key press would flash a console window.
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        let _ = cmd.spawn();
     }
 
     impl HotkeyBinder for WindowsBinder {
@@ -219,6 +233,12 @@ pub fn detect() -> Option<std::sync::Arc<dyn HotkeyBinder>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctl_name_has_the_exe_suffix_only_on_windows() {
+        assert_eq!(ctl_file_name(true), "geekbridge-ctl.exe");
+        assert_eq!(ctl_file_name(false), "geekbridge-ctl");
+    }
 
     #[test]
     fn windows_codes() {

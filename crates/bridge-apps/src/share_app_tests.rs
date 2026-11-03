@@ -238,6 +238,11 @@ fn only_readable_files_are_sendable_and_picker_output_is_tolerant() {
         "x.exe.",
         "x.exe  ",
         "y.AppImage",
+        "x.msc",
+        "x.Scpt",
+        "x.webloc",
+        "x.mobileconfig",
+        "x.application",
     ] {
         assert!(is_risky_to_open(Path::new(risky)), "{risky}");
     }

@@ -104,6 +104,20 @@ fn ports_cover_range(ports: &str) -> bool {
 /// for that program (the Defender prompt creates one for Any/Any) or a program-less rule for the
 /// whole port range.
 pub fn windows_allows(rules: &[NetshRule], proto: &str, exe: &str) -> bool {
+    // Choosing "Cancel" in the Defender prompt stores enabled Block rules for the program, and a
+    // block rule beats any allow rule.
+    let blocked = rules.iter().any(|r| {
+        r.enabled
+            && r.inbound
+            && !r.allow
+            && r.program.eq_ignore_ascii_case(exe)
+            && (r.protocol.eq_ignore_ascii_case("any") || r.protocol.eq_ignore_ascii_case(proto))
+            && ports_cover_range(&r.local_port)
+    });
+    !blocked && windows_allow_rule_exists(rules, proto, exe)
+}
+
+fn windows_allow_rule_exists(rules: &[NetshRule], proto: &str, exe: &str) -> bool {
     rules.iter().any(|r| {
         let program_ok = if r.program.eq_ignore_ascii_case("any") || r.program.is_empty() {
             true
@@ -196,10 +210,15 @@ pub fn parse_mac_app(text: &str) -> Option<MacApp> {
 
 #[cfg(any(windows, target_os = "macos"))]
 fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        // The desktop apps call this from a GUI-subsystem process: no console window per netsh.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = cmd.output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -545,6 +564,12 @@ mod tests {
         assert_eq!(verdict(&win(&off, NETSH_STATE_ON)), blocking);
         let block = rule("a", EXE, "Any", "Any", "Block", "Yes");
         assert_eq!(verdict(&win(&block, NETSH_STATE_ON)), blocking);
+        // What "Cancel" in the Defender prompt leaves behind next to an allow rule: block wins.
+        let cancelled = prompt.clone() + &rule("b", EXE, "TCP", "Any", "Block", "Yes");
+        assert_eq!(verdict(&win(&cancelled, NETSH_STATE_ON)), blocking);
+        let other_block =
+            prompt.clone() + &rule("b", r"C:\other.exe", "Any", "Any", "Block", "Yes");
+        assert_eq!(verdict(&win(&other_block, NETSH_STATE_ON)), Verdict::Fine);
         let other = rule("a", r"C:\other.exe", "Any", "Any", "Allow", "Yes");
         assert_eq!(verdict(&win(&other, NETSH_STATE_ON)), blocking);
         let narrow = rule("a", "", "TCP", "1716", "Allow", "Yes");

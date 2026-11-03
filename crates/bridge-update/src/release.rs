@@ -97,7 +97,7 @@ fn ext_rank(os: &str, lower: &str) -> Option<usize> {
     let list: &[&str] = match os {
         "linux" => &[".tar.gz", ".tgz", ".appimage"],
         "windows" => &[".msi", ".zip", ".exe"],
-        "macos" => &[".dmg", ".zip", ".pkg"],
+        "macos" => &[".dmg", ".zip", ".tar.gz", ".pkg"],
         _ => &[],
     };
     list.iter().position(|ext| lower.ends_with(ext))
@@ -290,6 +290,38 @@ mod tests {
         assert_eq!(
             select_asset(&list, &p).unwrap().name,
             "geekbridge-macos-arm64.dmg"
+        );
+    }
+
+    #[test]
+    fn macos_tar_gz_archives_are_recognised() {
+        // build-binaries.yml packages the Mac binaries as .tar.gz (release.yml as .zip).
+        let list = vec![
+            asset("geekbridge-macos-aarch64.tar.gz", 5),
+            asset("geekbridge-macos-x86_64.tar.gz", 5),
+        ];
+        for (arch, want) in [
+            ("aarch64", "geekbridge-macos-aarch64.tar.gz"),
+            ("x86_64", "geekbridge-macos-x86_64.tar.gz"),
+        ] {
+            let p = Platform {
+                os: "macos".into(),
+                arch: arch.into(),
+            };
+            assert_eq!(select_asset(&list, &p).unwrap().name, want);
+        }
+        // A zip still beats a tar.gz when both exist.
+        let both = vec![
+            asset("geekbridge-macos-aarch64.tar.gz", 5),
+            asset("geekbridge-macos-aarch64.zip", 5),
+        ];
+        let p = Platform {
+            os: "macos".into(),
+            arch: "aarch64".into(),
+        };
+        assert_eq!(
+            select_asset(&both, &p).unwrap().name,
+            "geekbridge-macos-aarch64.zip"
         );
     }
 
