@@ -650,7 +650,12 @@ impl PendingLink {
             cert: CertInfo::parse(info.peer_cert.der())?,
             paired_at_unix: clock(),
         };
-        if let Err(e) = self.store.insert(peer) {
+        // File lock + fsync: never on an async worker (a slow disk would freeze every other task).
+        let store = self.store.clone();
+        let stored = tokio::task::spawn_blocking(move || store.insert(peer))
+            .await
+            .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into())));
+        if let Err(e) = stored {
             // The peer may already consider us paired; tell it we are not.
             let _ = self.conn.send(&pair_packet(false, None)).await;
             return Err(e);

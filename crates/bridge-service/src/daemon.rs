@@ -194,7 +194,7 @@ enum Entry {
 pub struct Daemon {
     endpoint: kde::Endpoint,
     store: Arc<dyn kde::TrustStore>,
-    consents: Mutex<ConsentStore>,
+    consents: ConsentStore,
     discovery: SharedState,
     core: Mutex<Core>,
     options: DaemonOptions,
@@ -344,7 +344,7 @@ impl Daemon {
         let daemon = Arc::new(Self {
             endpoint,
             store,
-            consents: Mutex::new(consents),
+            consents,
             discovery,
             core: Mutex::new(Core::default()),
             options,
@@ -375,8 +375,8 @@ impl Daemon {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn consents(&self) -> MutexGuard<'_, ConsentStore> {
-        self.consents.lock().unwrap_or_else(|e| e.into_inner())
+    fn consents(&self) -> &ConsentStore {
+        &self.consents
     }
 
     /// Ask a connected phone for the notifications it is showing (consent already checked by the caller).
@@ -506,7 +506,6 @@ impl Daemon {
                 paired_at_unix: p.paired_at_unix,
             })
             .collect();
-        drop(consents);
         let now = Instant::now();
         let core = self.core();
         let mut links: Vec<LinkStatus> = core.links.values().map(|l| l.status.clone()).collect();
@@ -669,9 +668,14 @@ impl Daemon {
                 device_id,
                 feature,
                 enabled,
-            } => self
-                .set_consent(&device_id, feature, enabled)
-                .map(|()| Response::Ack),
+            } => {
+                // File lock + fsync inside: off the async workers.
+                let d = self.clone();
+                tokio::task::spawn_blocking(move || d.set_consent(&device_id, feature, enabled))
+                    .await
+                    .unwrap_or_else(|_| Err(err(ErrorCode::Failed, "the change was interrupted")))
+                    .map(|()| Response::Ack)
+            }
             Request::Ping { device_id } => self.ping(&device_id).map(|()| Response::Ack),
             Request::PhoneDebugState { device_id } => self
                 .phone_debug_state(&device_id)
@@ -1886,6 +1890,8 @@ async fn trusted_loop(
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
     let (mut call_rx, _call_guard) = calls_link(d, id, &link);
     let (mut data_rx, _data_guard) = data_link(d, id, &link);
+    let debug_declared = debug_declared(&link);
+    debug_default(d, id, debug_declared).await;
     let (mut debug_rx, _debug_guard) = debug_link(d, id, &link);
     // A ping every 20 s keeps access-point / NAT idle timers and the phone's Wi-Fi power saving from
     // dropping a quiet link. The phone judges our silence (it knows what its own sleep looks like); we
@@ -2170,7 +2176,6 @@ fn data_link(
         c.is_enabled(id, Feature::Calendar),
         c.is_enabled(id, Feature::Sms),
     );
-    drop(c);
     let edit = c_edit(d, id);
     let battery = d.consents().is_enabled(id, Feature::Battery);
     let (rx, generation) = d.data.link_up(id, &peer.device_name, caps, consents);
@@ -2188,6 +2193,38 @@ fn data_link(
     )
 }
 
+/// A phone that declares the debug packets gets the `debug` consent switched on once. The write
+/// (file lock + fsync) runs off the async workers.
+async fn debug_default(d: &Arc<Daemon>, id: &str, declared: bool) {
+    if declared {
+        let (daemon, device) = (d.clone(), id.to_owned());
+        let switched =
+            tokio::task::spawn_blocking(move || daemon.consents().default_debug_on(&device))
+                .await
+                .unwrap_or(Ok(false));
+        if matches!(switched, Ok(true)) {
+            d.core().emit(
+                Some(id),
+                EventKind::ConsentChanged {
+                    feature: Feature::Debug,
+                    enabled: true,
+                },
+            );
+        }
+    }
+}
+
+/// Does the phone declare any `geekbridge.debug.*` packet?
+fn debug_declared(link: &kde::TrustedLink) -> bool {
+    let peer = &link.info().peer;
+    gate::negotiated_outgoing(peer)
+        .iter()
+        .any(|k| k == gate::DEBUG_STATE_REQUEST)
+        || gate::negotiated_incoming(peer)
+            .iter()
+            .any(|k| k == gate::DEBUG_LOG)
+}
+
 /// Registers a trusted link with the debug hub. A phone that declares the debug packets (only a debug
 /// build does) gets the `debug` consent switched on once; the user can switch it off for good.
 fn debug_link(
@@ -2199,21 +2236,6 @@ fn debug_link(
     let accepts = gate::negotiated_outgoing(peer)
         .iter()
         .any(|k| k == gate::DEBUG_STATE_REQUEST);
-    let sends = gate::negotiated_incoming(peer)
-        .iter()
-        .any(|k| k == gate::DEBUG_LOG);
-    if accepts || sends {
-        let switched = d.consents().default_debug_on(id);
-        if matches!(switched, Ok(true)) {
-            d.core().emit(
-                Some(id),
-                EventKind::ConsentChanged {
-                    feature: Feature::Debug,
-                    enabled: true,
-                },
-            );
-        }
-    }
     let (rx, generation) = d.debug.link_up(id, accepts);
     (
         rx,
@@ -2291,7 +2313,7 @@ fn on_notification_packet(d: &Arc<Daemon>, id: &str, packet: &kde::Packet) -> bo
                 .unwrap_or_default();
             let loud = !n.silent;
             let only_once = n.only_once;
-            let banner = d.mirror.banner(&name, &n);
+            let banner = d.mirror.banner(id, &name, &n);
             let nid = n.id.clone();
             let outcome = d.mirror.post(id, &name, n, now);
             let alert = loud

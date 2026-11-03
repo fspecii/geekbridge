@@ -125,6 +125,8 @@ fn validate_trust(body: &Map<String, Value>) -> std::result::Result<(), String> 
 pub struct FileTrustStore {
     file: PrivateStateFile,
     state: Mutex<State>,
+    /// Serialises read-modify-write cycles in this process (never held by readers).
+    writer: Mutex<()>,
 }
 
 /// Last file contents seen and what they parsed to.
@@ -164,6 +166,7 @@ impl FileTrustStore {
         Ok(Self {
             file,
             state: Mutex::new(state),
+            writer: Mutex::new(()),
         })
     }
 
@@ -176,18 +179,24 @@ impl FileTrustStore {
         &self,
         f: impl FnOnce(&mut BTreeMap<DeviceId, TrustedPeer>) -> Result<Option<T>>,
     ) -> Result<Option<T>> {
-        let mut guard = self.state.lock().unwrap();
+        // One writer at a time inside this process; readers only ever take `state`, and only
+        // briefly, so a writer stuck on the file lock or an fsync never stalls them.
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let locked = self.file.lock()?;
         // Authoritative state, now that nobody else can write.
         let loaded = locked.load()?;
-        guard.apply(&loaded);
-        if let Some(found) = guard.newer {
-            return Err(KdeError::StoreNewer {
-                path: self.file.path().to_owned(),
-                found,
-            });
-        }
-        let mut next = guard.peers.clone();
+        let current = {
+            let mut guard = self.state.lock().unwrap();
+            guard.apply(&loaded);
+            if let Some(found) = guard.newer {
+                return Err(KdeError::StoreNewer {
+                    path: self.file.path().to_owned(),
+                    found,
+                });
+            }
+            guard.peers.clone()
+        };
+        let mut next = current.clone();
         let out = f(&mut next)?;
         if out.is_some() {
             if next.len() > MAX_PEERS {
@@ -197,11 +206,12 @@ impl FileTrustStore {
             write_peers(&mut body, &next);
             // Removals refresh the backup too, so a damaged primary cannot bring a revoked device
             // back from an older generation.
-            if next.len() < guard.peers.len() {
+            if next.len() < current.len() {
                 locked.save_and_refresh_backup(&body)?;
             } else {
                 locked.save(&body)?;
             }
+            let mut guard = self.state.lock().unwrap();
             guard.raw = None; // re-read (and re-validated) on next use
             guard.peers = next;
         }
@@ -348,6 +358,32 @@ mod tests {
             cert: creds.cert().clone(),
             paired_at_unix: 1,
         }
+    }
+
+    /// A writer stuck on the cross-process lock (another process, or a slow fsync) must not stop
+    /// readers: the daemon answers `status` from `list()` on an async worker.
+    #[test]
+    fn readers_are_not_blocked_by_a_writer_waiting_for_the_file_lock() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("s");
+        let s = Arc::new(FileTrustStore::open(&dir).unwrap());
+        s.insert(peer('a')).unwrap();
+        let lock = fsutil::lock_exclusive(&bridge_core::statefile::lock_path(s.path())).unwrap();
+        let writer = {
+            let s = s.clone();
+            std::thread::spawn(move || s.insert(peer('b')))
+        };
+        std::thread::sleep(Duration::from_millis(300)); // the writer is now waiting on the lock
+        let started = Instant::now();
+        assert_eq!(s.list().unwrap().len(), 1);
+        assert!(s.get(&peer('a').device_id).unwrap().is_some());
+        let took = started.elapsed();
+        drop(lock);
+        writer.join().unwrap().unwrap();
+        assert!(took < Duration::from_millis(200), "readers waited {took:?}");
+        assert_eq!(s.list().unwrap().len(), 2);
     }
 
     #[test]

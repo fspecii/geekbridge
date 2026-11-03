@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 const CONSENT_FILE: &str = "consent.json";
@@ -61,9 +61,18 @@ impl Unavailable {
 
 pub struct ConsentStore {
     file: PrivateStateFile,
-    enabled: BTreeMap<String, Vec<Feature>>,
     /// The file is from a newer build: readable, never rewritten.
     newer: Option<u32>,
+    /// In-memory view. Held only for instants, never across file I/O, so `status` is never delayed
+    /// by a writer waiting on the file lock or an fsync.
+    view: Mutex<View>,
+    /// Serialises read-modify-write cycles (held across file I/O; readers never take it).
+    writer: Mutex<()>,
+}
+
+#[derive(Clone)]
+struct View {
+    enabled: BTreeMap<String, Vec<Feature>>,
     /// Devices whose `debug` consent was switched on by default once (so turning it off sticks).
     debug_defaulted: BTreeSet<String>,
 }
@@ -134,10 +143,13 @@ impl ConsentStore {
             .map(str::to_owned)
             .collect();
         Ok(Self {
-            enabled: known_features(&loaded.body),
             file,
             newer,
-            debug_defaulted,
+            view: Mutex::new(View {
+                enabled: known_features(&loaded.body),
+                debug_defaulted,
+            }),
+            writer: Mutex::new(()),
         })
     }
 
@@ -146,69 +158,72 @@ impl ConsentStore {
         self.file.path().parent()
     }
 
+    fn view(&self) -> MutexGuard<'_, View> {
+        self.view.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn writer(&self) -> MutexGuard<'_, ()> {
+        self.writer.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A paired phone that advertises the debug packets (only a debug build does) gets the `debug` consent
     /// switched on, once. Later changes by the user are never overridden. True if it was switched on now.
-    pub fn default_debug_on(&mut self, device_id: &str) -> Result<bool, KdeError> {
-        if self.debug_defaulted.contains(device_id) {
+    pub fn default_debug_on(&self, device_id: &str) -> Result<bool, KdeError> {
+        let _writer = self.writer();
+        let mut next = self.view().clone();
+        if next.debug_defaulted.contains(device_id) {
             return Ok(false);
         }
-        let mut next = self.enabled.clone();
-        let entry = next.entry(device_id.to_owned()).or_default();
+        let entry = next.enabled.entry(device_id.to_owned()).or_default();
         let already = entry.contains(&Feature::Debug);
         if !already {
             entry.push(Feature::Debug);
             entry.sort();
         }
-        let mut seen = self.debug_defaulted.clone();
-        seen.insert(device_id.to_owned());
-        self.persist(&next, &seen)?;
-        self.enabled = next;
-        self.debug_defaulted = seen;
+        next.debug_defaulted.insert(device_id.to_owned());
+        self.persist(&next.enabled, &next.debug_defaulted)?;
+        *self.view() = next;
         Ok(!already)
     }
 
     /// Consent is opt-in: anything not recorded is off.
     pub fn is_enabled(&self, device_id: &str, feature: Feature) -> bool {
-        self.enabled
+        self.view()
+            .enabled
             .get(device_id)
             .is_some_and(|f| f.contains(&feature))
     }
 
-    pub fn set(
-        &mut self,
-        device_id: &str,
-        feature: Feature,
-        enabled: bool,
-    ) -> Result<(), KdeError> {
-        let mut next = self.enabled.clone();
-        let entry = next.entry(device_id.to_owned()).or_default();
+    pub fn set(&self, device_id: &str, feature: Feature, enabled: bool) -> Result<(), KdeError> {
+        let _writer = self.writer();
+        let mut next = self.view().clone();
+        let entry = next.enabled.entry(device_id.to_owned()).or_default();
         entry.retain(|f| *f != feature);
         if enabled {
             entry.push(feature);
             entry.sort();
         }
         if entry.is_empty() {
-            next.remove(device_id);
+            next.enabled.remove(device_id);
         }
-        if next.len() > MAX_CONSENT_DEVICES {
+        if next.enabled.len() > MAX_CONSENT_DEVICES {
             return Err(KdeError::Store("consent store is full".into()));
         }
-        self.persist(&next, &self.debug_defaulted)?;
-        self.enabled = next;
+        self.persist(&next.enabled, &next.debug_defaulted)?;
+        *self.view() = next;
         Ok(())
     }
 
-    pub fn forget(&mut self, device_id: &str) -> Result<(), KdeError> {
-        if !self.enabled.contains_key(device_id) && !self.debug_defaulted.contains(device_id) {
+    pub fn forget(&self, device_id: &str) -> Result<(), KdeError> {
+        let _writer = self.writer();
+        let mut next = self.view().clone();
+        if !next.enabled.contains_key(device_id) && !next.debug_defaulted.contains(device_id) {
             return Ok(());
         }
-        let mut next = self.enabled.clone();
-        next.remove(device_id);
-        let mut seen = self.debug_defaulted.clone();
-        seen.remove(device_id);
-        self.persist(&next, &seen)?;
-        self.enabled = next;
-        self.debug_defaulted = seen;
+        next.enabled.remove(device_id);
+        next.debug_defaulted.remove(device_id);
+        self.persist(&next.enabled, &next.debug_defaulted)?;
+        *self.view() = next;
         Ok(())
     }
 
@@ -423,13 +438,39 @@ mod tests {
         }
     }
 
+    /// `status` reads consents on an async worker; a writer waiting for the file lock (or an fsync)
+    /// must not hold those reads up.
+    #[test]
+    fn consent_reads_are_not_blocked_by_a_writer_waiting_for_the_file_lock() {
+        use std::time::{Duration, Instant};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("state");
+        fsutil::ensure_private_dir(&dir).unwrap();
+        let id = "c4".repeat(16);
+        let store = Arc::new(ConsentStore::open(&dir).unwrap());
+        let lock =
+            fsutil::lock_exclusive(&bridge_core::statefile::lock_path(store.file.path())).unwrap();
+        let writer = {
+            let (store, id) = (store.clone(), id.clone());
+            std::thread::spawn(move || store.set(&id, Feature::Sms, true))
+        };
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        assert!(!store.is_enabled(&id, Feature::Sms));
+        let took = started.elapsed();
+        drop(lock);
+        writer.join().unwrap().unwrap();
+        assert!(took < Duration::from_millis(200), "reads waited {took:?}");
+        assert!(store.is_enabled(&id, Feature::Sms));
+    }
+
     #[test]
     fn debug_consent_defaults_on_once_and_the_users_off_sticks() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("state");
         fsutil::ensure_private_dir(&dir).unwrap();
         let id = "c3".repeat(16);
-        let mut store = ConsentStore::open(&dir).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
         assert!(
             !store.is_enabled(&id, Feature::Debug),
             "off until a debug phone shows up"
@@ -439,7 +480,7 @@ mod tests {
         store.set(&id, Feature::Debug, false).unwrap();
         // A later connection of the same phone, even after a restart, must not switch it back on.
         assert!(!store.default_debug_on(&id).unwrap());
-        let mut again = ConsentStore::open(&dir).unwrap();
+        let again = ConsentStore::open(&dir).unwrap();
         assert!(!again.default_debug_on(&id).unwrap());
         assert!(!again.is_enabled(&id, Feature::Debug));
         // Unpairing forgets it, so a re-paired debug phone starts on again.
@@ -462,7 +503,7 @@ mod tests {
         put(format!(
             r#"{{"version":1,"extra":{{"a":1}},"devices":{{"{id}":["sms","clipboard","hologram"]}}}}"#
         ));
-        let mut store = ConsentStore::open(&dir).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
         assert!(store.is_enabled(&id, Feature::Sms));
         assert!(store.is_enabled(&id, Feature::Clipboard));
         store.set(&id, Feature::Contacts, true).unwrap();
@@ -474,7 +515,7 @@ mod tests {
         // Newer format: readable, refuses to write, file untouched.
         put(format!(r#"{{"version":4,"devices":{{"{id}":["sms"]}}}}"#));
         let before = std::fs::read(&path).unwrap();
-        let mut store = ConsentStore::open(&dir).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
         assert!(store.is_enabled(&id, Feature::Sms));
         assert!(matches!(
             store.set(&id, Feature::Contacts, true),
@@ -487,7 +528,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), before);
         // Damage falls back to the previous generation, else to "everything off".
         put(format!(r#"{{"version":1,"devices":{{"{id}":["sms"]}}}}"#));
-        let mut store = ConsentStore::open(&dir).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
         store.set(&id, Feature::Contacts, true).unwrap();
         std::fs::write(&path, b"").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -504,7 +545,7 @@ mod tests {
         let dir = tmp.path().join("state");
         fsutil::ensure_private_dir(&dir).unwrap();
         let id = "a".repeat(32);
-        let mut store = ConsentStore::open(&dir).unwrap();
+        let store = ConsentStore::open(&dir).unwrap();
         for feature in Feature::ALL {
             assert!(!store.is_enabled(&id, feature));
         }

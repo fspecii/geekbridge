@@ -353,7 +353,7 @@ impl TrustedLink {
             let body = pairing::PairBody::parse(&packet)?;
             match (body.pair, body.timestamp) {
                 (false, _) => {
-                    self.store.remove(&self.conn.info.peer.device_id)?;
+                    self.remove_trust().await?;
                     return Ok(LinkEvent::PeerUnpaired);
                 }
                 // Duplicate accept on an already paired link: ignore (stock Android would
@@ -369,9 +369,21 @@ impl TrustedLink {
 
     /// Delete the local trust record first, then tell the peer (best effort).
     pub async fn unpair(mut self) -> Result<()> {
-        self.store.remove(&self.conn.info.peer.device_id)?;
+        self.remove_trust().await?;
         let _ = self.conn.send(&pairing::pair_packet(false, None)).await;
         Ok(())
+    }
+
+    /// Remove this peer's trust record off the async workers (file lock + fsync).
+    fn remove_trust(&self) -> impl Future<Output = Result<()>> + Send + use<> {
+        let store = self.store.clone();
+        let id = self.conn.info.peer.device_id.clone();
+        async move {
+            tokio::task::spawn_blocking(move || store.remove(&id))
+                .await
+                .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into())))
+                .map(|_| ())
+        }
     }
 }
 

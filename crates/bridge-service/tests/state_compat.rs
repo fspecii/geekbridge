@@ -347,7 +347,7 @@ fn regenerate_fixtures() {
             paired_at_unix: 1_700_000_000,
         })
         .unwrap();
-    let mut consents = bridge_service::private::ConsentStore::open(&dir).unwrap();
+    let consents = bridge_service::private::ConsentStore::open(&dir).unwrap();
     consents.set(PHONE_ID, Feature::Clipboard, true).unwrap();
     consents.set(PHONE_ID, Feature::Sms, true).unwrap();
     for (name, body) in [
