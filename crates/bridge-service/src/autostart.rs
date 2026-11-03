@@ -408,12 +408,18 @@ mod tests {
 
     #[test]
     fn launch_agent_has_exact_shape() {
-        let p = launch_agent(Path::new("/opt/gb/geekbridge-service"));
+        // Absolute on every host (a leading slash alone is not absolute on Windows).
+        let exe = if cfg!(windows) {
+            "C:\\opt\\gb\\geekbridge-service"
+        } else {
+            "/opt/gb/geekbridge-service"
+        };
+        let p = launch_agent(Path::new(exe));
         let p = p.unwrap();
         assert!(p.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist"));
-        assert!(p.contains(
-            "<key>ProgramArguments</key><array><string>/opt/gb/geekbridge-service</string></array>"
-        ));
+        assert!(p.contains(&format!(
+            "<key>ProgramArguments</key><array><string>{exe}</string></array>"
+        )));
         assert!(p.ends_with("</dict>\n</plist>\n"));
     }
 
