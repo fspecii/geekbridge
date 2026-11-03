@@ -330,6 +330,12 @@ pub fn prepare_control(
                 "GeekBridge service: control API unavailable ({}): {detail}",
                 why.code
             );
+            if why.code == "state_insecure" {
+                eprintln!(
+                    "GeekBridge service: {}",
+                    private::insecure_hint(cfg!(windows), state_dir)
+                );
+            }
             control::Control::Unavailable(why)
         }
     }

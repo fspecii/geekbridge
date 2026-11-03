@@ -59,6 +59,21 @@ impl Unavailable {
     }
 }
 
+/// What to tell the operator when the state directory is refused as not private. The directory
+/// holds the identity key and the control token, so the service never "fixes" loose permissions by
+/// itself; this says why it refused and how to repair it. Goes to the terminal, never to clients.
+pub fn insecure_hint(windows: bool, dir: &Path) -> String {
+    let d = dir.display();
+    if windows {
+        return format!(
+            "hint: {d} already existed and Windows gave it permissions inherited from its parent folder (typical for a folder made in %TEMP% or by Explorer), so other accounts may be able to read the identity key and token. Either pick a --state-dir that does not exist yet (GeekBridge creates it private to your account), or protect this one once with: icacls \"{d}\" /inheritance:r /grant:r \"%USERNAME%:(OI)(CI)F\" \"SYSTEM:(OI)(CI)F\"  (then start the service again; if it still refuses, delete the folder and let GeekBridge create it)."
+        );
+    }
+    format!(
+        "hint: {d} or a file in it is readable by other users. Fix with: chmod 700 \"{d}\" && chmod 600 \"{d}\"/*  (or choose a --state-dir that does not exist yet; GeekBridge creates it private)."
+    )
+}
+
 pub struct ConsentStore {
     file: PrivateStateFile,
     /// The file is from a newer build: readable, never rewritten.
@@ -399,6 +414,15 @@ mod tests {
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&ipc::token_path(&dir)), 0o600);
         assert_eq!(mode(&dir), 0o700);
+    }
+
+    #[test]
+    fn the_insecure_hint_names_the_fix_for_each_system() {
+        let w = insecure_hint(true, Path::new(r"C:\Temp\gb"));
+        assert!(w.contains("icacls") && w.contains("/inheritance:r") && w.contains(r"C:\Temp\gb"));
+        assert!(w.contains("does not exist yet") && w.contains("%TEMP%"));
+        let u = insecure_hint(false, Path::new("/tmp/gb"));
+        assert!(u.contains("chmod 700") && !u.contains("icacls"));
     }
 
     #[test]

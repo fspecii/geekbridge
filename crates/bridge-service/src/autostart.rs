@@ -144,24 +144,81 @@ pub fn reg_args(action: Action, exe: &Path) -> Result<Vec<String>, String> {
     })
 }
 
+/// The program in `reg query HKCU\...\Run /v GeekBridge` output:
+/// `    GeekBridge    REG_SZ    "C:\\Program Files\\GeekBridge\\geekbridge-service.exe"`.
+pub fn parse_reg_query(output: &str) -> Option<String> {
+    output.lines().find_map(|l| {
+        let rest = l.trim().strip_prefix(RUN_VALUE)?.trim_start();
+        let data = rest.strip_prefix("REG_SZ")?.trim();
+        let data = data
+            .strip_prefix('"')
+            .and_then(|d| d.strip_suffix('"'))
+            .unwrap_or(data);
+        (!data.is_empty()).then(|| data.to_owned())
+    })
+}
+
+/// The program path in a LaunchAgent plist written by [`launch_agent`] (XML escapes undone).
+pub fn plist_program(plist: &str) -> Option<String> {
+    let after = plist
+        .split("<key>ProgramArguments</key><array><string>")
+        .nth(1)?;
+    let raw = after.split("</string>").next()?;
+    Some(
+        raw.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&"),
+    )
+}
+
+/// A warning when the entry found points at another copy of the service than the one in use.
+pub fn stale_note(found: &str, service: &Path) -> Option<String> {
+    let same = if cfg!(windows) {
+        found.eq_ignore_ascii_case(&service.display().to_string())
+    } else {
+        found == service.display().to_string()
+    };
+    (!same).then(|| {
+        format!(
+            "; it starts {found}, not {}: run `geekbridge-ctl autostart enable` to point it here",
+            service.display()
+        )
+    })
+}
+
+/// Commands to start or stop the LaunchAgent now without logging out (user domain, no sudo).
+pub fn launchctl_commands(plist: &Path, uid: &str) -> String {
+    format!(
+        "launchctl bootstrap gui/{uid} \"{p}\"   (start now)\nlaunchctl bootout gui/{uid}/{AGENT_LABEL}   (stop)",
+        p = plist.display()
+    )
+}
+
 /// How to let phones reach this computer through its firewall, as text to show the user.
 pub fn firewall_help_for(os: Os, exe: &Path) -> String {
     let exe = exe.display();
     match os {
-        Os::Windows => format!(
-            "Windows Defender Firewall normally asks the first time geekbridge-service listens: choose \"Private networks\" and Allow access.\n\
-             To add the rules by hand, run this in an administrator PowerShell:\n\
-             \x20 netsh advfirewall firewall add rule name=\"GeekBridge TCP\" dir=in action=allow program=\"{exe}\" protocol=TCP localport={PORT_RANGE} profile=private\n\
-             \x20 netsh advfirewall firewall add rule name=\"GeekBridge UDP\" dir=in action=allow program=\"{exe}\" protocol=UDP localport={PORT_RANGE} profile=private\n\
-             To remove them: netsh advfirewall firewall delete rule name=\"GeekBridge TCP\" (and \"GeekBridge UDP\")."
-        ),
-        Os::MacOs => format!(
-            "macOS asks \"Do you want the application geekbridge-service to accept incoming network connections?\" the first time it listens: choose Allow.\n\
-             If the application firewall is on and you dismissed the prompt, allow it by hand:\n\
-             \x20 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add \"{exe}\"\n\
-             \x20 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp \"{exe}\"\n\
-             (System Settings > Network > Firewall > Options shows the same list.) Ports: TCP and UDP {PORT_RANGE}."
-        ),
+        Os::Windows | Os::MacOs => {
+            use bridge_core::firewall::{Tool, commands_for, guidance};
+            let tool = if os == Os::Windows {
+                Tool::WindowsDefender
+            } else {
+                Tool::MacAppFirewall
+            };
+            let lines: String = commands_for(tool, &exe.to_string())
+                .lines()
+                .map(|l| format!("\x20 {l}\n"))
+                .collect();
+            let undo = if os == Os::Windows {
+                "To remove them: netsh advfirewall firewall delete rule name=\"GeekBridge TCP\" (and \"GeekBridge UDP\")."
+            } else {
+                "To remove it: sudo /usr/libexec/ApplicationFirewall/socketfilterfw --remove <the same path>."
+            };
+            format!(
+                "{}\nRun these yourself; GeekBridge never runs elevated commands. Ports: TCP and UDP {PORT_RANGE}.\n{lines}{undo}",
+                guidance(tool)
+            )
+        }
         Os::Linux => format!(
             "Allow TCP and UDP {PORT_RANGE} from your local network, for example:\n\
              \x20 sudo ufw allow from 192.168.0.0/16 to any port 1716:1764 proto tcp\n\
@@ -221,7 +278,17 @@ pub fn run(action: Action, service: &Path) -> Result<String, String> {
             .output()
             .map_err(|e| format!("cannot run reg.exe: {e}"))?;
         return Ok(match (action, out.status.success()) {
-            (Action::Status, ok) => format!("autostart: {}", if ok { "on" } else { "off" }),
+            (Action::Status, true) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                match parse_reg_query(&text) {
+                    Some(found) => format!(
+                        "autostart: on ({RUN_KEY}\\{RUN_VALUE}){}",
+                        stale_note(&found, service).unwrap_or_default()
+                    ),
+                    None => "autostart: on".into(),
+                }
+            }
+            (Action::Status, false) => "autostart: off".into(),
             (Action::Enable, true) => {
                 "autostart: on; the service starts at your next sign-in".into()
             }
@@ -246,7 +313,24 @@ pub fn run(action: Action, service: &Path) -> Result<String, String> {
         Os::MacOs => launch_agent(service),
         _ => desktop_entry(service),
     };
-    file_action(action, &path, content)
+    let mut msg = file_action(action, &path, content)?;
+    if os == Os::MacOs && action != Action::Disable {
+        if action == Action::Status
+            && path.is_file()
+            && let Some(found) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|t| plist_program(&t))
+        {
+            msg.push_str(&stale_note(&found, service).unwrap_or_default());
+        }
+        if path.is_file() {
+            msg.push_str(&format!(
+                "\nstart or stop it right now without logging out:\n{}",
+                launchctl_commands(&path, "$(id -u)")
+            ));
+        }
+    }
+    Ok(msg)
 }
 
 #[cfg(test)]
@@ -279,6 +363,69 @@ mod tests {
         let p = launch_agent(&abs("Apps & Tools/geekbridge-service")).unwrap();
         assert!(p.contains("Apps &amp; Tools") && p.contains("<key>RunAtLoad</key><true/>"));
         assert!(p.contains(AGENT_LABEL));
+    }
+
+    #[test]
+    fn reg_query_output_is_parsed() {
+        let out = "\r\nHKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\r\n    GeekBridge    REG_SZ    \"C:\\Program Files\\GeekBridge\\geekbridge-service.exe\"\r\n\r\n";
+        assert_eq!(
+            parse_reg_query(out).as_deref(),
+            Some("C:\\Program Files\\GeekBridge\\geekbridge-service.exe")
+        );
+        assert_eq!(
+            parse_reg_query(
+                "ERROR: The system was unable to find the specified registry key or value."
+            ),
+            None
+        );
+        assert_eq!(parse_reg_query("    Other    REG_SZ    x"), None);
+    }
+
+    #[test]
+    fn plist_roundtrips_and_stale_entries_are_noticed() {
+        let exe = abs("Apps & Tools/geekbridge-service");
+        let plist = launch_agent(&exe).unwrap();
+        assert_eq!(plist_program(&plist).unwrap(), exe.display().to_string());
+        assert_eq!(plist_program("<plist/>"), None);
+        assert!(stale_note(&exe.display().to_string(), &exe).is_none());
+        let n = stale_note("/old/geekbridge-service", &exe).unwrap();
+        assert!(
+            n.contains("/old/geekbridge-service") && n.contains("autostart enable"),
+            "{n}"
+        );
+    }
+
+    #[test]
+    fn launchctl_lines_use_the_user_domain_without_sudo() {
+        let t = launchctl_commands(
+            Path::new("/Users/a/Library/LaunchAgents/dev.geekbridge.service.plist"),
+            "501",
+        );
+        assert!(t.contains("launchctl bootstrap gui/501 \"/Users/a/Library/LaunchAgents/dev.geekbridge.service.plist\""));
+        assert!(t.contains("launchctl bootout gui/501/dev.geekbridge.service"));
+        assert!(!t.contains("sudo"));
+    }
+
+    #[test]
+    fn launch_agent_has_exact_shape() {
+        let p = launch_agent(Path::new("/opt/gb/geekbridge-service"));
+        let p = p.unwrap();
+        assert!(p.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist"));
+        assert!(p.contains(
+            "<key>ProgramArguments</key><array><string>/opt/gb/geekbridge-service</string></array>"
+        ));
+        assert!(p.ends_with("</dict>\n</plist>\n"));
+    }
+
+    #[test]
+    fn windows_and_mac_firewall_text_is_the_copyable_commands() {
+        let exe = Path::new("/opt/gb/geekbridge-service");
+        let w = firewall_help_for(Os::Windows, exe);
+        assert!(w.contains("never runs elevated"));
+        assert!(w.contains("netsh advfirewall firewall add rule name=\"GeekBridge UDP\""));
+        let m = firewall_help_for(Os::MacOs, exe);
+        assert!(m.contains("socketfilterfw --unblockapp \"/opt/gb/geekbridge-service\""));
+        assert!(m.contains("Allow"));
     }
 
     #[test]

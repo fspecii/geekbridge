@@ -50,6 +50,7 @@ pub struct SessionEnv {
 }
 
 pub use bridge_core::firewall::{Firewall, firewall_blocks, ufw_allows};
+use bridge_core::firewall::{Tool, Verdict};
 
 pub struct Inputs {
     /// `Err` carries the text of the failed call.
@@ -64,8 +65,83 @@ pub struct Inputs {
     pub systemd_unit: bool,
 }
 
+/// Windows Defender Firewall and the macOS application firewall, when `fw` was read on those systems.
+fn native_firewall_check(fw: &Firewall, exe: &str) -> Option<Check> {
+    let title = "Firewall";
+    let (tool, name, off) = if fw.windows.is_some() {
+        (
+            Tool::WindowsDefender,
+            "Windows Defender Firewall",
+            "Windows Defender Firewall is off for every network profile; nothing here blocks the phone.",
+        )
+    } else if fw.mac.is_some() {
+        (
+            Tool::MacAppFirewall,
+            "The macOS application firewall",
+            "The macOS application firewall is off; nothing here blocks the phone.",
+        )
+    } else {
+        return None;
+    };
+    let fix = format!(
+        "{}\n{}",
+        bridge_core::firewall::guidance(tool),
+        bridge_core::firewall::commands_for(tool, exe)
+    );
+    Some(match bridge_core::firewall::verdict(fw) {
+        Verdict::Fine
+            if fw.windows.as_ref().is_some_and(|w| {
+                bridge_core::firewall::parse_netsh_state(&w.state) == Some(true)
+            }) =>
+        {
+            check(
+                Level::Ok,
+                title,
+                "Windows Defender Firewall is on and has an inbound rule for geekbridge-service on TCP and UDP 1716-1764.",
+                None,
+            )
+        }
+        Verdict::Fine
+            if fw.mac.as_ref().is_some_and(|m| {
+                bridge_core::firewall::parse_mac_state(&m.state)
+                    != Some(bridge_core::firewall::MacState::Off)
+            }) =>
+        {
+            check(
+                Level::Ok,
+                title,
+                "The macOS application firewall is on and lets geekbridge-service accept incoming connections.",
+                None,
+            )
+        }
+        Verdict::Fine => check(Level::Ok, title, off, None),
+        Verdict::Blocking(_) => check(
+            Level::Fail,
+            title,
+            format!(
+                "{name} is on and does not let geekbridge-service accept incoming connections, so the phone cannot find or reach this computer (pairing times out silently)."
+            ),
+            Some(&fix),
+        ),
+        Verdict::Unverified(_) => check(
+            Level::Warn,
+            title,
+            format!(
+                "{name} is on, but this check cannot tell whether geekbridge-service is allowed (the program is not in its list yet, or the output could not be read)."
+            ),
+            Some(&fix),
+        ),
+    })
+}
+
 fn firewall_check(fw: &Firewall) -> Check {
     let title = "Firewall";
+    let exe = bridge_core::firewall::default_service_exe()
+        .display()
+        .to_string();
+    if let Some(c) = native_firewall_check(fw, &exe) {
+        return c;
+    }
     let fix_ufw =
         "geekbridge-ctl firewall   (prints the exact sudo ufw lines for TCP and UDP 1716-1764)";
     match fw.ufw_enabled {
@@ -646,6 +722,7 @@ mod tests {
             ufw_enabled: Some(true),
             ufw_rules: rules.map(str::to_owned),
             firewalld_active: false,
+            ..Default::default()
         };
         assert!(firewall_blocks(&on(Some(""))));
         assert!(!firewall_blocks(&on(Some(BOTH))));
@@ -778,6 +855,7 @@ mod tests {
             ufw_enabled: enabled,
             ufw_rules: rules.map(str::to_owned),
             firewalld_active: firewalld,
+            ..Default::default()
         }
     }
 
@@ -1313,5 +1391,49 @@ mod tests {
         );
         assert_eq!(hint_for_error(""), None);
         assert_eq!(hint_for_error("timeout"), None);
+    }
+
+    #[test]
+    fn windows_and_mac_firewall_checks_name_the_exact_commands() {
+        use bridge_core::firewall::{MacFw, WindowsFw};
+        let win = |rules: &str| Firewall {
+            windows: Some(WindowsFw {
+                state: "State                                 ON".into(),
+                rules: rules.into(),
+                exe: r"C:\gb\geekbridge-service.exe".into(),
+            }),
+            ..Default::default()
+        };
+        let c = native_firewall_check(
+            &win("Rule Name: x\nEnabled: No\n"),
+            r"C:\gb\geekbridge-service.exe",
+        )
+        .unwrap();
+        assert_eq!(c.level, Level::Fail);
+        let fix = c.fix.unwrap();
+        assert!(
+            fix.contains("netsh advfirewall firewall add rule name=\"GeekBridge TCP\""),
+            "{fix}"
+        );
+        assert!(fix.contains("administrator"));
+        let allow = "Rule Name: x\nEnabled: Yes\nDirection: In\nProgram: C:\\gb\\geekbridge-service.exe\nProtocol: Any\nLocalPort: Any\nAction: Allow\n";
+        let ok = native_firewall_check(&win(allow), r"C:\gb\geekbridge-service.exe").unwrap();
+        assert_eq!(ok.level, Level::Ok);
+        let mac = Firewall {
+            mac: Some(MacFw {
+                state: "Firewall is enabled. (State = 1)".into(),
+                app: "The application is not part of the application firewall.".into(),
+            }),
+            ..Default::default()
+        };
+        let c = native_firewall_check(&mac, "/opt/geekbridge-service").unwrap();
+        assert_eq!(c.level, Level::Warn);
+        let fix = c.fix.unwrap();
+        assert!(
+            fix.contains("socketfilterfw --add \"/opt/geekbridge-service\""),
+            "{fix}"
+        );
+        assert!(fix.contains("Allow"));
+        assert!(native_firewall_check(&Firewall::default(), "/x").is_none());
     }
 }

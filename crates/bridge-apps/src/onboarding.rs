@@ -91,9 +91,7 @@ pub fn nearby_phones(model: &DiscoveryModel) -> Vec<String> {
 pub fn copy_text(kind: CopyKind, facts: &Facts) -> String {
     match kind {
         CopyKind::Link => RELEASES_URL.to_owned(),
-        CopyKind::Firewall => {
-            firewall::commands(tool_of(facts.firewall).unwrap_or(Tool::Ufw)).to_owned()
-        }
+        CopyKind::Firewall => firewall::commands(tool_of(facts.firewall).unwrap_or(Tool::Ufw)),
         CopyKind::Service => service_command().to_owned(),
     }
 }
@@ -173,6 +171,8 @@ fn tool_name(t: Tool) -> &'static str {
     match t {
         Tool::Ufw => "ufw",
         Tool::Firewalld => "firewalld",
+        Tool::WindowsDefender => "Windows Defender Firewall", // i18n-ok: product name
+        Tool::MacAppFirewall => "macOS firewall",             // i18n-ok: product name
     }
 }
 
@@ -382,7 +382,7 @@ fn firewall_note(ui: &mut egui::Ui, pal: &Palette, f: &Facts, act: &mut Option<A
             "onboarding.fw.why_unverified"
         }),
     );
-    code_box(ui, pal, firewall::commands(tool));
+    code_box(ui, pal, &firewall::commands(tool));
     small(ui, pal, tr("onboarding.fw.never_runs"));
     copy_button(ui, pal, CopyKind::Firewall, f.copied, act);
 }
