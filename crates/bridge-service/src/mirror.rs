@@ -219,13 +219,19 @@ impl Mirror {
     }
 
     /// The banner for `n`, with the text only when content is allowed.
-    pub fn banner(&self, device_name: &str, n: &Mirrored) -> MirrorBanner {
-        let slot: String =
-            n.id.bytes()
-                .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
-                    (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
-                })
-                .to_string();
+    pub fn banner(&self, device_id: &str, device_name: &str, n: &Mirrored) -> MirrorBanner {
+        // The slot is what a notification server replaces a banner by: it must name the phone as well, or
+        // a second phone could pick the same notification id and wipe the first one's banner (and its
+        // buttons) from the screen. The phone id is ours (a paired id); only letters and digits are kept.
+        let hash = n.id.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+        });
+        let dev: String = device_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .take(64)
+            .collect();
+        let slot = format!("{dev}-{hash}");
         MirrorBanner {
             device_name: device_name.to_owned(),
             app: if n.app.is_empty() {
@@ -271,7 +277,13 @@ impl NotifySendMirror {
             .enumerate()
         {
             // The key is an index, never the phone's text; the label is cleaned and has no `=`.
-            args.push(format!("--action=a{i}={}", clean(a, 32).replace('=', "-")));
+            let label = clean(a, 32).replace('=', "-");
+            let label = if label.trim().is_empty() {
+                "Action".to_owned()
+            } else {
+                label
+            };
+            args.push(format!("--action=a{i}={label}"));
         }
         args.push("--".into());
         args.push(clean(&b.app, 48));
@@ -295,18 +307,85 @@ impl NotifySendMirror {
     }
 }
 
+/// Banners (one `notify-send --wait` process and thread each) open at once. A notification server that
+/// ignores the expiry, or a phone that floods, must not grow processes without bound.
+pub const MAX_OPEN_BANNERS: usize = 8;
+/// A banner is abandoned (its process killed) after this long, whatever the server does.
+pub const BANNER_LIFETIME: Duration = Duration::from_secs(60);
+
+static OPEN_BANNERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One of at most `max` open slots; released on drop.
+pub struct OpenSlot<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> OpenSlot<'a> {
+    pub fn acquire(counter: &'a std::sync::atomic::AtomicUsize, max: usize) -> Option<Self> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let mut n = counter.load(SeqCst);
+        loop {
+            if n >= max {
+                return None;
+            }
+            match counter.compare_exchange_weak(n, n + 1, SeqCst, SeqCst) {
+                Ok(_) => return Some(Self(counter)),
+                Err(now) => n = now,
+            }
+        }
+    }
+}
+
+impl Drop for OpenSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Run `cmd`, return its stdout, and kill it if it is still running after `limit`.
+pub fn run_bounded(mut cmd: std::process::Command, limit: Duration) -> Option<String> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    child
+        .stdout
+        .take()?
+        .take(256)
+        .read_to_string(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 impl MirrorNotifier for NotifySendMirror {
     fn show(&self, b: &MirrorBanner, reply: Box<dyn FnOnce(Choice) + Send>) {
+        let Some(slot) = OpenSlot::acquire(&OPEN_BANNERS, MAX_OPEN_BANNERS) else {
+            return; // too many still open: this one is only listed (ctl, tray, Home)
+        };
         let args = Self::args(b);
         let actions = b.actions.clone();
         std::thread::spawn(move || {
-            let out = std::process::Command::new("notify-send")
-                .args(&args)
-                .stdin(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .output();
-            if let Ok(out) = out
-                && let Some(c) = Self::choice(&String::from_utf8_lossy(&out.stdout), &actions)
+            let _slot = slot;
+            let mut cmd = std::process::Command::new("notify-send");
+            cmd.args(&args);
+            if let Some(out) = run_bounded(cmd, BANNER_LIFETIME)
+                && let Some(c) = Self::choice(&out, &actions)
             {
                 reply(c);
             }
@@ -374,14 +453,20 @@ mod tests {
     #[test]
     fn banners_hide_the_text_unless_content_is_allowed_and_are_rate_limited() {
         let m = Mirror::default();
-        assert_eq!(m.banner("Pixel", &n("1")).text, None);
+        assert_eq!(m.banner("dev", "Pixel", &n("1")).text, None);
         m.set_show_content(true);
         assert_eq!(
-            m.banner("Pixel", &n("1")).text.as_deref(),
+            m.banner("dev", "Pixel", &n("1")).text.as_deref(),
             Some("code 123456")
         );
-        assert_eq!(m.banner("P", &n("1")).slot, m.banner("P", &n("1")).slot);
-        assert_ne!(m.banner("P", &n("1")).slot, m.banner("P", &n("2")).slot);
+        assert_eq!(
+            m.banner("dev", "P", &n("1")).slot,
+            m.banner("dev", "P", &n("1")).slot
+        );
+        assert_ne!(
+            m.banner("dev", "P", &n("1")).slot,
+            m.banner("dev", "P", &n("2")).slot
+        );
         let t = Instant::now();
         let allowed = (0..20).filter(|_| m.banner_allowed(t)).count();
         assert_eq!(allowed, BANNER_BURST as usize);
@@ -417,5 +502,53 @@ mod tests {
         );
         assert_eq!(NotifySendMirror::choice("a9", &b.actions), None);
         assert_eq!(NotifySendMirror::choice("", &b.actions), None);
+    }
+
+    #[test]
+    fn two_phones_with_the_same_notification_id_never_share_a_banner_slot() {
+        let m = Mirror::default();
+        let a = m.banner("aaaa", "A", &n("same")).slot;
+        let b = m.banner("bbbb", "B", &n("same")).slot;
+        assert_ne!(a, b);
+        assert!(a.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+        // A hostile id cannot add hint syntax either.
+        let h = m.banner("aaaa", "A", &n("x:y;z\n")).slot;
+        assert!(h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    }
+
+    #[test]
+    fn open_banners_are_capped_and_a_stuck_one_is_killed() {
+        use std::sync::atomic::AtomicUsize;
+        let c = AtomicUsize::new(0);
+        let held: Vec<_> = (0..3).filter_map(|_| OpenSlot::acquire(&c, 3)).collect();
+        assert_eq!(held.len(), 3);
+        assert!(OpenSlot::acquire(&c, 3).is_none());
+        drop(held);
+        assert!(OpenSlot::acquire(&c, 3).is_some());
+        let t = Instant::now();
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        assert!(run_bounded(cmd, Duration::from_millis(300)).is_none());
+        assert!(t.elapsed() < Duration::from_secs(5));
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("a1");
+        assert_eq!(
+            run_bounded(cmd, Duration::from_secs(5)).as_deref(),
+            Some("a1\n")
+        );
+    }
+
+    #[test]
+    fn a_button_whose_label_cleans_to_nothing_still_gets_a_label() {
+        let b = MirrorBanner {
+            device_name: "P".into(),
+            app: "A".into(),
+            title: "t".into(),
+            text: None,
+            clearable: false,
+            actions: vec!["\u{200B}\u{202E}".into()],
+            slot: "1".into(),
+        };
+        assert!(NotifySendMirror::args(&b).contains(&"--action=a0=Action".to_owned()));
     }
 }
