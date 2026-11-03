@@ -36,7 +36,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          set -uo pipefail
+          set -u +e -o pipefail
           rel="target/$TARGET/release"
           ext=""; [[ "$RUNNER_OS" == "Windows" ]] && ext=".exe"
           fail=0
@@ -56,6 +56,8 @@ jobs:
             head -n 2 /tmp/help.out
           done
           state="$(mktemp -d)"
+          # Native Windows programs need a Windows path, not Git Bash's /tmp/... form.
+          [[ "$RUNNER_OS" == "Windows" ]] && state="$(cygpath -m "$state")"
           run "$rel/geekbridge-service$ext" --state-dir "$state" --no-tray --no-announce --no-listen-inbound \
             --api-port 18380 --control-port 18381 --discovery-port 18382 >"$RUNNER_TEMP/service.log" 2>&1 &
           svc=$!
@@ -66,8 +68,7 @@ jobs:
           done
           echo "--- ctl status"; cat "$RUNNER_TEMP/status.out"
           if [[ $ok != 1 ]]; then note "service never answered ctl status"; fail=1; fi
-          run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 doctor >"$RUNNER_TEMP/doctor.out" 2>&1
-          rc=$?
+          run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 doctor >"$RUNNER_TEMP/doctor.out" 2>&1 && rc=0 || rc=$?
           echo "--- ctl doctor (exit $rc)"; cat "$RUNNER_TEMP/doctor.out"
           note "doctor exit code $rc (non-zero only reports an environment problem, e.g. firewall; not a build failure)"
           kill "$svc" 2>/dev/null || true
