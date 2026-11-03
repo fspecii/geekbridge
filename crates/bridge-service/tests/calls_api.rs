@@ -68,6 +68,8 @@ async fn next_packet(phone_link: &mut kde::TrustedLink) -> kde::Packet {
             .unwrap();
         if let kde::LinkEvent::Packet(p) = event
             && p.kind == link::REQUEST
+            // The "send your state again" ask that follows switching Telephony on is not a control.
+            && p.body.get("action").and_then(|a| a.as_str()) != Some("report")
         {
             return p;
         }
@@ -80,6 +82,7 @@ async fn sends_nothing(phone_link: &mut kde::TrustedLink) -> bool {
         loop {
             if let Ok(kde::LinkEvent::Packet(p)) = phone_link.recv().await
                 && p.kind == link::REQUEST
+                && p.body.get("action").and_then(|a| a.as_str()) != Some("report")
             {
                 return;
             }
@@ -120,6 +123,7 @@ async fn next_request(phone_link: &mut kde::TrustedLink) -> (String, LinkAction)
             .unwrap();
         if let kde::LinkEvent::Packet(p) = event
             && p.kind == link::REQUEST
+            && p.body.get("action").and_then(|a| a.as_str()) != Some("report")
         {
             return link::parse_request(&p.body).unwrap();
         }
@@ -148,6 +152,22 @@ async fn answer_reject_and_hangup_over_the_phone_link() {
         enabled: true,
     })
     .await;
+    // Switching Telephony on asks the phone for the state it sent while the consent was off.
+    let ask = timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(kde::LinkEvent::Packet(p)) = phone_link.recv().await
+                && p.kind == link::REQUEST
+            {
+                return p;
+            }
+        }
+    })
+    .await
+    .expect("no report request after the consent was switched on");
+    assert_eq!(
+        link::parse_request(&ask.body).unwrap().1,
+        LinkAction::Report
+    );
     phone_link
         .send(&report(PhoneState::Ringing, true))
         .await

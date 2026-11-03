@@ -339,6 +339,16 @@ impl Core {
                     |c| (c.peer_id.to_string(), c.peer_name.clone()),
                 )
             };
+            if action == wire::LinkAction::Report {
+                // The computer switched Telephony on and has nothing yet: send it the state it missed. Answered with a
+                // state packet to that connection only; Kotlin is not involved and nothing is dialed or counted.
+                if let Some(last) = self.calls.current() {
+                    for ctl in self.trusted_ctls(Some(connection_id)) {
+                        let _ = ctl.try_send(Ctl::Calls(Out::State(last.clone())));
+                    }
+                }
+                return true;
+            }
             if action == wire::LinkAction::Dial
                 && !self.calls.lock().dials.admit(&device, Instant::now())
             {

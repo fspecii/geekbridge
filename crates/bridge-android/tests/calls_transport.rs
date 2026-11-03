@@ -539,6 +539,41 @@ fn a_computer_that_dials_too_often_is_refused_on_the_phone_and_told_why() {
     assert_eq!(phone.events(since, 1)[0]["request_id"], "a-1");
 }
 
+#[test]
+fn a_report_request_resends_the_current_state_to_that_computer_without_waking_kotlin() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    phone.ok(
+        "transport_calls_report",
+        json!({"state": "idle", "can_answer": true, "can_end": true, "can_dial": true}),
+    );
+    let first = peer.recv_kind(STATE);
+    // The computer dropped that state (its Telephony consent was off) and asks again.
+    peer.send(REQUEST, wire::request_body("s1", LinkAction::Report));
+    let again = peer.recv_kind(STATE);
+    assert_eq!(again.body, first.body);
+    // Nothing reached Kotlin and nothing counts against the dial allowance.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        phone.wait_events(0, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for i in 0..3 {
+        peer.send(
+            REQUEST,
+            wire::dial_request_body(&format!("d-{i}"), "+15550100"),
+        );
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        phone.wait_events(0, 1)["events"].as_array().unwrap().len(),
+        3
+    );
+}
+
 /// The REAL stock KDE Connect daemon's identity (captured, not hand-written) declares telephony and
 /// notification packets of its own but nothing of ours. Even with call control on and every computer
 /// allowed, no caller number or call state is queued for it.

@@ -66,7 +66,7 @@ when HFP is present but its audio link is closed, offers **Use computer audio**.
 | packet | direction | body |
 | --- | --- | --- |
 | `geekbridge.calls.state` | phone → computer | `state` (`idle`/`ringing`/`offhook`), optional `number`, `name` (≤ 128 bytes, no control characters), `canAnswer`, `canEnd`, `canDial` (absent = false) |
-| `geekbridge.calls.request` | computer → phone | `requestId` (`[A-Za-z0-9_-]{1,64}`), `action` (`answer`/`reject`/`hangup`/`dial`); `dial` also carries `number` (`+`? then 1-20 digits) |
+| `geekbridge.calls.request` | computer → phone | `requestId` (`[A-Za-z0-9_-]{1,64}`), `action` (`answer`/`reject`/`hangup`/`dial`/`report`); `dial` also carries `number` (`+`? then 1-20 digits); `report` asks the phone to send its state again (sent when Telephony is switched on here; answered with a `state` packet and no `result`, never reaches the app) |
 | `geekbridge.calls.result` | phone → computer | `requestId`, `ok`, optional `reason` (`permission_missing`/`no_such_call`/`failed`) |
 
 Rules (service, `gate.rs` + `call_control.rs`):

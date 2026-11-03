@@ -11,7 +11,7 @@
 //! | packet | direction | body |
 //! | --- | --- | --- |
 //! | [`STATE`] | phone to computer | `state` (`idle`, `ringing`, `offhook`), optional `number`/`name`, `canAnswer`, `canEnd`, `canDial` |
-//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`, `dial` with a `number`) |
+//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`, `dial` with a `number`, `report` = send the state again, answered by a STATE and no RESULT) |
 //! | [`RESULT`] | phone to computer | `requestId`, `ok`, optional `reason` |
 //!
 //! The phone decides what it may do: `canAnswer` and `canEnd` are true only while Android's
@@ -258,6 +258,10 @@ pub enum LinkAction {
     Hangup,
     /// Place a call. The request also carries a `number` ([`dial_request_body`]).
     Dial,
+    /// Send the current call state again. The computer asks when its Telephony consent is switched on: the
+    /// phone sent its state while that was off and the computer dropped it. Answered with a state packet
+    /// (no result), only if the phone allows calls for this computer.
+    Report,
 }
 impl LinkAction {
     pub fn as_str(self) -> &'static str {
@@ -266,6 +270,7 @@ impl LinkAction {
             Self::Reject => "reject",
             Self::Hangup => "hangup",
             Self::Dial => "dial",
+            Self::Report => "report",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -274,6 +279,7 @@ impl LinkAction {
             "reject" => Self::Reject,
             "hangup" => Self::Hangup,
             "dial" => Self::Dial,
+            "report" => Self::Report,
             _ => return None,
         })
     }
@@ -426,6 +432,13 @@ pub fn parse_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_request_round_trips_and_carries_no_number() {
+        let body = request_body("s-1", LinkAction::Report);
+        assert_eq!(body["action"], "report");
+        assert_eq!(parse_request(&body), Ok(("s-1".into(), LinkAction::Report)));
+    }
 
     #[test]
     fn dial_refusals_round_trip_with_their_own_words() {

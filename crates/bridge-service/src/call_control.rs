@@ -339,13 +339,25 @@ impl CallHub {
 
     /// Per-device "Telephony" consent changed. Turning it off forgets what the phone reported.
     pub fn set_enabled(self: &Arc<Self>, device_id: &str, enabled: bool) {
-        if let Some(phone) = self.inner().links.get_mut(device_id) {
-            phone.enabled = enabled;
-            if !enabled {
-                phone.report = None;
-                phone.state = CallState::default();
-                phone.pending.clear();
-            }
+        let mut guard = self.inner();
+        let inner = &mut *guard;
+        let Some(phone) = inner.links.get_mut(device_id) else {
+            return;
+        };
+        let was = std::mem::replace(&mut phone.enabled, enabled);
+        if !enabled {
+            phone.report = None;
+            phone.state = CallState::default();
+            phone.pending.clear();
+        } else if !was {
+            // The phone's state was dropped while the consent was off and it only sends changes: ask for it again.
+            // No result is expected, so it is not a pending request; a phone that does not know it ignores it.
+            inner.next_request += 1;
+            let _ = phone.tx.try_send(LinkRequest {
+                request_id: format!("s{}", inner.next_request),
+                action: LinkAction::Report,
+                number: None,
+            });
         }
     }
 
@@ -921,6 +933,8 @@ mod tests {
         let row = v.ringing().unwrap();
         assert!(row.answer.is_none() && row.reject.is_none());
         assert!(row.missing_control.is_some());
+        // Only the "report again" request after the consent came back; no control was sent.
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Report);
         assert!(rx.try_recv().is_err());
 
         hub.set_enabled("dev", false);
@@ -1252,9 +1266,11 @@ mod tests {
                 "{source}"
             );
         }
+        // Only the "report again" request after the consent came back; no dial was sent.
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Report);
         assert!(rx.try_recv().is_err());
         hub.dial("link:dev", &number("112")).unwrap();
-        assert!(rx.try_recv().is_ok());
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Dial);
     }
 
     #[test]
@@ -1308,6 +1324,32 @@ mod tests {
             hub.dial(other, &number("112")).unwrap_err().code,
             ErrorCode::NotFound
         );
+    }
+
+    #[test]
+    fn switching_telephony_on_asks_the_phone_to_report_again_but_only_then() {
+        let hub = CallHub::new();
+        let mut rx = hub.link_up("dev", "Pixel", true);
+        // Already on when the link came up: the phone reports by itself.
+        assert!(rx.try_recv().is_err());
+        hub.set_enabled("dev", true);
+        assert!(rx.try_recv().is_err(), "no change, nothing to ask");
+        hub.set_enabled("dev", false);
+        assert!(rx.try_recv().is_err());
+        hub.set_enabled("dev", true);
+        let ask = rx.try_recv().expect("asked for the state again");
+        assert_eq!(ask.action, LinkAction::Report);
+        assert!(ask.number.is_none());
+        assert!(link::parse_request(&link::request_body(&ask.request_id, ask.action)).is_ok());
+        // It is not a pending dial/answer: it takes no slot and needs no result.
+        assert!(hub.inner().links["dev"].pending.is_empty());
+        // The answer is the phone's ordinary state packet.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canDial":true})),
+        );
+        assert!(hub.view().dial.is_some());
     }
 
     #[test]
