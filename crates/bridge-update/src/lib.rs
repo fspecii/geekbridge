@@ -16,7 +16,7 @@ mod http;
 mod release;
 mod version;
 
-pub use release::{Asset, Platform, Release, select_asset};
+pub use release::{Asset, Platform, Release, select_asset, select_asset_with};
 pub use version::Version;
 
 /// The untrusted-input parsers, exposed only so `crates/bridge-fuzz` can drive them.
@@ -154,6 +154,9 @@ pub struct Config {
     pub tick: Duration,
     /// Manual checks closer together than this are answered from the cache.
     pub manual_cooldown: Duration,
+    /// Also offer experimental archives (`-gnu-`, `experimental`) when a release has no regular
+    /// one for this system. Off unless `GEEKBRIDGE_UPDATE_EXPERIMENTAL=1`.
+    pub experimental: bool,
 }
 
 impl Config {
@@ -175,6 +178,7 @@ impl Config {
             min_gap: Duration::from_secs(600),
             tick: Duration::from_secs(30),
             manual_cooldown: Duration::from_secs(30),
+            experimental: false,
         }
     }
 
@@ -191,6 +195,8 @@ impl Config {
                 eprintln!("GeekBridge: ignoring GEEKBRIDGE_UPDATE_REPO (expected owner/name)");
             }
         }
+        cfg.experimental = std::env::var("GEEKBRIDGE_UPDATE_EXPERIMENTAL")
+            .is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"));
         cfg.token = std::env::var("GEEKBRIDGE_UPDATE_TOKEN")
             .ok()
             .map(|t| t.trim().to_owned())
@@ -635,9 +641,10 @@ impl Updater {
             sha256: None,
         };
         if version > self.current {
-            cached.asset = select_asset(&release.assets, &self.cfg.platform)
-                .filter(|a| release::url_allowed(policy, &a.browser_download_url))
-                .cloned();
+            cached.asset =
+                select_asset_with(&release.assets, &self.cfg.platform, self.cfg.experimental)
+                    .filter(|a| release::url_allowed(policy, &a.browser_download_url))
+                    .cloned();
             if let (Some(asset), Some(sums)) = (&cached.asset, find_sums_asset(&release.assets))
                 && release::url_allowed(policy, &sums.browser_download_url)
             {

@@ -118,7 +118,33 @@ fn ext_rank(os: &str, lower: &str) -> Option<usize> {
 /// and a known archive/installer extension. Android packages, checksum files and anything for
 /// another platform are never chosen.
 pub fn select_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset> {
-    pick_asset(assets, platform).or_else(|| {
+    select_asset_with(assets, platform, false)
+}
+
+/// True for assets that are never an update candidate: Android packages, checksum files, SBOMs and
+/// debug builds.
+fn never_offered(lower: &str) -> bool {
+    lower.contains("android")
+        || lower.ends_with(".apk")
+        || lower.contains("sha256")
+        || lower.contains("sbom")
+        || lower.contains("debug")
+}
+
+/// True for assets a release carries for people who asked for them: cross-built `-gnu-` and
+/// `experimental` archives that have not been run on the target system.
+fn is_experimental(lower: &str) -> bool {
+    lower.contains("experimental") || lower.contains("-gnu-") || lower.contains("-gnu.")
+}
+
+/// [`select_asset`], with `experimental` (`GEEKBRIDGE_UPDATE_EXPERIMENTAL=1`) allowing the
+/// experimental archives as a last resort: a regular archive for the platform always wins.
+pub fn select_asset_with<'a>(
+    assets: &'a [Asset],
+    platform: &Platform,
+    experimental: bool,
+) -> Option<&'a Asset> {
+    pick_asset(assets, platform, experimental).or_else(|| {
         // Windows on ARM runs x64 programs under emulation: a release without a native
         // `geekbridge-windows-aarch64` archive still updates such a machine with the x86_64 one.
         // Never the other way round, and never across operating systems.
@@ -129,12 +155,17 @@ pub fn select_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a 
                     os: "windows".into(),
                     arch: "x86_64".into(),
                 },
+                experimental,
             )
         })?
     })
 }
 
-fn pick_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset> {
+fn pick_asset<'a>(
+    assets: &'a [Asset],
+    platform: &Platform,
+    experimental: bool,
+) -> Option<&'a Asset> {
     let os = os_words(&platform.os);
     let arch = arch_words(&platform.arch);
     assets
@@ -142,7 +173,11 @@ fn pick_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset>
         .filter(|a| a.size > 0 && a.size <= MAX_ASSET_BYTES && safe_file_name(&a.name))
         .filter_map(|a| {
             let lower = a.name.to_ascii_lowercase();
-            if lower.contains("android") || lower.ends_with(".apk") || lower.contains("sha256") {
+            if never_offered(&lower) {
+                return None;
+            }
+            let exp = is_experimental(&lower);
+            if exp && !experimental {
                 return None;
             }
             let has_os = os.iter().any(|w| lower.contains(w));
@@ -151,7 +186,7 @@ fn pick_asset<'a>(assets: &'a [Asset], platform: &Platform) -> Option<&'a Asset>
             if !(has_os && has_arch) {
                 return None;
             }
-            Some((ext_rank(&platform.os, &lower)?, a))
+            Some(((exp, ext_rank(&platform.os, &lower)?), a))
         })
         // Same extension: the shortest name is the canonical `geekbridge-<os>-<arch>.<ext>`; a longer
         // one (`geekbridge-0.1.1-linux-x86_64-installer.tar.gz`, `…-debug…`) is an extra the release
@@ -411,6 +446,104 @@ mod tests {
             select_asset(&list, &p).unwrap().name,
             "geekbridge-linux-x86_64.tar.gz"
         );
+    }
+
+    /// Every asset name of a full local release (`release-local.sh --with-windows`).
+    fn full_release() -> Vec<Asset> {
+        [
+            "SHA256SUMS",
+            "geekbridge-0.1.1-linux-x86_64-installer.tar.gz",
+            "geekbridge-android-arm64.apk",
+            "geekbridge-android.apk",
+            "geekbridge-linux-aarch64.tar.gz",
+            "geekbridge-linux-x86_64.tar.gz",
+            "geekbridge-linux-x86_64-debug.tar.gz",
+            "geekbridge-macos-aarch64.zip",
+            "geekbridge-macos-x86_64.zip",
+            "geekbridge-sbom.cdx.json",
+            "geekbridge-windows-x86_64-gnu-experimental.zip",
+            "geekbridge-windows-x86_64.zip",
+            "geekbridge_0.1.1_amd64.deb",
+        ]
+        .iter()
+        .map(|n| asset(n, 5))
+        .collect()
+    }
+
+    fn plat(os: &str, arch: &str) -> Platform {
+        Platform {
+            os: os.into(),
+            arch: arch.into(),
+        }
+    }
+
+    #[test]
+    fn full_release_selection_table() {
+        let list = full_release();
+        let table = [
+            ("linux", "x86_64", Some("geekbridge-linux-x86_64.tar.gz")),
+            ("linux", "aarch64", Some("geekbridge-linux-aarch64.tar.gz")),
+            ("windows", "x86_64", Some("geekbridge-windows-x86_64.zip")),
+            ("windows", "aarch64", Some("geekbridge-windows-x86_64.zip")),
+            ("macos", "aarch64", Some("geekbridge-macos-aarch64.zip")),
+            ("macos", "x86_64", Some("geekbridge-macos-x86_64.zip")),
+        ];
+        for exp in [false, true] {
+            for (os, arch, want) in table {
+                assert_eq!(
+                    select_asset_with(&list, &plat(os, arch), exp).map(|a| a.name.as_str()),
+                    want,
+                    "{os}/{arch} experimental={exp}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn experimental_zip_is_never_the_only_windows_candidate_by_default() {
+        let list: Vec<Asset> = [
+            "SHA256SUMS",
+            "geekbridge-sbom.cdx.json",
+            "geekbridge-windows-x86_64-gnu-experimental.zip",
+            "geekbridge-linux-x86_64.tar.gz",
+        ]
+        .iter()
+        .map(|n| asset(n, 5))
+        .collect();
+        for arch in ["x86_64", "aarch64"] {
+            let p = plat("windows", arch);
+            assert!(select_asset(&list, &p).is_none(), "{arch}");
+            assert_eq!(
+                select_asset_with(&list, &p, true).unwrap().name,
+                "geekbridge-windows-x86_64-gnu-experimental.zip"
+            );
+        }
+        // Opting in never reaches SBOM, checksum or Android files, or other systems.
+        let junk: Vec<Asset> = [
+            "SHA256SUMS",
+            "geekbridge-sbom.cdx.json",
+            "geekbridge-android.apk",
+        ]
+        .iter()
+        .map(|n| asset(n, 5))
+        .collect();
+        for os in ["linux", "windows", "macos"] {
+            assert!(select_asset_with(&junk, &plat(os, "x86_64"), true).is_none());
+        }
+        assert!(select_asset_with(&list, &plat("macos", "x86_64"), true).is_none());
+    }
+
+    #[test]
+    fn debug_and_gnu_names_are_excluded() {
+        let list: Vec<Asset> = [
+            "geekbridge-linux-x86_64-debug.tar.gz",
+            "geekbridge-linux-x86_64-gnu-extra.tar.gz",
+        ]
+        .iter()
+        .map(|n| asset(n, 5))
+        .collect();
+        assert!(select_asset(&list, &plat("linux", "x86_64")).is_none());
+        assert!(select_asset_with(&list, &plat("linux", "x86_64"), true).is_some());
     }
 
     #[test]

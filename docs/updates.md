@@ -101,6 +101,16 @@ To update by hand: extract it, copy the executables over the installed ones (sam
 (`systemctl --user restart geekbridge-service`, or log out and in). Pairings and settings live in the state directory and
 are not touched. Verified with real artifacts: [updater-e2e.md](updater-e2e.md).
 
+### Experimental assets
+
+The selector never offers an asset whose name contains `experimental`, `-gnu-`, `debug`, `sbom` or `sha256`, nor an
+Android package, to a desktop. A local release built with `release-local.sh --with-windows` carries
+`geekbridge-windows-x86_64-gnu-experimental.zip` (zig cross-build, unsigned, never run on Windows); a Windows machine
+is therefore offered no update from such a release, and the regular `geekbridge-windows-x86_64.zip` that
+`release.yml` publishes is what gets selected when present. Testers who want the experimental archive set
+`GEEKBRIDGE_UPDATE_EXPERIMENTAL=1` for the service; it is then used only when no regular archive exists for the system.
+`--with-windows` is off by default and the release notes say the zip is experimental.
+
 ### Asset naming (what the selector expects)
 
 `geekbridge-<os>-<arch>.<tar.gz|zip>` with `os` in `linux|windows|macos` and `arch` in `x86_64|aarch64`

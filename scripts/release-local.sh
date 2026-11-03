@@ -451,7 +451,7 @@ else
     SIGNER_NOTE="Android APK is DEBUG-signed (prerelease only; not updatable from or to a release build). Signer SHA-256: \`$SIGNER\`"
 fi
 no_assets="Linux (x86_64 tarball, installer tarball, .deb, Arch package), Android and a CycloneDX SBOM (geekbridge-sbom.cdx.json) only."
-(( WINDOWS )) && no_assets="Linux, Android, a CycloneDX SBOM and an experimental, untested Windows zip."
+(( WINDOWS )) && no_assets="Linux, Android, a CycloneDX SBOM and an EXPERIMENTAL, untested Windows zip (geekbridge-windows-x86_64-gnu-experimental.zip; the in-app updater never offers it)."
 {
     printf '%s\n\n%s\n\n' "$notes_body" "$SIGNER_NOTE"
     printf 'Assets: %s Windows and macOS builds are not part of this release (build from source). ' "$no_assets"
