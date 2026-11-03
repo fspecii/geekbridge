@@ -439,7 +439,7 @@ fn parse_start(mut f: Fields) -> Result<StartArgs, ApiError> {
     })
 }
 
-/// `{"sms": ["<device id>", ...], ...}`: the six known features only, at most 16 valid device ids each.
+/// `{"sms": ["<device id>", ...], ...}`: the known features (`PERMIT_FEATURES`) only, at most 16 valid device ids each.
 fn parse_permits(mut o: Fields) -> Result<engine::PermitMap, ApiError> {
     let mut map = engine::PermitMap::new();
     for feature in engine::PERMIT_FEATURES {

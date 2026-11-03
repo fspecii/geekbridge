@@ -28,7 +28,7 @@ mkdir -p "$out"; out="$(cd "$out" && pwd -P)"   # absolute: the .deb is assemble
 [[ -n "$version" ]] || version="$(awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' "$ROOT/Cargo.toml")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || { echo "bad version '$version'" >&2; exit 64; }
 debversion="$(printf '%s' "$version" | sed 's/-/~/')"   # not ${version/-/~}: bash expands that ~ to $HOME
-bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share)
+mapfile -t bins < <(grep -v -e '^#' -e '^[[:space:]]*$' "$ROOT/scripts/release-binaries.txt")
 for b in "${bins[@]}"; do [[ -x "$bindir/$b" ]] || { echo "missing binary: $bindir/$b" >&2; exit 66; }; done
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)" >&2; exit 69; }
 

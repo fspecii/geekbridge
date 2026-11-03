@@ -8,7 +8,7 @@ directory. No sudo, no system packages, no global `PATH`/config edits, and
 | --- | --- |
 | `scripts/bootstrap-android.sh [--with-emulator]` | one-time toolchain install into `.tools/` |
 | `scripts/build-android.sh [--skip-tests] [--skip-lint] [--skip-host-tests]` | `dist/android/geekbridge-debug.apk` |
-| `scripts/build-desktop.sh [--locked]` | `dist/linux/geekbridge-{service,ctl,calls,messages,clipboard,agenda,contacts}` (`geekbridge-agenda` is the Calendar executable) |
+| `scripts/build-desktop.sh [--locked]` | `dist/linux/` with the nine binaries listed in `scripts/release-binaries.txt` (`geekbridge-agenda` is the Calendar executable) |
 | `source scripts/android-env.sh` | puts the local toolchain on `PATH` for the current shell |
 | `scripts/emulator-call.sh start\|stop\|status\|wait\|env\|state\|adb` | dedicated headless emulator (AVD `gbcall`) for emulated-call checks; see [emulated-calls.md](emulated-calls.md) |
 | `scripts/emulate-call.sh fake\|emulator [--only S1,S4] [--json]` | emulated-call end-to-end scenarios S1-S8 on a private D-Bus bus; simulated signalling only, see [emulated-calls.md](emulated-calls.md) |
@@ -105,10 +105,10 @@ development, not a release/Play artifact. Release signing is done only by the re
 ## Desktop (Linux)
 
 `scripts/build-desktop.sh` runs `cargo build --release -p bridge-service -p bridge-apps`
-with the host (distro) cargo and installs the service, the `geekbridge-ctl` helper and the Calls, Messages, Clipboard, Calendar
-(`geekbridge-agenda`) and Contacts executables into `dist/linux/` plus `SHA256SUMS`. The entry window `geekbridge` and
-`geekbridge-share` are built by the same cargo command but are only copied by `scripts/package-linux.sh` (from
-`target/release/`). Only Linux x86_64 is built. No Windows or macOS
+with the host (distro) cargo and installs the nine binaries named in `scripts/release-binaries.txt` (the entry window
+`geekbridge`, the service, the `geekbridge-ctl` helper and the Calls, Messages, Clipboard, Calendar (`geekbridge-agenda`),
+Contacts and Share executables) into `dist/linux/` plus `SHA256SUMS`. The same list drives `scripts/package-linux.sh` and
+`release.yml`; `scripts/check-binary-list.sh` fails if any of them drifts. Only Linux x86_64 is built. No Windows or macOS
 binaries exist or are implied.
 
 ## What was actually built and run (2026-11-01, this host; historical record)

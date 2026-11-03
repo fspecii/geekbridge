@@ -82,9 +82,9 @@ jobs:
           out="stage/geekbridge-${{ matrix.name }}"
           mkdir -p "$out" dist
           ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
-          for bin in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share; do
+          while IFS= read -r bin; do
             cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
-          done
+          done < <(grep -v -e '^#' -e '^[[:space:]]*$' scripts/release-binaries.txt | tr -d '\r')
           cp README.md LICENSE THIRD_PARTY_NOTICES.md "$out/"
           name="geekbridge-${{ matrix.name }}.${{ matrix.archive }}"
           if [[ "${{ matrix.archive }}" == "zip" ]]; then

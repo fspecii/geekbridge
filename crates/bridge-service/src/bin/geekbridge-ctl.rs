@@ -26,7 +26,8 @@ Commands:
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
-  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, clipboard, notifications, telephony, debug, battery
+  consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, calendar_edit, calendar_alerts,
+                                      clipboard, notifications, telephony, debug, battery
   notifications [DEVICE_ID] [--json]  phone notifications mirrored here (needs `consent ID notifications on`; prints
                                       personal data; memory only, newest first)
   notifications dismiss DEVICE_ID ID  dismiss one here and on the phone
@@ -1560,5 +1561,25 @@ mod clipboard_words_tests {
             describe_pull(&pull("waiting", None)),
             "Waiting for the phone..."
         );
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+
+    #[test]
+    fn help_lists_every_consent_feature() {
+        for f in Feature::ALL {
+            let name = serde_json::to_value(f).unwrap();
+            let name = name.as_str().unwrap();
+            let found = USAGE
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .any(|w| w == name);
+            assert!(
+                found,
+                "geekbridge-ctl --help does not list the consent feature {name}"
+            );
+        }
     }
 }

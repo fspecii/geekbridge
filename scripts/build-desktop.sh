@@ -13,15 +13,7 @@ IFS=$'\n\t'
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 DIST="$ROOT/dist/linux"
 
-BINARIES=(
-    geekbridge-service
-    geekbridge-ctl
-    geekbridge-calls
-    geekbridge-messages
-    geekbridge-clipboard
-    geekbridge-agenda
-    geekbridge-contacts
-)
+mapfile -t BINARIES < <(grep -v -e '^#' -e '^[[:space:]]*$' "$ROOT/scripts/release-binaries.txt")
 
 CARGO_FLAGS=()
 for arg in "$@"; do

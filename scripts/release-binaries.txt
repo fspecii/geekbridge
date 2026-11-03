@@ -1,0 +1,12 @@
+# One binary name per line: the desktop binaries every build and release ships.
+# Read by scripts/build-desktop.sh, scripts/package-linux.sh and .github/workflows/release.yml;
+# scripts/check-binary-list.sh keeps them in agreement.
+geekbridge
+geekbridge-service
+geekbridge-ctl
+geekbridge-calls
+geekbridge-messages
+geekbridge-clipboard
+geekbridge-agenda
+geekbridge-contacts
+geekbridge-share
