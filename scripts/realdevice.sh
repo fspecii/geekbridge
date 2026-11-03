@@ -12,10 +12,12 @@
 #                              commands; runs them only with --apply. Every WARN/FAIL names the quickstart section.
 #   firewall [--apply]         only the firewall part of `check`
 #   install [--apk FILE] [--build] [--no-grant] [--no-start]
-#                              locate (or --build) the debug APK, `adb install -r`, grant the runtime permissions
-#                              adb is allowed to grant, start the app
+#                              locate (or --build) the debug APK, check that Android will accept it over the copy on the
+#                              phone (same signing key, versionCode not lower; stops before `adb install -r` otherwise),
+#                              grant the runtime permissions adb is allowed to grant, start the app
 #   desktop [run-desktop.sh options]
-#                              start the service (private state dir) + home window, print the pairing QR and name
+#                              start the service (private state dir) + home window, print the pairing QR and name.
+#                              --restart runs a rebuilt binary and keeps the pairings; --fresh --forget-pairings starts over
 #   logs                       dist/realdevice/<timestamp>/: filtered logcat, dumpsys battery/batterystats/deviceidle/
 #                              meminfo/services, redacted `geekbridge-ctl diagnose`, README.md
 #   battery-baseline [--minutes N] [--label NAME]
@@ -65,7 +67,7 @@ while (($#)); do
     --serial) shift; SERIAL="${1:?--serial needs a value}" ;;
     --adb-port) shift; export ANDROID_ADB_SERVER_PORT="${1:?--adb-port needs a value}" ;;
     --dry-run) DRY=1 ;;
-    -h|--help|help) sed -n '3,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help|help) sed -n '3,38p' "${BASH_SOURCE[0]}"; exit 0 ;;
     --) shift; break ;;
     -*) die "unknown option $1 (try --help)" ;;
     *) break ;;
@@ -73,7 +75,7 @@ while (($#)); do
   shift
 done
 CMD="${1:-}"; shift || true
-[[ -n $CMD ]] || { sed -n '3,36p' "${BASH_SOURCE[0]}"; exit 2; }
+[[ -n $CMD ]] || { sed -n '3,38p' "${BASH_SOURCE[0]}"; exit 2; }
 
 # --------------------------------------------------------------------------- helpers
 find_adb() {
@@ -526,6 +528,41 @@ build_apk() {
   ok "dist/android/geekbridge-debug.apk updated"
 }
 
+# Will Android accept this APK over the copy on the phone? Same signing key and a versionCode that is not lower.
+# A different key (typically a build made in a shell that did not source scripts/android-env.sh, so it was signed with
+# ~/.android/debug.keystore) can only be installed after an uninstall, which deletes the pairings: stop before that.
+# Returns 1 when the install must not be attempted.
+check_update_path() {
+  local apk="$1" path tmp verdict iv nv
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/lib/apk-signer.sh"
+  if ((DRY)); then echo "  [dry-run] adb -s $SERIAL pull <installed base.apk>; compare signing key and versionCode"; return 0; fi
+  path="$(sh_ pm path "$PKG" | sed -n 's/^package://p' | grep 'base\.apk$' | head -1)"
+  if [[ -z $path ]]; then info "GeekBridge is not installed on this phone: a fresh install (pairings start empty)."; return 0; fi
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/gb-installed-XXXXXX")" || return 0
+  if ! A pull "$path" "$tmp/installed.apk" >/dev/null 2>&1; then
+    rm -rf "$tmp"; warn "could not read the installed APK to compare signing keys (continuing)"; return 0
+  fi
+  iv="$(apk_version_code "$tmp/installed.apk")"; nv="$(apk_version_code "$apk")"
+  verdict="$(apk_update_verdict "$tmp/installed.apk" "$apk")"
+  case $verdict in
+    ok) ok "update path: same signing key $(apk_signer_sha256 "$apk" | cut -c1-12)..., versionCode ${iv:-?} -> ${nv:-?}; pairings and settings are kept" ;;
+    same-version) ok "update path: same signing key, same versionCode ${nv:-?}: Android replaces the app in place (pairings kept)"
+      info "Nothing in the version number changes, so check the install time afterwards: adb shell dumpsys package $PKG | grep lastUpdateTime" ;;
+    downgrade) bad "the phone has a NEWER build (versionCode ${iv:-?}) than this APK (${nv:-?}): Android refuses a downgrade."
+      info "Install a newer build (scripts/realdevice.sh install --build), or accept losing the pairings: adb uninstall $PKG"
+      rm -rf "$tmp"; return 1 ;;
+    other-key) bad "this APK is signed with a DIFFERENT key than the copy on the phone: Android would refuse it (INSTALL_FAILED_UPDATE_INCOMPATIBLE)."
+      info "installed: $(apk_signer_sha256 "$tmp/installed.apk" | cut -c1-16)...   this APK: $(apk_signer_sha256 "$apk" | cut -c1-16)..."
+      info "Rebuild in a shell where the project toolchain is active (source scripts/android-env.sh; scripts/build-android.sh): it signs with .tools/android-user/debug.keystore."
+      info "Only if you accept re-pairing: adb uninstall $PKG, then run this again."
+      rm -rf "$tmp"; return 1 ;;
+    unsigned) bad "this APK has no valid signature (apksigner verify failed): $apk"; rm -rf "$tmp"; return 1 ;;
+    *) warn "could not compare versions or signing keys (apksigner/aapt2 missing?); continuing" ;;
+  esac
+  rm -rf "$tmp"
+}
+
 cmd_install() {
   local build=0 grant=1 start=1 APK_ARG=""
   while (($#)); do
@@ -554,6 +591,7 @@ cmd_install() {
     local match=0 a; for a in ${abis//,/ }; do [[ " $lib " == *" $a "* ]] && match=1; done
     ((match)) || { [[ -n $lib ]] && bad "APK has no native library for this phone's ABIs ($abis)"; }
   fi
+  check_update_path "$APK" || { summary; return 1; }
   local res
   if ((DRY)); then echo "  [dry-run] adb -s $SERIAL install -r $APK"; res=Success
   else res="$(A install -r "$APK" 2>&1 | tr -d '\r' | tail -3)"; fi

@@ -6,6 +6,14 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Fixed
+- Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state
+  directory that holds pairings (it needs `--forget-pairings` and then moves the old state aside instead of deleting it);
+  a running service that is older than its binary is no longer reused silently (`--restart` runs the new binary and keeps
+  every pairing); `scripts/realdevice.sh install` compares the signing key and versionCode of the APK with the app on the
+  phone first and stops before Android would refuse the update (a build signed with `~/.android/debug.keystore` instead of
+  the project key, or a downgrade), saying why and what it costs.
+
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android

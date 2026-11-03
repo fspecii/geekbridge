@@ -10,6 +10,10 @@ Android's log buffer is small.
 
 ## Bring-up checklist in 10 minutes
 
+**The phone is already paired and you only have a newer build?** Do not follow this table; `desktop --fresh` (step 6)
+forgets the pairing. Use the upgrade steps in [reports/preflight-upgrade.md](reports/preflight-upgrade.md): `$S install`
+(it compares the signing key and version with the app on the phone first) and `$S desktop --restart`.
+
 Run everything from `path/to/geekbridge`, in a terminal **inside Hyprland**. Do not `source scripts/android-env.sh` in
 that terminal (it points cargo at `target/android`, so the desktop binaries would not be in `target/release`).
 
@@ -20,7 +24,7 @@ that terminal (it points cargo at `target/android`, so the desktop binaries woul
 | 3 | Helper variable and a first health check | `S=scripts/realdevice.sh; $S check` | phone `PASS device authorised`, `PASS phone and this PC are on the same subnet`, Android line, a *battery wizard to expect* line. A `FAIL ufw` here is expected until step 4 | each WARN/FAIL names its section: subnets [T2](#t2-phone-and-pc-on-different-subnets-guest-wi-fi-client-isolation), VPN [T3](#t3-vpn-on-either-side) |
 | 4 | Open the firewall for this PC (ufw, default DROP, no GeekBridge rule yet; details in [Firewall on this machine](#firewall-on-this-machine)) | `$S firewall --apply` | two `sudo ufw allow from 192.168.1.0/24 ... 1716:1764 ...` lines run; then `PASS ufw: ... rules for 1716:1764 tcp+udp present` | [T1](#t1-the-phone-cannot-connect-firewall) |
 | 5 | Install and start the app | `$S install` | `PASS installed`, five `PASS granted ...`, `PASS process running` | [T0](#t0-the-phone-does-not-show-up-in-adb-devices) (install errors listed there) |
-| 6 | Start the PC side and print the QR (first start can take 10+ s) | `$S desktop --fresh` | `service up`, `the QR makes the phone try (in this order): <your LAN IP>:1716`, a QR in the terminal, the GeekBridge window on **Home** | [T4](#t4-many-network-interfaces-which-address-is-in-the-qr) if the address is wrong; [T9](#t9-build-and-tool-problems) if the service does not come up |
+| 6 | Start the PC side and print the QR (first start can take 10+ s). First time only: `--fresh` is refused while the state holds pairings (add `--forget-pairings` to start over; the old state is kept aside) | `$S desktop --fresh` | `service up`, `the QR makes the phone try (in this order): <your LAN IP>:1716`, a QR in the terminal, the GeekBridge window on **Home** | [T4](#t4-many-network-interfaces-which-address-is-in-the-qr) if the address is wrong; [T9](#t9-build-and-tool-problems) if the service does not come up |
 | 7 | The real reachability test, now that the service listens | `$S check` | section **Phone to this PC**: `PASS phone can ping ...`, `PASS phone reached <IP>:1716 over TCP`; `Result: ... 0 fail` | *timed out*: [T1](#t1-the-phone-cannot-connect-firewall)/[T2](#t2-phone-and-pc-on-different-subnets-guest-wi-fi-client-isolation)/[T3](#t3-vpn-on-either-side); *refused*: [T4](#t4-many-network-interfaces-which-address-is-in-the-qr) |
 | 8 | Pair: phone wizard step 1 **Pair with your computer** > **Scan QR code** > **Open the camera app**, scan, tap the link > **Continue** > **Pair** (details: checklist row 1 below) | `eval "$(scripts/run-desktop.sh --env)"; geekbridge-ctl status` | phone under `paired`, link `phase: connected`; phone says "Paired with ..." | QR scan did nothing / "no address answered": [T5](#t5-discovery-mdns-and-udp-broadcast-blocked-pair-by-qr-only) and [T4](#t4-many-network-interfaces-which-address-is-in-the-qr); `geekbridge-ctl test-connection` explains the failing step |
 | 9 | Battery exemption for this phone's OEM | app wizard > battery > **Allow unrestricted battery**, then the vendor step `check` printed | `$S logs`, then `dumpsys-deviceidle.txt` lists the package under *whitelist* | [T8](#t8-wi-fi-power-saving-doze-and-oem-battery-managers) |
@@ -47,7 +51,7 @@ The same steps as the table above, with the detail:
 | 0.1 | Phone: USB debugging on, plug in, accept the RSA prompt. `$S check` | phone listed as `device`, same-subnet PASS, "no VPN on the phone", no FAIL except the firewall. Note the printed *battery wizard to expect* line. | |
 | 0.2 | **Firewall.** `$S firewall --apply` (runs the two printed `sudo ufw allow from <LAN> ... 1716:1764 tcp/udp` lines; undo lines are printed too). See [Firewall on this machine](#firewall-on-this-machine). | `check` shows firewall PASS | |
 | 0.3 | `$S install` (add `--build` if `check` says sources are newer; `--no-grant` to see the first-run permission prompts). A Play Protect "Scan app?" dialog on the phone: **Don't send** / **Install anyway**. | `installed`, app opens on the setup wizard | |
-| 0.4 | `$S desktop` (service + home window + terminal QR; `--fresh` forgets old pairings). The very first start creates the identity key and can take 10+ s; wait for `service up`. | `geekbridge-ctl status` answers; the GeekBridge window opens on **Home** (no QR there, see step 1) and the terminal shows a QR plus "the QR makes the phone try (in this order): ..." | |
+| 0.4 | `$S desktop` (service + home window + terminal QR; `--fresh --forget-pairings` starts over, keeping the old state in `<state>.before-fresh-<time>`; `--restart` runs a rebuilt binary and keeps the pairings). The very first start creates the identity key and can take 10+ s; wait for `service up`. | `geekbridge-ctl status` answers; the GeekBridge window opens on **Home** (no QR there, see step 1) and the terminal shows a QR plus "the QR makes the phone try (in this order): ..." | |
 | 0.5 | `$S check` again. Now the service listens, so the phone-to-PC TCP test runs. | `PASS phone reached <IP>:1716 over TCP` | |
 
 ## 1. The checklist

@@ -84,6 +84,11 @@ jobs:
       - name: Real-device kit (report redaction canaries, link-watch transitions; stub ctl, no phone)
         if: runner.os == 'Linux'
         run: scripts/tests/realdevice-kit-test.sh
+      - name: Upgrade safety of the real-device scripts (APK signer and version verdict, run-desktop --fresh and --restart; stubs)
+        if: runner.os == 'Linux'
+        run: |
+          scripts/tests/apk-signer-test.sh
+          scripts/tests/run-desktop-test.sh
       - name: Emulated call end-to-end (fake modem, private D-Bus; signalling only)
         if: runner.os == 'Linux'
         env:

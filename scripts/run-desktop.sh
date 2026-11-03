@@ -2,14 +2,18 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Start everything the desktop side needs for a real-phone session, in one command.
 #
-#   scripts/run-desktop.sh [--fresh] [--name NAME] [--no-ui] [--qr] [--default-state]
+#   scripts/run-desktop.sh [--fresh [--forget-pairings]] [--restart] [--name NAME] [--no-ui] [--qr] [--default-state]
 #   scripts/run-desktop.sh --status | --stop | --env
 #
 # Starts geekbridge-service (detached, private state dir, log in dist/realdevice/service.log) and then the
 # GeekBridge home window (geekbridge). The helper windows (calls popup, share, clipboard) are launched by
 # the service by name, so target/release is put on PATH for both processes.
 #
-#   --fresh          wipe the session state dir first (forget every pairing)
+#   --fresh          start with an EMPTY session state dir (forget every pairing). Refused while the state holds
+#                    pairings unless --forget-pairings is given; the old state is then moved to <dir>.before-fresh-<time>
+#                    (never deleted), so a mistaken --fresh can be undone by moving it back.
+#   --restart        stop the running service and home window (state untouched), then start the binaries on disk.
+#                    Use it after a rebuild: a service that is older than its binary is otherwise refused.
 #   --name NAME      name phones see (default: GeekBridge-<hostname>)
 #   --no-ui          service only, no home window
 #   --qr             also print a one-time pairing QR code in this terminal (valid 2 minutes, single use)
@@ -27,12 +31,12 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 BIN="${GEEKBRIDGE_BIN_DIR:-$ROOT/target/release}"
-OUT="$ROOT/dist/realdevice"
+OUT="${GEEKBRIDGE_REALDEVICE_OUT:-$ROOT/dist/realdevice}"
 STATE="${GEEKBRIDGE_REALDEVICE_STATE:-$ROOT/target/realdevice-state}"
 CTRL_PORT="${GEEKBRIDGE_CONTROL_PORT:-17381}"
 API_PORT="${GEEKBRIDGE_API_PORT:-17380}"
 NAME="GeekBridge-$(hostname -s 2>/dev/null || echo pc)"
-FRESH=0 UI=1 QR=0 MODE=start DEFAULT_STATE=0
+FRESH=0 FORGET=0 RESTART=0 UI=1 QR=0 MODE=start DEFAULT_STATE=0
 
 c() { if [[ -t 1 ]]; then printf '\033[%sm%s\033[0m' "$1" "$2"; else printf '%s' "$2"; fi; }
 say() { printf '%s %s\n' "$(c 36 '==>')" "$*"; }
@@ -43,6 +47,8 @@ die() { printf '%s %s\n' "$(c 31 'error')" "$*" >&2; exit 1; }
 while (($#)); do
   case "$1" in
     --fresh) FRESH=1 ;;
+    --forget-pairings) FORGET=1 ;;
+    --restart) RESTART=1 ;;
     --name) shift; NAME="${1:?--name needs a value}" ;;
     --no-ui) UI=0 ;;
     --qr) QR=1 ;;
@@ -96,11 +102,29 @@ for b in "$SVC" "$CTL" "$UIBIN"; do
        build it:  cargo build --release --locked -p bridge-apps -p bridge-service"
 done
 mkdir -p "$OUT"
+# Pairings in a state dir: the number of entries in trusted_peers.json (0 when the file is missing or unreadable).
+paired_in_state() {
+  [[ -s $STATE/trusted_peers.json ]] || { echo 0; return; }
+  grep -c '"device_id"' "$STATE/trusted_peers.json" 2>/dev/null || echo 0
+}
+if ((RESTART)); then
+  stop_pidfile "$PIDS.ui" "home window"; stop_pidfile "$PIDS.service" "service"
+  for _ in $(seq 20); do ctl status >/dev/null 2>&1 || break; sleep 0.25; done
+fi
 if ((FRESH)); then
   ((DEFAULT_STATE)) && die "--fresh with --default-state would wipe your real GeekBridge state; refusing"
+  n="$(paired_in_state)"
+  if ((n > 0 && !FORGET)); then
+    die "--fresh would forget $n paired phone(s) held in $STATE (and this computer's identity, so the phone must be paired again).
+       Upgrading to a new build does not need it: use  --restart  (keeps every pairing).
+       To forget them on purpose add  --forget-pairings  (the old state is kept in $STATE.before-fresh-<time>)."
+  fi
   stop_pidfile "$PIDS.ui" "home window"; stop_pidfile "$PIDS.service" "service"
   sleep 1
-  rm -rf -- "$STATE"; ok "wiped session state $STATE"
+  if [[ -e $STATE ]]; then
+    kept="$STATE.before-fresh-$(date +%Y%m%d-%H%M%S)"
+    mv -- "$STATE" "$kept" && ok "session state moved aside (undo: stop the service, then mv it back): $kept"
+  fi
 fi
 mkdir -p "$STATE" && chmod 700 "$STATE"
 export PATH="$BIN:$PATH"
@@ -113,7 +137,22 @@ if [[ -z ${WAYLAND_DISPLAY:-} && -z ${DISPLAY:-} ]]; then
 fi
 
 # ---------------------------------------------------------------- service
+running_pid() { # the pid of the service this script started, else whoever listens on the control port
+  local pid; pid="$(cat "$PIDS.service" 2>/dev/null)"
+  if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then echo "$pid"; return; fi
+  ss -Htlnp "sport = :$CTRL_PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1
+}
 if ctl status >/dev/null 2>&1; then
+  pid="$(running_pid)"
+  if [[ -n $pid ]]; then
+    started=$(( $(date +%s) - $(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0) ))
+    built="$(stat -c %Y "$SVC" 2>/dev/null || echo 0)"
+    if ((built > started)); then
+      die "the running service (pid $pid, started $(date -d "@$started" '+%F %T')) is older than $SVC (built $(date -d "@$built" '+%F %T')).
+       A rebuild does not replace a running service. Restart it on the new binary, keeping every pairing:
+         $0 --restart"
+    fi
+  fi
   ok "service already running (reusing it, state dir $STATE)"
   [[ -n ${GEEKBRIDGE_QR_ADDRESSES:-} ]] && warn "GEEKBRIDGE_QR_ADDRESSES is set but the running service was started without it: run '$0 --stop' first, then start again"
 else
