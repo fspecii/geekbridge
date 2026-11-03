@@ -23,6 +23,12 @@
 #   battery-report             drain since the baseline (level, charge counter, per-hour, app power/wake locks)
 #   screens [LABEL] [--count N] [--interval S]
 #                              adb screencap into dist/realdevice/screens/
+#   link-watch [--minutes N] [--interval S] [--device ID] [--log FILE]
+#                              poll `geekbridge-ctl status` every S seconds (default 5) for N minutes (default 10),
+#                              log link UP/DOWN transitions with timestamps and the why-disconnected code, then
+#                              print uptime %, outages and longest outage. Lock the phone and walk away: this
+#                              measures the screen-off heartbeat. Needs no adb. Log: dist/realdevice/link-watch-*.log
+#   (report: scripts/realdevice-report.sh collects one redacted file for a remote diagnosis)
 #
 # --dry-run prints every adb/sudo command instead of running it. --serial (or $ANDROID_SERIAL) picks the phone
 # when several are attached. --adb-port (or $ANDROID_ADB_SERVER_PORT) uses a dedicated adb server, e.g. to
@@ -59,7 +65,7 @@ while (($#)); do
     --serial) shift; SERIAL="${1:?--serial needs a value}" ;;
     --adb-port) shift; export ANDROID_ADB_SERVER_PORT="${1:?--adb-port needs a value}" ;;
     --dry-run) DRY=1 ;;
-    -h|--help|help) sed -n '3,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help|help) sed -n '3,36p' "${BASH_SOURCE[0]}"; exit 0 ;;
     --) shift; break ;;
     -*) die "unknown option $1 (try --help)" ;;
     *) break ;;
@@ -67,7 +73,7 @@ while (($#)); do
   shift
 done
 CMD="${1:-}"; shift || true
-[[ -n $CMD ]] || { sed -n '3,30p' "${BASH_SOURCE[0]}"; exit 2; }
+[[ -n $CMD ]] || { sed -n '3,36p' "${BASH_SOURCE[0]}"; exit 2; }
 
 # --------------------------------------------------------------------------- helpers
 find_adb() {
@@ -817,6 +823,146 @@ cmd_screens() {
   summary
 }
 
+# --------------------------------------------------------------------------- link-watch
+# Polls the service, not the phone: it needs no adb and works with the screen locked and the cable out.
+# Link state per paired phone: UP = a link in phase `connected`; DOWN = none, with the service's
+# why-disconnected code (see crates/bridge-core/src/why_disconnected.rs); a service that does not answer
+# counts as DOWN with code service_unreachable (the watcher cannot tell, so it is not blamed on the phone).
+lw_sample() { # prints "id<TAB>up|down<TAB>code<TAB>tries<TAB>last_seen_ago<TAB>pings" per paired phone
+  local out; out="$(ctl status 2>/dev/null)" || { echo -e "*\tdown\tservice_unreachable\t0\t-\t0"; return; }
+  python3 -I -c '
+import json, sys
+t = sys.stdin.read()
+try:
+    d = json.loads(t[t.index("{"):t.rindex("}") + 1])
+except Exception:
+    print("*\tdown\tservice_unreachable\t0\t-\t0"); sys.exit()
+links = {l["device_id"]: l for l in d.get("links", [])}
+why = {w["device_id"]: w for w in d.get("disconnected", [])}
+for p in d.get("paired", []):
+    i = p["device_id"]; l = links.get(i)
+    if l and l.get("phase") == "connected":
+        print("%s\tup\t-\t0\t-\t%s" % (i, l.get("pings_received", 0)))
+    else:
+        w = why.get(i, {})
+        ago = w.get("last_seen_ago_s"); print("%s\tdown\t%s\t%s\t%s\t0" % (i, w.get("code", "unknown"), w.get("tries", 0), "-" if ago is None else ago))
+if not d.get("paired"):
+    print("-\tnone\t-\t0\t-\t0")
+' <<<"$out"
+}
+
+cmd_link_watch() {
+  set +u   # empty associative arrays are "unbound" to older bash under set -u
+  local minutes=10 interval=5 only="" log="" secs=""
+  while (($#)); do
+    case "$1" in
+      --minutes) shift; minutes="${1:?--minutes needs a number}" ;;
+      --seconds) shift; secs="${1:?--seconds needs a number}" ;;   # for tests
+      --interval) shift; interval="${1:?--interval needs seconds}" ;;
+      --device) shift; only="${1:?--device needs an id}" ;;
+      --log) shift; log="${1:?--log needs a file}" ;;
+      *) die "link-watch: unknown argument $1" ;;
+    esac; shift
+  done
+  [[ $minutes =~ ^[0-9]+$ ]] || die "link-watch: --minutes must be a whole number"
+  [[ $interval =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "link-watch: --interval must be a number of seconds"
+  [[ -x $BIN/geekbridge-ctl ]] || die "link-watch: $BIN/geekbridge-ctl not found (build with scripts/build-desktop.sh or set GEEKBRIDGE_BIN_DIR)"
+  command -v python3 >/dev/null || die "link-watch: python3 is needed"
+  local total=$(( ${secs:-$((minutes * 60))} ))
+  ((total > 0)) || die "link-watch: duration must be positive"
+  if [[ -z $log ]]; then log="$OUT/link-watch-$(date +%Y%m%d-%H%M%S).log"; fi
+  if ((DRY)); then echo "  [dry-run] would poll geekbridge-ctl status every ${interval}s for ${total}s, logging to $log"; return 0; fi
+  mkdir -p "$(dirname "$log")"
+  say "Link watch: ${total}s, every ${interval}s -> ${log#$ROOT/}"
+  info "Now lock the phone (screen off, not charging) and leave it. Ctrl-C ends early and still prints the summary."
+
+  local -A st since_ms up_ms down_ms seen first_ping last_ping codes outage_start outage_codes
+  local -a outages=()
+  local t0 prev now_ms end_ms line id state code tries ago pings dev n_samples=0 n_service=0 longest=0 longest_dev=""
+  stamp() { date '+%F %T'; }
+  logl() { printf '%s %s\n' "$(stamp)" "$*" | tee -a "$log"; }
+  : >"$log"; chmod 600 "$log" 2>/dev/null
+  t0="$(date +%s%3N)"; prev=$t0; end_ms=$((t0 + total * 1000))
+  logl "START duration=${total}s interval=${interval}s control-port=$CTRL_PORT"
+  local stop=0; trap 'stop=1' INT TERM
+  while ((!stop)); do
+    now_ms="$(date +%s%3N)"
+    n_samples=$((n_samples + 1))
+    local dt=$((now_ms - prev)); ((n_samples == 1)) && dt=0
+    local rows; rows="$(lw_sample)"
+    if [[ $rows == $'*\t'* ]]; then   # service unreachable: every phone seen so far is DOWN, blamed on the service
+      n_service=$((n_service + 1)); rows=""
+      for id in "${!st[@]}"; do rows+="$id"$'\tdown\tservice_unreachable\t0\t-\t0\n'; done
+    fi
+    while IFS=$'\t' read -r id state code tries ago pings; do
+      [[ -n $id ]] || continue
+      [[ $state == none ]] && { ((n_samples == 1)) && logl "NOTE no phone is paired yet: nothing to watch"; continue; }
+      [[ -n $only && $id != "$only" && $id != '*' ]] && continue
+      dev="${id:0:8}"
+      # time since the previous sample is credited to the state seen at that sample (sample-and-hold)
+      case "${st[$id]:-}" in up) up_ms[$id]=$(( ${up_ms[$id]:-0} + dt )) ;; down) down_ms[$id]=$(( ${down_ms[$id]:-0} + dt )) ;; esac
+      seen[$id]=1
+      [[ $state == up ]] && { [[ -z ${first_ping[$id]:-} ]] && first_ping[$id]=$pings; last_ping[$id]=$pings; }
+      if [[ ${st[$id]:-} != "$state" ]]; then
+        if [[ $state == up ]]; then
+          if [[ -n ${outage_start[$id]:-} ]]; then
+            local d=$(( now_ms - outage_start[$id] ))
+            logl "UP    $dev after $((d / 1000))s down (codes seen: ${outage_codes[$id]})"
+            outages+=("$dev|$((d / 1000))|${outage_codes[$id]}")
+            ((d > longest)) && { longest=$d; longest_dev=$dev; }
+            unset 'outage_start[$id]'
+          else logl "UP    $dev connected (first sample)"; fi
+        else
+          outage_start[$id]=$now_ms; outage_codes[$id]="$code"
+          if [[ -n ${st[$id]:-} ]]; then logl "DOWN  $dev reason=$code tries=$tries last_seen_ago=${ago}s"
+          else logl "DOWN  $dev reason=$code tries=$tries last_seen_ago=${ago}s (already down at the first sample)"; fi
+        fi
+        st[$id]=$state
+      elif [[ $state == down && " ${outage_codes[$id]} " != *" $code "* ]]; then
+        outage_codes[$id]+=" $code"; logl "STILL $dev reason=$code tries=$tries last_seen_ago=${ago}s"
+      fi
+      [[ $state == down ]] && codes["$code"]=$(( ${codes["$code"]:-0} + 1 ))
+    done <<<"$rows"
+    prev=$now_ms
+    ((now_ms >= end_ms)) && break
+    # sleep in small steps so Ctrl-C and the deadline are honoured
+    local rest_ms; rest_ms="$(awk -v i="$interval" 'BEGIN{printf "%d", i*1000}')"
+    local left=$((end_ms - $(date +%s%3N))); ((rest_ms > left)) && rest_ms=$left
+    ((rest_ms > 0)) && sleep "$(awk -v m="$rest_ms" 'BEGIN{printf "%.3f", m/1000}')"
+  done
+  trap - INT TERM
+  now_ms="$(date +%s%3N)"
+  # a stop between samples credits the last state up to now
+  local dt_end=$(( now_ms - prev )); ((dt_end < 0)) && dt_end=0
+  for id in "${!st[@]}"; do
+    case "${st[$id]}" in up) up_ms[$id]=$(( ${up_ms[$id]:-0} + dt_end )) ;; down) down_ms[$id]=$(( ${down_ms[$id]:-0} + dt_end )) ;; esac
+    if [[ -n ${outage_start[$id]:-} ]]; then
+      local d=$(( now_ms - outage_start[$id] )); outages+=("${id:0:8}|$((d / 1000))|${outage_codes[$id]} (still down at the end)")
+      ((d > longest)) && { longest=$d; longest_dev=${id:0:8}; }
+    fi
+  done
+  logl "END   samples=$n_samples"
+  say "Link watch summary ($(( (now_ms - t0) / 1000 ))s, $n_samples samples)"
+  ((n_service > 0)) && warn "the service did not answer in $n_service sample(s): check it is running (scripts/run-desktop.sh --status); those samples count as DOWN"
+  if ((${#seen[@]} == 0)); then warn "no paired phone was seen: pair one first (scripts/realdevice.sh desktop --qr)"; summary; return; fi
+  for id in "${!seen[@]}"; do
+    local u=${up_ms[$id]:-0} dn=${down_ms[$id]:-0} pct
+    ((u + dn == 0)) && { warn "${id:0:8}: too short to measure"; continue; }
+    pct="$(awk -v u="$u" -v d="$dn" 'BEGIN{printf "%.1f", 100*u/(u+d)}')"
+    printf '  %s uptime %s%%  (up %ss, down %ss)\n' "${id:0:8}" "$pct" "$((u / 1000))" "$((dn / 1000))"
+    if awk -v p="$pct" 'BEGIN{exit !(p>=99)}'; then ok "${id:0:8}: link stayed up ($pct%)"
+    elif awk -v p="$pct" 'BEGIN{exit !(p>=95)}'; then warn "${id:0:8}: $pct% up: short outages, see the DOWN/UP lines in $log"
+    else bad "${id:0:8}: only $pct% up"; fi
+  done
+  local o; ((${#outages[@]})) && { info "outages: ${#outages[@]}, longest $((longest / 1000))s (${longest_dev})"; for o in "${outages[@]}"; do IFS='|' read -r dev n code <<<"$o"; info "  $dev: ${n}s, reasons: $code"; done; }
+  local k; for k in "${!codes[@]}"; do info "samples down with reason $k: ${codes[$k]}"; done
+  if [[ -n ${codes[link_timed_out]:-} ]]; then info "link_timed_out = the link existed and stopped answering (the heartbeat noticed): typical of Doze or a vendor battery killer while locked. Next: scripts/realdevice-report.sh, then realdevice.sh logs."; fi
+  if [[ -n ${codes[phone_silent]:-} ]]; then info "phone_silent = the phone stopped announcing itself: asleep, Wi-Fi power-save, or the app was stopped. Next: realdevice.sh logs (look for am_proc_died / Killing)."; fi
+  if [[ -n ${codes[firewall_blocking]:-} || -n ${codes[computer_offline]:-} || -n ${codes[not_listening]:-} ]]; then info "the cause was on this PC (firewall/offline/listener): run geekbridge-ctl doctor."; fi
+  info "full log: ${log#$ROOT/}"
+  summary
+}
+
 # --------------------------------------------------------------------------- dispatch
 case "$CMD" in
   check) cmd_check "$@" ;;
@@ -827,5 +973,6 @@ case "$CMD" in
   battery-baseline) cmd_battery_baseline "$@" ;;
   battery-report) cmd_battery_report "$@" ;;
   screens) cmd_screens "$@" ;;
+  link-watch) cmd_link_watch "$@" ;;
   *) die "unknown command '$CMD' (try --help)" ;;
 esac

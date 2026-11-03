@@ -55,6 +55,9 @@ jobs:
         # so one platform-specific surprise does not hide the results of the other checks.
         continue-on-error: ${{ runner.os != 'Linux' }}
         run: scripts/smoke-binaries.sh --live
+      - name: Real-device kit (report redaction canaries, link-watch transitions; stub ctl, no phone)
+        if: runner.os == 'Linux'
+        run: scripts/tests/realdevice-kit-test.sh
       - name: Emulated call end-to-end (fake modem, private D-Bus; signalling only)
         if: runner.os == 'Linux'
         env:

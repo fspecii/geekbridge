@@ -38,7 +38,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 ## Maintainers: releasing
 
 - [Release checklist](release-checklist.md), [licence decision](licence-decision.md)
-- [Real-device test plan](real-device-test-plan.md): the full manual checklist for a physical phone
+- [Real-device test plan](real-device-test-plan.md): the ordered session checklist for one phone and one PC, with the report and link-watch kit
 - [Real-device clipboard and calls script](real-device-clipboard-calls.md): step-by-step for the Galaxy Z Fold5 + Hyprland, with `geekbridge-ctl` proofs
 
 ## Reports (snapshots)

@@ -4,7 +4,7 @@ What has and has not been done on hardware: one real phone (Samsung Galaxy Z Fol
 and link stability were exercised on it. Everything else in this checklist (calls, Messages, battery sharing, dialing,
 calendar, contacts, clipboard on a real phone) is still to be confirmed by you. Windows and macOS have only run in CI.
 
-First hour with a real phone, highest value first. The full matrix is [real-device-test-plan.md](real-device-test-plan.md).
+First hour with a real phone, highest value first. The ordered session checklist (with the one-file report and the lock-screen link watcher) is [real-device-test-plan.md](real-device-test-plan.md).
 Fill the **Result** column as you go (PASS / FAIL / N/A + a note); on any FAIL run `logs` (step 0) right away,
 Android's log buffer is small.
 
