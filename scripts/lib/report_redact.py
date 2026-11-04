@@ -57,6 +57,8 @@ def FREE_GUARD(line):
     """Free-text redaction is for log/plain-text lines; JSON lines are handled by KEY_RE and keep
     structure (reason codes, timestamps) intact."""
     t = line.lstrip()
+    if t.startswith(("## ", "fix:", "Pick:")) or "contacts and the other features" in t:
+        return False  # section headers and the tool's own advice sentences carry no personal text
     return not (t.startswith(("{", "}", '"', "[", "]")) or t.startswith("$ "))
 
 

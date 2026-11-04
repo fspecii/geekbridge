@@ -166,7 +166,7 @@ else
   # the very first start creates the identity key, which can take 10+ s on a busy machine
   for _ in $(seq 60); do ctl status >/dev/null 2>&1 && break; sleep 0.5; done
   ctl status >/dev/null 2>&1 || { tail -15 "$OUT/service.log" >&2; die "service did not come up; log: $OUT/service.log"; }
-  ok "service up, log: dist/realdevice/service.log"
+  ok "service up, log: $OUT/service.log"
 fi
 
 # ---------------------------------------------------------------- home window
@@ -176,13 +176,14 @@ if ((UI)); then
   else
     (setsid nohup "$UIBIN" --api-port "$API_PORT" >>"$OUT/home.log" 2>&1 & echo $! >"$PIDS.ui")
     sleep 1
-    if kill -0 "$(cat "$PIDS.ui")" 2>/dev/null; then ok "home window started (log: dist/realdevice/home.log)"
-    else warn "home window exited at once; see dist/realdevice/home.log"; tail -5 "$OUT/home.log" >&2; fi
+    if kill -0 "$(cat "$PIDS.ui")" 2>/dev/null; then ok "home window started (log: $OUT/home.log)"
+    else warn "home window exited at once; see $OUT/home.log"; tail -5 "$OUT/home.log" >&2; fi
   fi
 fi
 
 # ---------------------------------------------------------------- what the phone needs
-port="$(ss -Htlnp 2>/dev/null | awk '/geekbridge-service/ {n=split($4,a,":"); print a[n]; exit}')"
+# (ss prints the 15-character process name "geekbridge-serv", so ask the service which port it really listens on)
+port="$(ctl status 2>/dev/null | sed -n 's/.*"inbound_listener": *"[^"]*:\([0-9][0-9]*\)".*/\1/p' | head -1)"
 # Phone-reachable addresses only: no docker/libvirt bridges, VPN tunnels, CGNAT (100.64/10) or link-local; the
 # default-route interface first. (The QR below carries the service's own pick of the same list.)
 dev="$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<NF;i++) if($i=="dev"){print $(i+1); exit}}')"
@@ -197,7 +198,7 @@ echo "  phone connects to    : TCP ${port:-1716} on this PC (discovery: UDP 1716
 echo "  state dir            : $STATE"
 echo "  ctl in this shell    : eval \"\$(scripts/run-desktop.sh --env)\"   then  geekbridge-ctl status"
 if command -v ufw >/dev/null 2>&1 && [[ "$(systemctl is-active ufw 2>/dev/null)" == active ]] \
-   && [[ -r /etc/ufw/user.rules ]] && ! grep -qE -- '--dport (1716|1716:1764) ' /etc/ufw/user.rules; then
+   && [[ -r /etc/ufw/user.rules ]] && ! grep -qE -- '--dports? ([0-9,:]*,)?1716:1764( |,)' /etc/ufw/user.rules; then
   echo
   warn "ufw is active and has no rule for 1716-1764: the phone will not reach this PC."
   echo "       run:  scripts/realdevice.sh check      (prints the exact commands; add --apply to run them)"

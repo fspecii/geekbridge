@@ -37,6 +37,10 @@ pub struct Env {
     pub ctl: Option<String>,
     /// The hotkey stored in the running service, when it answered.
     pub configured: Option<String>,
+    /// `GEEKBRIDGE_STATE_DIR` and `GEEKBRIDGE_CONTROL_PORT` of the session this was run in, when set: the
+    /// compositor starts the key's command with its own environment, which would not find a service
+    /// that was started with a private state dir (scripts/run-desktop.sh does that).
+    pub service_env: Option<(String, u16)>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -133,8 +137,19 @@ fn other_user_files(hypr_dir: &std::path::Path, target: &std::path::Path) -> Vec
 }
 
 fn command(env: &Env) -> String {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    };
+    let prefix = match &env.service_env {
+        Some((dir, port)) if plain(dir) => {
+            format!("env GEEKBRIDGE_STATE_DIR={dir} GEEKBRIDGE_CONTROL_PORT={port} ")
+        }
+        _ => String::new(),
+    };
     format!(
-        "{} --notify",
+        "{prefix}{} --notify",
         crate::hotkey_bind::paste_command(env.ctl.as_deref())
     )
 }
@@ -298,10 +313,33 @@ mod tests {
             default_binding_files: vec![],
             ctl: Some("/opt/gb/geekbridge-ctl".into()),
             configured: None,
+            service_env: None,
         }
     }
     fn s(a: &[&str]) -> Vec<String> {
         a.iter().map(|x| (*x).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_private_state_dir_is_carried_into_the_key_command() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("bindings.lua"), "-- mine\n").unwrap();
+        let mut e = env(d.path());
+        e.service_env = Some(("/home/u/gb/target/realdevice-state".into(), 17381));
+        let r = run(&s(&["install", "--apply"]), &e).unwrap();
+        assert!(r.wrote);
+        let installed = fs::read_to_string(d.path().join("bindings.lua")).unwrap();
+        assert!(installed.contains(
+            "env GEEKBRIDGE_STATE_DIR=/home/u/gb/target/realdevice-state GEEKBRIDGE_CONTROL_PORT=17381 /opt/gb/geekbridge-ctl clipboard paste-from-phone --notify"
+        ));
+        // a path the compositor's parser could split is not baked in (the bare command stays)
+        e.service_env = Some(("/home/u/my dir".into(), 17381));
+        run(&s(&["install", "--apply"]), &e).unwrap();
+        let again = fs::read_to_string(d.path().join("bindings.lua")).unwrap();
+        assert!(
+            !again.contains("GEEKBRIDGE_STATE_DIR")
+                && again.contains("/opt/gb/geekbridge-ctl clipboard")
+        );
     }
 
     #[test]

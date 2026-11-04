@@ -182,12 +182,13 @@ fw_detect() {
        || grep -qi '^ENABLED=yes' /etc/ufw/ufw.conf 2>/dev/null; }; then
     FW_KIND=ufw
     local pol t u
-    pol="$(sed -n 's/^DEFAULT_INPUT_POLICY="\{0,1\}\([A-Z]*\).*/\1/p' /etc/default/ufw 2>/dev/null)"
+    local rules_file="${GB_UFW_USER_RULES:-/etc/ufw/user.rules}"   # (overridable for tests)
+    pol="$(sed -n 's/^DEFAULT_INPUT_POLICY="\{0,1\}\([A-Z]*\).*/\1/p' "${GB_UFW_DEFAULTS:-/etc/default/ufw}" 2>/dev/null)"
     FW_DETAIL="ufw active, default incoming policy ${pol:-unknown}"
-    if [[ -r /etc/ufw/user.rules ]]; then
+    if [[ -r $rules_file ]]; then
       t=0 u=0
-      grep -qE -- "-p tcp .*--dports? ([0-9,:]*,)?($FW_LO:$FW_HI)( |,|\$)" /etc/ufw/user.rules && t=1
-      grep -qE -- "-p udp .*--dports? ([0-9,:]*,)?($FW_LO:$FW_HI)( |,|\$)" /etc/ufw/user.rules && u=1
+      grep -qE -- "-p tcp .*--dports? ([0-9,:]*,)?($FW_LO:$FW_HI)( |,|\$)" "$rules_file" && t=1
+      grep -qE -- "-p udp .*--dports? ([0-9,:]*,)?($FW_LO:$FW_HI)( |,|\$)" "$rules_file" && u=1
       if ((t && u)); then FW_STATE=open; FW_DETAIL+="; rules for $FW_LO:$FW_HI tcp+udp present"
       elif [[ $pol == ACCEPT ]]; then FW_STATE=open; FW_DETAIL+=" (everything allowed)"
       else FW_STATE=blocked; FW_DETAIL+="; no complete $FW_LO:$FW_HI rule (tcp:$t udp:$u)"; fi
@@ -259,6 +260,10 @@ firewall_section() { # [apply]
   while IFS= read -r line; do echo "         $line"; done < <(fw_revert "$net")
   if [[ $apply == apply ]]; then
     [[ $FW_KIND == nftables ]] && { warn "not applying nftables rules automatically (table/chain names differ per setup)"; return 0; }
+    if ((!DRY)) && [[ ! -t 0 && -z ${GB_ASSUME_TTY:-} ]]; then
+      bad "--apply needs a terminal (sudo asks for your password there); nothing was applied. Run the lines above yourself, or rerun this from a terminal."
+      return 0
+    fi
     echo "       --apply given: running the allow commands now (sudo may ask for your password)."
     while IFS= read -r line; do
       line="${line%%   #*}"

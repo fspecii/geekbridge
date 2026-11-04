@@ -26,7 +26,7 @@ touch "$T/up"; echo started >>"$T/starts"; sleep 300 & p=\$!; wait
 EOF
 cat >"$T/bin/geekbridge-ctl" <<EOF
 #!/bin/sh
-for a in "\$@"; do [ "\$a" = status ] && { [ -f "$T/up" ] && exit 0 || exit 1; }; done
+for a in "\$@"; do [ "\$a" = status ] && { [ -f "$T/up" ] || exit 1; echo '{ "inbound_listener": "0.0.0.0:1731" }'; exit 0; }; done
 [ "\$1" = pair-qr ] && exit 1
 exit 0
 EOF
@@ -81,5 +81,9 @@ rc=0; "$RD" --restart --no-ui >"$T/o6" 2>&1 || rc=$?
 rc=0; "$RD" --no-ui >"$T/o7" 2>&1 || rc=$?
 [[ $rc == 0 && "$(wc -l <"$T/starts")" == 2 ]] && grep -q "reusing" "$T/o7" && ok "an up-to-date service is reused" || bad "up-to-date service not reused (rc $rc)"
 "$RD" --stop >/dev/null 2>&1
+
+# ---- 4. the port the phone must reach comes from the service itself (ss shows the 15-character process name
+# "geekbridge-serv", so matching "geekbridge-service" in ss output never found anything and 1716 was always printed)
+grep -q "TCP 1731 on this PC" "$T/o7" && ok "the printed phone port is the one the service listens on" || bad "wrong phone port line: $(grep 'phone connects' "$T/o7")"
 
 exit "$fail"

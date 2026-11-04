@@ -68,6 +68,10 @@ The bound command is `geekbridge-ctl clipboard paste-from-phone --notify`: it pu
 (copied recently, phone unlocked) onto the computer clipboard and shows a short notification with the result.
 While clipboard sync is on, the service also binds the same key for the running session with `hyprctl keyword bind`;
 the installed block makes it permanent and independent of the service. Both do the same thing.
+If your service was started with a private state dir (`scripts/run-desktop.sh` does that), run the install from a shell where
+`eval "$(scripts/run-desktop.sh --env)"` was done: the block then starts the command as
+`env GEEKBRIDGE_STATE_DIR=... GEEKBRIDGE_CONTROL_PORT=... /path/to/geekbridge-ctl ...`, because the compositor's own
+environment would not find that service.
 
 ### Window rules (same command)
 

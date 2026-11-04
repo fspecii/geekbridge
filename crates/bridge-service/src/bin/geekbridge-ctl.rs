@@ -864,6 +864,9 @@ fn hotkey_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> 
             .filter(|p| p.file_name().is_some_and(|n| n == "geekbridge-ctl"))
             .map(|p| p.to_string_lossy().into_owned()),
         configured,
+        service_env: std::env::var_os(ipc::ENV_STATE_DIR)
+            .is_some()
+            .then(|| (state_dir.to_string_lossy().into_owned(), port)),
     };
     let report = run(&words, &env)?;
     print!("{}", report.text);

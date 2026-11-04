@@ -49,11 +49,16 @@ from $C_NUM1 and $C_NUM2 and $C_NUM3 and $C_NUM4 mail $C_MAIL
 link geekbridge://pair?code=$C_PAIR&host=192.168.1.5
 peer 192.168.77.12:1716 loopback 127.0.0.1 mac aa:bb:cc:dd:ee:ff
 2026-11-03T10:11:12 masked +49 ••• ••• 78
+## clipboard status
+## Service log (last 300 lines)
+       fix: install wl-clipboard so the clipboard bridge works
+Pick: geekbridge-ctl call audio-devices --output NAME to choose
+audio note: Messages, contacts and the other features work normally.
 EOT
 echo "$C_TOKEN" >"$T/tok"
 python3 -I "$src/scripts/lib/report_redact.py" --needle-file "$T/tok" <"$T/in.txt" >"$T/out.txt"
 absent "$T/out.txt" "${CANARIES[@]}"
-for keep in "version 0.1.0" "link_timed_out" "phone_silent" "1730000000123" "2026-11-03T10:11:12" "127.0.0.1" "192.168.x.x" "geekbridge://pair?<redacted>" "ffffffffffff..." "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  /home/USER/bin"; do
+for keep in "version 0.1.0" "link_timed_out" "phone_silent" "1730000000123" "2026-11-03T10:11:12" "127.0.0.1" "192.168.x.x" "geekbridge://pair?<redacted>" "ffffffffffff..." "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  /home/USER/bin" "## clipboard status" "## Service log (last 300 lines)" "install wl-clipboard so the clipboard bridge works" "--output NAME to choose" "contacts and the other features work normally"; do
   has "$T/out.txt" "$keep" || bad "redactor removed or changed what it should keep: $keep"
 done
 [[ $fail == 0 ]] && ok "redactor: canaries removed, versions/hashes/reason codes/timestamps kept"
@@ -153,6 +158,29 @@ watch up up svcdown svcdown up up up up up
 has "$T/watch.log" "reason=service_unreachable" && ok "link-watch: unreachable service is DOWN with its own code, not blamed on the phone" || { bad "service outage not logged"; cat "$T/watch.log"; }
 watch down:firewall_blocking
 has "$T/watch.log" "already down at the first sample" && has "$T/watch.out" "run geekbridge-ctl doctor" && ok "link-watch: down from the start names the cause and the next step" || { bad "down-at-start handling"; cat "$T/watch.out"; }
+
+# ---------------------------------------------------------------- 4. firewall (ufw stubbed, rules files in the scratch dir)
+mkdir -p "$T/fw/bin"
+printf '#!/bin/sh\n[ "$1" = is-active ] && echo active\nexit 0\n' >"$T/fw/bin/systemctl"
+printf '#!/bin/sh\necho "$@" >>%s\n' "$T/fw/ufw-called" >"$T/fw/bin/ufw"
+printf '#!/bin/sh\necho "sudo $@" >>%s\n' "$T/fw/sudo-called" >"$T/fw/bin/sudo"
+chmod +x "$T/fw/bin/"*
+echo 'DEFAULT_INPUT_POLICY="DROP"' >"$T/fw/defaults"
+echo '-A ufw-user-input -p tcp --dport 22 -j ACCEPT' >"$T/fw/rules-closed"
+# what ufw really stores for "port 1716:1764 proto tcp|udp": a multiport match
+printf '%s\n' '-A ufw-user-input -p tcp -m multiport --dports 1716:1764 -s 192.168.1.0/24 -j ACCEPT' \
+  '-A ufw-user-input -p udp -m multiport --dports 1716:1764 -s 192.168.1.0/24 -j ACCEPT' >"$T/fw/rules-open"
+fwrun() { # rules-file [args]; stdin is not a terminal
+  local r="$1"; shift
+  PATH="$T/fw/bin:$PATH" GB_UFW_USER_RULES="$r" GB_UFW_DEFAULTS="$T/fw/defaults" "$src/scripts/realdevice.sh" firewall "$@" </dev/null
+}
+rc=0; fwrun "$T/fw/rules-open" >"$T/fw/o1" 2>&1 || rc=$?
+[[ $rc == 0 ]] && has "$T/fw/o1" "rules for 1716:1764 tcp+udp present" && ok "firewall: the multiport rules ufw really writes count as open" || bad "firewall: open rules not recognised: $(cat "$T/fw/o1")"
+rc=0; fwrun "$T/fw/rules-closed" >"$T/fw/o2" 2>&1 || rc=$?
+has "$T/fw/o2" "sudo ufw allow" && has "$T/fw/o2" "port 1716:1764 proto tcp" && has "$T/fw/o2" "port 1716:1764 proto udp" && has "$T/fw/o2" "sudo ufw delete allow" && ok "firewall: blocked PC prints the ufw allow and delete lines (nothing applied without --apply)" || bad "firewall lines: $(cat "$T/fw/o2")"
+[[ ! -e $T/fw/sudo-called ]] && ok "firewall: nothing ran without --apply" || bad "sudo was called without --apply"
+rc=0; fwrun "$T/fw/rules-closed" --apply >"$T/fw/o3" 2>&1 || rc=$?
+has "$T/fw/o3" "sudo ufw allow" && has "$T/fw/o3" "--apply needs a terminal" && [[ $rc != 0 && ! -e $T/fw/sudo-called ]] && ok "firewall --apply without a terminal prints the lines, refuses, runs nothing (exit $rc)" || bad "apply without a terminal (rc $rc, sudo called: $(cat "$T/fw/sudo-called" 2>/dev/null)): $(cat "$T/fw/o3")"
 
 echo
 if [[ $fail == 0 ]]; then echo "realdevice kit tests passed"; else echo "realdevice kit tests FAILED"; exit 1; fi

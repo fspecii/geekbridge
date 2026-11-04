@@ -252,11 +252,15 @@ pub fn ufw_allows(rules: &str, proto: &str) -> bool {
         if word_after("-p") != Some(proto) {
             return false;
         }
-        let Some(ports) = word_after("--dport") else {
+        // A single range is `--dport 1716:1764`; ufw writes a range given as `port 1716:1764` (and any
+        // list) as `-m multiport --dports 22,1716:1764`.
+        let Some(ports) = word_after("--dport").or_else(|| word_after("--dports")) else {
             return false;
         };
-        let (lo, hi) = ports.split_once(':').unwrap_or((ports, ports));
-        matches!((lo.parse::<u16>(), hi.parse::<u16>()), (Ok(lo), Ok(hi)) if lo <= PORT_LO && hi >= PORT_HI)
+        ports.split(',').any(|part| {
+            let (lo, hi) = part.split_once(':').unwrap_or((part, part));
+            matches!((lo.parse::<u16>(), hi.parse::<u16>()), (Ok(lo), Ok(hi)) if lo <= PORT_LO && hi >= PORT_HI)
+        })
     })
 }
 
@@ -441,6 +445,22 @@ mod tests {
     use super::*;
 
     const BOTH: &str = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT\n-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT\n";
+
+    #[test]
+    fn ufw_range_rules_are_written_with_multiport() {
+        // What `ufw allow from 192.168.1.0/24 to any port 1716:1764 proto tcp` really stores in user.rules.
+        let real = "-A ufw-user-input -p tcp -m multiport --dports 1716:1764 -s 192.168.1.0/24 -j ACCEPT\n\
+-A ufw-user-input -p udp -m multiport --dports 1716:1764 -s 192.168.1.0/24 -j ACCEPT\n";
+        assert!(ufw_allows(real, "tcp") && ufw_allows(real, "udp"));
+        let list = "-A ufw-user-input -p tcp -m multiport --dports 22,1700:1800 -j ACCEPT";
+        assert!(ufw_allows(list, "tcp") && !ufw_allows(list, "udp"));
+        let narrow = "-A ufw-user-input -p tcp -m multiport --dports 22,1716:1730 -j ACCEPT";
+        assert!(!ufw_allows(narrow, "tcp"));
+        assert!(!ufw_allows(
+            "-A ufw-user-input -p tcp -m multiport --dports -j ACCEPT",
+            "tcp"
+        ));
+    }
 
     fn ufw(rules: Option<&str>) -> Firewall {
         Firewall {
