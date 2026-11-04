@@ -224,7 +224,7 @@ android() {
   start_mock "$A2"
   $ADB reverse "tcp:$MOCK_PORT" "tcp:$MOCK_PORT" >/dev/null
   setprefs() { # last_check_ms auto_check
-    printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"debug_base_url\">http://127.0.0.1:%s</string>\n    <boolean name=\"auto_check\" value=\"%s\" />\n    <long name=\"last_check_ms\" value=\"%s\" />\n</map>\n" "$MOCK_PORT" "$2" "$1" >"$W/updates.xml"
+    printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"channel\">stable</string>\n    <string name=\"debug_base_url\">http://127.0.0.1:%s</string>\n    <boolean name=\"auto_check\" value=\"%s\" />\n    <long name=\"last_check_ms\" value=\"%s\" />\n</map>\n" "$MOCK_PORT" "$2" "$1" >"$W/updates.xml"
     $ADB push "$W/updates.xml" /data/local/tmp/updates.xml >/dev/null
     $ADB shell am force-stop $PKG
     $ADB shell run-as $PKG sh -c "mkdir -p shared_prefs"; $ADB shell run-as $PKG cp /data/local/tmp/updates.xml shared_prefs/updates.xml

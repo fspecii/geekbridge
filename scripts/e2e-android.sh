@@ -261,7 +261,7 @@ stage_pair() {
   dcode="$(ctl status | jget 'd["challenges"][0]["verification_key"]')"
   [[ -n "$code" && "$code" == "$dcode" ]] || { rec pair FAIL "verification codes differ: phone=$code desktop=$dcode"; return 1; }
   ctl approve "$id" "$code" >/dev/null || { rec pair FAIL "desktop approve refused"; return 1; }
-  tap Pair; sleep 4
+  tap Link >/dev/null 2>&1 || tap Pair; sleep 4   # the dialog button was renamed Pair -> Link
   if wait_for 15 is_paired; then
     shot 14-paired
     local pong=ok; ctl ping "$PHONE_ID" >/dev/null 2>&1 || pong=FAILED
@@ -434,7 +434,7 @@ stage_update() {
   $ADB reverse "tcp:$MOCK_PORT" "tcp:$MOCK_PORT" >/dev/null
   $ADB shell am force-stop $PKG
   # Debug builds read this preference (UpdateChecker.forBuild); it needs the debug-only cleartext config in src/debug.
-  printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"debug_base_url\">http://127.0.0.1:%s</string>\n    <boolean name=\"auto_check\" value=\"false\" />\n</map>\n" "$MOCK_PORT" >"$RUN/updates.xml"
+  printf "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"channel\">stable</string>\n    <string name=\"debug_base_url\">http://127.0.0.1:%s</string>\n    <boolean name=\"auto_check\" value=\"false\" />\n</map>\n" "$MOCK_PORT" >"$RUN/updates.xml"
   $ADB push "$RUN/updates.xml" /data/local/tmp/updates.xml >/dev/null
   $ADB shell run-as $PKG cp /data/local/tmp/updates.xml shared_prefs/updates.xml
   goto_diag; ui scrollto "Check for updates" >/dev/null; tap "Check for updates"; sleep 5; shot 30-update-available
