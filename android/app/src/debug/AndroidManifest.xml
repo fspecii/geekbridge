@@ -5,6 +5,8 @@
     <!-- Debug only: the scale seeder (ScaleSeedReceiver) writes made-up contacts and events into the emulator's providers. -->
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <!-- Debug only: the call_audio_experiment probe (CallAudioProbe) opens an AudioRecord. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <application android:networkSecurityConfig="@xml/debug_network_security">
         <!-- Debug only: design gallery for screenshots (see DesignGalleryActivity). -->
         <activity android:name=".DesignGalleryActivity" android:exported="true" android:theme="@style/Theme.GeekBridge" />

@@ -176,6 +176,8 @@ data class StateModel(
     val callListener: List<String> = emptyList(),
     /** [ProcessStateText.describe]: how Android ranks this process right now. */
     val processState: String = "unknown",
+    /** [CallAudioProbe.lines]: the call_audio_experiment switch and the last VOICE_DOWNLINK probe result. */
+    val callAudioProbe: List<String> = emptyList(),
 )
 
 /** How Android ranks this app's process, in words (a frozen or cached process gets no callbacks). */
@@ -275,6 +277,7 @@ object DebugStateText {
         appendLine("== Calls ==")
         appendLine(m.processState)
         m.callListener.ifEmpty { listOf("call state listener: not tracked") }.forEach(::appendLine)
+        m.callAudioProbe.forEach(::appendLine)
         appendLine("(a call state callback is logged as 'GB calls: source <name> reported ringing'; none after a call means Android did not call the app)")
         appendLine()
         appendLine("== Link health ==")
@@ -418,6 +421,7 @@ object DebugStateCollector {
             logLines = ring.size(), logBytes = ring.byteSize(), streamingTo = streamingTo, linkHealth = linkHealth,
             callListener = CallControlRuntime.ledger.lines() + ("subscriptions now: " + SubscriptionReader.summary(ctx)),
             processState = ProcessStateText.describe(myImportance(), LinkService.isRunning),
+            callAudioProbe = CallAudioProbe.lines(ctx),
         )
     }
 
