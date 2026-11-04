@@ -63,6 +63,8 @@ pub struct Inputs {
     pub firewall: Firewall,
     /// A service-less `doctor` still says how to start it; `true` when a unit file is installed.
     pub systemd_unit: bool,
+    /// The "Hear calls on this computer" checklist (`bridge_calls::hear`), read on this machine.
+    pub hear_calls: Option<bridge_core::ipc::HearCalls>,
 }
 
 /// Windows Defender Firewall and the macOS application firewall, when `fw` was read on those systems.
@@ -494,7 +496,40 @@ pub fn run(i: &Inputs) -> Vec<Check> {
         out.extend(phones_checks(s, firewall_blocks(&i.firewall)));
         out.extend(capability_checks(i, s));
     }
+    if let Some(h) = &i.hear_calls {
+        out.push(hear_calls_check(h));
+    }
     out
+}
+
+/// One line for the call-audio checklist: ready, or the first step that is not, with its fix.
+/// Never a failure: answering from here works without it, only the voice stays on the phone.
+pub fn hear_calls_check(h: &bridge_core::ipc::HearCalls) -> Check {
+    const TITLE: &str = "Hear calls here";
+    match h.first_problem() {
+        None => check(
+            Level::Ok,
+            TITLE,
+            "Ready: a call answered on this computer plays on its headphones and uses its microphone.",
+            None,
+        ),
+        Some(p) => Check {
+            level: Level::Warn,
+            title: TITLE.into(),
+            detail: if h.no_bluetooth {
+                format!(
+                    "{} Full checklist: geekbridge-ctl calling",
+                    bridge_core::ipc::NO_BLUETOOTH_WARNING
+                )
+            } else {
+                format!(
+                    "{}: {}. Full checklist: geekbridge-ctl calling",
+                    p.title, p.detail
+                )
+            },
+            fix: p.fix.clone(),
+        },
+    }
 }
 
 /// Number of failed checks, for the exit status.
@@ -603,7 +638,27 @@ mod tests {
             },
             firewall: Firewall::default(),
             systemd_unit: false,
+            hear_calls: None,
         }
+    }
+
+    #[test]
+    fn hear_calls_names_the_first_open_step_and_its_fix_but_never_fails() {
+        use bridge_calls::hear::{Facts, evaluate, to_ipc};
+        let steps = to_ipc(&evaluate(&Facts::default()), Default::default(), false);
+        let c = hear_calls_check(&steps);
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.starts_with(bridge_core::ipc::NO_BLUETOOTH_WARNING));
+        assert!(c.detail.contains("geekbridge-ctl calling"));
+        assert!(c.fix.unwrap().contains("USB Bluetooth adapter"));
+        let mut i = inputs(Err("down".into()));
+        i.hear_calls = Some(steps);
+        assert!(run(&i).iter().any(|c| c.title == "Hear calls here"));
+        assert!(
+            !run(&inputs(Err("down".into())))
+                .iter()
+                .any(|c| c.title == "Hear calls here")
+        );
     }
 
     fn find<'a>(c: &'a [Check], title: &str) -> Vec<&'a Check> {

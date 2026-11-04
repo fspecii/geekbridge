@@ -223,6 +223,22 @@ pub fn plan(action: &Action, phone: &PhoneSnapshot) -> Result<PlannedCall, Contr
                 arg: None,
             })
         }
+        // A property write, sent by `pipewire::Client::invoke` through `check_reject_sco`.
+        Action::SetRejectSco { .. } => Err(ControlError::Unsupported(
+            "RejectSCO is a property write, not a method call",
+        )),
+    }
+}
+
+/// Pre-flight of a `RejectSCO` write: same phone, and its transport exposes the property.
+pub fn check_reject_sco(action: &Action, phone: &PhoneSnapshot) -> Result<String, ControlError> {
+    check_device(action.device(), phone)?;
+    match &phone.transport {
+        Some(t) if t.reject_sco.is_some() => Ok(phone.device.path.clone()),
+        Some(_) => Err(ControlError::Unsupported(
+            "this PipeWire version has no RejectSCO property",
+        )),
+        None => Err(ControlError::WrongState("phone exposes no audio transport")),
     }
 }
 

@@ -22,6 +22,8 @@ pub mod backend;
 pub mod declared;
 pub mod error;
 pub mod guard;
+pub mod hear;
+pub mod hfp_audio;
 pub mod model;
 pub mod probe;
 pub mod readiness;
@@ -31,6 +33,8 @@ mod session;
 pub mod pipewire;
 #[cfg(target_os = "linux")]
 mod probe_linux;
+#[cfg(target_os = "linux")]
+pub mod setup;
 
 pub use backend::{CallBackend, UnavailableBackend, default_backend};
 pub use declared::{

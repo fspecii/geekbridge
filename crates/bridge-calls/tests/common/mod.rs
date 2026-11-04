@@ -112,6 +112,7 @@ pub struct PhoneModel {
     pub address: String,
     pub transport: Option<(String, u8)>,
     pub calls: BTreeMap<u32, CallModel>,
+    pub reject_sco: bool,
 }
 
 /// One received method call, exactly as the wire carried it.
@@ -216,7 +217,7 @@ fn phone_ifaces(p: &PhoneModel) -> Ifaces {
             HashMap::from([
                 ("State".to_string(), v(state.clone())),
                 ("Codec".to_string(), v(*codec)),
-                ("RejectSCO".to_string(), v(false)),
+                ("RejectSCO".to_string(), v(p.reject_sco)),
             ]),
         );
     }
@@ -345,7 +346,19 @@ impl TransportObj {
     }
     #[zbus(property, name = "RejectSCO")]
     fn reject_sco(&self) -> bool {
-        false
+        self.1.phones.lock().unwrap()[&self.0].reject_sco
+    }
+    #[zbus(property, name = "RejectSCO")]
+    fn set_reject_sco(&mut self, value: bool) {
+        let _ = self.1.record(
+            &format!("{MANAGER}/ag{}", self.0),
+            TRANSPORT,
+            "SetRejectSCO",
+            if value { "true" } else { "false" },
+        );
+        if let Some(p) = self.1.phones.lock().unwrap().get_mut(&self.0) {
+            p.reject_sco = value;
+        }
     }
 }
 
@@ -449,6 +462,7 @@ impl MockService {
             address: address.into(),
             transport,
             calls: BTreeMap::new(),
+            reject_sco: false,
         };
         let ifaces = phone_ifaces(&model);
         self.shared.phones.lock().unwrap().insert(n, model);

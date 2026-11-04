@@ -1,8 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Platform-neutral description of an audio server's state: cards, sinks, sources and modules.
+//! Platform-neutral description of an audio server's state: cards, devices and streams.
 //!
-//! These are plain data. The Linux adapter fills them from libpulse; tests fill them by hand.
-//! Nothing here performs I/O.
+//! These are plain data. The Linux adapter fills them from libpulse (`pipewire-pulse`); tests
+//! fill them by hand. Nothing here performs I/O.
+//!
+//! ## How a phone call looks on PipeWire (1.x, checked against 1.6.9 sources)
+//!
+//! With the phone as the HFP audio gateway and this computer as the hands-free unit:
+//!
+//! * the phone's card (`bluez_card.<ADDR>`) has the profile **`audio-gateway`** (plus `off`).
+//!   Profile names describe the *remote* device: `audio-gateway` = the remote is a phone.
+//!   `headset-head-unit` is what a *headset* gets (the computer is then the gateway) and never
+//!   carries a phone call.
+//! * while the voice link (SCO/eSCO) is open, the card exposes two **streams**, not devices:
+//!   the caller's voice as a playback stream (`Stream/Output/Audio`, a pulse *sink input*,
+//!   `bluez_input.<ADDR>.<n>`) and the uplink as a capture stream (`Stream/Input/Audio`, a pulse
+//!   *source output*, `bluez_output.<ADDR>.<n>`), both with `api.bluez5.profile =
+//!   headset-audio-gateway` and `node.autoconnect = true`. WirePlumber links them to the default
+//!   speakers and microphone by itself; GeekBridge moves them to the devices the user picked.
+//! * they disappear when the voice link closes. Nothing has to be unloaded afterwards.
+//!
+//! PulseAudio (no PipeWire) names the same profile `headset_audio_gateway` and exposes a source
+//! and sink instead; it also loops them to the defaults itself. GeekBridge detects that shape and
+//! reports it, but only routes on PipeWire.
 
 use std::collections::BTreeMap;
 
@@ -43,6 +63,11 @@ impl BtAddress {
             b[0], b[1], b[2], b[3], b[4], b[5]
         )
     }
+
+    /// Last two octets only, for logs and user-facing lines (`..:EE:FF`).
+    pub fn short(&self) -> String {
+        format!("..:{:02X}:{:02X}", self.0[4], self.0[5])
+    }
 }
 
 impl std::fmt::Debug for BtAddress {
@@ -57,35 +82,22 @@ impl Serialize for BtAddress {
     }
 }
 
-/// Codec implied by a Bluetooth voice profile *name* (`headset-head-unit-msbc`). It is a hint
-/// from the card, not evidence about samples.
+/// What a card profile or a node's `api.bluez5.profile` says about the *remote* device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VoiceCodec {
-    Cvsd,
-    Msbc,
-    Lc3,
-    /// The profile name does not say (`headset-head-unit`).
-    Unspecified,
-}
-
-/// What a card profile or node `api.bluez5.profile` value means for routing.
-///
-/// A2DP is one-directional media (the phone plays *to* this computer, or the reverse) and has no
-/// microphone. Only [`ProfileKind::Voice`] (HSP/HFP hands-free unit, an SCO/eSCO link) carries
-/// duplex call audio. BlueZ and PipeWire name HSP and HFP profiles alike, so the two cannot be
-/// told apart here and both are `Voice`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", content = "codec", rename_all = "snake_case")]
 pub enum ProfileKind {
     Off,
-    /// This computer is the A2DP sink: phone media playing here. Not a call path.
-    A2dpSink,
-    A2dpSource,
-    /// This computer is the hands-free unit of an HSP/HFP link.
-    Voice(VoiceCodec),
-    /// This computer would be the audio gateway: the wrong role for a phone.
-    AudioGateway,
+    /// The remote is a phone (HFP/HSP audio gateway): PipeWire card profile `audio-gateway`,
+    /// node profile `headset-audio-gateway`, PulseAudio `headset_audio_gateway`. The only kind
+    /// that carries a phone call.
+    PhoneGateway,
+    /// The remote sends media here (a phone playing music): `a2dp-source`. No microphone.
+    MediaFromRemote,
+    /// The remote plays media (headphones/speaker): `a2dp-sink[-codec]`.
+    MediaToRemote,
+    /// The remote is a headset (this computer is the gateway): `headset-head-unit[-codec]`.
+    /// A Bluetooth headset's microphone profile, never a phone call.
+    HeadsetUnit,
     Other,
 }
 
@@ -102,16 +114,21 @@ impl ProfileKind {
         let n = n.as_str();
         if n == "off" {
             Self::Off
-        } else if family(n, "a2dp-sink") || family(n, "a2dp_sink") {
-            Self::A2dpSink
-        } else if family(n, "a2dp-source") || family(n, "a2dp_source") {
-            Self::A2dpSource
-        } else if family(n, "headset-audio-gateway")
-            || family(n, "headset_audio_gateway")
-            || family(n, "handsfree-audio-gateway")
-            || family(n, "handsfree_audio_gateway")
+        } else if [
+            "audio-gateway",
+            "headset-audio-gateway",
+            "headset_audio_gateway",
+            "handsfree_audio_gateway",
+            "handsfree-audio-gateway",
+        ]
+        .iter()
+        .any(|b| family(n, b))
         {
-            Self::AudioGateway
+            Self::PhoneGateway
+        } else if family(n, "a2dp-source") || family(n, "a2dp_source") {
+            Self::MediaFromRemote
+        } else if family(n, "a2dp-sink") || family(n, "a2dp_sink") {
+            Self::MediaToRemote
         } else if [
             "headset-head-unit",
             "headset_head_unit",
@@ -121,22 +138,10 @@ impl ProfileKind {
         .iter()
         .any(|b| family(n, b))
         {
-            Self::Voice(if n.contains("msbc") {
-                VoiceCodec::Msbc
-            } else if n.contains("cvsd") {
-                VoiceCodec::Cvsd
-            } else if n.contains("lc3") {
-                VoiceCodec::Lc3
-            } else {
-                VoiceCodec::Unspecified
-            })
+            Self::HeadsetUnit
         } else {
             Self::Other
         }
-    }
-
-    pub fn is_voice(&self) -> bool {
-        matches!(self, Self::Voice(_))
     }
 }
 
@@ -161,7 +166,7 @@ pub struct SinkInfo {
     pub name: String,
     pub description: String,
     pub card: Option<u32>,
-    pub owner_module: Option<u32>,
+    pub mute: bool,
     pub props: Props,
 }
 
@@ -171,40 +176,42 @@ pub struct SourceInfo {
     pub name: String,
     pub description: String,
     pub card: Option<u32>,
-    pub owner_module: Option<u32>,
+    pub mute: bool,
     /// `Some` for a sink monitor, which is never a microphone.
     pub monitor_of_sink: Option<u32>,
     pub props: Props,
 }
 
+/// A playback stream (pulse sink input) or capture stream (pulse source output).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModuleInfo {
+pub struct StreamInfo {
     pub index: u32,
     pub name: String,
-    /// The argument string the module was loaded with. Some servers do not report it.
-    pub argument: Option<String>,
+    /// The sink (for a playback stream) or source (capture stream) it is connected to.
+    pub device: Option<u32>,
+    pub corked: bool,
+    pub mute: bool,
+    pub props: Props,
 }
 
-/// Identifies one running audio-server instance. Module indices are only meaningful for the
-/// instance that issued them.
+/// Identifies one running audio-server instance.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ServerIdentity {
     pub server_name: String,
     pub server_version: String,
     pub host_name: String,
-    /// Random per server start in PulseAudio. 0 means the server does not report one, in which
-    /// case a restart cannot be told from a reconnect and module indices are never trusted
-    /// across a reconnect.
+    /// Random per server start in PulseAudio and pipewire-pulse. 0 = not reported.
     pub cookie: u32,
 }
 
 impl ServerIdentity {
-    pub fn proves_same_instance(&self, other: &Self) -> bool {
-        self.cookie != 0 && self == other
+    /// `pipewire-pulse` reports `PulseAudio (on PipeWire x.y.z)`.
+    pub fn is_pipewire(&self) -> bool {
+        self.server_name.contains("PipeWire")
     }
 }
 
-/// One read of the whole server. Entities are numbered per read; they are not stable handles.
+/// One read of the whole server. Indices are per read; names are the stable handles.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ServerSnapshot {
     pub identity: ServerIdentity,
@@ -213,23 +220,23 @@ pub struct ServerSnapshot {
     pub cards: Vec<CardInfo>,
     pub sinks: Vec<SinkInfo>,
     pub sources: Vec<SourceInfo>,
-    pub modules: Vec<ModuleInfo>,
+    /// Playback streams (pulse sink inputs).
+    pub sink_inputs: Vec<StreamInfo>,
+    /// Capture streams (pulse source outputs).
+    pub source_outputs: Vec<StreamInfo>,
 }
 
-/// A sink or source pinned by index *and* exact name. Both must still match at start time.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-pub struct EndpointId {
-    pub index: u32,
-    pub name: String,
-}
-
-pub(crate) const PROP_BT_ADDRESS: &str = "api.bluez5.address";
-pub(crate) const PROP_BT_PROFILE: &str = "api.bluez5.profile";
-pub(crate) const PROP_DEVICE_API: &str = "device.api";
-pub(crate) const PROP_DEVICE_STRING: &str = "device.string";
+pub const PROP_BT_ADDRESS: &str = "api.bluez5.address";
+pub const PROP_BT_PROFILE: &str = "api.bluez5.profile";
+pub const PROP_BT_CODEC: &str = "api.bluez5.codec";
+pub const PROP_DEVICE_API: &str = "device.api";
+pub const PROP_DEVICE_STRING: &str = "device.string";
+pub const PROP_MEDIA_CLASS: &str = "media.class";
+pub const PROP_NODE_NAME: &str = "node.name";
+pub const PROP_FORM_FACTOR: &str = "device.form_factor";
 
 /// The Bluetooth address a card or node reports through its properties. Names are never parsed.
-pub(crate) fn props_address(props: &Props) -> Option<BtAddress> {
+pub fn props_address(props: &Props) -> Option<BtAddress> {
     if let Some(a) = props.get(PROP_BT_ADDRESS) {
         return BtAddress::parse(a);
     }
@@ -250,27 +257,27 @@ impl CardInfo {
     pub fn active_kind(&self) -> Option<ProfileKind> {
         self.active_profile.as_deref().map(ProfileKind::classify)
     }
-    pub fn voice_profile_available(&self) -> bool {
+    /// The phone-gateway profile this card offers, if any (available or not).
+    pub fn gateway_profile(&self) -> Option<&CardProfile> {
         self.profiles
             .iter()
-            .any(|p| p.available && ProfileKind::classify(&p.name).is_voice())
+            .filter(|p| ProfileKind::classify(&p.name) == ProfileKind::PhoneGateway)
+            .max_by_key(|p| p.available)
     }
 }
 
-impl SinkInfo {
-    pub fn id(&self) -> EndpointId {
-        EndpointId {
-            index: self.index,
-            name: self.name.clone(),
-        }
+impl StreamInfo {
+    pub fn address(&self) -> Option<BtAddress> {
+        props_address(&self.props)
     }
-}
-impl SourceInfo {
-    pub fn id(&self) -> EndpointId {
-        EndpointId {
-            index: self.index,
-            name: self.name.clone(),
-        }
+    pub fn profile_kind(&self) -> Option<ProfileKind> {
+        self.props
+            .get(PROP_BT_PROFILE)
+            .map(|p| ProfileKind::classify(p))
+    }
+    /// The HFP codec name PipeWire reports (`cvsd`, `msbc`, `lc3_swb`), if any.
+    pub fn codec(&self) -> Option<&str> {
+        self.props.get(PROP_BT_CODEC).map(String::as_str)
     }
 }
 
@@ -282,6 +289,7 @@ mod tests {
     fn address_parsing_accepts_pipewire_card_form_and_rejects_partials() {
         let a = BtAddress::parse("aa:BB:cc:00:11:22").unwrap();
         assert_eq!(a.expose(), "AA:BB:CC:00:11:22");
+        assert_eq!(a.short(), "..:11:22");
         assert_eq!(BtAddress::parse("AA_BB_CC_00_11_22"), Some(a));
         assert_eq!(BtAddress::parse("AA:BB:CC:00:11"), None);
         assert_eq!(BtAddress::parse("AA:BB:CC:00:11:22:33"), None);
@@ -291,31 +299,20 @@ mod tests {
     }
 
     #[test]
-    fn profile_classification_separates_a2dp_from_duplex_voice() {
+    fn profile_names_describe_the_remote_device() {
         use ProfileKind::*;
-        assert_eq!(ProfileKind::classify("a2dp-sink"), A2dpSink);
-        assert_eq!(ProfileKind::classify("a2dp-sink-aac"), A2dpSink);
-        assert_eq!(ProfileKind::classify("a2dp_sink"), A2dpSink);
-        assert_eq!(ProfileKind::classify("a2dp-source"), A2dpSource);
-        assert_eq!(
-            ProfileKind::classify("headset-head-unit"),
-            Voice(VoiceCodec::Unspecified)
-        );
-        assert_eq!(
-            ProfileKind::classify("headset-head-unit-msbc"),
-            Voice(VoiceCodec::Msbc)
-        );
-        assert_eq!(
-            ProfileKind::classify("headset-head-unit-cvsd"),
-            Voice(VoiceCodec::Cvsd)
-        );
-        assert_eq!(
-            ProfileKind::classify("handsfree_head_unit"),
-            Voice(VoiceCodec::Unspecified)
-        );
-        assert_eq!(ProfileKind::classify("headset-audio-gateway"), AudioGateway);
+        // PipeWire card profile and node profile of a phone; PulseAudio's name for the same.
+        assert_eq!(ProfileKind::classify("audio-gateway"), PhoneGateway);
+        assert_eq!(ProfileKind::classify("headset-audio-gateway"), PhoneGateway);
+        assert_eq!(ProfileKind::classify("headset_audio_gateway"), PhoneGateway);
+        // A headset's profiles are never a phone call.
+        assert_eq!(ProfileKind::classify("headset-head-unit"), HeadsetUnit);
+        assert_eq!(ProfileKind::classify("headset-head-unit-msbc"), HeadsetUnit);
+        assert_eq!(ProfileKind::classify("handsfree_head_unit"), HeadsetUnit);
+        assert_eq!(ProfileKind::classify("a2dp-sink"), MediaToRemote);
+        assert_eq!(ProfileKind::classify("a2dp-sink-aac"), MediaToRemote);
+        assert_eq!(ProfileKind::classify("a2dp-source"), MediaFromRemote);
         assert_eq!(ProfileKind::classify("off"), Off);
-        // A name that merely starts with a known family prefix is not that family.
         assert_eq!(ProfileKind::classify("a2dp-sinkhole"), Other);
         assert_eq!(ProfileKind::classify("pro-audio"), Other);
     }
@@ -329,5 +326,27 @@ mod tests {
         assert!(props_address(&p).is_some());
         p.insert(PROP_BT_ADDRESS.into(), "11:22:33:44:55:66".into());
         assert_eq!(props_address(&p), BtAddress::parse("11:22:33:44:55:66"));
+    }
+
+    #[test]
+    fn gateway_profile_prefers_an_available_one() {
+        let card = CardInfo {
+            index: 1,
+            name: "bluez_card.X".into(),
+            props: Props::new(),
+            profiles: vec![
+                CardProfile {
+                    name: "off".into(),
+                    available: true,
+                },
+                CardProfile {
+                    name: "audio-gateway".into(),
+                    available: true,
+                },
+            ],
+            active_profile: Some("off".into()),
+        };
+        assert_eq!(card.gateway_profile().unwrap().name, "audio-gateway");
+        assert_eq!(card.active_kind(), Some(ProfileKind::Off));
     }
 }

@@ -141,6 +141,32 @@ impl Session {
         self.refresh()
     }
 
+    /// Accept (`false`) or refuse (`true`) the voice link the phone opens. Not a call command:
+    /// the call-audio controller uses it to keep the audio where the user wants it.
+    pub fn set_reject_sco(&self, device: &DeviceRef, reject: bool) -> Result<(), ControlError> {
+        let tracked = self
+            .phones
+            .get(&device.path)
+            .ok_or(ControlError::NoSuchDevice)?;
+        if tracked.phone.device != *device {
+            return Err(ControlError::StaleDevice);
+        }
+        self.backend.invoke(&Action::SetRejectSco {
+            device: device.clone(),
+            reject,
+        })
+    }
+
+    /// Ask the phone to open the voice link (`Activate`), outside the call-command pre-flight.
+    pub fn activate_audio(&self, device: &DeviceRef) -> Result<(), ControlError> {
+        if !self.phones.contains_key(&device.path) {
+            return Err(ControlError::NoSuchDevice);
+        }
+        self.backend.invoke(&Action::ActivateAudio {
+            device: device.clone(),
+        })
+    }
+
     /// Run a neutral command against one phone: model pre-flight (capability, arguments, link,
     /// call state), then backend dispatch with fresh-state revalidation. `Ok` means the service
     /// accepted the request; the effect appears in a later [`refresh`](Self::refresh).

@@ -283,6 +283,12 @@ pub enum Action {
     ActivateAudio {
         device: DeviceRef,
     },
+    /// Write `AudioGatewayTransport1.RejectSCO`: `true` refuses the voice link the phone opens
+    /// (the call audio stays on the phone), `false` accepts it.
+    SetRejectSco {
+        device: DeviceRef,
+        reject: bool,
+    },
 }
 
 impl Action {
@@ -296,7 +302,8 @@ impl Action {
             | Self::HoldAndAnswer { device }
             | Self::CreateMultiparty { device }
             | Self::SendTones { device, .. }
-            | Self::ActivateAudio { device } => device,
+            | Self::ActivateAudio { device }
+            | Self::SetRejectSco { device, .. } => device,
             Self::Answer { call } | Self::Reject { call } | Self::Hangup { call } => &call.device,
         }
     }

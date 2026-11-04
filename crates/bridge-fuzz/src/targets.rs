@@ -1348,6 +1348,7 @@ fn doctor_ufw(input: &[u8]) {
             session: doctor::SessionEnv::default(),
             firewall: fw,
             systemd_unit: false,
+            hear_calls: None,
         });
         let shown = doctor::render(&checks);
         bounded(&shown, input.len().min(200), "doctor render");

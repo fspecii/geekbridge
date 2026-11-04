@@ -1,49 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Call-audio routing: connecting the phone's duplex HFP/SCO audio to this computer's speakers
-//! and microphone.
+//! Call audio: putting a phone call's voice on this computer's headphones and microphone.
 //!
-//! This is the layer *after* call control. Orchestration, in order (details and the exact service
-//! integration are in `docs/call-audio-options.md`):
+//! The phone is the Bluetooth hands-free audio gateway; PipeWire carries the voice link (SCO).
+//! While the link is open PipeWire shows the call as two streams (see [`model`]); WirePlumber
+//! links them to the default devices and [`CallAudio`] moves them to the ones the user picked,
+//! asks the phone for the link when the user answered here, mutes the real microphone, checks
+//! that audio flows and undoes every change when the call ends (also after a crash).
 //!
-//! 1. The call adapter (`CallBackend`) invokes `AudioGatewayTransport1.Activate` (the explicit
-//!    `ConnectAudio` action). That only asks PipeWire to open the SCO/eSCO transport. It does not
-//!    create microphone audio and it does not route anything.
-//! 2. The adapter reports `TransportSnapshot { state: Active, codec }`. The service passes that as
-//!    a [`ControlEvidence`].
-//! 3. WirePlumber switches the phone's card to a duplex voice profile and exposes the voice
-//!    source/sink. [`AudioRouteManager::assess`] reports [`Blocker::CardNotInVoiceProfile`] /
-//!    [`Blocker::VoiceEndpointsMissing`] until it has; the service re-assesses on a bounded
-//!    schedule. Card profiles are never switched from here.
-//! 4. Only then does the service call [`AudioRouteManager::start`] with a prepared [`RoutePlan`].
-//!
-//! Platform support: [`AudioServer`] is implemented for PulseAudio / `pipewire-pulse` on Linux
-//! ([`PulseServer`]); other platforms get [`UnsupportedAudioServer`], which fails every operation
-//! with an explicit reason.
+//! * [`model`]: plain data of one audio-server read; how a phone call looks on PipeWire.
+//! * [`route`]: pure decisions (find the call, resolve devices, name problems with fixes).
+//! * [`controller`]: the per-call state machine.
+//! * [`prefs`]: the user's device pick and the restore file.
+//! * [`AudioServer`]: the narrow server interface; [`PulseServer`] on Linux (libpulse against
+//!   `pipewire-pulse`), [`UnsupportedAudioServer`] elsewhere.
 
-pub mod inventory;
-pub mod manager;
+pub mod controller;
 pub mod model;
-pub mod plan;
+pub mod prefs;
+pub mod route;
 pub mod server;
-pub mod spec;
 mod unsupported;
 
 #[cfg(target_os = "linux")]
 mod pulse;
 
-pub use inventory::{AudioInventory, LocalEndpoint, OrphanModule, PhoneAudio};
-pub use manager::{
-    ActiveRoute, AudioRouteManager, EchoFailure, EchoOutcome, Health, ModuleRole, OwnedModule,
-    RecoverReport, RecoverRoute, StartError, StartFailure, StartOptions, StartReport, StopReason,
-    StopReport, TeardownReport,
-};
-pub use model::{BtAddress, EndpointId, ProfileKind, ServerIdentity, ServerSnapshot, VoiceCodec};
-pub use plan::{
-    Assessment, Blocker, ControlEvidence, DeclaredFeasibility, EchoPolicy, HardwareEvidence,
-    LocalSelection, RoutePlan, RouteRequest, Warning,
-};
-pub use server::{AudioServer, ServerError};
-pub use spec::{EchoMethod, PathDirection, SessionId};
+pub use controller::{AudioStatus, CallAudio, Options, PhoneInput, Place, Request, Want};
+pub use model::{BtAddress, ProfileKind, ServerIdentity, ServerSnapshot};
+pub use prefs::Choice;
+pub use route::{Device, DeviceList, FlowProblem, Role};
+pub use server::{AudioServer, PeakTarget, ServerError};
 pub use unsupported::UnsupportedAudioServer;
 
 #[cfg(target_os = "linux")]

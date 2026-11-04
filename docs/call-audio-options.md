@@ -32,7 +32,9 @@ The setup window lists six steps, each with a state in words and, when it fails,
 * `bluetoothd` with a powered adapter.
 * PipeWire's native HFP backend with the `hfp_hf` role. WirePlumber's current defaults for `bluez5.roles` already include `hfp_hf`, and `bluez5.hfphsp-backend` defaults to `native` **[OFFICIAL]** (<https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html>). Only if a phone refuses hands-free, add `hsp_hs` to the roles in a WirePlumber fragment and restart `wireplumber pipewire pipewire-pulse`.
 * PipeWire's `org.pipewire.Telephony` D-Bus service, which GeekBridge drives for answer and hang up. Its API is undocumented, so it is probed live **[SRC]**.
-* `pipewire-pulse` (GeekBridge routes through PulseAudio-protocol modules).
+* `pipewire-pulse`: GeekBridge reads the sound server and moves the call's voice to the chosen devices through the PulseAudio protocol (libpulse).
+
+**How a call looks on PipeWire (verified against the 1.6.9 sources and in the sandbox, 2026-11-04):** the phone's card `bluez_card.<ADDR>` has the profile **`audio-gateway`** (profile names describe the *remote* device; `headset-head-unit` is what a *headset* gets and never carries a phone call). While the phone's voice link (SCO) is open, PipeWire adds two *streams* (not devices) with `api.bluez5.profile = headset-audio-gateway` and `node.autoconnect = true`: the caller's voice (`Stream/Output/Audio`) and the uplink (`Stream/Input/Audio`). WirePlumber links them to the default speakers and microphone by itself; GeekBridge moves them to the devices picked with `geekbridge-ctl call audio-devices`, mutes the real microphone on `call mute`, checks within 3 s that audio flows and undoes everything after the call. Details, the guided setup and the hardware test script: [reports/call-audio-pc-headset.md](reports/call-audio-pc-headset.md).
 
 ## What to buy (no Bluetooth on the computer)
 
@@ -66,7 +68,11 @@ On stock Android 10+ an installed app cannot capture the other party's voice or 
 geekbridge-ctl call-audio             # the checklist as text
 geekbridge-ctl call-audio test        # tone, then 5 s of microphone level
 geekbridge-ctl call-audio use --output NAME --input NAME   # no name = system default
-geekbridge-ctl calling                # raw backend summary
+geekbridge-ctl calling                # backend summary and the step-by-step 'Hear calls on this computer' checklist
+geekbridge-ctl call setup             # pair, trust and connect the phone as a hands-free device (compare the code)
+geekbridge-ctl call audio-devices     # devices a call uses; --output/--input NAME|default
+geekbridge-ctl call mute on|off       # the real microphone of the live call
+geekbridge-ctl call audio phone       # send a live call's voice back to the phone (call audio: bring it here)
 geekbridge-ctl doctor                 # includes the call audio line for your OS
 geekbridge-call-probe                 # read-only evidence report
 ```
@@ -78,5 +84,8 @@ geekbridge-call-probe                 # read-only evidence report
 3. On the phone: GeekBridge, Answer calls, **Pair phone with your computer for call audio**. Pair in Android's Bluetooth settings and allow Phone calls (One UI: Bluetooth, the gear, Call audio on). Back in GeekBridge the step shows whether the phone sees the computer as connected.
 4. Press **Test call audio**: you should hear a two-note tone in the chosen headphones and see the meter move when you speak.
 5. Call the phone from another number, answer on the computer, and talk. Write down what happened (voice both ways? echo? delay?) and run `geekbridge-ctl call-audio` and `geekbridge-ctl doctor` for the report.
+6. To pair from the computer instead: `geekbridge-ctl call setup` (powers the adapter on, makes it visible for two minutes, pairs with the phone after you compare the six-digit code on both screens, trusts it and connects hands-free; it reconnects by itself afterwards). `geekbridge-ctl call setup --fix-config` fixes the WirePlumber settings without sudo, e.g. a `bluez5.auto-connect` rule without `hfp_ag`.
 
-The automatic pairing and routing behind step 2 and 3 belongs to the call backend work; this window shows the state and the fixes but does not itself pair or connect.
+Open items that need real hardware: audible quality, whether the adapter carries wideband (mSBC) over USB, and echo with open speakers (the phone's own echo cancellation, NREC, stays on). There is no profile to switch for a call on PipeWire: `audio-gateway` carries both music and calls.
+
+A call answered on this computer is routed to the chosen headphones and microphone automatically (no clicks) and everything is put back when it ends; a call answered on the phone stays on the phone. How it works, the sandbox tests and the hardware test script: [reports/call-audio-pc-headset.md](reports/call-audio-pc-headset.md).

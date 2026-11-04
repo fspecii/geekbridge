@@ -380,6 +380,24 @@ impl Client {
                 .next()
                 .ok_or(ControlError::NoSuchDevice)?,
         };
+        if let Action::SetRejectSco { reject, .. } = action {
+            let path = guard::check_reject_sco(action, &phone)?;
+            return self
+                .conn
+                .call_method(
+                    Some(owner.as_str()),
+                    path.as_str(),
+                    Some("org.freedesktop.DBus.Properties"),
+                    "Set",
+                    &(
+                        IFACE_TRANSPORT,
+                        "RejectSCO",
+                        zbus::zvariant::Value::from(*reject),
+                    ),
+                )
+                .map(|_| ())
+                .map_err(|e| map_call_error(e, false));
+        }
         let plan = guard::plan(action, &phone)?;
 
         let result = match &plan.arg {

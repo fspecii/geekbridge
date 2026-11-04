@@ -2,52 +2,51 @@
 //! Opt-in, read-only check of the real libpulse adapter against this host's audio server:
 //! `cargo test -p bridge-calls --test audio_live_inventory -- --ignored --nocapture`.
 //!
-//! It connects, reads cards/sinks/sources/modules and prints a summary. It loads and unloads
-//! nothing, plays nothing, and never starts a sound server. It cannot prove calling or audio
-//! relay: that needs a Bluetooth controller and a paired phone.
+//! It connects, reads cards, devices and streams and prints a summary. It moves, mutes and
+//! switches nothing, plays nothing, and never starts a sound server.
 #![cfg(target_os = "linux")]
 
-use bridge_calls::audio::{AudioRouteManager, AudioServer, PulseOptions, PulseServer};
+use bridge_calls::audio::model::ProfileKind;
+use bridge_calls::audio::{AudioServer, PulseOptions, PulseServer, route};
 
 #[test]
 #[ignore = "talks to the host's real audio server (read-only)"]
 fn live_read_only_inventory() {
-    let server = match PulseServer::connect(PulseOptions::default()) {
+    let mut server = match PulseServer::connect(PulseOptions::default()) {
         Ok(s) => s,
         Err(e) => {
             println!("no audio server reachable (not a failure): {e}");
             return;
         }
     };
-    let mut server = server;
     let snap = server.snapshot().expect("read-only snapshot");
-    let with_args = snap
-        .modules
+    println!(
+        "server: {} {} (PipeWire: {})",
+        snap.identity.server_name,
+        snap.identity.server_version,
+        snap.identity.is_pipewire()
+    );
+    let phones = snap
+        .cards
         .iter()
-        .filter(|m| m.argument.as_deref().is_some_and(|a| !a.is_empty()))
+        .filter(|c| c.gateway_profile().is_some())
         .count();
+    println!("bluetooth phone cards: {phones}");
+    for c in &snap.cards {
+        if c.address().is_some() {
+            println!(
+                "  bluetooth card active profile: {:?} ({:?})",
+                c.active_profile,
+                c.active_kind().unwrap_or(ProfileKind::Other)
+            );
+        }
+    }
+    let l = route::devices(&snap);
     println!(
-        "modules: {} ({} report an argument string)",
-        snap.modules.len(),
-        with_args
+        "local outputs: {}, local inputs: {}, playback streams: {}, capture streams: {}",
+        l.outputs.len(),
+        l.inputs.len(),
+        snap.sink_inputs.len(),
+        snap.source_outputs.len()
     );
-    let mut mgr = AudioRouteManager::new(server);
-    let inv = mgr.inventory().expect("read-only inventory");
-    println!(
-        "server: {} {}",
-        inv.server.server_name, inv.server.server_version
-    );
-    println!(
-        "server identity cookie reported: {}",
-        inv.server.cookie != 0
-    );
-    println!("bluetooth phone cards: {}", inv.phones.len());
-    println!(
-        "local outputs: {}, local inputs: {}",
-        inv.local_outputs.len(),
-        inv.local_inputs.len()
-    );
-    println!("orphaned geekbridge modules: {}", inv.orphans.len());
-    assert!(inv.phones.iter().all(|p| p.address.expose().len() == 17));
-    assert!(mgr.active().is_none(), "inventory must not start anything");
 }

@@ -55,14 +55,12 @@ impl Readiness {
     /// One line: what is wrong and the next step. Calls keep working on the phone either way.
     pub fn line(self) -> String {
         match self {
-            Readiness::NoAdapter => format!(
-                "Call audio on this computer: no Bluetooth adapter found. Call control works over the phone link (answer, decline, hang up, dial) but the voice stays on the phone; add a USB Bluetooth dongle to hear calls here ({DOC})."
-            ),
+            Readiness::NoAdapter => format!("{} ({DOC})", bridge_core::ipc::NO_BLUETOOTH_WARNING),
             Readiness::NoHfpPhone { paired: false } => format!(
-                "Call audio on this computer: Bluetooth adapter found, but the phone is not paired as a hands-free device. Pair it in Bluetooth settings and allow calls ({DOC})."
+                "Call audio on this computer: Bluetooth adapter found, but the phone is not paired as a hands-free device. Set it up: geekbridge-ctl call setup (or Settings > Calls) ({DOC})."
             ),
             Readiness::NoHfpPhone { paired: true } => format!(
-                "Call audio on this computer: phone is paired but not connected as a hands-free device. Connect its Hands-free profile ({DOC})."
+                "Call audio on this computer: phone is paired but not connected as a hands-free device. Turn on Calls for this computer in the phone's Bluetooth settings, or run: geekbridge-ctl call setup ({DOC})."
             ),
             Readiness::Ready => {
                 "Call audio on this computer: ready (phone connected as a hands-free device)."
@@ -177,7 +175,7 @@ mod host {
         {
             return r;
         }
-        let r = classify(&gather(Path::new("/sys/class/bluetooth"), 0, &bluetoothctl));
+        let r = classify(&gather(&crate::hear::bt_sysfs(), 0, &bluetoothctl));
         *c = Some((Instant::now(), r));
         r
     }
@@ -222,6 +220,11 @@ mod tests {
         );
         assert!(Readiness::NoAdapter.line().contains(DOC));
         assert!(Readiness::NoAdapter.line().contains("USB"));
+        assert!(
+            Readiness::NoAdapter
+                .line()
+                .starts_with(bridge_core::ipc::NO_BLUETOOTH_WARNING)
+        );
     }
 
     // `hci0:256` is a valid sysfs name on Linux but ':' is not a legal file name character on

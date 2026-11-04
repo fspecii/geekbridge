@@ -53,6 +53,16 @@ pub trait HostCalls: Send + 'static {
     fn poll(&mut self, wait: Duration) -> Result<Vec<SourceSnapshot>, String>;
     /// Execute a command on the phone behind `source`. `Ok` means accepted for dispatch.
     fn execute(&mut self, source: &str, command: &CallCommand) -> Result<(), String>;
+    /// Lines about the call audio (where it plays, what is wrong and how to fix it). Read after
+    /// every poll.
+    fn notes(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Names of the phones whose GeekBridge link is up right now (before every poll). The Linux
+    /// host reconnects a set-up phone's hands-free profile when its link comes up.
+    fn set_link_phones(&mut self, names: Vec<String>) {
+        let _ = names;
+    }
 }
 
 struct HostCommand {
@@ -66,6 +76,7 @@ struct HostShared {
     snapshots: Vec<SourceSnapshot>,
     label: String,
     problem: Option<String>,
+    notes: Vec<String>,
 }
 
 struct HostHandle {
@@ -245,6 +256,9 @@ impl CallHub {
                         let result = host.execute(&cmd.source, &cmd.command);
                         let _ = cmd.reply.send(result);
                     }
+                    if let Some(hub) = hub.upgrade() {
+                        host.set_link_phones(hub.link_phone_names());
+                    }
                     let polled = host.poll(HOST_POLL);
                     {
                         let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -258,6 +272,7 @@ impl CallHub {
                                 g.problem = Some(problem);
                             }
                         }
+                        g.notes = host.notes();
                     }
                     match hub.upgrade() {
                         Some(hub) => hub.announce_new_calls(),
@@ -462,6 +477,7 @@ impl CallHub {
                 }
                 None => lines.push(format!("{}: ready.", g.label)),
             }
+            lines.extend(g.notes.iter().cloned());
             snaps.extend(g.snapshots.iter().cloned());
         } else {
             lines.push("Bluetooth hands-free calling is not available on this computer.".into());
@@ -494,12 +510,59 @@ impl CallHub {
 
     pub fn status(&self) -> CallsStatus {
         let (snaps, sources) = self.sources();
+        // A problem with a live call's audio (with its fix) wins over the general readiness note.
+        let audio_problem = self
+            .host_notes()
+            .into_iter()
+            .find(|l| !l.starts_with("Call audio:"));
         CallsStatus {
             view: view::build(&snaps),
             notice: self.inner().notice.clone(),
             sources,
-            audio_note: Self::audio_note(&snaps),
+            audio_note: audio_problem.or_else(|| Self::audio_note(&snaps)),
         }
+    }
+
+    /// Names of the phones whose GeekBridge link is up.
+    pub fn link_phone_names(&self) -> Vec<String> {
+        self.inner()
+            .links
+            .values()
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    /// The host's call-audio lines (where a live call's audio plays and what is wrong).
+    pub fn host_notes(&self) -> Vec<String> {
+        self.host
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|h| {
+                h.shared
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .notes
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Send a live call's audio back to the phone. Only Bluetooth hands-free sources carry the
+    /// audio here, so only they can.
+    pub fn audio_to_phone(&self, source: &str) -> Result<(), ErrorBody> {
+        let live = self.view().rows.iter().any(|r| {
+            r.hangup
+                .as_ref()
+                .is_some_and(|t| t.source == source && t.path == ControlPath::Hfp)
+        });
+        if !live {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "no call's audio from that phone is on this computer",
+            ));
+        }
+        self.send_host(source, &CallCommand::DisconnectAudio)
     }
 
     // -------------------------------------------------------------- control
@@ -747,16 +810,40 @@ pub mod linux {
     use bridge_calls::{DeviceRef, Session};
     use bridge_core::calls::{CallFeature, UnsupportedReason};
 
-    /// This computer as the Bluetooth hands-free unit, through `bridge-calls` (PipeWire telephony).
+    use bridge_calls::audio::Want;
+    use bridge_core::calls::{AudioCodec, AudioLinkState, CallEvent, MuteScope};
+
+    /// This computer as the Bluetooth hands-free unit, through `bridge-calls` (PipeWire telephony),
+    /// with the call's audio on the headphones and microphone the user picked
+    /// ([`crate::call_audio_host::HostAudio`]).
     pub struct LinuxHfp {
         session: Session,
         devices: BTreeMap<String, DeviceRef>,
+        audio: Option<crate::call_audio_host::HostAudio>,
     }
     impl LinuxHfp {
+        /// Call control only: the call's audio is left to WirePlumber's defaults.
         pub fn new(session: Session) -> Self {
             Self {
                 session,
                 devices: BTreeMap::new(),
+                audio: None,
+            }
+        }
+        /// Call control plus call audio on this computer; picks and the restore file live in
+        /// `state_dir`.
+        pub fn with_audio(session: Session, state_dir: &std::path::Path) -> Self {
+            Self {
+                session,
+                devices: BTreeMap::new(),
+                audio: Some(crate::call_audio_host::HostAudio::new(state_dir)),
+            }
+        }
+    }
+    impl Drop for LinuxHfp {
+        fn drop(&mut self) {
+            if let Some(a) = &mut self.audio {
+                a.shutdown(&self.session);
             }
         }
     }
@@ -766,24 +853,58 @@ pub mod linux {
         }
         fn poll(&mut self, wait: Duration) -> Result<Vec<SourceSnapshot>, String> {
             self.session.pump(wait).map_err(|e| e.to_string())?;
+            if let Some(a) = &mut self.audio {
+                a.tick(&self.session);
+            }
             self.devices.clear();
             let mut out = Vec::new();
             for (device, state, caps) in self.session.phones() {
                 let key = format!("hfp:{}", device.path);
                 let mut caps = caps.clone();
-                // The telephony API has no microphone mute; mute is a host audio-graph matter.
-                caps.set(
-                    CallFeature::MuteMicrophone,
-                    Support::Unsupported {
-                        reason: UnsupportedReason::NoPlatformApi,
-                    },
-                );
+                let mut state = state.clone();
+                // Mute acts on the microphone the call uses, so it exists only while the call's
+                // audio is on this computer.
+                match self.audio.as_ref().and_then(|a| a.status(device)) {
+                    Some(s) if self.audio.as_ref().is_some_and(|a| a.routed(device)) => {
+                        caps.set(CallFeature::MuteMicrophone, Support::Declared);
+                        // The call's voice streams exist and play here: that is the audio link,
+                        // even if the telephony service has not reported its transport yet.
+                        if !matches!(state.audio, AudioLinkState::Connected { .. }) {
+                            let codec = match &s.place {
+                                bridge_calls::audio::Place::Computer { codec, .. } => {
+                                    match codec.as_deref() {
+                                        Some("msbc") => AudioCodec::Msbc,
+                                        Some("cvsd") => AudioCodec::Cvsd,
+                                        Some("lc3_swb") => AudioCodec::Lc3Swb,
+                                        _ => AudioCodec::Unknown,
+                                    }
+                                }
+                                _ => AudioCodec::Unknown,
+                            };
+                            state.apply(CallEvent::Audio {
+                                state: AudioLinkState::Connected { codec },
+                            });
+                        }
+                        if let Some(m) = s.muted {
+                            state.apply(CallEvent::MuteChanged {
+                                scope: MuteScope::HostMicrophone,
+                                muted: m,
+                            });
+                        }
+                    }
+                    _ => caps.set(
+                        CallFeature::MuteMicrophone,
+                        Support::Unsupported {
+                            reason: UnsupportedReason::NoPlatformApi,
+                        },
+                    ),
+                }
                 self.devices.insert(key.clone(), device.clone());
                 out.push(SourceSnapshot {
                     key,
                     label: "Bluetooth phone".into(),
                     caps,
-                    state: state.clone(),
+                    state,
                 });
             }
             Ok(out)
@@ -792,12 +913,43 @@ pub mod linux {
             let device = self
                 .devices
                 .get(source)
-                .ok_or_else(|| "that phone is no longer connected over Bluetooth".to_owned())?;
+                .ok_or_else(|| "that phone is no longer connected over Bluetooth".to_owned())?
+                .clone();
+            if let Some(a) = &mut self.audio {
+                match command {
+                    // Answered or dialled here: the voice comes here. The phone's voice link is
+                    // accepted before the command goes out.
+                    CallCommand::Answer { .. } | CallCommand::Dial { .. } => {
+                        a.want(&self.session, &device, Want::Computer)
+                    }
+                    CallCommand::ConnectAudio => {
+                        a.want(&self.session, &device, Want::Computer);
+                        // The controller asks the phone for the link itself when none opens.
+                        return Ok(());
+                    }
+                    CallCommand::DisconnectAudio => {
+                        a.want(&self.session, &device, Want::Phone);
+                        return Ok(());
+                    }
+                    CallCommand::SetMicrophoneMute { muted } => {
+                        return a.set_mute(&device, *muted);
+                    }
+                    _ => {}
+                }
+            }
             match command {
-                CallCommand::Reject { call } => self.session.reject(device, call),
-                other => self.session.execute(device, other),
+                CallCommand::Reject { call } => self.session.reject(&device, call),
+                other => self.session.execute(&device, other),
             }
             .map_err(|e| e.to_string())
+        }
+        fn notes(&self) -> Vec<String> {
+            self.audio.as_ref().map(|a| a.lines()).unwrap_or_default()
+        }
+        fn set_link_phones(&mut self, names: Vec<String>) {
+            if let Some(a) = &mut self.audio {
+                a.set_link_phones(names);
+            }
         }
     }
 }

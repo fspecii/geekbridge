@@ -464,6 +464,27 @@ pub enum Request {
     CallAudio {
         source: String,
     },
+    /// Send the live call's audio back to the phone (Bluetooth hands-free sources only).
+    CallAudioPhone {
+        source: String,
+    },
+    /// The "Hear calls on this computer" checklist and the state of the guided setup.
+    HearCalls,
+    /// Drive the guided call-audio setup (pair the phone as a hands-free device, fix the
+    /// WirePlumber configuration). Answers with `HearCalls`.
+    CallAudioPair {
+        action: CallAudioSetupAction,
+    },
+    /// List the speakers/headphones and microphones a call can use, with the user's pick. With
+    /// `set`, first store `output`/`input` as the pick (`None` = follow the system default).
+    CallAudioDevices {
+        #[serde(default)]
+        set: bool,
+        #[serde(default)]
+        output: Option<String>,
+        #[serde(default)]
+        input: Option<String>,
+    },
     /// Update-check state (never contacts the network by itself).
     UpdateStatus,
     /// Start a check of the latest GitHub Release now; poll `UpdateStatus` for the result.
@@ -874,6 +895,153 @@ pub struct CallsStatus {
     pub audio_note: Option<String>,
 }
 
+/// What every place that shows calls says when this computer has no Bluetooth adapter.
+pub const NO_BLUETOOTH_WARNING: &str = "This computer has no Bluetooth. You can see and answer calls here, but talking needs Bluetooth (add a USB adapter). Messages, contacts and the other features work normally.";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "do", rename_all = "snake_case")]
+pub enum CallAudioSetupAction {
+    /// Start pairing. `phone`: the phone's Bluetooth name or part of it (default: the name of
+    /// the connected GeekBridge phone, else the first phone that shows up).
+    Start {
+        #[serde(default)]
+        phone: Option<String>,
+    },
+    /// The user compared the six-digit code with the phone's.
+    Confirm {
+        accept: bool,
+    },
+    Cancel,
+    /// Write GeekBridge's WirePlumber fragment (no sudo) and restart WirePlumber.
+    FixConfig,
+}
+
+/// One step of the "Hear calls on this computer" checklist.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HearCallsStep {
+    /// Stable id: adapter, rfkill, service, powered, wireplumber, telephony, paired, connected,
+    /// hfp, card, devices, voice.
+    pub id: String,
+    pub title: String,
+    /// ok, warn, fail or skip.
+    pub state: String,
+    pub detail: String,
+    pub fix: Option<String>,
+}
+
+/// The guided setup as it runs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallAudioSetupState {
+    /// idle, working, confirm (show `passkey`), done or failed.
+    pub phase: String,
+    /// The latest line for the user.
+    pub message: String,
+    /// Six digits to compare with the phone's screen while `phase` is confirm.
+    pub passkey: Option<String>,
+    /// The device asking to pair.
+    pub device: Option<String>,
+    /// Every line of this run.
+    pub log: Vec<String>,
+    /// The phone set up for call audio (name), remembered across restarts.
+    pub phone: Option<String>,
+}
+
+/// Can a call's voice play here, and if not what is the next step. Stable for the UI.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HearCalls {
+    pub ready: bool,
+    /// No Bluetooth adapter at all: show [`NO_BLUETOOTH_WARNING`].
+    pub no_bluetooth: bool,
+    /// One line: ready, the warning above, or the first open step.
+    pub headline: String,
+    pub steps: Vec<HearCallsStep>,
+    pub setup: CallAudioSetupState,
+    /// A Bluetooth adapter appeared since the service started and no phone is set up yet:
+    /// offer "Set up call audio".
+    #[serde(default)]
+    pub offer_setup: bool,
+}
+
+impl HearCalls {
+    /// The first failing step, else the first warning.
+    pub fn first_problem(&self) -> Option<&HearCallsStep> {
+        self.steps
+            .iter()
+            .find(|s| s.state == "fail")
+            .or_else(|| self.steps.iter().find(|s| s.state == "warn"))
+    }
+
+    /// The checklist as text (`geekbridge-ctl calling`).
+    pub fn render(&self) -> String {
+        let mut out = String::from("Hear calls on this computer:\n");
+        if self.no_bluetooth {
+            out.push_str(&format!("  {NO_BLUETOOTH_WARNING}\n"));
+        }
+        for (n, s) in self.steps.iter().enumerate() {
+            let mark = match s.state.as_str() {
+                "ok" => "ok  ",
+                "warn" => "warn",
+                "fail" => "FAIL",
+                _ => "--  ",
+            };
+            out.push_str(&format!(
+                "  {:>2}. [{mark}] {}: {}\n",
+                n + 1,
+                s.title,
+                s.detail
+            ));
+            if let Some(fix) = &s.fix {
+                for (i, line) in fix.lines().enumerate() {
+                    out.push_str(if i == 0 {
+                        "        fix: "
+                    } else {
+                        "             "
+                    });
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+        }
+        out.push_str(if self.ready {
+            "  Result: ready. Answer a call from this computer and the voice comes to the devices above.\n"
+        } else {
+            "  Result: not ready yet; fix the first FAIL above and run this again.\n"
+        });
+        out.push_str(
+            "  Details and a hardware test script: docs/reports/call-audio-pc-headset.md\n",
+        );
+        out
+    }
+}
+
+/// One speaker/headphone or microphone a call can use.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallAudioDevice {
+    /// The sound server's device name (what `CallAudioDevices` takes).
+    pub name: String,
+    pub description: String,
+    pub is_default: bool,
+    /// Itself a Bluetooth device (a headset), not the phone.
+    pub bluetooth: bool,
+    pub muted: bool,
+}
+
+/// The call-audio device choice: what exists, what the user picked, what a call uses right now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallAudioDevices {
+    pub outputs: Vec<CallAudioDevice>,
+    pub inputs: Vec<CallAudioDevice>,
+    /// The user's pick; `None` = the system default.
+    pub chosen_output: Option<String>,
+    pub chosen_input: Option<String>,
+    /// Where a live call's audio is and anything wrong with it (one line each, with a fix).
+    #[serde(default)]
+    pub call: Vec<String>,
+    /// Set when the devices could not be read (no sound server, unsupported platform).
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallingStatus {
     pub platform: String,
@@ -1092,6 +1260,8 @@ pub enum Response {
         text: String,
     },
     Calls(Box<CallsStatus>),
+    CallAudioDevices(Box<CallAudioDevices>),
+    HearCalls(Box<HearCalls>),
     Notifications(Box<NotificationsView>),
     Photos(Box<crate::photos_view::PhotosView>),
     PhotoThumb(Box<crate::photos_view::PhotoThumbView>),
@@ -1124,6 +1294,8 @@ fn every_response_is_parsed(r: &Response) {
         | Response::CallAudioSetup(_)
         | Response::PhoneDebugState { .. }
         | Response::Calls(_)
+        | Response::CallAudioDevices(_)
+        | Response::HearCalls(_)
         | Response::Notifications(_)
         | Response::Photos(_)
         | Response::PhotoThumb(_)
@@ -1177,6 +1349,8 @@ impl Response {
                 text: p::<Text>(json)?.text,
             },
             "calls" => Response::Calls(Box::new(p(json)?)),
+            "call_audio_devices" => Response::CallAudioDevices(Box::new(p(json)?)),
+            "hear_calls" => Response::HearCalls(Box::new(p(json)?)),
             "notifications" => Response::Notifications(Box::new(p(json)?)),
             "photos" => Response::Photos(Box::new(p(json)?)),
             "photo_thumb" => Response::PhotoThumb(Box::new(p(json)?)),

@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod calendar_edit;
 pub mod call_audio;
 pub mod call_audio_cli;
+pub mod call_audio_host;
 pub mod call_cli;
 pub mod call_control;
 pub mod call_overlay;
@@ -536,8 +537,9 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         desktop_notify::spawn_update_watcher(options.updates.clone());
         if config.calling_probe {
             let session = bridge_calls::Session::new(bridge_calls::default_backend());
-            options.call_host =
-                std::sync::Mutex::new(Some(Box::new(call_control::linux::LinuxHfp::new(session))));
+            options.call_host = std::sync::Mutex::new(Some(Box::new(
+                call_control::linux::LinuxHfp::with_audio(session, &config.state_dir),
+            )));
         }
     }
     #[cfg(any(windows, target_os = "macos"))]

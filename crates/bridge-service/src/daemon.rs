@@ -393,6 +393,27 @@ impl Daemon {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    async fn hear_calls(
+        &self,
+        action: Option<bridge_core::ipc::CallAudioSetupAction>,
+    ) -> Result<Response, ErrorBody> {
+        let dir = self.consents().dir().map(std::path::Path::to_path_buf);
+        let phone = self.calls.link_phone_names().into_iter().next();
+        match tokio::task::spawn_blocking(move || {
+            let dir = dir
+                .ok_or_else(|| err(ErrorCode::Unsupported, "call audio needs a state directory"))?;
+            crate::call_audio_host::hear_calls_request(&dir, action, phone)
+        })
+        .await
+        {
+            Ok(r) => r.map(|h| Response::HearCalls(Box::new(h))),
+            Err(_) => Err(err(
+                ErrorCode::Failed,
+                "the call-audio check was interrupted",
+            )),
+        }
+    }
+
     fn consents(&self) -> &ConsentStore {
         &self.consents
     }
@@ -895,6 +916,34 @@ impl Daemon {
             Request::CallAudio { source } => {
                 let hub = self.calls.clone();
                 blocking(move || hub.connect_audio(&source)).await
+            }
+            Request::CallAudioPhone { source } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.audio_to_phone(&source)).await
+            }
+            Request::HearCalls => self.hear_calls(None).await,
+            Request::CallAudioPair { action } => self.hear_calls(Some(action)).await,
+            Request::CallAudioDevices { set, output, input } => {
+                let dir = self.consents().dir().map(std::path::Path::to_path_buf);
+                let hub = self.calls.clone();
+                let set = set.then_some((output, input));
+                match tokio::task::spawn_blocking(move || {
+                    let dir = dir.ok_or_else(|| {
+                        err(
+                            ErrorCode::Unsupported,
+                            "call-audio devices need a state directory",
+                        )
+                    })?;
+                    crate::call_audio_host::devices(&dir, set).map(|mut d| {
+                        d.call = hub.host_notes();
+                        d
+                    })
+                })
+                .await
+                {
+                    Ok(r) => r.map(|d| Response::CallAudioDevices(Box::new(d))),
+                    Err(_) => Err(err(ErrorCode::Failed, "listing call-audio devices failed")),
+                }
             }
             Request::ClipboardStatus => self
                 .clipboard_status()

@@ -56,7 +56,7 @@ Commands:
   messages [DEVICE_ID THREAD_ID]      SMS conversations from phones whose Sms consent is on, and one thread
   messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
   messages-send DEVICE_ID NUMBER TEXT [SUB_ID] send one SMS (SUB_ID: a SIM the phone listed); the send id is not a receipt
-  calling                             read-only host calling backend summary
+  calling                             Bluetooth calling summary and the 'Hear calls on this computer' checklist (fix per step)
   call-audio [test | use [--output NAME] [--input NAME]]
                                       hear and talk through this computer: the checklist (Bluetooth adapter,
                                       phone paired, hands-free, headphones), a five-second tone and microphone
@@ -233,6 +233,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "doctor" {
         return doctor_command(port, &state_dir);
+    }
+    if command == "calling" {
+        return calling_command(port, &state_dir);
     }
     if command == "diagnose" {
         return diagnose_command(port, &state_dir);
@@ -968,6 +971,81 @@ fn read_firewall() -> bridge_service::doctor::Firewall {
 }
 
 /// `doctor`: run every check, print what to do about each problem, fail if one check failed.
+/// The "Hear calls on this computer" checklist, read by the service (it has the telephony and
+/// sound-server clients; ctl stays small). `None` when the service does not answer.
+fn hear_calls(port: u16, state_dir: &std::path::Path) -> Option<bridge_core::ipc::HearCalls> {
+    let t = load_token(state_dir).ok()?;
+    match ipc::call(port, &t, &Request::HearCalls).ok()? {
+        Response::HearCalls(h) if !h.steps.is_empty() => Some(*h),
+        _ => None,
+    }
+}
+
+/// Bluetooth controllers the kernel lists, for when the service is not running.
+fn bluetooth_controllers() -> usize {
+    std::fs::read_dir(
+        std::env::var_os("GEEKBRIDGE_BT_SYSFS").unwrap_or_else(|| "/sys/class/bluetooth".into()),
+    )
+    .map(|d| {
+        d.flatten()
+            .filter(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.strip_prefix("hci")
+                    .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .count()
+    })
+    .unwrap_or(0)
+}
+
+/// `geekbridge-ctl calling`: the service's Bluetooth calling summary, then the step-by-step
+/// "Hear calls on this computer" checklist with a fix for every open step.
+fn calling_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
+    match load_token(state_dir)
+        .map_err(|e| e.to_string())
+        .and_then(|t| ipc::call(port, &t, &Request::CallingStatus).map_err(|e| e.to_string()))
+    {
+        Ok(Response::CallingStatus(c)) => {
+            println!(
+                "calling: {} ({}), telephony service: {}, Bluetooth controllers: {}, phones: {}, calls: {}",
+                c.verdict,
+                c.backend,
+                if c.telephony_service_present {
+                    "present"
+                } else {
+                    "absent"
+                },
+                c.bluetooth_controllers
+                    .map_or("unknown".to_owned(), |n| n.to_string()),
+                c.phones,
+                c.calls
+            );
+        }
+        Ok(Response::Error(e)) => println!("calling: the service answered: {}", e.message),
+        Ok(_) => println!("calling: unexpected reply from the service"),
+        Err(e) => {
+            println!("calling: the service is not reachable ({e}); checking this computer anyway")
+        }
+    }
+    match hear_calls(port, state_dir) {
+        Some(h) => print!("{}", h.render()),
+        None if cfg!(target_os = "linux") => {
+            println!("Hear calls on this computer:");
+            if bluetooth_controllers() == 0 {
+                println!("  {}", bridge_core::ipc::NO_BLUETOOTH_WARNING);
+            }
+            println!(
+                "  The full step-by-step check needs the GeekBridge service: systemctl --user start geekbridge-service, then run this again."
+            );
+        }
+        None => println!(
+            "Hear calls on this computer: pair the phone in the system's Bluetooth settings (Windows/macOS calling guide)."
+        ),
+    }
+    Ok(())
+}
+
 fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> {
     use bridge_core::phone_view::MessagesView;
     use bridge_service::doctor::{self, Inputs, SessionEnv};
@@ -1007,6 +1085,7 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
         }
     };
     let mut checks = doctor::run(&Inputs {
+        hear_calls: hear_calls(port, state_dir),
         status,
         clipboard,
         calling,

@@ -4,11 +4,11 @@
 //! Uses the single-threaded libpulse main loop, pumped manually so every wait has a deadline:
 //! libpulse's blocking calls and the threaded main loop offer none. The context is connected with
 //! `NOAUTOSPAWN`, so connecting can never start a sound server. Reads use only the introspection
-//! calls `get_*_info_list` / `get_server_info`; writes are limited to `load_module` and
-//! `unload_module`.
+//! calls `get_*_info_list` / `get_server_info`; writes are limited to moving a stream, switching
+//! a card profile and muting a source. The level meter opens a short-lived record stream.
 //!
-//! This adapter has been compiled and its read path run against the host's server, but no module
-//! has been loaded through it on a real desktop (see the implementation notes).
+//! Exercised against a private `pipewire` + `pipewire-pulse` + `wireplumber` instance by
+//! `scripts/e2e/call-audio-sandbox.sh` (see `tests/audio_sandbox.rs`).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,11 +21,15 @@ use libpulse_binding::operation::{Operation, State as OpState};
 use libpulse_binding::proplist::{Proplist, properties};
 
 use crate::audio::model::{
-    CardInfo, CardProfile, ModuleInfo, Props, ServerIdentity, ServerSnapshot, SinkInfo, SourceInfo,
+    CardInfo, CardProfile, Props, ServerIdentity, ServerSnapshot, SinkInfo, SourceInfo, StreamInfo,
 };
-use crate::audio::server::{AudioServer, ServerError};
+use crate::audio::server::{AudioServer, PeakTarget, ServerError};
 
 const INVALID_INDEX: u32 = u32::MAX;
+
+fn index(i: u32) -> Option<u32> {
+    (i != INVALID_INDEX).then_some(i)
+}
 
 /// Server identity plus the default sink and source names.
 type IdentityAndDefaults = (ServerIdentity, Option<String>, Option<String>);
@@ -229,6 +233,168 @@ impl PulseServer {
     }
 }
 
+impl PulseServer {
+    /// Wait for a write whose callback reports success, mapping refusal to `Rejected`.
+    fn ack(
+        &mut self,
+        what: &'static str,
+        start: impl FnOnce(
+            &mut libpulse_binding::context::introspect::Introspector,
+            Box<dyn FnMut(bool)>,
+        ) -> Operation<dyn FnMut(bool)>,
+    ) -> Result<(), ServerError> {
+        let cell = Rc::new(Cell::new(None));
+        let c = cell.clone();
+        let mut introspect = self.conn()?.context.introspect();
+        let op = start(&mut introspect, Box::new(move |ok| c.set(Some(ok))));
+        let probe = cell.clone();
+        self.wait(op, &move || probe.get().is_some(), what)?;
+        match cell.get() {
+            Some(true) => Ok(()),
+            _ => {
+                let errno = self
+                    .conn
+                    .as_ref()
+                    .and_then(|c| c.context.errno().to_string())
+                    .unwrap_or_default();
+                Err(ServerError::Rejected {
+                    what,
+                    detail: errno,
+                })
+            }
+        }
+    }
+
+    fn checked(name: &str, what: &'static str) -> Result<(), ServerError> {
+        if name.is_empty() || name.contains('\0') {
+            return Err(ServerError::Rejected {
+                what,
+                detail: "empty name or NUL in name".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Record float32 mono samples from `device` (optionally only one sink input's samples) for
+    /// `window` and return the highest absolute value.
+    fn measure(
+        &mut self,
+        device: &str,
+        monitor_of: Option<u32>,
+        window: Duration,
+    ) -> Result<f32, ServerError> {
+        use libpulse_binding::def::BufferAttr;
+        use libpulse_binding::sample::{Format, Spec};
+        use libpulse_binding::stream::{FlagSet as SFlags, PeekResult, State as SState, Stream};
+
+        let spec = Spec {
+            format: Format::F32le,
+            channels: 1,
+            rate: 8000,
+        };
+        let op_timeout = self.opts.op_timeout;
+        let conn = self.conn()?;
+        let mut props = Proplist::new().ok_or_else(|| ServerError::Rejected {
+            what: "level meter",
+            detail: "cannot allocate property list".into(),
+        })?;
+        let _ = props.set_str(properties::MEDIA_ROLE, "abstract");
+        let _ = props.set_str("geekbridge.purpose", "call-audio-level");
+        let mut stream = Stream::new_with_proplist(
+            &mut conn.context,
+            "GeekBridge call audio level",
+            &spec,
+            None,
+            &mut props,
+        )
+        .ok_or_else(|| ServerError::Rejected {
+            what: "level meter",
+            detail: "cannot create record stream".into(),
+        })?;
+        if let Some(i) = monitor_of {
+            stream
+                .set_monitor_stream(i)
+                .map_err(|e| ServerError::Rejected {
+                    what: "level meter",
+                    detail: e.to_string().unwrap_or_default(),
+                })?;
+        }
+        // ~20 ms fragments so a short window still sees several.
+        let attr = BufferAttr {
+            maxlength: u32::MAX,
+            tlength: u32::MAX,
+            prebuf: u32::MAX,
+            minreq: u32::MAX,
+            fragsize: 640,
+        };
+        stream
+            .connect_record(
+                Some(device),
+                Some(&attr),
+                SFlags::DONT_MOVE | SFlags::ADJUST_LATENCY,
+            )
+            .map_err(|e| ServerError::Rejected {
+                what: "level meter",
+                detail: e.to_string().unwrap_or_default(),
+            })?;
+        let deadline = Instant::now() + op_timeout;
+        loop {
+            match stream.get_state() {
+                SState::Ready => break,
+                SState::Failed | SState::Terminated => {
+                    let detail = conn.context.errno().to_string().unwrap_or_default();
+                    return Err(ServerError::Rejected {
+                        what: "level meter",
+                        detail,
+                    });
+                }
+                _ => {}
+            }
+            if Instant::now() >= deadline {
+                let _ = stream.disconnect();
+                return Err(ServerError::Timeout {
+                    what: "level meter",
+                });
+            }
+            Self::turn(&mut conn.mainloop)?;
+        }
+        let end = Instant::now() + window;
+        let mut peak = 0f32;
+        while Instant::now() < end {
+            Self::turn(&mut conn.mainloop)?;
+            loop {
+                match stream.peek() {
+                    Ok(PeekResult::Empty) | Err(_) => break,
+                    Ok(PeekResult::Hole(_)) => {
+                        let _ = stream.discard();
+                    }
+                    Ok(PeekResult::Data(bytes)) => {
+                        for c in bytes.as_chunks::<4>().0 {
+                            let v = f32::from_le_bytes(*c).abs();
+                            if v.is_finite() && v > peak {
+                                peak = v;
+                            }
+                        }
+                        let _ = stream.discard();
+                    }
+                }
+            }
+            if matches!(stream.get_state(), SState::Failed | SState::Terminated) {
+                break;
+            }
+        }
+        let _ = stream.disconnect();
+        Ok(peak.min(1.0))
+    }
+}
+
+fn stream_name(name: &Option<std::borrow::Cow<'_, str>>, props: &Props) -> String {
+    props
+        .get(crate::audio::model::PROP_NODE_NAME)
+        .cloned()
+        .unwrap_or_else(|| text(name))
+}
+
 impl AudioServer for PulseServer {
     fn snapshot(&mut self) -> Result<ServerSnapshot, ServerError> {
         let (identity, default_sink, default_source) = self.server_identity()?;
@@ -263,7 +429,7 @@ impl AudioServer for PulseServer {
                     name: text(&s.name),
                     description: text(&s.description),
                     card: s.card,
-                    owner_module: s.owner_module,
+                    mute: s.mute,
                     props: props_of(&s.proplist),
                 }
             }
@@ -278,21 +444,41 @@ impl AudioServer for PulseServer {
                     name: text(&s.name),
                     description: text(&s.description),
                     card: s.card,
-                    owner_module: s.owner_module,
+                    mute: s.mute,
                     monitor_of_sink: s.monitor_of_sink,
                     props: props_of(&s.proplist),
                 }
             }
         );
-        let modules = collect_list!(
+        let sink_inputs = collect_list!(
             self,
-            "module list",
-            get_module_info_list,
-            |m: &libpulse_binding::context::introspect::ModuleInfo| {
-                ModuleInfo {
-                    index: m.index,
-                    name: text(&m.name),
-                    argument: m.argument.as_deref().map(str::to_string),
+            "playback stream list",
+            get_sink_input_info_list,
+            |s: &libpulse_binding::context::introspect::SinkInputInfo| {
+                let props = props_of(&s.proplist);
+                StreamInfo {
+                    index: s.index,
+                    name: stream_name(&s.name, &props),
+                    device: index(s.sink),
+                    corked: s.corked,
+                    mute: s.mute,
+                    props,
+                }
+            }
+        );
+        let source_outputs = collect_list!(
+            self,
+            "capture stream list",
+            get_source_output_info_list,
+            |s: &libpulse_binding::context::introspect::SourceOutputInfo| {
+                let props = props_of(&s.proplist);
+                StreamInfo {
+                    index: s.index,
+                    name: stream_name(&s.name, &props),
+                    device: index(s.source),
+                    corked: s.corked,
+                    mute: s.mute,
+                    props,
                 }
             }
         );
@@ -303,64 +489,49 @@ impl AudioServer for PulseServer {
             cards,
             sinks,
             sources,
-            modules,
+            sink_inputs,
+            source_outputs,
         })
     }
 
-    fn load_module(&mut self, name: &str, argument: &str) -> Result<u32, ServerError> {
-        if name.contains('\0') || argument.contains('\0') {
-            return Err(ServerError::Rejected {
-                what: "load module",
-                detail: "NUL in module name or argument".into(),
-            });
-        }
-        let cell = Rc::new(Cell::new(None));
-        let c = cell.clone();
-        let op = self
-            .conn()?
-            .context
-            .introspect()
-            .load_module(name, argument, move |i| c.set(Some(i)));
-        let probe = cell.clone();
-        self.wait(op, &move || probe.get().is_some(), "load module")?;
-        match cell.get() {
-            Some(INVALID_INDEX) | None => {
-                let errno = self
-                    .conn
-                    .as_ref()
-                    .and_then(|c| c.context.errno().to_string())
-                    .unwrap_or_default();
-                Err(ServerError::Rejected {
-                    what: "load module",
-                    detail: errno,
-                })
-            }
-            Some(i) => Ok(i),
-        }
+    fn move_sink_input(&mut self, index: u32, sink: &str) -> Result<(), ServerError> {
+        Self::checked(sink, "moving the call's playback stream")?;
+        self.ack("moving the call's playback stream", |i, cb| {
+            i.move_sink_input_by_name(index, sink, Some(cb))
+        })
     }
 
-    fn unload_module(&mut self, index: u32) -> Result<(), ServerError> {
-        let cell = Rc::new(Cell::new(None));
-        let c = cell.clone();
-        let op = self
-            .conn()?
-            .context
-            .introspect()
-            .unload_module(index, move |ok| c.set(Some(ok)));
-        let probe = cell.clone();
-        self.wait(op, &move || probe.get().is_some(), "unload module")?;
-        match cell.get() {
-            Some(true) => Ok(()),
-            _ => {
-                let errno = self
-                    .conn
-                    .as_ref()
-                    .and_then(|c| c.context.errno().to_string())
-                    .unwrap_or_default();
-                Err(ServerError::Rejected {
-                    what: "unload module",
-                    detail: errno,
-                })
+    fn move_source_output(&mut self, index: u32, source: &str) -> Result<(), ServerError> {
+        Self::checked(source, "moving the call's capture stream")?;
+        self.ack("moving the call's capture stream", |i, cb| {
+            i.move_source_output_by_name(index, source, Some(cb))
+        })
+    }
+
+    fn set_card_profile(&mut self, card: u32, profile: &str) -> Result<(), ServerError> {
+        Self::checked(profile, "switching the card profile")?;
+        self.ack("switching the card profile", |i, cb| {
+            i.set_card_profile_by_index(card, profile, Some(cb))
+        })
+    }
+
+    fn set_source_mute(&mut self, source: &str, mute: bool) -> Result<(), ServerError> {
+        Self::checked(source, "muting the microphone")?;
+        self.ack("muting the microphone", |i, cb| {
+            i.set_source_mute_by_name(source, mute, Some(cb))
+        })
+    }
+
+    fn peak(&mut self, target: &PeakTarget, window: Duration) -> Result<Option<f32>, ServerError> {
+        match target {
+            PeakTarget::SinkInput { index, sink } => {
+                Self::checked(sink, "level meter")?;
+                let monitor = format!("{sink}.monitor");
+                self.measure(&monitor, Some(*index), window).map(Some)
+            }
+            PeakTarget::Source(name) => {
+                Self::checked(name, "level meter")?;
+                self.measure(name, None, window).map(Some)
             }
         }
     }

@@ -804,3 +804,60 @@ fn probe_states_absence_explicitly() {
     let text = probe::render_text(&r);
     assert!(text.contains("No phone"));
 }
+
+#[test]
+fn reject_sco_is_written_as_a_property_on_the_phones_transport() {
+    let bus = bus_or_skip!();
+    let mock = MockService::start(&bus);
+    mock.add_phone(1, ADDR1, Some(("idle", 1)));
+    let mut s = session(&bus);
+    s.refresh().unwrap();
+    let d = device_of(&s);
+    assert_eq!(
+        s.phone(&d).unwrap().transport.as_ref().unwrap().reject_sco,
+        Some(false)
+    );
+    s.set_reject_sco(&d, true).unwrap();
+    s.set_reject_sco(&d, false).unwrap();
+    let writes: Vec<String> = mock
+        .shared
+        .log()
+        .into_iter()
+        .filter(|i| i.member == "SetRejectSCO")
+        .map(|i| format!("{} {}", i.path, i.arg))
+        .collect();
+    assert_eq!(writes, vec![format!("{AG1} true"), format!("{AG1} false")]);
+    // The activate shortcut goes through the same revalidation.
+    s.activate_audio(&d).unwrap();
+    assert!(mock.shared.log().iter().any(|i| i.member == "Activate"));
+    // A stale handle sends nothing.
+    let mut stale = d.clone();
+    stale.address = Sensitive::new("11:11:11:11:11:11");
+    assert!(s.set_reject_sco(&stale, true).is_err());
+    assert_eq!(
+        mock.shared
+            .log()
+            .iter()
+            .filter(|i| i.member == "SetRejectSCO")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn reject_sco_without_a_transport_is_refused_locally() {
+    let bus = bus_or_skip!();
+    let mock = MockService::start_with(
+        &bus,
+        MockOptions {
+            with_transport: false,
+        },
+    );
+    mock.add_phone(1, ADDR1, None);
+    let mut s = session(&bus);
+    s.refresh().unwrap();
+    let d = device_of(&s);
+    let e = s.set_reject_sco(&d, true).unwrap_err();
+    assert!(matches!(e, ControlError::WrongState(_)), "{e:?}");
+    assert!(mock.shared.log().is_empty());
+}

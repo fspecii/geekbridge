@@ -8,7 +8,8 @@
 #                                [--page URL] [--apk FILE] [--serial SERIAL] [--out DIR] [--no-adb] [--stdout]
 #
 # Sections: versions and SHA-256 of the installed desktop binaries; geekbridge-ctl doctor, status (JSON),
-# events, clipboard status; for every paired phone phone-state and phone-log (debug builds only; others say
+# events, clipboard status; Bluetooth and call audio (adapter, rfkill, bluetoothctl, PipeWire cards and call
+# streams, WirePlumber bluez settings and log lines, call audio-devices); for every paired phone phone-state and phone-log (debug builds only; others say
 # so); firewall state and listening ports; service log tail; the phone's installed app version and APK hash
 # (adb, when a phone is attached); the APK(s) linked from the page at --page URL, hashed and compared.
 #
@@ -96,6 +97,8 @@ collect() {
     run "events" ctl events 0
     run "clipboard status (counters only)" ctl clipboard status
     run "calling" ctl calling
+    run "calls (call audio lines)" ctl calls
+    run "call audio-devices" ctl call audio-devices
     run "update status" ctl update status
     local ids id
     ids="$(ctl status | python3 -I -c 'import json,sys
@@ -109,6 +112,38 @@ except Exception: pass')"
       run "phone-state ${id:0:8}" ctl phone-state "$id"
       run "phone-log ${id:0:8} (last 200 lines)" ctl phone-log "$id" -n 200
     done
+  fi
+
+  sec "Bluetooth and call audio (host)"
+  local c
+  for c in "ls /sys/class/bluetooth" "rfkill list bluetooth" "systemctl is-active bluetooth.service" \
+    "systemctl --user is-active pipewire.service pipewire-pulse.service wireplumber.service" \
+    "bluetoothctl show" "bluetoothctl devices Paired" "pactl list cards short" \
+    "busctl --user tree org.pipewire.Telephony"; do
+    command -v "${c%% *}" >/dev/null || continue
+    printf '$ %s\n' "$c"; timeout 8 $c 2>&1 | head -40
+  done
+  if command -v bluetoothctl >/dev/null; then
+    for a in $(timeout 5 bluetoothctl devices Paired 2>/dev/null | awk '/^Device/{print $2}'); do
+      printf '$ bluetoothctl info (paired device)\n'; timeout 5 bluetoothctl info "$a" 2>&1 | grep -E 'Name|Icon|Paired|Trusted|Connected|UUID' | head -20
+    done
+  fi
+  if command -v lsusb >/dev/null; then printf '$ lsusb | grep -i -E "bluetooth|wireless"\n'; lsusb 2>&1 | grep -i -E 'bluetooth|wireless|btusb|csr|realtek|intel.*bt' | head; fi
+  if command -v pactl >/dev/null; then
+    printf '$ pactl list cards (bluez only: profiles)\n'
+    pactl list cards 2>/dev/null | awk '/^Card/{c=0} /Name: bluez_card/{c=1} c&&/(Name:|Active Profile|audio-gateway|off:)/' | head -20
+    printf '$ call streams (sink inputs / source outputs with api.bluez5.profile)\n'
+    pactl list sink-inputs 2>/dev/null | grep -E 'Sink Input #|api.bluez5.profile|api.bluez5.codec|Sink:|Mute:' | head -20
+    pactl list source-outputs 2>/dev/null | grep -E 'Source Output #|api.bluez5.profile|api.bluez5.codec|Source:|Mute:' | head -20
+  fi
+  printf '$ WirePlumber bluez5 settings in user/system fragments\n'
+  grep -r -n -E 'bluez5\.(roles|hfphsp-backend|auto-connect|telephony|enable-msbc)' \
+    "$HOME/.config/wireplumber" /etc/wireplumber /usr/share/wireplumber/wireplumber.conf.d 2>/dev/null | head -20
+  if command -v journalctl >/dev/null; then
+    printf '$ journalctl --user -u wireplumber -u pipewire (bluez/hfp/sco lines, last 80)\n'
+    journalctl --user -u wireplumber -u pipewire -n 2000 --no-pager 2>/dev/null | grep -i -E 'bluez|hfp|sco|telephony|rfcomm' | tail -80
+    printf '$ journalctl -k (Bluetooth kernel lines, last 30; may need the systemd-journal group)\n'
+    journalctl -k -n 3000 --no-pager 2>/dev/null | grep -i -E 'bluetooth|btusb|hci[0-9]|firmware' | tail -30
   fi
 
   sec "Firewall and listening ports"

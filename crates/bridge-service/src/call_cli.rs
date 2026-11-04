@@ -11,7 +11,15 @@ pub const USAGE: &str = "  calls [--reveal]                    ringing and live 
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to
                                       confirm unless --yes. Needs Telephony consent and the phone's permission
-  call mute on|off | call audio       mute the computer microphone / move the audio here (only where offered)";
+  call mute on|off                    mute or unmute the microphone the call uses on this computer
+  call audio [computer] | audio phone move the live call's voice to this computer / back to the phone
+  call setup [--phone NAME]           set up call audio: power Bluetooth on, pair this computer with the phone
+                                      as its hands-free device (compare the six-digit code), trust, connect
+  call setup --fix-config             fix the WirePlumber settings call audio needs (user file, no sudo)
+  call setup --confirm yes|no | --cancel   answer the pairing code from a script / stop the setup
+  call audio-devices [--output NAME] [--input NAME]
+                                      list speakers/headphones and microphones for calls; with a flag,
+                                      pick one (NAME from the list, or default = follow the system)";
 
 /// Keep the last two digits, like the redacted device reports.
 pub fn mask(number: &str) -> String {
@@ -76,6 +84,19 @@ pub fn describe(s: &CallsStatus, reveal: bool) -> String {
             .as_ref()
             .map_or(String::new(), |h| format!(" ({h})"))
     ));
+    if let Some(m) = &s.view.mute {
+        out.push_str(&format!(
+            "microphone: {}\n",
+            match m.muted {
+                Some(true) => "muted",
+                Some(false) => "on",
+                None => "unknown",
+            }
+        ));
+    }
+    if let Some(n) = &s.audio_note {
+        out.push_str(&format!("audio note: {n}\n"));
+    }
     if let Some(n) = &s.notice {
         out.push_str(&format!("notice: {n}\n"));
     }
@@ -133,7 +154,161 @@ fn confirmed(yes: bool, phone: &str, number: &str) -> Result<(), String> {
     }
 }
 
+/// `call audio-devices [--output NAME] [--input NAME]`.
+fn audio_devices(args: &[String], port: u16, token: &Token) -> Result<(), String> {
+    let mut output = None;
+    let mut input = None;
+    let mut it = args.iter().skip_while(|a| *a != "audio-devices").skip(1);
+    while let Some(a) = it.next() {
+        let slot = match a.as_str() {
+            "--output" => &mut output,
+            "--input" => &mut input,
+            other => return Err(format!("unknown option {other}\n\n{USAGE}")),
+        };
+        *slot = Some(
+            it.next()
+                .ok_or(format!("{a} needs a device name or default"))?
+                .clone(),
+        );
+    }
+    let set = output.is_some() || input.is_some();
+    if set {
+        // Keep the other half of the pick as it is.
+        let current = match ipc::call(
+            port,
+            token,
+            &Request::CallAudioDevices {
+                set: false,
+                output: None,
+                input: None,
+            },
+        )
+        .map_err(|e| e.to_string())?
+        {
+            Response::CallAudioDevices(d) => *d,
+            Response::Error(e) => return Err(e.message),
+            _ => return Err("unexpected reply from the service".into()),
+        };
+        output = output.or(current.chosen_output);
+        input = input.or(current.chosen_input);
+    }
+    match ipc::call(
+        port,
+        token,
+        &Request::CallAudioDevices { set, output, input },
+    )
+    .map_err(|e| e.to_string())?
+    {
+        Response::CallAudioDevices(d) => {
+            print!("{}", crate::call_audio_host::describe(&d));
+            Ok(())
+        }
+        Response::Error(e) => Err(e.message),
+        _ => Err("unexpected reply from the service".into()),
+    }
+}
+
+fn hear(port: u16, token: &Token, req: Request) -> Result<bridge_core::ipc::HearCalls, String> {
+    match ipc::call(port, token, &req).map_err(|e| e.to_string())? {
+        Response::HearCalls(h) => Ok(*h),
+        Response::Error(e) => Err(e.message),
+        _ => Err("unexpected reply from the service".into()),
+    }
+}
+
+/// `call setup ...`: drive the service's guided setup and follow it until it ends.
+fn setup(args: &[String], port: u16, token: &Token) -> Result<(), String> {
+    use bridge_core::ipc::CallAudioSetupAction as A;
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let has = |name: &str| args.iter().any(|a| a == name);
+    let action = if has("--fix-config") {
+        A::FixConfig
+    } else if has("--cancel") {
+        A::Cancel
+    } else if let Some(c) = flag("--confirm") {
+        A::Confirm {
+            accept: match c.as_str() {
+                "yes" | "y" => true,
+                "no" | "n" => false,
+                _ => return Err("--confirm takes yes or no".into()),
+            },
+        }
+    } else {
+        A::Start {
+            phone: flag("--phone"),
+        }
+    };
+    let follow = matches!(action, A::Start { .. });
+    let h = hear(port, token, Request::CallAudioPair { action })?;
+    if !follow {
+        println!("{}", h.setup.message);
+        return Ok(());
+    }
+    let mut shown = 0;
+    let started = std::time::Instant::now();
+    loop {
+        let h = hear(port, token, Request::HearCalls)?;
+        for l in h.setup.log.iter().skip(shown) {
+            println!("  {l}");
+        }
+        shown = h.setup.log.len();
+        match h.setup.phase.as_str() {
+            "confirm" => {
+                let code = h.setup.passkey.clone().unwrap_or_default();
+                if !std::io::stdin().is_terminal() {
+                    println!(
+                        "Pairing code {code}: answer with geekbridge-ctl call setup --confirm yes (or no)"
+                    );
+                    return Ok(());
+                }
+                eprint!("Does the phone show {code}? Accept there too. [y/N] ");
+                let _ = std::io::stderr().flush();
+                let mut line = String::new();
+                std::io::stdin()
+                    .lock()
+                    .read_line(&mut line)
+                    .map_err(|e| e.to_string())?;
+                let accept = matches!(line.trim(), "y" | "Y" | "yes");
+                hear(
+                    port,
+                    token,
+                    Request::CallAudioPair {
+                        action: A::Confirm { accept },
+                    },
+                )?;
+            }
+            "done" => {
+                println!(
+                    "Next: geekbridge-ctl calling (every step should be ok), then answer a test call here."
+                );
+                return Ok(());
+            }
+            "failed" => return Err("call-audio setup did not finish (see above)".into()),
+            _ if started.elapsed() > std::time::Duration::from_secs(240) => {
+                return Err(
+                    "the setup is taking too long; geekbridge-ctl call setup --cancel".into(),
+                );
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(400)),
+        }
+    }
+}
+
 pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
+    if args.get(1).map(String::as_str) == Some("setup")
+        && args.first().map(String::as_str) == Some("call")
+    {
+        return setup(args, port, token);
+    }
+    if args.get(1).map(String::as_str) == Some("audio-devices")
+        && args.first().map(String::as_str) == Some("call")
+    {
+        return audio_devices(args, port, token);
+    }
     let reveal = args.iter().any(|a| a == "--reveal");
     let words: Vec<&str> = args
         .iter()
@@ -195,13 +370,20 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
                         _ => return Err("expected on or off".into()),
                     },
                 },
-                ["audio"] => Request::CallAudio {
+                ["audio"] | ["audio", "computer"] => Request::CallAudio {
                     source: s
                         .view
                         .audio
                         .connect
                         .clone()
-                        .ok_or("moving the audio here is not available")?,
+                        .ok_or("moving the audio here is not available (no call, or it is already here; see geekbridge-ctl calling)")?,
+                },
+                ["audio", "phone"] => Request::CallAudioPhone {
+                    source: live
+                        .and_then(|r| r.hangup.as_ref())
+                        .filter(|t| t.path == ControlPath::Hfp)
+                        .map(|t| t.source.clone())
+                        .ok_or("no call's audio is on this computer")?,
                 },
                 _ => return Err(format!("unknown call command\n\n{USAGE}")),
             };

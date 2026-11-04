@@ -85,7 +85,7 @@ J
   doctor) echo "[ ok ] Service: geekbridge-service 9.9.9-stub answers as \"CANARY-Fold5-of-Alice\"."; echo "[warn] Phones: reachable at 192.168.77.12 token=$CANARY_TOKEN" ;;
   events) echo '{"kind":"events","events":[{"seq":1,"kind":"link_lost","text":"CANARY-SMS-BODY-meet-me-at-the-bridge"}]}' ;;
   clipboard) echo "backend: stub"; echo "last: CANARY-CLIPBOARD-hunter2-secret" ;;
-  calling|update|firewall) echo "stub $1" ;;
+  calling|calls|call|update|firewall) echo "stub $1" ;;
   phone-state) echo "debug state for $2"; echo "notification: CANARY-NOTIFICATION-BODY-your-code-is-481516 from +4915112345678"; echo "contact CANARY-Contact-Zelda-Fitzgerald 0049 151 1234 5678 (555) 123-4567 5551234567" ;;
   phone-log) echo "I/Link heartbeat ok"; echo "D/Sms body=CANARY-SMS-BODY-meet-me-at-the-bridge mail canary.user@example.org" ;;
   *) echo "stub: unhandled $*" >&2; exit 2 ;;

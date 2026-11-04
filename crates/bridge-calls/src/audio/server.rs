@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The only way the route manager touches an audio server.
+//! The only way call-audio code touches an audio server.
 //!
-//! The trait is deliberately narrow: one consistent read, load a module, unload a module,
-//! reconnect. There is *no* method to set a default sink/source, move a stream, change a card
-//! profile, or write configuration, so the manager cannot perform those mutations.
+//! The trait is deliberately narrow. Besides reading, it can: move one stream to a named device,
+//! switch one card's profile, mute/unmute one source, and measure a peak level. It has no method
+//! to change the default sink/source, load modules or write configuration, so call audio can
+//! never leave anything behind that outlives the call except what the controller records in its
+//! restore file (a card profile and a source mute) and undoes.
+
+use std::time::Duration;
 
 use crate::audio::model::ServerSnapshot;
 
@@ -12,8 +16,7 @@ pub enum ServerError {
     /// No server could be reached, or this platform has no audio adapter.
     #[error("audio server unavailable: {0}")]
     Unavailable(String),
-    /// The connection to a running server dropped. Modules this client loaded may still be
-    /// loaded on the server.
+    /// The connection to a running server dropped.
     #[error("audio server connection lost: {0}")]
     ConnectionLost(String),
     /// A bounded wait expired. For a write the outcome is unknown: the server may still act.
@@ -28,23 +31,35 @@ impl ServerError {
     pub fn is_connection_loss(&self) -> bool {
         matches!(self, Self::ConnectionLost(_) | Self::Unavailable(_))
     }
-    /// The request may have taken effect even though it reported failure.
-    pub fn outcome_unknown(&self) -> bool {
-        matches!(self, Self::ConnectionLost(_) | Self::Timeout { .. })
-    }
+}
+
+/// What to measure the level of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeakTarget {
+    /// A playback stream, measured through its sink's monitor (only that stream's samples).
+    SinkInput { index: u32, sink: String },
+    /// A source (microphone), by name.
+    Source(String),
 }
 
 /// Blocking audio-server access. Every method is bounded in time by the implementation.
-///
-/// Implementations run on the calling thread; a service on an async runtime must call the
-/// manager from a blocking context (a dedicated thread or `spawn_blocking`).
 pub trait AudioServer: Send {
-    /// Read everything the planner needs in one pass.
+    /// Read everything call audio needs in one pass.
     fn snapshot(&mut self) -> Result<ServerSnapshot, ServerError>;
-    /// `pa_context_load_module`. Returns the new module index.
-    fn load_module(&mut self, name: &str, argument: &str) -> Result<u32, ServerError>;
-    /// `pa_context_unload_module`.
-    fn unload_module(&mut self, index: u32) -> Result<(), ServerError>;
+    /// Move a playback stream to the sink called `sink`.
+    fn move_sink_input(&mut self, index: u32, sink: &str) -> Result<(), ServerError>;
+    /// Move a capture stream to the source called `source`.
+    fn move_source_output(&mut self, index: u32, source: &str) -> Result<(), ServerError>;
+    /// Activate `profile` on card `card` (by index).
+    fn set_card_profile(&mut self, card: u32, profile: &str) -> Result<(), ServerError>;
+    /// Mute or unmute the source called `source`.
+    fn set_source_mute(&mut self, source: &str, mute: bool) -> Result<(), ServerError>;
+    /// Highest absolute sample level (0.0..=1.0) seen on `target` within `window`. `Ok(None)` if
+    /// this server cannot measure it; `Ok(Some(0.0))` is digital silence.
+    fn peak(&mut self, target: &PeakTarget, window: Duration) -> Result<Option<f32>, ServerError> {
+        let _ = (target, window);
+        Ok(None)
+    }
     /// Drop the old connection and establish a new one. Never starts a server.
     fn reconnect(&mut self) -> Result<(), ServerError>;
 }

@@ -331,6 +331,16 @@ needed. The full guide, with what to buy and the decision table per OS, is [call
   my computer* in the phone's Answer calls step. Digits and a leading `+` only.
 * No Bluetooth controller is reported as information, not an error (`geekbridge-ctl doctor`, `geekbridge-ctl call-audio`).
   Carrying call audio over Wi-Fi is not possible on a stock Android phone. Dialing was tested against a stand-in phone only.
+* Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
+  controller (many desktops have none; a USB adapter works), the phone paired as a hands-free device with *Calls*
+  allowed, and PipeWire/WirePlumber (the defaults on Arch/Omarchy are right). `geekbridge-ctl calling` walks through
+  every step with a fix; `geekbridge-ctl call setup` pairs, trusts and connects the phone (compare the six-digit code on
+  both screens) and `call setup --fix-config` fixes the WirePlumber settings without sudo. A call answered on the
+  computer then plays on the headphones and microphone chosen in Settings (or `geekbridge-ctl call audio-devices`; default: the
+  system's); `call mute on|off` mutes the real microphone; `call audio phone` sends the audio back to the phone and
+  `call audio` brings it here. A call answered on the phone stays on the phone. Details and the hardware test:
+  [reports/call-audio-pc-headset.md](reports/call-audio-pc-headset.md). Verified in a sandbox with PipeWire's real
+  Bluetooth code and a fake phone; not yet on real hardware.
 * No incoming-call popup on Hyprland/mako: see [omarchy.md](omarchy.md) (notification buttons, floating window rule).
 
 ### Battery optimisation kills the Android service
