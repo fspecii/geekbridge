@@ -49,7 +49,7 @@ pub mod windows_host;
 use bridge_core::{MAX_API_BYTES, MAX_DEVICES, Snapshot, api_address};
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -455,6 +455,21 @@ async fn bind_inbound(addr: SocketAddr, walk: bool) -> io::Result<TcpListener> {
     Err(last.unwrap_or_else(|| io::Error::other("no port to listen on")))
 }
 
+/// The IPv6 twin of the IPv4 wildcard inbound listener, on the same port. A separate IPv6-only
+/// socket, not a dual-stack one: phones on IPv4 keep arriving as plain IPv4 addresses (the trust and
+/// sighting records compare them as such), and an IPv6-only guest or ISP network can still reach us
+/// by a QR address. `Err` when this machine has no IPv6 or the port is taken there; the caller goes
+/// on with IPv4 alone.
+fn bind_inbound_v6(port: u16) -> io::Result<TcpListener> {
+    let socket = socket2::Socket::new(socket2::Domain::IPV6, socket2::Type::STREAM, None)?;
+    socket.set_only_v6(true)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port).into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    TcpListener::from_std(socket.into())
+}
+
 pub async fn run(config: config::Config) -> io::Result<()> {
     let shutdown = shutdown_signal()?;
     let api = TcpListener::bind(api_address(config.api_port)).await?;
@@ -573,6 +588,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         }
         control::Control::Unavailable(_) => None,
     };
+    let mut inbound6 = None;
     let inbound = match (&*control, config.inbound) {
         (control::Control::Ready { daemon, .. }, Some(addr)) => {
             match bind_inbound(addr, config.inbound_auto).await {
@@ -589,6 +605,19 @@ pub async fn run(config: config::Config) -> io::Result<()> {
                     );
                     if config.announce {
                         announce = Some(tokio::spawn(daemon.clone().announce_loop(discovery_port)));
+                    }
+                    // The default 0.0.0.0 listener gets an IPv6 twin so a phone on an IPv6-only network
+                    // can use an IPv6 QR address.
+                    if config.inbound_auto && addr.ip().is_unspecified() {
+                        let port = listener.local_addr()?.port();
+                        match bind_inbound_v6(port) {
+                            Ok(l6) => {
+                                inbound6 = Some(tokio::spawn(serve_inbound(l6, daemon.clone())));
+                            }
+                            Err(err) => eprintln!(
+                                "GeekBridge service: not listening on IPv6 port {port}: {err} (IPv4 only)"
+                            ),
+                        }
                     }
                     Some(tokio::spawn(serve_inbound(listener, daemon.clone())))
                 }
@@ -654,12 +683,40 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     if let Some(inbound) = inbound {
         inbound.abort();
     }
+    if let Some(inbound6) = inbound6 {
+        inbound6.abort();
+    }
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_ipv6_twin_listens_on_the_same_port_and_leaves_ipv4_alone() {
+        let v4 = bind_inbound(SocketAddr::from(([0, 0, 0, 0], 0)), false)
+            .await
+            .unwrap();
+        let port = v4.local_addr().unwrap().port();
+        let Ok(v6) = bind_inbound_v6(port) else {
+            return; // this machine has no IPv6
+        };
+        assert_eq!(v6.local_addr().unwrap().port(), port);
+        // Both families reach their own listener: a v6-only socket does not shadow or steal IPv4.
+        let (a, b) = tokio::join!(
+            TcpStream::connect(("::1", port)),
+            TcpStream::connect(("127.0.0.1", port))
+        );
+        if let Ok(_c6) = a {
+            let (s, peer) = v6.accept().await.unwrap();
+            drop(s);
+            assert!(peer.ip().is_ipv6());
+        }
+        let _c4 = b.unwrap();
+        let (_s, peer) = v4.accept().await.unwrap();
+        assert!(peer.ip().is_ipv4(), "{peer}");
+    }
 
     #[test]
     fn only_per_datagram_receive_errors_are_skipped() {

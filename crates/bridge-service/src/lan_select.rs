@@ -17,6 +17,8 @@ pub struct Iface {
     pub ip: IpAddr,
     /// Link is up (IFF_UP and IFF_RUNNING on Unix).
     pub up: bool,
+    /// Length of the network prefix (the netmask as a bit count): 24 for 255.255.255.0.
+    pub prefix: u8,
 }
 
 impl Iface {
@@ -25,7 +27,55 @@ impl Iface {
             name: name.to_owned(),
             ip: ip.parse().expect("test address"),
             up,
+            prefix: if ip.contains(':') { 64 } else { 24 },
         }
+    }
+
+    pub fn with_prefix(mut self, prefix: u8) -> Self {
+        self.prefix = prefix;
+        self
+    }
+
+    /// Is `other` on the network this address belongs to (same family, same prefix)?
+    pub fn contains(&self, other: IpAddr) -> bool {
+        same_network(self.ip, self.prefix, other)
+    }
+
+    /// The directed broadcast address of this interface's IPv4 network (`10.20.255.255` for
+    /// `10.20.0.10/16`), the destination a datagram needs to reach every host on that network
+    /// and only that one. `None` for IPv6, and for /31 and /32 (point-to-point, no broadcast).
+    pub fn directed_broadcast(&self) -> Option<Ipv4Addr> {
+        let IpAddr::V4(v4) = self.ip else { return None };
+        if self.prefix > 30 {
+            return None;
+        }
+        let host_bits = u32::MAX >> self.prefix;
+        Some(Ipv4Addr::from(u32::from(v4) | host_bits))
+    }
+}
+
+/// Do `a` (with its `prefix`) and `b` share a network? Different families never do.
+pub fn same_network(a: IpAddr, prefix: u8, b: IpAddr) -> bool {
+    match (a, b) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => {
+            let bits = u32::from(prefix.min(32));
+            let mask = if bits == 0 {
+                0
+            } else {
+                u32::MAX << (32 - bits)
+            };
+            (u32::from(a) & mask) == (u32::from(b) & mask)
+        }
+        (IpAddr::V6(a), IpAddr::V6(b)) => {
+            let bits = u32::from(prefix.min(128));
+            let mask = if bits == 0 {
+                0
+            } else {
+                u128::MAX << (128 - bits)
+            };
+            (u128::from(a) & mask) == (u128::from(b) & mask)
+        }
+        _ => false,
     }
 }
 
@@ -135,8 +185,10 @@ fn score(i: &Iface, default_ips: &[IpAddr]) -> u8 {
 }
 
 /// The addresses for the QR, most likely first, without duplicates, at most `max`.
-/// IPv6 only appears when there is no IPv4 candidate at all (older phone builds and many routers are
-/// IPv4-first, and a bracketed v6 literal is the least tested path).
+/// IPv4 comes first. IPv6 follows it only as a unique-local (`fd..`) address, the fallback for a phone
+/// whose Wi-Fi has no IPv4 (the phone tries addresses in order, so a working IPv4 never waits for it);
+/// global IPv6 appears only when there is no IPv4 candidate at all (a bracketed v6 literal is the
+/// least tested path, and a global address is rarely what a LAN peer should dial).
 pub fn rank(ifaces: &[Iface], default_ips: &[IpAddr], max: usize) -> Vec<IpAddr> {
     let mut v: Vec<(u8, usize, IpAddr)> = ifaces
         .iter()
@@ -152,9 +204,34 @@ pub fn rank(ifaces: &[Iface], default_ips: &[IpAddr], max: usize) -> Vec<IpAddr>
         }
     }
     if out.iter().any(IpAddr::is_ipv4) {
-        out.retain(IpAddr::is_ipv4);
+        out.retain(|ip| match ip {
+            IpAddr::V4(_) => true,
+            IpAddr::V6(v6) => is_v6_ula(*v6),
+        });
     }
     out.truncate(max);
+    out
+}
+
+/// [`rank`], but returning the interfaces' addresses with their prefix lengths.
+pub fn rank_ifaces(ifaces: &[Iface], default_ips: &[IpAddr], max: usize) -> Vec<Iface> {
+    rank(ifaces, default_ips, max)
+        .into_iter()
+        .filter_map(|ip| ifaces.iter().find(|i| i.ip == ip && !never(i)).cloned())
+        .collect()
+}
+
+/// Where this computer's announcement goes: the limited broadcast (the default-route interface only,
+/// as the kernel routes it) plus the directed broadcast of every LAN-like interface, computed from
+/// its real netmask. Never a tunnel or container bridge ([`rank`] drops those).
+pub fn announce_targets(lan: &[Iface], port: u16) -> Vec<std::net::SocketAddr> {
+    let mut out = vec![std::net::SocketAddr::from((Ipv4Addr::BROADCAST, port))];
+    for b in lan.iter().filter_map(Iface::directed_broadcast) {
+        let t = std::net::SocketAddr::from((b, port));
+        if !out.contains(&t) {
+            out.push(t);
+        }
+    }
     out
 }
 
@@ -190,10 +267,25 @@ pub fn system_interfaces() -> Vec<Iface> {
                 }
                 _ => continue,
             };
+            let prefix = if e.ifa_netmask.is_null() {
+                if ip.is_ipv4() { 24 } else { 64 }
+            } else {
+                match ip {
+                    IpAddr::V4(_) => {
+                        let m = &*(e.ifa_netmask as *const libc::sockaddr_in);
+                        u32::from_be(m.sin_addr.s_addr).leading_ones() as u8
+                    }
+                    IpAddr::V6(_) => {
+                        let m = &*(e.ifa_netmask as *const libc::sockaddr_in6);
+                        u128::from_be_bytes(m.sin6_addr.s6_addr).leading_ones() as u8
+                    }
+                }
+            };
             out.push(Iface {
                 name: CStr::from_ptr(e.ifa_name).to_string_lossy().into_owned(),
                 ip,
                 up,
+                prefix,
             });
         }
         libc::freeifaddrs(head);
@@ -253,7 +345,10 @@ mod tests {
         ] {
             assert!(!got.contains(&bad.parse().unwrap()), "{bad} in {got:?}");
         }
-        assert!(got.iter().all(IpAddr::is_ipv4), "v6 only without any v4");
+        assert!(
+            got.iter().all(IpAddr::is_ipv4),
+            "no v6 on this machine is a LAN address"
+        );
     }
 
     #[test]
@@ -303,6 +398,20 @@ mod tests {
     }
 
     #[test]
+    fn a_unique_local_address_trails_ipv4_but_a_global_one_does_not() {
+        let list = [
+            Iface::new("enp5s0", "192.168.1.150", true),
+            Iface::new("enp5s0", "fd12:3456::10", true),
+            Iface::new("enp5s0", "2001:db8::10", true),
+            Iface::new("tailscale0", "fd7a:115c:a1e0::1", true),
+        ];
+        assert_eq!(
+            rank(&list, &["192.168.1.150".parse().unwrap()], 8),
+            ips(&["192.168.1.150", "fd12:3456::10"])
+        );
+    }
+
+    #[test]
     fn ipv6_only_when_there_is_no_ipv4() {
         let list = vec![
             Iface::new("enp5s0", "fe80::1", true),
@@ -344,5 +453,77 @@ mod tests {
     #[test]
     fn system_interfaces_reports_loopback() {
         assert!(system_interfaces().iter().any(|i| i.ip.is_loopback()));
+    }
+
+    #[test]
+    fn directed_broadcast_follows_the_real_netmask() {
+        let b = |ip: &str, p: u8| {
+            Iface::new("x", ip, true)
+                .with_prefix(p)
+                .directed_broadcast()
+        };
+        assert_eq!(
+            b("192.168.1.10", 24),
+            Some("192.168.1.255".parse().unwrap())
+        );
+        assert_eq!(b("10.20.0.10", 16), Some("10.20.255.255".parse().unwrap()));
+        assert_eq!(
+            b("192.168.0.10", 23),
+            Some("192.168.1.255".parse().unwrap())
+        );
+        assert_eq!(b("10.1.2.3", 8), Some("10.255.255.255".parse().unwrap()));
+        assert_eq!(
+            b("192.168.1.130", 25),
+            Some("192.168.1.255".parse().unwrap())
+        );
+        assert_eq!(b("10.0.0.1", 31), None);
+        assert_eq!(b("10.0.0.1", 32), None);
+        assert_eq!(b("fd00::1", 64), None);
+    }
+
+    #[test]
+    fn announcements_go_to_each_lan_like_nic_and_not_to_vpn_or_docker() {
+        let machine = vec![
+            Iface::new("eth0", "192.168.1.10", true),
+            Iface::new("wlan0", "10.20.0.10", true).with_prefix(16),
+            Iface::new("docker0", "172.17.0.1", true).with_prefix(16),
+            Iface::new("tailscale0", "100.101.0.1", true).with_prefix(32),
+            Iface::new("wg0", "10.66.0.2", true),
+        ];
+        let lan = rank_ifaces(&machine, &["192.168.1.10".parse().unwrap()], 8);
+        let t: Vec<String> = announce_targets(&lan, 1716)
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(
+            t,
+            [
+                "255.255.255.255:1716",
+                "192.168.1.255:1716",
+                "10.20.255.255:1716"
+            ]
+        );
+    }
+
+    #[test]
+    fn same_network_uses_the_prefix_not_a_fixed_24() {
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(same_network(ip("10.20.0.10"), 16, ip("10.20.7.3")));
+        assert!(!same_network(ip("10.20.0.10"), 24, ip("10.20.7.3")));
+        assert!(same_network(ip("192.168.0.9"), 23, ip("192.168.1.200")));
+        assert!(!same_network(ip("192.168.0.9"), 23, ip("192.168.2.1")));
+        assert!(same_network(ip("fd00:1:2:3::5"), 64, ip("fd00:1:2:3::99")));
+        assert!(!same_network(ip("fd00:1:2:3::5"), 64, ip("fd00:1:2:4::5")));
+        assert!(!same_network(ip("10.0.0.1"), 8, ip("fd00::1")));
+    }
+
+    #[test]
+    fn the_system_reports_a_real_prefix() {
+        let lo = system_interfaces()
+            .into_iter()
+            .find(|i| i.ip == IpAddr::V4(Ipv4Addr::LOCALHOST));
+        if let Some(lo) = lo {
+            assert_eq!(lo.prefix, 8);
+        }
     }
 }

@@ -69,15 +69,16 @@ fn usable(ip: IpAddr) -> bool {
     }
 }
 
-/// Was `phone` last seen on one of this computer's IPv4 networks? A /24 match is a good-enough proxy
-/// for "same Wi-Fi". `None` when it cannot be said (IPv6, or no IPv4 interface to compare with).
+/// Was `phone` last seen on one of this computer's IPv4 networks? Compared with each interface's real
+/// prefix (a /16 home network is one network; a /25 is two). `None` when it cannot be said (IPv6, or
+/// no IPv4 interface to compare with).
 pub fn on_our_network(ifaces: &[Iface], phone: IpAddr) -> Option<bool> {
     let IpAddr::V4(p) = phone else { return None };
     let mut any = false;
     for i in ifaces.iter().filter(|i| i.up && usable(i.ip)) {
-        if let IpAddr::V4(ours) = i.ip {
+        if i.ip.is_ipv4() {
             any = true;
-            if ours.octets()[..3] == p.octets()[..3] {
+            if i.contains(IpAddr::V4(p)) {
                 return Some(true);
             }
         }
@@ -241,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn same_network_means_the_same_slash_24_on_any_usable_up_interface() {
+    fn same_network_follows_the_interface_prefix_on_any_usable_up_interface() {
         let ifaces = [
             Iface::new("lo", "127.0.0.1", true),
             Iface::new("docker0", "172.17.0.1", false),
@@ -262,6 +263,16 @@ mod tests {
             "a down interface is not ours"
         );
         assert_eq!(at("127.0.0.9"), Some(false), "loopback is not a network");
+        // A /16 or /23 home network is one network, not 256 or two.
+        let wide = [
+            Iface::new("wlan0", "10.20.0.10", true).with_prefix(16),
+            Iface::new("eth0", "192.168.0.7", true).with_prefix(23),
+        ];
+        let wide_at = |ip: &str| on_our_network(&wide, ip.parse().unwrap());
+        assert_eq!(wide_at("10.20.7.3"), Some(true));
+        assert_eq!(wide_at("10.21.0.3"), Some(false));
+        assert_eq!(wide_at("192.168.1.9"), Some(true));
+        assert_eq!(wide_at("192.168.2.9"), Some(false));
         // Only IPv6 interfaces: cannot say either way.
         let v6 = [Iface::new("wlan0", "fd00::2", true)];
         assert_eq!(on_our_network(&v6, "192.168.1.5".parse().unwrap()), None);

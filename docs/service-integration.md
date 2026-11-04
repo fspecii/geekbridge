@@ -41,7 +41,7 @@ geekbridge-service [--state-dir DIR] [--api-port P] [--control-port P] [--discov
   `consent.json` (per-device opt-ins, no phone content), `ipc-token` (64 hex chars). The other files
   (share, clipboard, update and what's-new state, tray markers) are listed in [state-formats.md](state-formats.md).
 * `--print-token-path` prints the token file's **path**. Nothing prints or logs the token.
-* The service listens for phones (`--listen-inbound`, default `0.0.0.0:1716`, then the next free port up to 1764) and
+* The service listens for phones (`--listen-inbound`, default `0.0.0.0:1716` plus `[::]:1716`, then the next free port up to 1764) and
   announces itself on the LAN every 15 s, so phones can find and dial it. `--no-listen-inbound` and `--no-announce`
   switch these off (outbound `connect` only). The port actually bound is announced in `tcpPort` and, inside TLS, as
   `geekbridgePort` ([kdeconnect-interop.md](kdeconnect-interop.md)). `--tray` / `--no-tray` choose the tray icon.

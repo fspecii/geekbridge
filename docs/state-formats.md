@@ -34,7 +34,8 @@ follows, and the tests that keep them true.
    and never pushes the good `.bak` out. Loose permissions or a symlink are *not* damage: they are
    a security refusal and stay an error (`state_insecure`).
 7. **Identity and trust are protected harder than settings.** The identity key is never regenerated
-   while it is intact: a certificate the clock calls expired is an error, not a reason to rotate.
+   while it is intact. Certificate dates are not enforced anywhere (peers pin the certificate byte for byte),
+   so a wrong clock can neither stop the service nor be a reason to rotate; new identities are valid from 1970 to 2100.
    If `identity.pem` is missing or its content is damaged it is restored from `identity.pem.bak`
    (same device id, so every pairing stays valid). Only with no usable backup is a new identity
    generated, loudly: the damaged file is kept as `identity.pem.corrupt` and a line says all devices
@@ -55,7 +56,7 @@ overridden by `--state-dir` / `$GEEKBRIDGE_STATE_DIR`; owner-only (mode 0700 on 
 
 | File | Content | Version | Damaged, no backup | Notes |
 |---|---|---|---|---|
-| `identity.pem` (+`.bak`) | own certificate + P-256 key, PEM | PEM (no JSON); validity not enforced to decide "damaged" | restored from `.bak`; else new identity (loud, see rule 7) | `.bak` is written at first creation and refreshed whenever a good file is loaded |
+| `identity.pem` (+`.bak`) | own certificate + P-256 key, PEM | PEM (no JSON); dates never enforced | restored from `.bak`; else new identity (loud, see rule 7) | `.bak` is written at first creation and refreshed whenever a good file is loaded |
 | `trusted_peers.json` | paired devices, pinned certificate per device | `version` 1 | trust nobody (fail closed), file kept as `.corrupt` | each entry is validated (fingerprint, CN = device id); one bad entry marks the file damaged |
 | `consent.json` | per-device feature opt-ins (`"devices": {id: [feature,…]}`) | `version` 1 | everything off (opt-in) | unknown feature names are kept on rewrite |
 | `share.json` | per-device receive / auto-accept | `version` 1 | nothing allowed | per-device unknown fields kept |

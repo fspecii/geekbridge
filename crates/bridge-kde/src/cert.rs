@@ -159,15 +159,16 @@ impl DeviceCredentials {
     }
 
     /// Parse PEM holding exactly one certificate and one private key.
-    /// Fails if the key does not belong to the certificate, the common name is
-    /// not a valid device id, or the certificate is outside its validity.
-    pub fn from_pem(pem: &[u8], now_unix: i64) -> Result<Self> {
-        Self::parse_pem(pem, Some(now_unix))
+    /// Fails if the key does not belong to the certificate or the common name is not a valid device
+    /// id. The validity period is deliberately not checked (`_now_unix` is kept for callers): the
+    /// certificate is self-signed and peers pin it byte for byte, so the dates carry no trust, while
+    /// a device whose clock is wrong (never set, battery pulled, year 2020) must neither refuse to
+    /// start nor, worse, be rotated into a new identity that every paired device would reject.
+    pub fn from_pem(pem: &[u8], _now_unix: i64) -> Result<Self> {
+        Self::parse_pem(pem)
     }
 
-    /// [`Self::from_pem`]; with `None` the validity period is not checked (to tell a damaged file
-    /// from a good key whose certificate the clock currently calls expired).
-    fn parse_pem(pem: &[u8], now_unix: Option<i64>) -> Result<Self> {
+    fn parse_pem(pem: &[u8]) -> Result<Self> {
         let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
             .collect::<std::result::Result<_, _>>()
             .map_err(|_| {
@@ -181,13 +182,6 @@ impl DeviceCredentials {
         })?;
         let info = CertInfo::parse(cert.as_ref())?;
         let device_id = DeviceId::parse(info.common_name())?;
-        if let Some(now_unix) = now_unix {
-            info.check_validity(now_unix).map_err(|e| {
-                KdeError::Certificate(format!(
-                    "own certificate unusable ({e}); it is never rotated silently"
-                ))
-            })?;
-        }
         let signing = provider()
             .key_provider
             .load_private_key(key)
@@ -231,8 +225,8 @@ impl DeviceCredentials {
                     }
                     return Ok((c, false));
                 }
-                // Good key, wrong clock (or similar): never rotate.
-                Err(e) if Self::parse_pem(&bytes, None).is_ok() => return Err(e),
+                // A readable key pair that failed for another reason: never rotate.
+                Err(e) if Self::parse_pem(&bytes).is_ok() => return Err(e),
                 Err(e) => damaged = Some((Some(bytes), e.to_string())),
             },
             Ok(None) => {}
@@ -339,11 +333,17 @@ fn random_device_id() -> Result<DeviceId> {
 }
 
 fn generate_pem(id: &DeviceId, now: time::OffsetDateTime) -> Result<GeneratedIdentity> {
-    // Same validity convention as stock peers: a year of backdating, ten years forward.
+    // Stock peers use a year of backdating and ten years forward. We start the same way but also
+    // cover any wrong clock: a phone that generates its identity while its clock says 1970 or 2020
+    // must not end up with a certificate that is "expired" once the clock is right, and one
+    // generated with a right clock must not be "not yet valid" when the clock is wrong. Nobody
+    // enforces the dates (see `from_pem`); this keeps strict third-party tools happy as well.
+    let floor = time::OffsetDateTime::from_unix_timestamp(86_400).unwrap_or(now); // 1970-01-02: no clock reads earlier
+    let ceiling = time::OffsetDateTime::from_unix_timestamp(4_102_444_800).unwrap_or(now); // 2100-01-01
     generate_pem_between(
         id,
-        now - time::Duration::days(365),
-        now + time::Duration::days(3650),
+        (now - time::Duration::days(365)).min(floor),
+        (now + time::Duration::days(3650)).max(ceiling),
     )
 }
 
@@ -418,19 +418,33 @@ mod tests {
     }
 
     #[test]
-    fn expired_or_future_own_certificate_is_refused() {
+    fn a_wrong_clock_does_not_make_our_own_certificate_unusable() {
         let id = DeviceId::parse(&"c".repeat(32)).unwrap();
-        let old = generate_pem(
+        let fresh = generate_pem(&id, time::OffsetDateTime::now_utc()).unwrap();
+        for year_offset in [-6_i64, -56, 0, 40] {
+            let clock = unix_now() + year_offset * 365 * 86400; // 2020, 1970, now, 2066
+            assert!(
+                DeviceCredentials::from_pem(fresh.pem.as_bytes(), clock).is_ok(),
+                "clock {year_offset} years away"
+            );
+        }
+        // Generated while the clock said 1970: still valid at the real date (and at 2020).
+        let epoch = time::OffsetDateTime::from_unix_timestamp(86_400).unwrap();
+        let born_1970 = generate_pem(&id, epoch).unwrap();
+        let c = DeviceCredentials::from_pem(born_1970.pem.as_bytes(), unix_now()).unwrap();
+        for at in [86_400, 1_577_836_800, unix_now(), 4_000_000_000] {
+            assert!(c.cert().check_validity(at).is_ok(), "valid at {at}");
+        }
+        // Generated at 2020: valid in 2026 and at 1970.
+        let born_2020 = generate_pem(
             &id,
-            time::OffsetDateTime::now_utc() - time::Duration::days(4000),
+            time::OffsetDateTime::from_unix_timestamp(1_577_836_800).unwrap(),
         )
         .unwrap();
-        assert!(DeviceCredentials::from_pem(old.pem.as_bytes(), unix_now()).is_err());
-        let fresh = generate_pem(&id, time::OffsetDateTime::now_utc()).unwrap();
-        assert!(
-            DeviceCredentials::from_pem(fresh.pem.as_bytes(), unix_now() - 3 * 365 * 86400)
-                .is_err()
-        );
+        let c = DeviceCredentials::from_pem(born_2020.pem.as_bytes(), unix_now()).unwrap();
+        for at in [86_400, 1_577_836_800, unix_now(), 4_000_000_000] {
+            assert!(c.cert().check_validity(at).is_ok(), "valid at {at}");
+        }
     }
 
     #[cfg(unix)]
@@ -481,22 +495,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_expired_but_intact_identity_is_never_rotated() {
+    fn an_old_intact_identity_is_loaded_and_never_rotated() {
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path().join("state");
         fsutil::ensure_private_dir(&dir).unwrap();
         let id = DeviceId::parse(&"d".repeat(32)).unwrap();
-        let old = generate_pem(
+        // A certificate the dates of which ended long ago (an install from before the wide window).
+        let old = generate_pem_between(
             &id,
+            time::OffsetDateTime::now_utc() - time::Duration::days(8000),
             time::OffsetDateTime::now_utc() - time::Duration::days(4000),
         )
         .unwrap();
         let path = identity_path(&dir);
         fsutil::atomic_write_private(&path, old.pem.as_bytes()).unwrap();
-        assert!(matches!(
-            DeviceCredentials::load_or_create(&dir),
-            Err(KdeError::Certificate(_))
-        ));
+        let (c, created) = DeviceCredentials::load_or_create(&dir).unwrap();
+        assert!(!created);
+        assert_eq!(c.device_id(), &id);
         assert_eq!(std::fs::read(&path).unwrap(), old.pem.as_bytes());
     }
 

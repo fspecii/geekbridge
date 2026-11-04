@@ -12,8 +12,7 @@
 //!   accepted into the handshake so it can be shown to the user and bound to a
 //!   pending pairing, but the link carries no feature traffic.
 //!
-//! In both modes the certificate must parse, be inside its validity period,
-//! carry a common name equal to the claimed device id, and the TLS handshake
+//! In both modes the certificate must parse, carry a common name equal to the claimed device id, and the TLS handshake
 //! signature must verify against that certificate's key (so possession of the
 //! private key is proven, not just a copy of the certificate).
 
@@ -94,7 +93,7 @@ impl PeerVerifier {
     fn check(
         &self,
         end_entity: &CertificateDer<'_>,
-        now: UnixTime,
+        _now: UnixTime,
     ) -> std::result::Result<(), TlsError> {
         if let PeerPolicy::Pinned(pinned) = &self.policy
             && pinned.der() != end_entity.as_ref()
@@ -118,15 +117,11 @@ impl PeerVerifier {
                 CertificateError::NotValidForName,
             ));
         }
-        let secs = i64::try_from(now.as_secs()).unwrap_or(i64::MAX);
-        info.check_validity(secs).map_err(|e| {
-            let kind = if e.to_string().contains("expired") {
-                CertificateError::Expired
-            } else {
-                CertificateError::NotValidYet
-            };
-            self.fail(VerifyFailure::Certificate(e.to_string()), kind)
-        })
+        // The validity period is not checked: the certificate is self-signed and, once paired, must
+        // equal the pinned one byte for byte, so its dates carry no trust. Checking them only made a
+        // phone or computer with a wrong clock (never set, year 2020) unable to connect to anyone.
+        // Pairing has its own clock guard (the +-1800 s timestamp window on the pair request).
+        Ok(())
     }
 }
 
@@ -286,5 +281,50 @@ pub(crate) fn handshake_error(
         },
         Some(VerifyFailure::Certificate(m)) => KdeError::Certificate(m),
         None => KdeError::Tls(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(year: u64) -> UnixTime {
+        UnixTime::since_unix_epoch(std::time::Duration::from_secs((year - 1970) * 365 * 86400))
+    }
+
+    #[test]
+    fn a_wrong_clock_does_not_stop_a_pinned_or_new_peer_certificate() {
+        let id = DeviceId::parse(&"e".repeat(32)).unwrap();
+        let creds = DeviceCredentials::generate_with_id(&id).unwrap();
+        let der = CertificateDer::from(creds.cert().der().to_vec());
+        for policy in [
+            PeerPolicy::Pinned(creds.cert().clone()),
+            PeerPolicy::Inspect,
+        ] {
+            let (v, _) = PeerVerifier::new(policy, id.clone());
+            for year in [1970, 2020, 2026, 2060, 2200] {
+                v.check(&der, at(year))
+                    .unwrap_or_else(|e| panic!("clock {year}: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn the_pin_and_the_claimed_name_still_decide_whatever_the_clock_says() {
+        let id = DeviceId::parse(&"e".repeat(32)).unwrap();
+        let other = DeviceId::parse(&"f".repeat(32)).unwrap();
+        let mine = DeviceCredentials::generate_with_id(&id).unwrap();
+        let stranger = DeviceCredentials::generate_with_id(&id).unwrap();
+        let (pinned, failure) =
+            PeerVerifier::new(PeerPolicy::Pinned(mine.cert().clone()), id.clone());
+        let swapped = CertificateDer::from(stranger.cert().der().to_vec());
+        assert!(pinned.check(&swapped, at(2020)).is_err());
+        assert!(matches!(
+            *failure.lock().unwrap(),
+            Some(VerifyFailure::PinMismatch)
+        ));
+        let (wrong_name, _) = PeerVerifier::new(PeerPolicy::Inspect, other);
+        let der = CertificateDer::from(mine.cert().der().to_vec());
+        assert!(wrong_name.check(&der, at(2020)).is_err());
     }
 }

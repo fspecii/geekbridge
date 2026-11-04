@@ -25,7 +25,7 @@ help), `crates/bridge-apps/src/pair_ui.rs` (desktop UI), `android/.../QrPairActi
 * **UDP announce (done).** KDE Connect's identity datagram (`kdeconnect.identity` with `tcpPort`) to
   `255.255.255.255:1716` and each local `/24` broadcast. The phone already announced and listened. The computer now
   announces every 15 s (`Daemon::announce_loop`) and the service **listens for phones and accepts phones by default**
-  (`--listen-inbound` now defaults to `0.0.0.0:1716`, walking up to 1764 if the port is taken; `--no-listen-inbound` and
+  (`--listen-inbound` now defaults to `0.0.0.0:1716` plus an IPv6-only twin on `[::]:1716`, walking up to 1764 if the port is taken; `--no-listen-inbound` and
   `--no-announce` switch these off). Hearing an announcement only lists a device; nothing is trusted.
 * **mDNS (not implemented).** There is no mDNS responder or browser. Networks that filter UDP broadcast (some routers,
   guest Wi-Fi) therefore do not auto-list devices; the QR code and "Connect by address" still work there. Adding

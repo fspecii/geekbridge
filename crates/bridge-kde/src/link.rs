@@ -26,7 +26,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::{Instant, timeout};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
-use crate::cert::{CertInfo, DeviceCredentials, unix_now};
+use crate::cert::{CertInfo, DeviceCredentials};
 use crate::error::{KdeError, Result};
 use crate::identity::{DeviceId, DeviceType, Identity, PROTOCOL_VERSION};
 use crate::packet::{LineReader, Packet, read_line_unbuffered, write_packet};
@@ -791,7 +791,6 @@ impl Endpoint {
                 "certificate common name differs from the device id".into(),
             ));
         }
-        peer_cert.check_validity(unix_now())?;
         if let Some(pin) = &pinned
             && pin.der() != peer_cert.der()
         {

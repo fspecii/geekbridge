@@ -211,7 +211,7 @@ Selection rules (crates/bridge-service/src/lan_select.rs, unit-tested against a 
 2. Order: private address (`10/8`, `172.16/12`, `192.168/16`) on the **default-route interface** first, then private
    addresses on other interfaces (wired + Wi-Fi: the phone may be on either), then a public address, then Docker's
    default `172.17/16` as a last resort. At most 4 end up in the QR.
-3. IPv6 is offered only when the PC has no usable IPv4 at all (see T6).
+3. IPv6: a unique-local address (`fd..`) follows the IPv4 ones; a global one is offered only when the PC has no usable IPv4 at all (see T6).
 
 Check what you got: `$S desktop` prints `the QR makes the phone try (in this order): ...`; `$S check` repeats it under
 *the pairing QR will carry*; `geekbridge-ctl pair-qr` prints `Addresses: ...`. If it is wrong (for example the phone is on a
@@ -238,12 +238,17 @@ open: lines from the phone's IP mean broadcasts do arrive (then it is the firewa
 
 ### T6. IPv6-only, dual-stack and link-local addresses
 
-The QR is IPv4 by default. Addresses starting `fe80::` (link-local) are never put in it because they need a zone
-(`%enp5s0`) the phone cannot guess. A global or ULA IPv6 address (`2001:...`, `fd..`) is included only when this PC has no
-usable IPv4; that path is the least tested (not on a real phone yet), so prefer IPv4 where the router offers it. On a
-dual-stack network nothing changes: the phone dials the IPv4 address first. If a mobile-data connection is on, and
-the Wi-Fi shows "connected, no internet", Android may route app traffic over mobile data and the LAN address will not answer:
-`check` warns about this ("Wi-Fi is connected, no internet"); fix the router's uplink or switch mobile data off for the test.
+The service listens on `0.0.0.0:1716` (IPv4) **and** on `[::]:1716` (IPv6 only, a separate socket, so IPv4 phones still
+arrive as plain IPv4 addresses). The QR is IPv4 first. Addresses starting `fe80::` (link-local) are never put in it
+because they need a zone (`%enp5s0`) the phone cannot guess (the phone's address field takes no scope id either). A ULA
+(`fd..`) address trails the IPv4 ones, so a phone whose Wi-Fi has no IPv4 can still dial; a global IPv6 address is
+included only when this PC has no usable IPv4. **Limit:** the transport's address policy accepts only private,
+link-local, CGNAT and ULA sources, so a network that hands out *only* global (`2001:..`) IPv6 addresses is refused with
+"address is not on a permitted local network"; give the router a ULA prefix or use IPv4. Discovery is IPv4 UDP broadcast
+only (no IPv6 multicast), so on an IPv6-only network the phone never appears in the list: pair by QR. If a mobile-data
+connection is on, and the Wi-Fi shows "connected, no internet", Android may route app traffic over mobile data and the LAN
+address will not answer: `check` warns about this ("Wi-Fi is connected, no internet"); fix the router's uplink or switch
+mobile data off for the test. Reproduce in a sandbox: `scripts/netns-hostility.sh ipv6`.
 
 ### T7. Hostname resolution and Android Private DNS
 

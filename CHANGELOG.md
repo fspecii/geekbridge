@@ -18,6 +18,13 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   the debug Link health section shows the switch and the last fallback reason.
 
 ### Fixed
+- Home-network hostility (docs/reports/network-hostility.md): the LAN announcement now goes to each NIC's real
+  directed broadcast (a /16 Wi-Fi was announced to `x.y.z.255`, which nobody listens on); "different network" in
+  `test-connection` and the why-not-connected answer uses the real prefix (a /16 or /23 home network was reported as
+  another network); `test-connection` answers within the control deadline when a router drops TCP silently (it used
+  to end as "cannot reach the service") and names client isolation; the service also listens on `[::]:1716`, so
+  the IPv6 address in an IPv6-only QR works; a wrong clock (year 2020, 1970) no longer stops the service, rotates
+  nothing and no longer makes paired devices refuse each other's certificate (dates are not enforced; pinning is).
 - Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state
   directory that holds pairings (it needs `--forget-pairings` and then moves the old state aside instead of deleting it);
   a running service that is older than its binary is no longer reused silently (`--restart` runs the new binary and keeps

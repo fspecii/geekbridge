@@ -47,16 +47,37 @@ pub struct Measured {
     pub listening: bool,
     /// This computer's LAN addresses (loopback excluded).
     pub own_addresses: Vec<IpAddr>,
+    /// Prefix length of each of those addresses (`(address, bits)`); an address missing here is
+    /// compared as a /24 (IPv4) or /64 (IPv6).
+    pub own_prefixes: Vec<(IpAddr, u8)>,
     pub peer_address: Option<IpAddr>,
     pub probe: Probe,
     /// An interface that looks like a VPN is up (tun/wg/tailscale/ppp, ...).
     pub vpn_interface: bool,
 }
 
-fn same_subnet24(a: IpAddr, b: IpAddr) -> bool {
+/// Same network, by the real prefix when known. `None` when the families differ: a phone seen over
+/// IPv4 says nothing about this computer's IPv6 addresses, and the other way round.
+fn same_subnet(a: IpAddr, prefixes: &[(IpAddr, u8)], b: IpAddr) -> Option<bool> {
+    let default = if a.is_ipv4() { 24 } else { 64 };
+    let bits = prefixes
+        .iter()
+        .find(|(ip, _)| *ip == a)
+        .map_or(default, |(_, p)| *p);
     match (a, b) {
-        (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[..3] == b.octets()[..3],
-        _ => true, // not judged for IPv6
+        (IpAddr::V4(a), IpAddr::V4(b)) => {
+            let mask = u32::MAX
+                .checked_shl(32 - u32::from(bits.min(32)))
+                .unwrap_or(0);
+            Some(u32::from(a) & mask == u32::from(b) & mask)
+        }
+        (IpAddr::V6(a), IpAddr::V6(b)) => {
+            let mask = u128::MAX
+                .checked_shl(128 - u32::from(bits.min(128)))
+                .unwrap_or(0);
+            Some(u128::from(a) & mask == u128::from(b) & mask)
+        }
+        _ => None,
     }
 }
 
@@ -108,8 +129,16 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
         },
     ));
 
+    // Only addresses of the phone's family can tell: all of them must disagree.
     let different_network = match m.peer_address {
-        Some(peer) if has_lan => !m.own_addresses.iter().any(|a| same_subnet24(*a, peer)),
+        Some(peer) if has_lan => {
+            let verdicts: Vec<bool> = m
+                .own_addresses
+                .iter()
+                .filter_map(|a| same_subnet(*a, &m.own_prefixes, peer))
+                .collect();
+            !verdicts.is_empty() && !verdicts.contains(&true)
+        }
         _ => false,
     };
     if let Some(peer) = m.peer_address {
@@ -137,6 +166,9 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
             match m.probe {
                 Probe::Connected => "Connected",
                 Probe::Refused => "The phone refused: GeekBridge is not running there",
+                Probe::TimedOut if !different_network => {
+                    "No answer, although the phone's announcement was heard: Wi-Fi client isolation or a firewall"
+                }
                 Probe::TimedOut => "No answer",
                 Probe::NoRoute => "No route to the phone",
                 Probe::NotTried => "Not tried",
@@ -187,9 +219,17 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
             add(VPN);
         }
     } else {
-        headline = "The phone does not answer".to_owned();
-        add(OPEN_APP);
+        // The phone's broadcast got through but a connection did not, on the same subnet: that is
+        // what a router's client isolation does (broadcast allowed, client-to-client TCP dropped),
+        // or a firewall. Say so first.
+        headline = if m.probe == Probe::TimedOut {
+            "The phone can be seen but does not accept connections (client isolation or a firewall)"
+        } else {
+            "The phone does not answer"
+        }
+        .to_owned();
         add(GUEST);
+        add(OPEN_APP);
         add(FIREWALL);
         if m.vpn_interface {
             add(VPN);
@@ -292,6 +332,7 @@ mod tests {
         Measured {
             listening: true,
             own_addresses: vec!["192.168.1.20".parse().unwrap()],
+            own_prefixes: vec![],
             peer_address: Some("192.168.1.35".parse().unwrap()),
             probe,
             vpn_interface: false,
@@ -319,6 +360,64 @@ mod tests {
         assert!(!r.ok);
         assert!(r.advice.iter().any(|a| a.contains("firewall")));
         assert!(r.advice.iter().any(|a| a.contains("Guest")));
+    }
+
+    #[test]
+    fn announcement_heard_but_tcp_blocked_says_client_isolation_first() {
+        let r = build_report(&m(Probe::TimedOut));
+        assert!(r.headline.contains("client isolation"), "{}", r.headline);
+        assert!(r.advice[0].contains("client isolation"), "{:?}", r.advice);
+        assert!(r.advice[0].contains("main Wi-Fi"));
+        assert!(r.advice.iter().any(|a| a.contains("firewall")));
+        let answers = r.steps.iter().find(|s| s.label == "Phone answers").unwrap();
+        assert!(answers.detail.contains("client isolation"));
+        // A refusal is a different thing: the phone's network answered.
+        assert!(
+            !build_report(&m(Probe::Refused))
+                .headline
+                .contains("isolation")
+        );
+    }
+
+    #[test]
+    fn a_slash_16_or_23_home_network_is_not_a_different_network() {
+        let mut x = m(Probe::TimedOut);
+        x.own_addresses = vec!["10.20.0.10".parse().unwrap()];
+        x.own_prefixes = vec![("10.20.0.10".parse().unwrap(), 16)];
+        x.peer_address = Some("10.20.7.3".parse().unwrap());
+        assert!(!build_report(&x).headline.contains("different network"));
+        // With no prefix known the old /24 guess applies.
+        x.own_prefixes.clear();
+        assert!(build_report(&x).headline.contains("different network"));
+        // 192.168.0.0/23 holds 192.168.1.x; 192.168.2.x is another network.
+        x.own_addresses = vec!["192.168.0.9".parse().unwrap()];
+        x.own_prefixes = vec![("192.168.0.9".parse().unwrap(), 23)];
+        x.peer_address = Some("192.168.1.77".parse().unwrap());
+        assert!(!build_report(&x).headline.contains("different network"));
+        x.peer_address = Some("192.168.2.77".parse().unwrap());
+        assert!(build_report(&x).headline.contains("different network"));
+    }
+
+    #[test]
+    fn ipv6_prefixes_are_judged_and_mixed_families_are_not() {
+        let mut x = m(Probe::TimedOut);
+        x.own_addresses = vec!["fd00:1:2:3::5".parse().unwrap()];
+        x.peer_address = Some("fd00:1:2:3::99".parse().unwrap());
+        assert!(!build_report(&x).headline.contains("different network"));
+        x.peer_address = Some("fd00:1:2:4::99".parse().unwrap());
+        assert!(build_report(&x).headline.contains("different network"));
+        // A v4 phone against a v6-only computer cannot be judged either way.
+        x.peer_address = Some("192.168.1.9".parse().unwrap());
+        assert!(!build_report(&x).headline.contains("different network"));
+        // But a dual-stack computer still sees that a v4 phone is on another v4 network.
+        x.own_addresses = vec![
+            "192.168.1.20".parse().unwrap(),
+            "fd00:1:2:3::5".parse().unwrap(),
+        ];
+        x.peer_address = Some("10.0.0.7".parse().unwrap());
+        assert!(build_report(&x).headline.contains("different network"));
+        x.peer_address = Some("192.168.1.9".parse().unwrap());
+        assert!(!build_report(&x).headline.contains("different network"));
     }
 
     #[test]

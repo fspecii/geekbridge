@@ -13,7 +13,11 @@ use tokio::net::UdpSocket;
 
 /// How often the identity goes out on the LAN.
 const ANNOUNCE_EVERY: Duration = Duration::from_secs(15);
-const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+/// How long the "Test connection" probe waits for the phone's TCP port. It must end well inside the
+/// control API's exchange deadline: a router that silently drops client-to-client TCP (client
+/// isolation) is exactly the case that waits the full time, and the answer has to arrive then, not
+/// as "service closed the connection".
+const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
 /// Addresses written into one QR code.
 const MAX_QR_ADDRESSES: usize = 4;
 
@@ -47,6 +51,11 @@ fn route_probe_addresses() -> Vec<IpAddr> {
 /// the default-route interface's private address, then other private networks. Never loopback,
 /// link-local, CGNAT, container bridges or VPN tunnels (see [`lan_select`]).
 pub(super) fn lan_addresses() -> Vec<IpAddr> {
+    lan_interfaces().into_iter().map(|i| i.ip).collect()
+}
+
+/// [`lan_addresses`] with each address's interface name and prefix length.
+pub(super) fn lan_interfaces() -> Vec<lan_select::Iface> {
     let probes = route_probe_addresses();
     let mut ifaces = lan_select::system_interfaces();
     if ifaces.is_empty() {
@@ -57,10 +66,11 @@ pub(super) fn lan_addresses() -> Vec<IpAddr> {
                 name: "route".into(),
                 ip: *ip,
                 up: true,
+                prefix: 24,
             })
             .collect();
     }
-    lan_select::rank(&ifaces, &probes[..probes.len().min(1)], 8)
+    lan_select::rank_ifaces(&ifaces, &probes[..probes.len().min(1)], 8)
 }
 
 /// `GEEKBRIDGE_QR_ADDRESSES=192.168.1.50,192.168.1.50:1716,[fd00::5]:1716`: the owner (or a test rig)
@@ -253,13 +263,15 @@ impl Daemon {
                 }
             }
         };
-        let mut own = lan_addresses();
+        let lan = lan_interfaces();
+        let mut own: Vec<IpAddr> = lan.iter().map(|i| i.ip).collect();
         if own.is_empty() && self.options.dev_loopback {
             own.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
         }
         Ok(build_report(&Measured {
             listening,
             own_addresses: own,
+            own_prefixes: lan.iter().map(|i| (i.ip, i.prefix)).collect(),
             peer_address: target.map(|t| t.0),
             probe,
             vpn_interface: vpn_interface(),
@@ -288,16 +300,8 @@ impl Daemon {
         let port = listener.port();
         let socket = &socket;
         self.announce_every(port, ANNOUNCE_EVERY, |line| async move {
-            let mut targets = vec![SocketAddr::from((Ipv4Addr::BROADCAST, discovery_port))];
-            for ip in lan_addresses() {
-                if let IpAddr::V4(v4) = ip {
-                    let o = v4.octets();
-                    targets.push(SocketAddr::from((
-                        Ipv4Addr::new(o[0], o[1], o[2], 255),
-                        discovery_port,
-                    )));
-                }
-            }
+            // The real broadcast address of each LAN-like NIC (a /16 is not x.y.z.255).
+            let targets = lan_select::announce_targets(&lan_interfaces(), discovery_port);
             for target in targets {
                 let _ = socket.send_to(&line, target).await;
             }
@@ -316,5 +320,18 @@ impl Daemon {
             send(self.announcement(tcp_port)).await;
             tokio::time::sleep(every).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_connection_probe_gives_up_before_the_control_exchange_does() {
+        assert!(
+            PROBE_TIMEOUT + Duration::from_millis(1000) <= crate::control::EXCHANGE_DEADLINE,
+            "a silently dropped SYN would end the control connection first"
+        );
     }
 }
