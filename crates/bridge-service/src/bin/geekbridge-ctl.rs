@@ -69,10 +69,13 @@ Commands:
                                       hear and talk through this computer: the checklist (Bluetooth adapter,
                                       phone paired, hands-free, headphones), a five-second tone and microphone
                                       test, or choose the headphones and microphone (no name = system default)
-  callwifi [status | listen [DEVICE_ID] | stop | speak on|off] [--json]
+  callwifi [status | listen [DEVICE_ID] | stop | speak on|off | echo auto|on|off] [--json]
                                       EXPERIMENTAL, off by default: hear a phone call on this computer over Wi-Fi
-                                      (needs `consent ID call_audio_wifi on` and the phone's own switch; plays on
-                                      the headphones chosen for calls; Bluetooth stays the supported way)
+                                      and, where the phone allows it, speak into it (needs `consent ID
+                                      call_audio_wifi on` and the phone's own switch; plays on the headphones
+                                      chosen for calls; Bluetooth stays the supported way)
+  callwifi setup [--serial S] [--pair HOST:PORT CODE] [--connect HOST:PORT] [--yes] | setup --status|--stop
+                                      one-time guided start of the phone's helper over Wireless debugging (adb)
   calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
@@ -314,6 +317,11 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             .iter()
             .filter_map(|a| a.to_str().map(str::to_owned))
             .collect();
+        if words.first().map(String::as_str) == Some("setup") {
+            // The guided helper start also works before the service runs (it then skips the consent step).
+            let rest: Vec<&str> = words[1..].iter().map(String::as_str).collect();
+            return bridge_service::callwifi_setup::run(&rest, port, load_token(&state_dir).ok());
+        }
         return bridge_service::callwifi_cli::run(&words, port, &load_token(&state_dir)?);
     }
     if command == "call-audio" {

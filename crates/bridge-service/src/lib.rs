@@ -16,6 +16,7 @@ pub mod call_trace;
 pub mod calling;
 pub mod callwifi;
 pub mod callwifi_cli;
+pub mod callwifi_setup;
 pub mod clipboard;
 #[cfg(target_os = "macos")]
 mod clipboard_mac;
