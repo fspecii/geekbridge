@@ -119,7 +119,7 @@ speaking is possible in principle; false = the interception route is closed), `t
 `outcome`/`rms` (with no call they should be `refused`, `silent` or near 0).
 
 **E. Self-test step 1, no call (phone).** Settings > Experimental > *Step 1: check with no call*. **Look for:**
-"Good: with no call the call sources are silent or refused." With the other agent's control fix, a later *Works*
+"Good: with no call the call sources are silent or refused." Since commit 915e4ebb2 a later *Works*
 counts only if this capture opened and was quiet; if the phone says it "still produced sound ... with no call",
 step 2 ends *Unsure* (= not working). **Report:** the sentence.
 
@@ -208,8 +208,9 @@ build refused, wrong code never reaches adb, status/stop), phone hub (`callwifi_
 (each route its own number of beeps, refused route says why) and `HelperProtocolTest` (the app's INJECT frames reach
 the route; a route that throws does not end the helper).
 
-Seen on the side: on this emulator the self-test said **works** although its no-call control was loud; that is the
-case the other agent's control fix turns into *unsure* (works only if the control opened and was quiet).
+Seen on the side: on this run's build (before 915e4ebb2) the emulator's self-test said **works** although its no-call
+control was loud; main now has the control fix (Works only if the control opened, delivered samples and was quiet),
+which makes this *unsure*.
 
 Not proven anywhere: that a person on the far end hears the PC microphone, latency on a real phone's capture path
 (the emulator adds none), Samsung's behaviour. Expected mouth-to-ear delay on the Fold5 from the parts: phone capture
