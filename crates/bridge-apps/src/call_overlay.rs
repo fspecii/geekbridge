@@ -668,16 +668,42 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                         .truncate(),
                                     );
                                 }
-                                (None, Some(WifiCard::Running { .. })) => {
+                                (
+                                    None,
+                                    Some(WifiCard::Running {
+                                        speaking,
+                                        can_speak,
+                                        ..
+                                    }),
+                                ) => {
                                     ui.horizontal(|ui| {
                                         ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(tr("overlay.wifi.listening"))
-                                                    .size(12.0)
-                                                    .color(pal.err),
+                                                egui::RichText::new(tr(if *speaking {
+                                                    "overlay.wifi.speaking"
+                                                } else {
+                                                    "overlay.wifi.listening"
+                                                }))
+                                                .size(12.0)
+                                                .color(pal.err),
                                             )
                                             .truncate(),
                                         );
+                                        // Speak only where the phone reported a route and the session is live.
+                                        if (*can_speak || *speaking)
+                                            && ui
+                                                .add(small(tr(if *speaking {
+                                                    "overlay.wifi.speak.off"
+                                                } else {
+                                                    "overlay.wifi.speak"
+                                                })))
+                                                .clicked()
+                                        {
+                                            action.live =
+                                                Some(LiveChoice::Wifi(CallWifiAction::Speak {
+                                                    on: !*speaking,
+                                                }));
+                                        }
                                         if ui.add(small(tr("overlay.wifi.stop"))).clicked() {
                                             action.live =
                                                 Some(LiveChoice::Wifi(CallWifiAction::Stop));
