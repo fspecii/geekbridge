@@ -23,6 +23,7 @@ BUDGET = {  # series: (unit, drift budget over the whole fitted window)
     "state_bytes": ("B", 4096),
     "state_files": ("", 2),
     "log_bytes": ("B", 256 * 1024),
+    "children": ("", 2),           # feature soak: pw-cat and card children come and go, the floor must not rise
 }
 CAPS = {  # hard caps on the maximum seen
     "events": 256,                 # the event log is a ring (leaks.rs)
@@ -124,14 +125,14 @@ def main(argv):
     L("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for key in ["rss_kib", "threads", "fds", "state_bytes", "state_files", "log_bytes", "saves_bytes",
                 "transfers", "events", "notifications", "driver_fds", "driver_threads",
-                "pss_kib", "priv_dirty_kib", "anon_kib"]:
+                "pss_kib", "priv_dirty_kib", "anon_kib", "children", "banners", "cards", "pwcat", "err_lines"]:
         if key not in run[0]:  # older samples.csv without the smaps_rollup columns
             continue
         ys_all = [num(r[key]) for r in run]
         xs = [ts[i] for i in sel]
         ys = [ys_all[i] for i in sel]
         if key in ("rss_kib", "threads", "fds", "state_bytes", "state_files", "driver_fds", "driver_threads",
-                   "pss_kib", "priv_dirty_kib", "anon_kib"):
+                   "pss_kib", "priv_dirty_kib", "anon_kib", "children"):
             fx, fy = floor_series(xs, ys, 300.0)
         else:
             fx, fy = xs, ys
@@ -228,6 +229,26 @@ def main(argv):
     if num(last["poll_fail"]) > 0:
         msg = f"control API poll failures {last['poll_fail']}/{last['polls']} ({late} after minute 10)"
         (fail if late or num(last["poll_fail"]) > 0.005 * max(1, num(last["polls"])) else anomalies).append(msg)
+    if "ring_stuck" in last:  # feature soak (scripts/soak-features.sh)
+        L("")
+        L("Feature counters at the end: " + ", ".join(f"{k}={last[k]}" for k in
+          ("rings", "answered", "declined", "missed", "wifi_live", "wifi_fail", "feature_req", "ring_not_seen",
+           "ring_retry", "ring_stuck", "card_missing", "card_orphan", "pwcat_orphan", "polls_slow", "poll_max_ms", "err_lines")))
+        mx = max(num(r["poll_max_ms"]) for r in run)
+        L(f"- slowest control call in any 30 s window: {mx:.0f} ms; slow (>1 s) calls: {last['polls_slow']}")
+        for k, why in (("ring_stuck", "a ring/call still shown 15 s after it ended"),
+                       ("card_orphan", "overlay card process alive 10 s after the call ended"),
+                       ("pwcat_orphan", "pw-cat or a Wi-Fi session left after the call ended"),
+                       ("ring_not_seen", "ring sent by the phone never reached the call list"),
+                       ("polls_slow", "control API call slower than 1 s")):
+            if num(last[k]) > 0:
+                fail.append(f"{k}={last[k]}: {why}")
+        if num(last["ring_retry"]) > 0:
+            anomalies.append(f"ring_retry={last['ring_retry']}: a ring was not shown within 6 s and was sent again (see ring-missed rows in events.tsv)")
+        if num(last["card_missing"]) > 0:
+            anomalies.append(f"card_missing={last['card_missing']}: a ring was seen but no card process appeared within 5 s")
+        if idle and (num(idle[-1]["cards"]) or num(idle[-1]["pwcat"])):
+            fail.append(f"children left at idle: cards={idle[-1]['cards']} pw-cat={idle[-1]['pwcat']}")
     L("")
     for key in ("rss_kib", "threads", "fds", "state_bytes", "log_bytes"):
         L(f"- {key}: `{spark([num(r[key]) for r in rows])}`")
@@ -236,7 +257,7 @@ def main(argv):
             ev = [l.rstrip("\n").split("\t") for l in open(events)]
             kinds = {}
             for e in ev:
-                if len(e) > 3 and e[1] in ("reconnect", "pair"):
+                if len(e) > 3 and e[1] in ("reconnect", "pair", "ring", "repair-p0"):
                     k = (e[1], e[2] or "-", e[3])
                     kinds[k] = kinds.get(k, 0) + 1
             L("")
