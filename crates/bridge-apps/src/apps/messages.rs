@@ -50,6 +50,11 @@ pub struct Messages {
     /// (device id, thread id) shown in the conversation pane.
     thread: Option<(String, i64)>,
     reply: String,
+    /// The conversation `reply` belongs to; other conversations' unsent replies wait in `drafts`.
+    reply_for: Option<(String, i64)>,
+    drafts: HashMap<(String, i64), String>,
+    /// Put the cursor in the reply box (a conversation was just opened).
+    focus_reply: bool,
     /// A send was clicked; the draft is cleared only once the service accepted it.
     awaiting: bool,
     clicks: u64,
@@ -80,6 +85,29 @@ const OVERSCAN: f32 = 240.0;
 enum Focus {
     Recipient,
     Draft,
+}
+
+/// Most unsent replies kept in memory at once (one per conversation, dropped when sent or emptied).
+const MAX_DRAFTS: usize = 50;
+
+/// Enter (without Shift) or Ctrl/Cmd+Enter, taken from the event queue so the text field never sees it.
+/// Shift+Enter is left alone: it is a new line.
+fn take_send_key(ui: &egui::Ui) -> bool {
+    ui.input_mut(|i| {
+        let shifted = i.events.iter().any(|e| {
+            matches!(
+                e,
+                egui::Event::Key { key: egui::Key::Enter, pressed: true, modifiers, .. } if modifiers.shift && !modifiers.command
+            )
+        });
+        i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+            || (!shifted && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+    })
+}
+
+/// Only Ctrl/Cmd+Enter (the compose body: Enter there is a new line).
+fn take_ctrl_enter(ui: &egui::Ui) -> bool {
+    ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
 }
 
 const SIDEBAR_WIDTH: f32 = 204.0;
@@ -127,6 +155,29 @@ impl Messages {
         } else {
             Focus::Draft
         });
+    }
+
+    /// The reply box belongs to the open conversation: leaving one keeps its unsent text for when the user
+    /// comes back (memory only), and another conversation starts with its own, with the cursor in the box.
+    fn swap_reply_draft(&mut self) {
+        if self.reply_for == self.thread {
+            return;
+        }
+        if let Some(old) = self.reply_for.take() {
+            let text = std::mem::take(&mut self.reply);
+            if text.trim().is_empty() {
+                self.drafts.remove(&old);
+            } else if self.drafts.contains_key(&old) || self.drafts.len() < MAX_DRAFTS {
+                self.drafts.insert(old, text);
+            }
+        }
+        self.reply = self
+            .thread
+            .as_ref()
+            .and_then(|k| self.drafts.remove(k))
+            .unwrap_or_default();
+        self.reply_for.clone_from(&self.thread);
+        self.focus_reply = self.thread.is_some();
     }
 
     fn has_draft(&self) -> bool {
@@ -389,6 +440,7 @@ impl Messages {
 
     fn conversations(&mut self, ui: &mut egui::Ui, env: &Env, view: &MessagesView) {
         let pal = env.pal;
+        self.swap_reply_draft();
         let Some((device, thread)) = self.thread.clone() else {
             return self.conversations_empty(ui, env, view);
         };
@@ -442,7 +494,7 @@ impl Messages {
                 }
                 ui.label(theme::caption(
                     pal,
-                    "Read marks stay on this computer; the phone keeps its own.",
+                    "Marked read on this computer only. The phone keeps its own unread state.",
                 ));
             });
         theme::hairline(ui, pal);
@@ -460,7 +512,8 @@ impl Messages {
             + if ready { 0.0 } else { 74.0 };
         let body_h = (ui.available_height() - footer).max(80.0);
         egui::ScrollArea::vertical().drag_to_scroll(false)
-            .id_salt("thread-scroll")
+            // One scroll state per conversation, so a newly opened one starts at its newest message.
+            .id_salt(("thread-scroll", &device, thread))
             .max_height(body_h)
             .min_scrolled_height(body_h)
             .stick_to_bottom(true)
@@ -575,9 +628,12 @@ impl Messages {
         let ready = dev.is_some_and(|d| send_blocker(d).is_none());
         let to = conv.and_then(|c| c.addresses.first().cloned());
         ui.add_space(6.0);
+        let reply_id = ui.id().with("reply-box");
+        let send_key = ui.memory(|m| m.has_focus(reply_id)) && take_send_key(ui);
         let reply = crate::a11y::named(
             ui.add(
                 egui::TextEdit::multiline(&mut self.reply)
+                    .id(reply_id)
                     .frame(false)
                     .hint_text(egui::RichText::new("Reply").color(pal.text3))
                     .font(FontId::new(15.0, FontFamily::Proportional))
@@ -587,6 +643,9 @@ impl Messages {
             "Reply",
         );
         theme::ring_when_focused(ui, pal, &reply);
+        if std::mem::take(&mut self.focus_reply) {
+            reply.request_focus();
+        }
         input::limit_chars(&mut self.reply, input::MAX_DRAFT_CHARS);
         if let Some(d) = dev {
             self.sim_picker(ui, pal, d);
@@ -605,6 +664,7 @@ impl Messages {
             theme::blocked_note(ui, pal, b);
         }
         let can = blocker.is_none() && !self.reply.trim().is_empty();
+        let mut go = send_key && can;
         ui.horizontal(|ui| {
             ui.label(theme::caption(pal, segment_label(&self.reply)))
                 .on_hover_text(segment_hint(&self.reply));
@@ -619,21 +679,24 @@ impl Messages {
                     "Send as text message",
                 )
                 .clicked()
-                    && let (Some(to), Some(d)) = (to, dev)
                 {
-                    let submission_id = self.submission();
-                    let sub_id = self.chosen_sim(d);
-                    self.run(Request::MessagesSend {
-                        device_id: d.device_id.clone(),
-                        recipient: to,
-                        text: self.reply.clone(),
-                        submission_id,
-                        sub_id,
-                    });
-                    self.reply.clear();
+                    go = true;
                 }
             });
         });
+        if go && let (Some(to), Some(d)) = (to, dev) {
+            let submission_id = self.submission();
+            let sub_id = self.chosen_sim(d);
+            self.run(Request::MessagesSend {
+                device_id: d.device_id.clone(),
+                recipient: to,
+                text: self.reply.clone(),
+                submission_id,
+                sub_id,
+            });
+            self.reply.clear();
+            reply.request_focus();
+        }
         let _ = sel;
     }
 
@@ -762,6 +825,10 @@ impl Messages {
                 to.request_focus();
                 self.focus = None;
             }
+            // Enter in "To" moves on to the text.
+            if to.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.focus = Some(Focus::Draft);
+            }
         });
         theme::hairline(ui, pal);
         ui.add_space(6.0);
@@ -772,6 +839,7 @@ impl Messages {
             .devices
             .iter()
             .any(|d| d.sims.len() > 1 && send_blocker(d).is_none());
+        let ctrl_enter = take_ctrl_enter(ui);
         let footer_h = 176.0 + if sims { 34.0 } else { 0.0 };
         let body_h = (ui.available_height() - footer_h).max(70.0);
         egui::ScrollArea::vertical()
@@ -847,8 +915,11 @@ impl Messages {
         }
         ui.add_space(2.0);
         ui.horizontal(|ui| {
-            let can_send =
-                blocker.is_none() && !self.recipient.is_empty() && !self.draft.trim().is_empty();
+            let can_send = blocker.is_none()
+                && !self.awaiting
+                && !self.recipient.is_empty()
+                && !self.draft.trim().is_empty();
+            let mut go = ctrl_enter && can_send;
             if theme::pill_button(
                 ui,
                 pal,
@@ -878,20 +949,22 @@ impl Messages {
                     "Send as text message",
                 )
                 .clicked()
-                    && let Some(d) = &target
                 {
-                    let submission_id = self.submission();
-                    let sub_id = self.chosen_sim(d);
-                    self.run(Request::MessagesSend {
-                        device_id: d.device_id.clone(),
-                        recipient: self.recipient.clone(),
-                        text: self.draft.clone(),
-                        submission_id,
-                        sub_id,
-                    });
-                    self.awaiting = true;
+                    go = true;
                 }
             });
+            if go && let Some(d) = &target {
+                let submission_id = self.submission();
+                let sub_id = self.chosen_sim(d);
+                self.run(Request::MessagesSend {
+                    device_id: d.device_id.clone(),
+                    recipient: self.recipient.clone(),
+                    text: self.draft.clone(),
+                    submission_id,
+                    sub_id,
+                });
+                self.awaiting = true;
+            }
         });
     }
 
@@ -1014,10 +1087,14 @@ fn digits(s: &str) -> String {
 }
 
 /// Same number when the last seven digits agree (country codes and spacing differ between sources).
+/// Short codes (under 7 digits, like 22000) must match exactly: they are not the tail of a long number.
 fn same_number(a: &str, b: &str) -> bool {
     let (a, b) = (digits(a), digits(b));
     let n = 7.min(a.len()).min(b.len());
-    n >= 3 && a[a.len() - n..] == b[b.len() - n..]
+    if n < 7 {
+        return n >= 3 && a == b;
+    }
+    a[a.len() - n..] == b[b.len() - n..]
 }
 
 fn short(s: &str, max: usize) -> String {
@@ -1481,7 +1558,34 @@ impl AppView for Messages {
                 self.open_compose();
             }
         }
+        // Keyboard: Ctrl/Cmd+N writes a new message; Escape leaves the compose page (the draft stays).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
+            self.open_compose();
+        } else if self.section == Section::Compose
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.section = Section::Conversations;
+            self.focus_reply = true;
+        }
         let (view, state) = self.view();
+        // Text in a script the bundled fonts lack (CJK, Arabic, Indic, ...) gets a system font on demand.
+        crate::script_fonts::ensure(
+            ctx,
+            view.conversations
+                .iter()
+                .flat_map(|c| {
+                    [
+                        c.title.as_str(),
+                        c.last_body.as_str(),
+                        c.matched.as_deref().unwrap_or(""),
+                    ]
+                })
+                .chain(
+                    view.selected
+                        .iter()
+                        .flat_map(|s| s.messages.iter().map(|m| m.body.as_str())),
+                ),
+        );
         if !self.open_number_checked {
             self.open_number_checked = true;
             self.open_number = crate::prefill::take_message_to();
@@ -1519,6 +1623,7 @@ impl AppView for Messages {
         {
             self.thread = Some((first.device_id.clone(), first.thread_id));
         }
+        self.swap_reply_draft();
         self.toolbar(ctx, env);
         self.sidebar(ctx, env);
         // A device that disappeared from the network can't stay selected.

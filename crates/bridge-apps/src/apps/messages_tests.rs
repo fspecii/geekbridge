@@ -5,7 +5,7 @@
 use super::*;
 use crate::test_support::{Rig, shapes, wait_until};
 use bridge_core::AppKind;
-use eframe::egui::Key;
+use eframe::egui::{Key, Modifiers};
 
 const H: u64 = 3_600_000;
 const D: u64 = 86_400_000;
@@ -146,19 +146,55 @@ fn fixture(sms: DataState, send: bool) -> MessagesView {
 }
 
 fn messages_with(view: MessagesView) -> Messages {
+    messages_logged(view).0
+}
+
+type Log = std::sync::Arc<std::sync::Mutex<Vec<Request>>>;
+
+/// Like `messages_with`, also returning every action the window asked the service to run.
+fn messages_logged(view: MessagesView) -> (Messages, Log) {
+    let log = Log::default();
     let mut m = Messages {
         env_checked: true,
         open_number_checked: true,
         ..Messages::default()
     };
+    let seen = log.clone();
     m.feed = Some(Feed::spawn_with(
         Duration::from_millis(10),
         Request::Status,
-        move |_| Ok(view.clone()),
-        |_| Ok(Some("sent".into())),
+        move |r| {
+            // The service answers for the conversation that was asked for.
+            let mut v = view.clone();
+            if let Request::MessagesView {
+                thread_id: Some(t), ..
+            } = r
+                && let Some(sel) = &mut v.selected
+            {
+                sel.thread_id = *t;
+            }
+            Ok(v)
+        },
+        move |r| {
+            seen.lock().unwrap().push(r.clone());
+            Ok(Some("sent".into()))
+        },
         || {},
     ));
-    m
+    (m, log)
+}
+
+fn sends(log: &Log) -> Vec<(String, String)> {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| match r {
+            Request::MessagesSend {
+                recipient, text, ..
+            } => Some((recipient.clone(), text.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 fn ready(m: &mut Messages, rig: &mut Rig) {
@@ -332,4 +368,107 @@ fn many_devices_and_empty_views_render() {
     ready(&mut m, &mut rig);
     let mut m = messages_with(MessagesView::default());
     ready(&mut m, &mut Rig::new(AppKind::Messages, 600.0, 500.0));
+}
+
+#[test]
+fn enter_sends_a_reply_and_shift_enter_adds_a_line() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    // Opening a conversation puts the cursor in the reply box.
+    rig.type_text(&mut m, "a");
+    rig.key_with(&mut m, Key::Enter, Modifiers::SHIFT);
+    rig.type_text(&mut m, "b");
+    assert_eq!(m.reply, "a\nb", "Shift+Enter is a new line");
+    assert!(sends(&log).is_empty(), "nothing sent yet");
+    rig.key(&mut m, Key::Enter);
+    wait_until("send", || !sends(&log).is_empty());
+    assert_eq!(sends(&log), vec![("+1 555 000 0001".into(), "a\nb".into())]);
+    assert!(m.reply.is_empty(), "the box is empty after sending");
+    // Enter on an empty box sends nothing and adds no blank line.
+    rig.key(&mut m, Key::Enter);
+    assert!(m.reply.is_empty());
+    assert_eq!(sends(&log).len(), 1);
+    // Ctrl+Enter sends as well.
+    rig.type_text(&mut m, "again");
+    rig.key_with(&mut m, Key::Enter, Modifiers::COMMAND);
+    wait_until("second send", || sends(&log).len() == 2);
+    assert_eq!(m.reply, "");
+}
+
+#[test]
+fn every_conversation_keeps_its_own_unsent_reply() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.type_text(&mut m, "for Ann");
+    m.thread = Some(("d".into(), 2));
+    rig.settle(&mut m, 3);
+    assert_eq!(m.reply, "", "another person's draft never carries over");
+    rig.type_text(&mut m, "for two");
+    m.thread = Some(("d".into(), 1));
+    rig.settle(&mut m, 3);
+    assert_eq!(m.reply, "for Ann");
+    m.thread = Some(("d".into(), 2));
+    rig.settle(&mut m, 3);
+    assert_eq!(m.reply, "for two");
+    rig.key(&mut m, Key::Enter);
+    wait_until("send", || !sends(&log).is_empty());
+    assert_eq!(
+        sends(&log),
+        vec![("+1 555 000 0002".into(), "for two".into())]
+    );
+    m.thread = Some(("d".into(), 1));
+    rig.settle(&mut m, 3);
+    assert_eq!(
+        m.reply, "for Ann",
+        "the draft of the other thread is untouched"
+    );
+}
+
+#[test]
+fn ctrl_n_opens_a_new_message_with_the_cursor_in_to_and_escape_goes_back() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.key_with(&mut m, Key::N, Modifiers::COMMAND);
+    rig.settle(&mut m, 2);
+    assert!(m.section == Section::Compose);
+    rig.type_text(&mut m, "+49 151 2345678");
+    assert_eq!(m.recipient, "+491512345678", "typing goes to the To field");
+    // Enter in To moves to the text; the text keeps its newlines; Ctrl+Enter sends.
+    rig.key(&mut m, Key::Enter);
+    rig.type_text(&mut m, "hello");
+    rig.key_with(&mut m, Key::Enter, Modifiers::SHIFT);
+    rig.type_text(&mut m, "there");
+    assert_eq!(m.draft, "hello\nthere");
+    rig.key_with(&mut m, Key::Enter, Modifiers::COMMAND);
+    wait_until("send", || !sends(&log).is_empty());
+    assert_eq!(
+        sends(&log),
+        vec![("+491512345678".into(), "hello\nthere".into())]
+    );
+    // Escape leaves the draft in place and returns to the conversations.
+    m.draft = "kept".into();
+    m.awaiting = false;
+    m.section = Section::Compose;
+    rig.settle(&mut m, 2);
+    rig.key(&mut m, Key::Escape);
+    assert!(m.section == Section::Conversations);
+    assert_eq!(m.draft, "kept");
+}
+
+#[test]
+fn numbers_group_across_country_code_and_trunk_prefix_but_short_codes_stay_exact() {
+    assert!(same_number("+49 151 2345678", "0151 2345678"));
+    assert!(same_number("+49 (151) 234-5678", "01512345678"));
+    assert!(!same_number("+49 151 2345678", "+49 151 2345679"));
+    // A short code is not a tail of a long number.
+    assert!(same_number("12345", "12345"));
+    assert!(!same_number("345", "+1 555 0100 345"));
+    assert!(!same_number("22000", "+49 151 2322000"));
+    assert!(!same_number("", "+49 151 2322000"));
 }

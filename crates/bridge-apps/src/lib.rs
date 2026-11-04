@@ -33,6 +33,7 @@ pub mod photos_pane;
 pub mod poller;
 pub mod prefill;
 pub mod report_ui;
+pub mod script_fonts;
 pub mod share_app;
 pub mod shell;
 pub mod state;

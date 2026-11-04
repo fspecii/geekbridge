@@ -572,6 +572,12 @@ impl AppView for Contacts {
             }
         }
         let (state, view) = self.view();
+        crate::script_fonts::ensure(
+            ctx,
+            view.people
+                .iter()
+                .flat_map(|p| [p.name.as_str(), p.organization.as_deref().unwrap_or("")]),
+        );
         // Screenshot/testing aid: open the first contact on start.
         if self.person.is_none()
             && std::env::var_os("GEEKBRIDGE_CONTACTS_SELECT_FIRST").is_some()

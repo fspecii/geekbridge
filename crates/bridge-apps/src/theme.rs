@@ -328,6 +328,8 @@ pub fn install_fonts(ctx: &egui::Context) {
             break;
         }
     }
+    // Scripts the bundled fonts lack (CJK, Arabic, Indic, ...) that text on screen asked for.
+    crate::script_fonts::add_loaded(&mut fonts);
     // Semibold falls back to the regular face (then the built-in one) when no bold exists.
     let mut semibold: Vec<String> = bold_name.into_iter().collect();
     semibold.extend(
