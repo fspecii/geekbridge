@@ -82,7 +82,7 @@ impl Cannot {
                 "geekbridge-calls is not installed next to geekbridge-service or on PATH"
             }
             Self::NoDisplay => {
-                "no Wayland or X11 display found (no WAYLAND_DISPLAY/DISPLAY, no wayland-* socket in XDG_RUNTIME_DIR)"
+                "no Wayland or X11 display found (no WAYLAND_DISPLAY/DISPLAY, no wayland-* socket in XDG_RUNTIME_DIR); only Linux and the BSDs need one"
             }
             Self::SpawnFailed(_) => "starting geekbridge-calls failed",
         }
@@ -131,7 +131,16 @@ pub fn display_env(
     }
 }
 
+/// Linux and the BSDs find their windows through Wayland/X11 variables the service may lack.
+/// Windows and macOS have one native window system that every process of the user reaches.
+pub fn needs_display_variables(os: &str) -> bool {
+    !matches!(os, "windows" | "macos")
+}
+
 fn real_display_env() -> Result<Vec<(String, String)>, Cannot> {
+    if !needs_display_variables(std::env::consts::OS) {
+        return Ok(Vec::new());
+    }
     display_env(
         &|k| std::env::var(k).ok(),
         &|dir| {
@@ -266,6 +275,19 @@ pub fn test(state_dir: &Path, api_port: u16, control_port: u16) -> Result<(), Ca
     Ok(())
 }
 
+/// The doctor line after a ring that could not show the card; the fix depends on the system.
+pub fn last_ring_failed(os: &str, why: &str) -> String {
+    if needs_display_variables(os) {
+        format!(
+            "the last ring could not start it ({why}); the service's session may lack the display variables. Try: systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR && systemctl --user restart geekbridge-service"
+        )
+    } else {
+        format!(
+            "the last ring could not start it ({why}); check that geekbridge-calls is installed next to geekbridge-service, then restart GeekBridge from its tray icon or the Start menu / Applications folder. The call banner still shows."
+        )
+    }
+}
+
 /// The `doctor` line: what the last real launch said, and whether one would work from here.
 pub fn doctor_line(state_dir: &Path) -> (bool, String) {
     let last = std::fs::read_to_string(state_dir.join(STATUS_FILE)).unwrap_or_default();
@@ -274,10 +296,7 @@ pub fn doctor_line(state_dir: &Path) -> (bool, String) {
         Err(c) => (false, format!("cannot: {} ({})", c.code(), c.explain())),
         Ok(_) if last.starts_with("cannot") => (
             false,
-            format!(
-                "the last ring could not start it ({}); the service's session may lack the display variables. Try: systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_RUNTIME_DIR && systemctl --user restart geekbridge-service",
-                last.trim_start_matches("cannot: ")
-            ),
+            last_ring_failed(std::env::consts::OS, last.trim_start_matches("cannot: ")),
         ),
         Ok(_) => (
             true,
@@ -363,6 +382,24 @@ mod tests {
                 ("XDG_RUNTIME_DIR".to_owned(), "/run/user/1000".to_owned())
             ])
         );
+    }
+
+    #[test]
+    fn windows_and_macos_need_no_display_variables_but_linux_does() {
+        assert!(!needs_display_variables("windows"));
+        assert!(!needs_display_variables("macos"));
+        assert!(needs_display_variables("linux"));
+        assert!(needs_display_variables("freebsd"));
+    }
+
+    #[test]
+    fn the_failed_ring_hint_names_no_linux_tool_off_linux() {
+        for os in ["windows", "macos"] {
+            let t = last_ring_failed(os, "spawn-failed: x");
+            assert!(!t.contains("systemctl") && !t.contains("WAYLAND"), "{t}");
+            assert!(t.contains("spawn-failed: x"));
+        }
+        assert!(last_ring_failed("linux", "x").contains("systemctl --user import-environment"));
     }
 
     #[test]

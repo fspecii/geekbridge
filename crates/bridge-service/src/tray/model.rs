@@ -180,6 +180,24 @@ impl TrayInput {
     }
 }
 
+/// A tooltip as the fixed 128-unit UTF-16 buffer of a Windows notification icon (`szTip`): cut at
+/// a whole character, always ending in a zero. Platform-independent so it is tested everywhere.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn tip_units(text: &str) -> [u16; 128] {
+    let mut out = [0_u16; 128];
+    let mut at = 0;
+    for c in text.chars() {
+        let mut buf = [0_u16; 2];
+        let units = c.encode_utf16(&mut buf);
+        if at + units.len() > 127 {
+            break;
+        }
+        out[at..at + units.len()].copy_from_slice(units);
+        at += units.len();
+    }
+    out
+}
+
 /// What a click does. The runner turns each into a service request or a helper window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TrayAction {
@@ -369,6 +387,41 @@ mod tests {
         assert_eq!(i.tooltip().1, i.status_line());
         i.connected.clear();
         assert_eq!(i.status_line(), "No phone connected");
+    }
+
+    #[test]
+    fn every_call_audio_line_fits_the_windows_tooltip_buffer_and_the_mac_tooltip_is_plain_text() {
+        for hint in [
+            CallAudioHint::Unknown,
+            CallAudioHint::NoBluetooth,
+            CallAudioHint::Ready,
+        ] {
+            for name in [
+                "Pixel",
+                "A very long phone name \u{1F4F1}\u{1F4F1}\u{1F4F1} that goes on and on and on",
+            ] {
+                let mut i = phone();
+                i.connected = vec![name.to_owned()];
+                i.call_audio = hint;
+                let (title, body) = i.tooltip();
+                let units = tip_units(&format!("GeekBridge \u{2013} {title}: {body}"));
+                assert_eq!(units[127], 0, "always zero-terminated");
+                let end = units.iter().position(|u| *u == 0).unwrap();
+                let back = String::from_utf16(&units[..end]).expect("never half a surrogate pair");
+                assert!(back.starts_with("GeekBridge"));
+                // macOS sets the tooltip from the same two strings, as one line break separated text.
+                let mac = format!("{title}: {body}");
+                assert!(!mac.contains('\0'));
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_never_splits_a_surrogate_pair() {
+        let text = format!("{}\u{1F4F1}tail", "a".repeat(126));
+        let units = tip_units(&text);
+        assert_eq!(String::from_utf16(&units[..126]).unwrap(), "a".repeat(126));
+        assert_eq!((units[126], units[127]), (0, 0));
     }
 
     #[test]

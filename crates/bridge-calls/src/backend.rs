@@ -47,12 +47,7 @@ impl UnavailableBackend {
     /// The backend this build uses when the platform has no adapter yet.
     pub fn for_this_platform() -> Self {
         let platform = std::env::consts::OS;
-        Self::new(
-            platform_label(platform),
-            format!(
-                "no Bluetooth call adapter is implemented for {platform} yet (Linux uses PipeWire's org.pipewire.Telephony; Windows and macOS adapters are future work)"
-            ),
-        )
+        Self::new(platform_label(platform), unavailable_reason(platform))
     }
     pub fn reason(&self) -> &str {
         &self.reason
@@ -71,6 +66,16 @@ impl UnavailableBackend {
             CallBackendKind::BluetoothHfp { host },
             UnsupportedReason::NotImplemented,
         )
+    }
+}
+
+/// Why there is no Bluetooth call backend, in words for the system it is read on. Nothing here
+/// names a Linux tool unless the system is Linux-like.
+pub fn unavailable_reason(os: &str) -> String {
+    match os {
+        "windows" => "Windows carries call audio itself (pair the phone in Settings > Bluetooth & devices and turn on Phone calls); GeekBridge shows and answers calls through the phone link".into(),
+        "macos" => "a Mac cannot carry the voice of an Android phone's call; GeekBridge shows and answers calls through the phone link, and you talk on the phone".into(),
+        other => format!("no Bluetooth call adapter is implemented for {other} (Linux uses PipeWire's org.pipewire.Telephony)"),
     }
 }
 
@@ -113,6 +118,18 @@ pub fn default_backend() -> Box<dyn CallBackend> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_and_macos_reasons_name_no_linux_tool() {
+        for os in ["windows", "macos"] {
+            let r = super::unavailable_reason(os);
+            for linux in ["PipeWire", "pactl", "D-Bus", "bluetoothctl", "BlueZ"] {
+                assert!(!r.contains(linux), "{os}: {r}");
+            }
+        }
+        assert!(super::unavailable_reason("windows").contains("Phone calls"));
+        assert!(super::unavailable_reason("macos").contains("talk on the phone"));
+    }
+
     use super::*;
     use bridge_core::calls::{CallFeature, Sensitive, Support};
 

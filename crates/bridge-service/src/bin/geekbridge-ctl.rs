@@ -1006,6 +1006,12 @@ fn calling_command(port: u16, state_dir: &std::path::Path) -> Result<(), String>
         .map_err(|e| e.to_string())
         .and_then(|t| ipc::call(port, &t, &Request::CallingStatus).map_err(|e| e.to_string()))
     {
+        Ok(Response::CallingStatus(c)) if !cfg!(target_os = "linux") => {
+            println!(
+                "calling: {}",
+                bridge_service::doctor::native_calls_line(&c.platform)
+            );
+        }
         Ok(Response::CallingStatus(c)) => {
             println!(
                 "calling: {} ({}), telephony service: {}, Bluetooth controllers: {}, phones: {}, calls: {}",
@@ -1039,8 +1045,15 @@ fn calling_command(port: u16, state_dir: &std::path::Path) -> Result<(), String>
         }
     }
     match hear {
+        _ if !cfg!(target_os = "linux") => print!(
+            "{}",
+            bridge_service::call_audio_host::platform_calling_text(
+                std::env::consts::OS,
+                hear.as_ref()
+            )
+        ),
         Some(h) => print!("{}", h.render()),
-        None if cfg!(target_os = "linux") => {
+        None => {
             println!("Hear calls on this computer:");
             if bluetooth_controllers() == 0 {
                 println!("  {}", bridge_core::ipc::NO_BLUETOOTH_WARNING);
@@ -1049,9 +1062,6 @@ fn calling_command(port: u16, state_dir: &std::path::Path) -> Result<(), String>
                 "  The full step-by-step check needs the GeekBridge service: systemctl --user start geekbridge-service, then run this again."
             );
         }
-        None => println!(
-            "Hear calls on this computer: pair the phone in the system's Bluetooth settings (Windows/macOS calling guide)."
-        ),
     }
     Ok(())
 }

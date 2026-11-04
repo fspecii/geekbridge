@@ -22,7 +22,14 @@ accesskit = ["eframe/accesskit"]
 memstats = []
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Time", "Win32_UI_WindowsAndMessaging"] }
+# The call card asks Windows not to activate it (WS_EX_NOACTIVATE); eframe::Frame hands out the window handle through this trait.
+raw-window-handle = "0.6"
+
+# macOS: the call card runs as an "accessory" application (no Dock icon, no activation of its own
+# app when it appears). Same version as the winit that eframe already links.
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = { version = "0.30", default-features = false }
 
 [dependencies.bridge-kde]
 path = "../bridge-kde"

@@ -219,6 +219,14 @@ fn hear(port: u16, token: &Token, req: Request) -> Result<bridge_core::ipc::Hear
 /// `call setup ...`: drive the service's guided setup and follow it until it ends.
 fn setup(args: &[String], port: u16, token: &Token) -> Result<(), String> {
     use bridge_core::ipc::CallAudioSetupAction as A;
+    if !cfg!(target_os = "linux") {
+        // Windows pairs and routes call audio itself; a Mac keeps the voice on the phone.
+        println!(
+            "{}",
+            crate::call_audio_host::setup_unsupported(std::env::consts::OS)
+        );
+        return Ok(());
+    }
     let flag = |name: &str| {
         args.iter()
             .position(|a| a == name)

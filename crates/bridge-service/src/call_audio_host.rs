@@ -116,7 +116,12 @@ fn list() -> Result<Listing, String> {
 
 #[cfg(not(target_os = "linux"))]
 fn list() -> Result<Listing, String> {
-    Err("picking call-audio devices here is only implemented on Linux; Windows and macOS use the system's communication device".into())
+    Err(match std::env::consts::OS {
+        "windows" => "Windows chooses the call devices itself: set your headset as the default communications device in Settings > System > Sound.",
+        "macos" => "On a Mac the voice of a call stays on the phone, so there is no computer headset to pick.",
+        _ => "picking call-audio devices is not available on this system.",
+    }
+    .into())
 }
 
 /// `Request::HearCalls` / `Request::CallAudioPair`. Blocking.
@@ -135,17 +140,124 @@ pub fn hear_calls_request(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (state_dir, default_phone);
+        let os = std::env::consts::OS;
         if action.is_some() {
-            return Err(err(
-                ErrorCode::Unsupported,
-                "the guided call-audio setup is for Linux; on Windows and macOS pair the phone in the system's Bluetooth settings",
-            ));
+            return Err(err(ErrorCode::Unsupported, &setup_unsupported(os)));
         }
-        Ok(bridge_core::ipc::HearCalls {
-            headline: "Pair the phone in the system's Bluetooth settings; calls then use the system's communication device.".into(),
-            ..Default::default()
+        Ok(match os {
+            "windows" => hear_calls_from_setup(os, &crate::call_audio::windows_setup_now()),
+            _ => platform_hear_calls(os),
         })
     }
+}
+
+/// What `geekbridge-ctl call setup` says where the guided Bluetooth pairing does not exist: the
+/// pairing there is the operating system's own.
+pub fn setup_unsupported(os: &str) -> String {
+    match os {
+        "windows" => "Windows pairs and routes call audio itself, so there is nothing to set up here. Pair the phone in Windows Settings > Bluetooth & devices (Add device > Bluetooth) and turn on Phone calls for it, then set your headset as the default communications device in Settings > System > Sound. Check the result with geekbridge-ctl call-audio.".into(),
+        "macos" => "On a Mac the voice of a call stays on the phone: answer the call here and talk on the phone (or on a Bluetooth headset paired with the phone). There is no call audio to set up.".into(),
+        _ => "the guided call-audio setup is for Linux; pair the phone in the system's Bluetooth settings".into(),
+    }
+}
+
+/// The checklist of a system that has no guided setup, without any steps (macOS, others).
+pub fn platform_hear_calls(os: &str) -> bridge_core::ipc::HearCalls {
+    bridge_core::ipc::HearCalls {
+        headline: setup_unsupported(os),
+        ..Default::default()
+    }
+}
+
+/// Windows' checklist (`bridge_core::call_audio::build_windows`) in the shape the service answers
+/// `HearCalls` with, so `geekbridge-ctl calling` and `doctor` read it like the Linux one.
+pub fn hear_calls_from_setup(
+    os: &str,
+    s: &bridge_core::call_audio::Setup,
+) -> bridge_core::ipc::HearCalls {
+    use bridge_core::call_audio::{StepState, Verdict};
+    use bridge_core::ipc::{HearCalls, HearCallsStep};
+    use bridge_i18n::tr;
+    let steps: Vec<HearCallsStep> = s
+        .steps
+        .iter()
+        .map(|st| {
+            let fix = st.fix.as_ref();
+            let (state, detail) = match st.state {
+                StepState::Ok => ("ok", tr("callaudio.state.ok")),
+                StepState::Todo => ("fail", fix.map_or("", |f| tr(f.kind.key()))),
+                StepState::Waiting => ("skip", tr("callaudio.state.waiting")),
+                // Windows offers no cheap way to read its default communications device.
+                StepState::Unknown => (
+                    "skip",
+                    fix.map_or(tr("callaudio.state.unknown"), |f| tr(f.kind.key())),
+                ),
+            };
+            HearCallsStep {
+                id: format!("{:?}", st.id).to_ascii_lowercase(),
+                title: tr(st.id.key()).to_owned(),
+                state: state.into(),
+                detail: detail.to_owned(),
+                fix: fix.and_then(|f| f.command.clone()),
+            }
+        })
+        .collect();
+    let ready = s.verdict == Verdict::Ready;
+    let no_bluetooth = s.verdict == Verdict::NoBluetooth;
+    let headline = if ready {
+        "Phone calls are connected in Windows; the voice plays on the default communications device.".to_owned()
+    } else if no_bluetooth {
+        bridge_core::ipc::NO_BLUETOOTH_WARNING.to_owned()
+    } else {
+        steps.iter().find(|x| x.state == "fail").map_or_else(
+            || setup_unsupported(os),
+            |x| format!("{}: {}", x.title, x.detail),
+        )
+    };
+    HearCalls {
+        ready,
+        no_bluetooth,
+        headline,
+        steps,
+        ..Default::default()
+    }
+}
+
+/// `geekbridge-ctl calling` below the summary line, on Windows and macOS: what carries the voice
+/// there and what is still open. `h` is the service's answer when it gave one.
+pub fn platform_calling_text(os: &str, h: Option<&bridge_core::ipc::HearCalls>) -> String {
+    let mut out = String::from("Hear calls on this computer:\n");
+    match os {
+        "windows" => {
+            out.push_str("  Windows carries the call's voice itself over Bluetooth hands-free; GeekBridge only shows and answers the call.\n");
+            out.push_str("  Pair the phone in Windows Settings > Bluetooth & devices > Phone calls, then set your headset as the default communications device in Settings > System > Sound.\n");
+            match h {
+                Some(h) if !h.steps.is_empty() => {
+                    for (n, s) in h.steps.iter().enumerate() {
+                        let mark = match s.state.as_str() {
+                            "ok" => "ok  ",
+                            "fail" => "FAIL",
+                            "warn" => "warn",
+                            _ => "--  ",
+                        };
+                        out.push_str(&format!("  {:>2}. [{mark}] {}: {}\n", n + 1, s.title, s.detail));
+                        if let Some(f) = &s.fix {
+                            out.push_str(&format!("        fix: {f}\n"));
+                        }
+                    }
+                    if h.no_bluetooth {
+                        out.push_str(&format!("  {}\n", bridge_core::ipc::NO_BLUETOOTH_WARNING));
+                    }
+                }
+                _ => out.push_str("  The device check is not available right now (the GeekBridge service is not running or is still reading Windows' devices); run this again in a few seconds.\n"),
+            }
+        }
+        "macos" => {
+            out.push_str("  On a Mac the voice of a call stays on the phone: answer the call here, then talk on the phone (or on a Bluetooth headset paired with the phone).\n");
+        }
+        _ => out.push_str("  Pair the phone in the system's Bluetooth settings.\n"),
+    }
+    out
 }
 
 /// Text for `geekbridge-ctl call audio-devices`.
@@ -680,6 +792,124 @@ mod host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const LINUX_WORDS: [&str; 9] = [
+        "pactl",
+        "parec",
+        "wpctl",
+        "bluetoothctl",
+        "systemctl",
+        "PipeWire",
+        "D-Bus",
+        "WirePlumber",
+        "sudo",
+    ];
+
+    fn pnp(status: &str, name: &str, id: &str) -> bridge_core::call_audio::PnpDevice {
+        bridge_core::call_audio::PnpDevice {
+            status: status.into(),
+            name: name.into(),
+            instance_id: id.into(),
+        }
+    }
+
+    const RADIO: &str = "USB\\VID_8087&PID_0033\\5&1";
+    const AG: &str = "BTHENUM\\{0000111F-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0000\\7&2";
+
+    #[test]
+    fn windows_detects_adapter_pairing_and_phone_calls_from_the_pnp_listing() {
+        use bridge_core::call_audio::build_windows;
+        // No adapter at all.
+        let h = hear_calls_from_setup("windows", &build_windows(Some(&[]), &[]));
+        assert!(h.no_bluetooth && !h.ready);
+        assert_eq!(h.headline, bridge_core::ipc::NO_BLUETOOTH_WARNING);
+        assert_eq!(h.steps[0].state, "fail");
+        // Adapter, nothing paired: the pairing step is the first problem and points at Settings.
+        let radio = pnp("OK", "Intel Bluetooth", RADIO);
+        let h = hear_calls_from_setup(
+            "windows",
+            &build_windows(Some(std::slice::from_ref(&radio)), &[]),
+        );
+        assert!(!h.no_bluetooth && !h.ready);
+        let p = h.first_problem().unwrap();
+        assert!(p.title.contains("paired"), "{p:?}");
+        assert!(p.detail.contains("Settings"), "{p:?}");
+        assert_eq!(p.fix.as_deref(), Some("start ms-settings:bluetooth"));
+        // Paired but the hands-free node is down: Phone calls must be turned on.
+        let h = hear_calls_from_setup(
+            "windows",
+            &build_windows(
+                Some(&[radio.clone(), pnp("Unknown", "Pixel Hands-Free AG", AG)]),
+                &[],
+            ),
+        );
+        assert!(h.first_problem().unwrap().detail.contains("Phone calls"));
+        // Connected: ready, and the headset step is "cannot be checked", never a problem.
+        let h = hear_calls_from_setup(
+            "windows",
+            &build_windows(Some(&[radio, pnp("OK", "Pixel Hands-Free AG", AG)]), &[]),
+        );
+        assert!(h.ready);
+        assert!(h.first_problem().is_none(), "{:?}", h.first_problem());
+        assert_eq!(h.steps.last().unwrap().state, "skip");
+        assert!(h.headline.contains("default communications device"));
+        // Windows could not be queried: unknown, not ready, no crash.
+        let h = hear_calls_from_setup("windows", &build_windows(None, &[]));
+        assert!(!h.ready && !h.no_bluetooth);
+    }
+
+    #[test]
+    fn windows_and_macos_text_names_no_linux_tool() {
+        use bridge_core::call_audio::build_windows;
+        let radio = pnp("OK", "Intel Bluetooth", RADIO);
+        let hears = [
+            Some(hear_calls_from_setup(
+                "windows",
+                &build_windows(Some(&[]), &[]),
+            )),
+            Some(hear_calls_from_setup(
+                "windows",
+                &build_windows(Some(&[radio]), &[]),
+            )),
+            Some(hear_calls_from_setup("windows", &build_windows(None, &[]))),
+            Some(platform_hear_calls("macos")),
+            None,
+        ];
+        for os in ["windows", "macos"] {
+            for h in &hears {
+                let mut t = platform_calling_text(os, h.as_ref());
+                t.push_str(&setup_unsupported(os));
+                if let Some(h) = h {
+                    t.push_str(&h.headline);
+                }
+                for w in LINUX_WORDS {
+                    assert!(!t.contains(w), "{os}: {w} in {t}");
+                }
+            }
+        }
+        let w = platform_calling_text("windows", None);
+        assert!(w.contains("Bluetooth & devices") && w.contains("default communications device"));
+        let m = platform_calling_text("macos", None);
+        assert!(m.contains("answer the call here") && m.contains("talk on the phone"));
+        assert!(setup_unsupported("windows").contains("Phone calls"));
+        assert!(setup_unsupported("macos").contains("talk on the phone"));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn off_linux_setup_is_refused_in_words_and_nothing_is_spawned() {
+        let dir = std::path::Path::new("unused");
+        let e = hear_calls_request(
+            dir,
+            Some(bridge_core::ipc::CallAudioSetupAction::Cancel),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, ErrorCode::Unsupported);
+        assert!(e.message.contains("Settings") || e.message.contains("talk on the phone"));
+        let d = devices(dir, None).unwrap();
+        assert!(d.problem.is_some_and(|p| !p.contains("Linux")));
+    }
 
     #[test]
     fn the_listing_marks_the_pick_the_default_and_a_missing_pick() {

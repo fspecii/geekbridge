@@ -20,13 +20,18 @@ pub const SELECTION_FILE: &str = "call-audio.json";
 
 /// Output of a command with a deadline; `None` on any failure.
 pub fn run_text(program: &str, args: &[&str], limit: Duration) -> Option<String> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut cmd = Command::new(program);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        // The service has no console; without this every query would flash a console window.
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn().ok()?;
     let mut out = child.stdout.take()?;
     // Read on a helper thread so a command that never exits cannot hold the caller past `limit`.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -64,7 +69,7 @@ impl Host for SystemHost {
     fn collect(&self, selection: &Selection) -> Setup {
         match std::env::consts::OS {
             "linux" => linux_setup(selection),
-            "windows" => windows_setup(),
+            "windows" => windows_setup_now(),
             "macos" => model::mac_fallback(),
             other => model::unsupported(other),
         }
@@ -151,10 +156,90 @@ fn pnp(class: &str) -> Option<Vec<model::PnpDevice>> {
     .map(|t| model::parse_pnp_json(&t))
 }
 
+/// Read Windows' Bluetooth and audio devices. Starting PowerShell takes seconds, so the two
+/// queries run side by side.
 fn windows_setup() -> Setup {
-    let bt = pnp("Bluetooth");
-    let ep = pnp("AudioEndpoint").unwrap_or_default();
+    let (bt, ep) = std::thread::scope(|s| {
+        let ep = s.spawn(|| pnp("AudioEndpoint"));
+        let bt = pnp("Bluetooth");
+        (bt, ep.join().ok().flatten().unwrap_or_default())
+    });
     model::build_windows(bt.as_deref(), &ep)
+}
+
+/// A value that is reloaded on a helper thread, so a slow load never holds a caller past its wait.
+/// The control connection of `geekbridge-ctl` gives up after four seconds; PowerShell can need more
+/// than that to start, so the first answer may be the "not read yet" one and the next is real.
+pub struct Refreshing<T> {
+    slot: Mutex<(Option<(Instant, T)>, bool)>,
+    changed: std::sync::Condvar,
+    fresh_for: Duration,
+}
+
+impl<T: Clone + Send + 'static> Refreshing<T> {
+    pub fn new(fresh_for: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            slot: Mutex::new((None, false)),
+            changed: std::sync::Condvar::new(),
+            fresh_for,
+        })
+    }
+
+    /// The fresh value, else (after waiting at most `wait` for a reload) the last one, else `None`.
+    pub fn get(
+        self: &Arc<Self>,
+        wait: Duration,
+        load: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let mut g = lock(&self.slot);
+        let fresh = |g: &(Option<(Instant, T)>, bool)| {
+            g.0.as_ref()
+                .filter(|(at, _)| at.elapsed() < self.fresh_for)
+                .map(|(_, v)| v.clone())
+        };
+        if let Some(v) = fresh(&g) {
+            return Some(v);
+        }
+        if !g.1 {
+            g.1 = true;
+            let me = self.clone();
+            let started = std::thread::Builder::new()
+                .name("geekbridge-call-audio-read".into())
+                .spawn(move || {
+                    let v = load();
+                    let mut g = lock(&me.slot);
+                    *g = (Some((Instant::now(), v)), false);
+                    me.changed.notify_all();
+                });
+            if started.is_err() {
+                g.1 = false;
+                return g.0.as_ref().map(|(_, v)| v.clone());
+            }
+        }
+        let end = Instant::now() + wait;
+        while g.1 {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            g = self
+                .changed
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+        fresh(&g).or_else(|| g.0.as_ref().map(|(_, v)| v.clone()))
+    }
+}
+
+/// Windows' own picture of the phone and the headset, read at most every 20 seconds and never
+/// holding the caller for longer than 2.5 seconds.
+pub(crate) fn windows_setup_now() -> Setup {
+    static CACHE: std::sync::OnceLock<Arc<Refreshing<Setup>>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| Refreshing::new(Duration::from_secs(20)))
+        .get(Duration::from_millis(2500), windows_setup)
+        .unwrap_or_else(|| model::build_windows(None, &[]))
 }
 
 // ------------------------------------------------------------------------- the local test
@@ -379,7 +464,14 @@ impl CallAudioService {
         let _g = lock(&self.gate);
         let setup = self.host.collect(&self.selection());
         if !setup.can_test {
-            return Err("call audio cannot be tested on this computer".into());
+            return Err(match setup.platform.as_str() {
+                "windows" => bridge_i18n::tr("callaudio.test.not_here").to_owned(),
+                "macos" => {
+                    "A Mac does not carry the voice of a call; answer here and talk on the phone."
+                        .to_owned()
+                }
+                _ => "call audio cannot be tested on this computer".to_owned(),
+            });
         }
         if matches!(
             lock(&self.test).phase,
@@ -422,6 +514,43 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use bridge_core::call_audio::{StepState, Verdict};
+
+    #[test]
+    fn a_slow_read_never_holds_the_caller_and_the_next_call_gets_the_value() {
+        let r = Refreshing::<u32>::new(Duration::from_secs(60));
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        let first = r.get(Duration::from_millis(100), move || {
+            let _ = go_rx.recv_timeout(Duration::from_secs(5));
+            7
+        });
+        assert_eq!(first, None, "nothing read yet");
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // A second caller while the read runs does not start another one.
+        assert_eq!(r.get(Duration::from_millis(10), || 99), None);
+        go_tx.send(()).unwrap();
+        assert_eq!(r.get(Duration::from_secs(5), || 99), Some(7));
+        // Fresh: served without loading.
+        assert_eq!(r.get(Duration::ZERO, || panic!("must not reload")), Some(7));
+    }
+
+    #[test]
+    fn a_stale_value_is_served_while_a_reload_runs_and_replaced_after() {
+        let r = Refreshing::<u32>::new(Duration::from_millis(300));
+        assert_eq!(r.get(Duration::from_secs(5), || 1), Some(1));
+        std::thread::sleep(Duration::from_millis(400));
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        assert_eq!(
+            r.get(Duration::from_millis(50), move || {
+                let _ = go_rx.recv_timeout(Duration::from_secs(5));
+                2
+            }),
+            Some(1),
+            "the old value while the reload is slow"
+        );
+        go_tx.send(()).unwrap();
+        assert_eq!(r.get(Duration::from_secs(5), || 3), Some(2));
+    }
 
     struct Fake {
         outputs: Vec<Device>,

@@ -46,8 +46,15 @@ pub fn describe(s: &Setup) -> String {
             }
         }
     }
+    if s.platform == "windows" {
+        let _ = writeln!(out, "{}", tr("callaudio.windows.guide"));
+    }
     if s.verdict == Verdict::NoBluetooth {
-        let _ = writeln!(out, "{}", tr("callaudio.buy"));
+        if s.platform == "windows" {
+            let _ = writeln!(out, "{}", tr("callaudio.buy.windows"));
+        } else {
+            let _ = writeln!(out, "{}", tr("callaudio.buy"));
+        }
         let _ = writeln!(out, "{}", bridge_calls::readiness::DOC);
     }
     let name = |list: &[bridge_core::call_audio::Device], id: &Option<String>| {
@@ -168,6 +175,76 @@ mod tests {
         );
         assert!(t.contains("btusb"));
         assert!(t.contains("docs/call-audio-options.md"));
+    }
+
+    #[test]
+    fn windows_checklist_speaks_windows_and_never_linux() {
+        use bridge_core::call_audio::{PnpDevice, build_windows};
+        let dev = |status: &str, name: &str, id: &str| PnpDevice {
+            status: status.into(),
+            name: name.into(),
+            instance_id: id.into(),
+        };
+        let radio = dev(
+            "OK",
+            "Intel Wireless Bluetooth",
+            "USB\\VID_8087&PID_0033\\5&1",
+        );
+        let node = |st: &str| {
+            dev(
+                st,
+                "Pixel 8 Hands-Free AG",
+                "BTHENUM\\{0000111F-0000-1000-8000-00805F9B34FB}_VID&0001004C_PID&0000\\7&2",
+            )
+        };
+        let cases = [
+            (
+                build_windows(Some(&[]), &[]),
+                "No Bluetooth on this computer",
+            ),
+            (
+                build_windows(Some(std::slice::from_ref(&radio)), &[]),
+                "Almost there",
+            ),
+            (
+                build_windows(Some(&[radio.clone(), node("Unknown")]), &[]),
+                "Almost there",
+            ),
+            (build_windows(Some(&[radio, node("OK")]), &[]), "Ready"),
+            (build_windows(None, &[]), "Almost there"),
+        ];
+        for (setup, headline) in cases {
+            let t = describe(&setup);
+            assert!(t.contains(headline), "{headline}: {t}");
+            assert!(t.contains("default communications device"), "{t}");
+            assert!(t.contains("Settings"), "{t}");
+            for linux in [
+                "btusb",
+                "pactl",
+                "wpctl",
+                "bluetoothctl",
+                "systemctl",
+                "PipeWire",
+                "rfkill",
+                "sudo",
+            ] {
+                assert!(!t.contains(linux), "{linux} in: {t}");
+            }
+        }
+        let paired_off = build_windows(
+            Some(&[dev("OK", "Intel Bluetooth", "USB\\VID_8087&PID_0033\\5&1")]),
+            &[],
+        );
+        assert!(describe(&paired_off).contains("add your phone as a Bluetooth device"));
+    }
+
+    #[test]
+    fn the_mac_checklist_says_answer_here_and_talk_on_the_phone() {
+        let t = describe(&bridge_core::call_audio::mac_fallback());
+        assert!(t.contains("Answer here and talk on the phone."), "{t}");
+        for linux in ["btusb", "pactl", "bluetoothctl", "systemctl", "PipeWire"] {
+            assert!(!t.contains(linux), "{linux} in: {t}");
+        }
     }
 
     #[test]

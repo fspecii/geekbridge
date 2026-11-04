@@ -625,9 +625,11 @@ dependencies = [
  "eframe",
  "jpeg-decoder",
  "qrcode",
+ "raw-window-handle",
  "rqrr",
  "tempfile",
  "windows-sys 0.61.2",
+ "winit",
  "zeroize",
 ]
 

@@ -502,6 +502,8 @@ struct OverlayApp {
     test: Option<Instant>,
     placed: bool,
     hidden_sent: bool,
+    /// The native window style has been applied (once, on the first frame).
+    styled: bool,
 }
 
 impl eframe::App for OverlayApp {
@@ -509,7 +511,11 @@ impl eframe::App for OverlayApp {
         crate::memtrim::cap_atlas(raw_input);
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        if !self.styled {
+            self.styled = true;
+            native::never_activate(frame);
+        }
         if let Some(started) = self.test {
             self.place(ctx);
             let pal = theme::current(ctx, AppKind::Calls);
@@ -595,12 +601,15 @@ impl OverlayApp {
         if size.x < 1.0 || size.y < 1.0 {
             return;
         }
-        let (x, y) = geometry::card_position(Monitor {
-            x: 0.0,
-            y: 0.0,
-            width: size.x,
-            height: size.y,
-        });
+        let (x, y) = geometry::card_position_for(
+            std::env::consts::OS,
+            Monitor {
+                x: 0.0,
+                y: 0.0,
+                width: size.x,
+                height: size.y,
+            },
+        );
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x, y)));
         self.placed = true;
     }
@@ -625,9 +634,65 @@ pub fn viewport() -> egui::ViewportBuilder {
         .with_window_type(egui::X11WindowType::Notification)
 }
 
+/// Operating-system details of a card that must not take the keyboard from what the user is
+/// typing. Windows gets the "no activate" extended style; macOS runs the card's process as an
+/// accessory application. Linux relies on the window type and the compositor's rules.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod native {
+    /// `WS_EX_NOACTIVATE`: a click on the card does not make it the foreground window.
+    pub const WS_EX_NOACTIVATE: isize = 0x0800_0000;
+    /// `WS_EX_TOOLWINDOW`: not in the task bar or Alt+Tab.
+    pub const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
+    /// `WS_EX_APPWINDOW`: forces a task bar button; must be off for a card.
+    pub const WS_EX_APPWINDOW: isize = 0x0004_0000;
+
+    /// The extended window style of the card, from the one the window has now.
+    pub fn card_ex_style(current: isize) -> isize {
+        (current | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & !WS_EX_APPWINDOW
+    }
+
+    #[cfg(windows)]
+    pub fn never_activate(frame: &eframe::Frame) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW,
+        };
+        let Ok(handle) = frame.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = h.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+        // SAFETY: `hwnd` is this process's own live top-level window, valid while `frame` is
+        // borrowed; reading and writing its extended style has no other preconditions.
+        unsafe {
+            let now = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, card_ex_style(now));
+        }
+    }
+
+    #[cfg(not(windows))]
+    pub fn never_activate(_frame: &eframe::Frame) {}
+
+    #[cfg(target_os = "macos")]
+    pub fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        Some(Box::new(|builder| {
+            builder.with_activation_policy(ActivationPolicy::Accessory);
+        }))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn event_loop_hook() -> Option<eframe::EventLoopBuilderHook> {
+        None
+    }
+}
+
 pub fn run(theme_choice: ThemeChoice, reveal: Reveal, test: bool) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: viewport(),
+        event_loop_builder: native::event_loop_hook(),
         ..Default::default()
     };
     eframe::run_native(
@@ -647,6 +712,7 @@ pub fn run(theme_choice: ThemeChoice, reveal: Reveal, test: bool) -> eframe::Res
                 test: test.then(Instant::now),
                 placed: false,
                 hidden_sent: false,
+                styled: false,
             }))
         }),
     )
@@ -927,6 +993,17 @@ mod tests {
             });
         }
         assert_eq!(drawn, 3);
+    }
+
+    #[test]
+    fn the_windows_style_is_no_activate_tool_window_and_keeps_the_rest() {
+        let plain = 0x0000_0100; // WS_EX_WINDOWEDGE
+        let s = native::card_ex_style(plain | native::WS_EX_APPWINDOW);
+        assert_ne!(s & native::WS_EX_NOACTIVATE, 0);
+        assert_ne!(s & native::WS_EX_TOOLWINDOW, 0);
+        assert_eq!(s & native::WS_EX_APPWINDOW, 0);
+        assert_ne!(s & plain, 0);
+        assert_eq!(native::card_ex_style(s), s, "idempotent");
     }
 
     #[test]

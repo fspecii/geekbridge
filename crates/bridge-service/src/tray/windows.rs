@@ -182,20 +182,7 @@ fn tray_thread(
 
 fn tip(input: &TrayInput) -> [u16; 128] {
     let (title, body) = input.tooltip();
-    let text = format!("GeekBridge \u{2013} {title}: {body}");
-    let mut out = [0_u16; 128];
-    let mut at = 0;
-    // Whole characters only: a cut must not end in half a surrogate pair.
-    for c in text.chars() {
-        let mut buf = [0_u16; 2];
-        let units = c.encode_utf16(&mut buf);
-        if at + units.len() > 127 {
-            break;
-        }
-        out[at..at + units.len()].copy_from_slice(units);
-        at += units.len();
-    }
-    out
+    super::model::tip_units(&format!("GeekBridge \u{2013} {title}: {body}"))
 }
 
 /// `NIM_ADD` / `NIM_MODIFY` / `NIM_DELETE` for our one icon.

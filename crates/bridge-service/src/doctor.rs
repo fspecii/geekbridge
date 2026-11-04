@@ -408,6 +408,14 @@ pub fn calls_check(c: &CallingStatus) -> Check {
             ),
         );
     }
+    if matches!(c.platform.as_str(), "windows" | "macos") {
+        return check(
+            Level::Ok,
+            "Calls",
+            native_calls_line(&c.platform),
+            call_audio_hint(&c.platform),
+        );
+    }
     let level = if c.backend == "none" || c.read_only {
         Level::Warn
     } else {
@@ -419,6 +427,16 @@ pub fn calls_check(c: &CallingStatus) -> Check {
         crate::diagnose::scrub(&c.verdict),
         call_audio_hint(&c.platform),
     )
+}
+
+/// The `Calls` line on Windows and macOS, where the system (not GeekBridge) owns Bluetooth
+/// hands-free: calls are shown and answered through the phone link either way.
+pub fn native_calls_line(platform: &str) -> String {
+    match platform {
+        "windows" => "calls are shown and answered through the phone link; Windows' own Bluetooth Phone calls carries the voice (Settings > Bluetooth & devices), on the default communications device".into(),
+        "macos" => "calls are shown and answered through the phone link; the voice stays on the phone, so answer here and talk on the phone".into(),
+        other => format!("Bluetooth call audio is not available on {other}"),
+    }
 }
 
 /// What to do for the voice of a call to come through this computer, per operating system. Only

@@ -79,9 +79,27 @@ jobs:
           run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 doctor >"$RUNNER_TEMP/doctor.out" 2>&1 && rc=0 || rc=$?
           echo "--- ctl doctor (exit $rc)"; cat "$RUNNER_TEMP/doctor.out"
           note "doctor exit code $rc (non-zero only reports an environment problem, e.g. firewall; not a build failure)"
+          # Call features: Windows and macOS must answer in their own words and never show Linux-only
+          # tools or errors (pactl, bluetoothctl, PipeWire, systemctl, ...). On Windows the first read of
+          # the Bluetooth devices takes PowerShell a few seconds, so ask once, wait, then ask again.
+          linux_only='pactl|parec|wpctl|bluetoothctl|rfkill|btusb|PipeWire|WirePlumber|D-Bus|systemctl|WAYLAND|sudo '
+          ctl() { run "$rel/geekbridge-ctl$ext" --state-dir "$state" --control-port 18381 "$@"; }
+          ctl calling >/dev/null 2>&1; ctl call-audio >/dev/null 2>&1
+          [[ "$RUNNER_OS" == "Windows" ]] && sleep 12
+          : >"$RUNNER_TEMP/calls.out"
+          for sub in "calling" "call-audio" "call setup" "call audio-devices"; do
+            # shellcheck disable=SC2086
+            ctl $sub >"$RUNNER_TEMP/sub.out" 2>&1 && src=0 || src=$?
+            echo "--- ctl $sub (exit $src)"; cat "$RUNNER_TEMP/sub.out"
+            { echo "### ctl $sub (exit $src)"; cat "$RUNNER_TEMP/sub.out"; } >> "$RUNNER_TEMP/calls.out"
+            if [[ $src != 0 && "$sub" != "call audio-devices" ]]; then note "ctl $sub exited $src"; fail=1; fi
+            if grep -Eiq "$linux_only" "$RUNNER_TEMP/sub.out"; then note "ctl $sub printed Linux-only text"; grep -Ein "$linux_only" "$RUNNER_TEMP/sub.out"; fail=1; fi
+          done
+          if grep -Eq 'pactl|parec|wpctl|bluetoothctl|PipeWire|WirePlumber' "$RUNNER_TEMP/doctor.out"; then note "ctl doctor printed Linux-only call text"; fail=1; fi
           kill "$svc" 2>/dev/null || true
           echo "--- service log"; cat "$RUNNER_TEMP/service.log"
-          { echo "### Smoke ${{ matrix.name }}"; echo '```'; cat "$RUNNER_TEMP/status.out"; echo "doctor exit $rc"; cat "$RUNNER_TEMP/doctor.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          if grep -Eiq 'pactl|parec|wpctl|bluetoothctl|PipeWire|WirePlumber' "$RUNNER_TEMP/service.log"; then note "service log mentions Linux-only call tools"; fail=1; fi
+          { echo "### Smoke ${{ matrix.name }}"; echo '```'; cat "$RUNNER_TEMP/status.out"; echo "doctor exit $rc"; cat "$RUNNER_TEMP/doctor.out"; cat "$RUNNER_TEMP/calls.out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit $fail
       - name: Package
         shell: bash
