@@ -2237,6 +2237,7 @@ async fn trusted_loop(
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
     let (mut call_rx, _call_guard) = calls_link(d, id, &link);
     let (mut data_rx, _data_guard) = data_link(d, id, &link);
+    let (mut answer_rx, _answer_guard) = answer_link(d, id, &link);
     let debug_declared = debug_declared(&link);
     debug_default(d, id, debug_declared).await;
     let (mut debug_rx, _debug_guard) = debug_link(d, id, &link);
@@ -2400,6 +2401,15 @@ async fn trusted_loop(
                     break reason(&e);
                 }
             },
+            Some(answer) = answer_rx.recv() => {
+                let packet = kde::Packet::new(
+                    gate::SHARE_RESULT,
+                    bridge_core::share_result::body(&answer),
+                );
+                if let Err(e) = link.send(&packet).await {
+                    break reason(&e);
+                }
+            },
             Some(out) = debug_rx.recv() => {
                 if let Err(e) = link.send(&kde::Packet::new(&out.kind, out.body)).await {
                     break reason(&e);
@@ -2560,6 +2570,38 @@ fn data_link(
         rx,
         DataLinkGuard(Some((d.clone(), id.to_owned(), generation))),
     )
+}
+
+/// Registers a trusted link for the answers to the phone's shares. Only a phone that declared
+/// `geekbridge.share.result` gets any; any other peer's queue stays empty and closed.
+fn answer_link(
+    d: &Arc<Daemon>,
+    id: &str,
+    link: &kde::TrustedLink,
+) -> (
+    mpsc::Receiver<bridge_core::share_result::ShareResult>,
+    AnswerGuard,
+) {
+    let speaks = gate::negotiated_outgoing(&link.info().peer)
+        .iter()
+        .any(|k| k == gate::SHARE_RESULT);
+    if !speaks {
+        return (mpsc::channel(1).1, AnswerGuard(None));
+    }
+    let (rx, generation) = d.share.answers_up(id);
+    (
+        rx,
+        AnswerGuard(Some((d.clone(), id.to_owned(), generation))),
+    )
+}
+
+struct AnswerGuard(Option<(Arc<Daemon>, String, u64)>);
+impl Drop for AnswerGuard {
+    fn drop(&mut self) {
+        if let Some((d, id, generation)) = self.0.take() {
+            d.share.answers_down(&id, generation);
+        }
+    }
 }
 
 /// A phone that declares the debug packets gets the `debug` consent switched on once. The write

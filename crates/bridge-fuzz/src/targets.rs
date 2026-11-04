@@ -1216,6 +1216,41 @@ fn goodbye_wire(input: &[u8]) {
     }
 }
 
+fn share_result_wire(input: &[u8]) {
+    use bridge_core::share_result as sr;
+    let (_, body) = kind_and_body(input, &[sr::RESULT, "kdeconnect.share.request"]);
+    if let Ok(r) = sr::parse(&body) {
+        oracle(sr::parse(&sr::body(&r)) == Ok(r.clone()), || {
+            "share result does not round-trip".into()
+        });
+        oracle((1..=sr::MAX_ID).contains(&r.subject.id()), || {
+            "share result accepted an id out of range".into()
+        });
+        oracle(r.reason.as_deref().is_none_or(sr::valid_reason), || {
+            "share result kept an unusable reason".into()
+        });
+    }
+    if let Some(id) = sr::share_id(&body) {
+        oracle((1..=sr::MAX_ID).contains(&id), || {
+            "share id out of range".into()
+        });
+    }
+}
+
+fn share_result_seeds() -> Vec<Vec<u8>> {
+    [
+        r#"{"transferId":3,"outcome":"accepted"}"#,
+        r#"{"type":"geekbridge.share.result","body":{"textId":9,"outcome":"link_saved","reason":"kept","x":[1]}}"#,
+        r#"{"transferId":1,"textId":1,"outcome":"declined"}"#,
+        r#"{"transferId":9007199254740993,"outcome":"busy","reason":"A B"}"#,
+        r#"{"type":"kdeconnect.share.request","body":{"text":"hi","geekbridgeShareId":-1}}"#,
+        r#"{"textId":2,"outcome":"saved","reason":"too_many_offers"}"#,
+    ]
+    .iter()
+    .map(|s| s.as_bytes().to_vec())
+    .collect()
+}
+
 fn goodbye_seeds() -> Vec<Vec<u8>> {
     [
         r#"{"reason":"user_disconnect"}"#,
@@ -1686,6 +1721,13 @@ pub static TARGETS: &[Target] = &[
         &["geekbridge.goodbye"],
         &["geekbridge.goodbye"],
         goodbye_seeds
+    ),
+    t!(
+        "share_result",
+        share_result_wire,
+        &["geekbridge.share.result", "kdeconnect.share.request"],
+        &["geekbridge.share"],
+        share_result_seeds
     ),
     t!("doctor_ufw", doctor_ufw, &[], &[], ufw_seeds),
     t!("reconnect", reconnect_book, &[], &[], none),

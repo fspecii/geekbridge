@@ -19,12 +19,13 @@ use bridge_core::share::{
     MAX_SEND_PATH_BYTES, MAX_SEND_TEXT_BYTES, ShareDeviceSettings, ShareStatus, ShareTextKind,
     TransferDirection, TransferInfo, TransferKind, TransferState,
 };
+use bridge_core::share_result::{self, Outcome, ShareResult, Subject};
 use bridge_kde::fsutil;
 use bridge_kde::share::{self as kshare, FileOffer, ShareContent};
 use bridge_kde::{CancelToken, Packet, PayloadContext, TrustedLink};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -32,6 +33,7 @@ use std::{
     },
     time::Duration,
 };
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 pub const SHARE_REQUEST: &str = kshare::SHARE_REQUEST;
@@ -432,6 +434,8 @@ struct Fetch {
 
 struct Transfer {
     fetch: Option<u64>,
+    /// The id the phone gave this share (`geekbridgeShareId`), when it sent one: the answer quotes it.
+    remote_id: Option<u64>,
     info: TransferInfo,
     bytes: Arc<AtomicU64>,
     cancel: CancelToken,
@@ -456,7 +460,13 @@ pub struct ShareManager {
     settings_writer: Mutex<()>,
     sink: Mutex<Option<EventSink>>,
     notifier: Mutex<Arc<dyn Notifier>>,
+    /// Live links of phones that accept `geekbridge.share.result`: device id to (link generation, queue).
+    answers: Mutex<HashMap<String, (u64, mpsc::Sender<ShareResult>)>>,
+    next_answer_generation: AtomicU64,
 }
+
+/// Answers queued for one link; beyond this the oldest news is not worth holding for a phone that cannot keep up.
+const ANSWER_QUEUE: usize = 64;
 
 fn err(code: ErrorCode, message: &str) -> ErrorBody {
     ErrorBody {
@@ -497,6 +507,8 @@ impl ShareManager {
             settings_writer: Mutex::new(()),
             sink: Mutex::new(None),
             notifier: Mutex::new(Arc::new(NoNotifier)),
+            answers: Mutex::new(HashMap::new()),
+            next_answer_generation: AtomicU64::new(1),
         });
         // Nothing in the scratch folder can be in use at start: whatever a crashed run left goes now.
         me.sweep_copy_dir_older_than(Duration::ZERO);
@@ -528,6 +540,60 @@ impl ShareManager {
         if let Some(sink) = sink {
             sink(Some(device), kind);
         }
+    }
+
+    // ------------------------------------------------------------ answers to the phone
+
+    /// A link to a phone that declared `geekbridge.share.result` came up: its answers arrive on the receiver.
+    /// The returned generation identifies this link when it goes down (a newer link for the same phone keeps its own).
+    pub fn answers_up(&self, device_id: &str) -> (mpsc::Receiver<ShareResult>, u64) {
+        let (tx, rx) = mpsc::channel(ANSWER_QUEUE);
+        let generation = self.next_answer_generation.fetch_add(1, Ordering::Relaxed);
+        self.answers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(device_id.to_owned(), (generation, tx));
+        (rx, generation)
+    }
+
+    pub fn answers_down(&self, device_id: &str, generation: u64) {
+        let mut answers = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        if answers
+            .get(device_id)
+            .is_some_and(|(g, _)| *g == generation)
+        {
+            answers.remove(device_id);
+        }
+    }
+
+    /// Tell the phone what became of its share. Silent for a phone that did not send an id or whose link does not
+    /// carry the packet (stock KDE Connect, older GeekBridge phones): they keep waiting as before.
+    fn answer(
+        &self,
+        device_id: &str,
+        remote_id: Option<u64>,
+        subject: fn(u64) -> Subject,
+        outcome: Outcome,
+        reason: &str,
+    ) {
+        let Some(id) = remote_id else { return };
+        let answers = self.answers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, tx)) = answers.get(device_id) {
+            let _ = tx.try_send(ShareResult {
+                subject: subject(id),
+                outcome,
+                reason: Some(reason.to_owned()),
+            });
+        }
+    }
+
+    fn answer_transfer(&self, t: &Transfer, outcome: Outcome, reason: &str) {
+        let subject: fn(u64) -> Subject = if t.info.kind == TransferKind::File {
+            Subject::File
+        } else {
+            Subject::Text
+        };
+        self.answer(&t.info.device_id, t.remote_id, subject, outcome, reason);
     }
 
     // ------------------------------------------------------------ settings
@@ -625,6 +691,7 @@ impl ShareManager {
                 t.info.state = TransferState::Declined;
                 t.offer = None;
                 t.finished = Some(now);
+                self.answer_transfer(t, Outcome::ReceiveOff, "not_allowed");
             }
         }
     }
@@ -688,6 +755,7 @@ impl ShareManager {
                 t.info.code = Some("expired".into());
                 t.offer = None;
                 t.finished = Some(now);
+                self.answer_transfer(t, Outcome::Declined, "expired");
             }
         }
         let keep = self.opts.keep_finished;
@@ -963,9 +1031,22 @@ impl ShareManager {
             return Disposition::NotShare;
         }
         let perm = self.perm(device_id);
+        let remote_id = share_result::share_id(&packet.body);
         let content = match kshare::parse_share(packet, self.opts.max_file_bytes) {
             Ok(c) => c,
-            Err(_) => return Disposition::Rejected,
+            Err(e) => {
+                if matches!(e, kshare::ShareError::TooLarge { .. }) {
+                    // Only a file can be too large to parse; the phone is told which limit it ran into.
+                    self.answer(
+                        device_id,
+                        remote_id,
+                        Subject::File,
+                        Outcome::TooLarge,
+                        "over_limit",
+                    );
+                }
+                return Disposition::Rejected;
+            }
         };
         // A photo this computer asked the phone for is taken without the general `receive` permission: the
         // user's click on "Save" or "Copy" was the consent. Anything else still needs `receive`.
@@ -975,18 +1056,47 @@ impl ShareManager {
             let ShareContent::File(offer) = content else {
                 unreachable!()
             };
-            return self.offer_file(device_id, device_name, ctx, offer, true, Some(fetch));
+            return self.offer_file(
+                device_id,
+                device_name,
+                ctx,
+                offer,
+                (true, Some(fetch)),
+                remote_id,
+            );
         }
         if !perm.receive {
+            let subject: fn(u64) -> Subject = match content {
+                ShareContent::File(_) => Subject::File,
+                _ => Subject::Text,
+            };
+            if !matches!(content, ShareContent::Ignored) {
+                self.answer(
+                    device_id,
+                    remote_id,
+                    subject,
+                    Outcome::ReceiveOff,
+                    "not_allowed",
+                );
+            }
             return Disposition::Rejected;
         }
         match content {
             ShareContent::Ignored => Disposition::Handled,
-            ShareContent::Text(t) => self.store_text(device_id, device_name, TransferKind::Text, t),
-            ShareContent::Url(u) => self.store_text(device_id, device_name, TransferKind::Url, u),
-            ShareContent::File(offer) => {
-                self.offer_file(device_id, device_name, ctx, offer, perm.auto_accept, None)
+            ShareContent::Text(t) => {
+                self.store_text(device_id, device_name, TransferKind::Text, t, remote_id)
             }
+            ShareContent::Url(u) => {
+                self.store_text(device_id, device_name, TransferKind::Url, u, remote_id)
+            }
+            ShareContent::File(offer) => self.offer_file(
+                device_id,
+                device_name,
+                ctx,
+                offer,
+                (perm.auto_accept, None),
+                remote_id,
+            ),
         }
     }
 
@@ -996,13 +1106,28 @@ impl ShareManager {
         device_name: &str,
         kind: TransferKind,
         text: String,
+        remote_id: Option<u64>,
     ) -> Disposition {
         if text.len() > MAX_RECEIVED_TEXT {
+            self.answer(
+                device_id,
+                remote_id,
+                Subject::Text,
+                Outcome::TooLarge,
+                "over_limit",
+            );
             return Disposition::Rejected;
         }
         let id = {
             let mut inner = self.inner();
             if !self.make_room(&mut inner) {
+                self.answer(
+                    device_id,
+                    remote_id,
+                    Subject::Text,
+                    Outcome::Busy,
+                    "too_many_transfers",
+                );
                 return Disposition::Rejected;
             }
             inner.next_id += 1;
@@ -1010,6 +1135,7 @@ impl ShareManager {
             let now = Instant::now();
             inner.items.push(Transfer {
                 fetch: None,
+                remote_id,
                 info: TransferInfo {
                     transfer_id: id,
                     device_id: device_id.to_owned(),
@@ -1034,6 +1160,17 @@ impl ShareManager {
             });
             id
         };
+        self.answer(
+            device_id,
+            remote_id,
+            Subject::Text,
+            if kind == TransferKind::Url {
+                Outcome::LinkSaved
+            } else {
+                Outcome::Saved
+            },
+            "kept",
+        );
         self.emit(device_id, EventKind::ShareReceivedText { transfer_id: id });
         let notifier = self
             .notifier
@@ -1050,13 +1187,20 @@ impl ShareManager {
         device_name: &str,
         ctx: PayloadContext,
         offer: FileOffer,
-        auto_accept: bool,
-        fetch: Option<u64>,
+        (auto_accept, fetch): (bool, Option<u64>),
+        remote_id: Option<u64>,
     ) -> Disposition {
         let (id, name, size) = {
             let mut inner = self.inner();
             if !self.make_room(&mut inner) {
                 Self::release_fetch(&mut inner, fetch, "busy");
+                self.answer(
+                    device_id,
+                    remote_id,
+                    Subject::File,
+                    Outcome::Busy,
+                    "too_many_transfers",
+                );
                 return Disposition::Rejected;
             }
             let offered = |t: &&Transfer| t.info.state == TransferState::Offered;
@@ -1070,6 +1214,13 @@ impl ShareManager {
                     >= MAX_OFFERED_PER_DEVICE
             {
                 Self::release_fetch(&mut inner, fetch, "busy");
+                self.answer(
+                    device_id,
+                    remote_id,
+                    Subject::File,
+                    Outcome::Busy,
+                    "too_many_offers",
+                );
                 return Disposition::Rejected;
             }
             inner.next_id += 1;
@@ -1078,6 +1229,7 @@ impl ShareManager {
             let (name, size) = (offer.name.clone(), offer.size);
             inner.items.push(Transfer {
                 fetch,
+                remote_id,
                 info: TransferInfo {
                     transfer_id: id,
                     device_id: device_id.to_owned(),
@@ -1168,6 +1320,13 @@ impl ShareManager {
                 t.offer = None;
                 t.finished = Some(Instant::now());
                 let device = t.info.device_id.clone();
+                self.answer(
+                    &device,
+                    t.remote_id,
+                    Subject::File,
+                    Outcome::Declined,
+                    "user",
+                );
                 drop(inner);
                 self.emit(
                     &device,
@@ -1190,6 +1349,13 @@ impl ShareManager {
                 .ok_or_else(|| err(ErrorCode::Busy, "the offer is no longer available"))?;
             t.info.state = TransferState::Active;
             crate::tray::poke();
+            self.answer(
+                &t.info.device_id,
+                t.remote_id,
+                Subject::File,
+                Outcome::Accepted,
+                "user",
+            );
             let parts = (
                 offer,
                 ctx,
@@ -1454,6 +1620,7 @@ impl ShareManager {
         let now = Instant::now();
         inner.items.push(Transfer {
             fetch: None,
+            remote_id: None,
             info: TransferInfo {
                 transfer_id: id,
                 device_id: device_id.to_owned(),
@@ -1903,7 +2070,7 @@ mod tests {
         let m = ShareManager::new(ShareOptions::default());
         let text = "x".repeat(kshare::MAX_TEXT_BYTES);
         assert!(matches!(
-            m.store_text("d", "Phone", TransferKind::Text, text),
+            m.store_text("d", "Phone", TransferKind::Text, text, None),
             Disposition::Handled
         ));
     }
@@ -1912,6 +2079,7 @@ mod tests {
         let now = Instant::now();
         Transfer {
             fetch,
+            remote_id: None,
             info: TransferInfo {
                 transfer_id: id,
                 device_id: device.to_owned(),

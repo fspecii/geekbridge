@@ -43,6 +43,7 @@ pub use bridge_core::debug_link::{
 };
 
 pub use bridge_core::goodbye::GOODBYE;
+pub use bridge_core::share_result::RESULT as SHARE_RESULT;
 
 pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
@@ -71,7 +72,7 @@ pub const LOCAL_INCOMING: [&str; 20] = [
     PHOTOS_LIST,
     PHOTOS_THUMB,
 ];
-pub const LOCAL_OUTGOING: [&str; 20] = [
+pub const LOCAL_OUTGOING: [&str; 21] = [
     PING,
     BATTERY_REQUEST,
     NOTIFICATION_REQUEST,
@@ -93,6 +94,8 @@ pub const LOCAL_OUTGOING: [&str; 20] = [
     PHOTOS_REQUEST,
     // GeekBridge-only: said to a GeekBridge phone that declared it, never to a stock peer.
     GOODBYE,
+    // GeekBridge-only: the answer to a share, said to a GeekBridge phone that declared it.
+    SHARE_RESULT,
 ];
 
 /// Packet types the peer may send us: its outgoing list intersected with what we declared.

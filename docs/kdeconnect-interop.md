@@ -111,7 +111,7 @@ but GeekBridge also lists them in its own `incomingCapabilities` / `outgoingCapa
 
 `geekbridge.clipboard.{pull,item,none}`, `geekbridge.calls.{request,state,result}` (the request's `action` includes
 `dial`), `geekbridge.calendar.{request,sync,write,write_result}`, `geekbridge.sms.status`,
-`geekbridge.debug.{log,state,state_request}` (debug-build phones only), `geekbridge.goodbye` (below) and the empty
+`geekbridge.debug.{log,state,state_request}` (debug-build phones only), `geekbridge.goodbye` and `geekbridge.share.result` (both below) and the empty
 marker `geekbridge.heartbeat`, which a GeekBridge phone declares in every identity so the computer knows to send it
 the periodic `kdeconnect.ping`. The heartbeat is a plain ping every 20 s from the computer and from the phone (the phone slows to 60 s while its
 screen is off and nobody is using the link); a
@@ -156,6 +156,42 @@ counted as an ignored packet.
   completeness and not sent today.
 * A stock computer never sends the type; a stock phone is never sent it. Tests: `crates/bridge-service/tests/goodbye.rs`,
   `cross_dial.rs`, `crates/bridge-android/tests/chaos.rs`, `bridge_core::goodbye` unit tests, fuzz target `goodbye`.
+
+### Share result (`geekbridge.share.result`)
+
+GeekBridge-only, computer to phone (`docs/reports/share-result-packet.md`). Without it a computer with receiving off, or
+one whose user taps Decline, never answers the phone's share: the phone waited for a payload connection that never came and
+could not say anything at all about a text. The phone declares the type as an incoming capability; the computer sends it
+only to a phone that did, so a stock peer never receives it. Like every `geekbridge.*` name it is left out of the
+plaintext identity (UDP broadcast, first TCP line) and appears only in the identity inside TLS.
+
+* The phone numbers each share and adds the key `geekbridgeShareId` (a positive integer) to its `kdeconnect.share.request`
+  body, but **only** when the computer declared `geekbridge.share.result` in its secure identity. A stock computer gets a
+  plain share packet. (Stock KDE Connect reads named body keys only; the key is never sent to it.)
+* The computer answers with body `{"transferId": N}` (a file) or `{"textId": N}` (text or link), `"outcome"` and an optional
+  `"reason"` (`[a-z0-9_]{1,32}`):
+
+| outcome | when | reason |
+| --- | --- | --- |
+| `accepted` | the user (or auto-accept) took the file; the computer is about to connect | `user` |
+| `declined` | the user declined, or the offer lapsed unanswered | `user`, `expired` |
+| `receive_off` | receiving from this phone is off (also when the setting is switched off while an offer waits) | `not_allowed` |
+| `too_large` | the file is over the computer's limit | `over_limit` |
+| `busy` | no room: too many offers or transfers | `too_many_offers`, `too_many_transfers` |
+| `saved` | text kept in the computer's share list | `kept` |
+| `link_saved` | link kept in the list; **never** opened or put on the clipboard automatically | `kept` |
+
+* Sent at most once per outcome event; the phone keeps the first answer for a share. A file refused before any byte moved
+  ends its wait at once (shown as "the computer is not set to receive files from this phone (...)"); an `accepted` that is
+  followed by a failure leaves the transfer's own failure text. A text with no answer within 8 s falls back to "sent".
+* The computer ignores a phone's id unless it is a positive integer up to 2^53 - 1; an invalid id is simply no id (the share
+  is treated as before, no answer is sent). A refused share still counts against the link's rejected-packet budget (64).
+* Old computers send nothing: the phone keeps its earlier hint ("waiting for the computer (it may need Share files > Allow
+  this phone ...)") and, for text, "sent. It only shows up if ...".
+* Tests: `crates/bridge-service/tests/share_api.rs` (answers over a real link, no id or no declared type = silence),
+  `stock_peer.rs`, `android_negotiation.rs`, `crates/bridge-android/tests/transport.rs` (ids sent only to a computer that
+  declared the type, refusal ends the wait, unsolicited answers ignored), `bridge_core::share_result` unit tests, fuzz target
+  `share_result`, Kotlin `ShareAnswerTest`, emulator suite `share.sh`.
 
 **Listening port.** The computer's secure identity (inside TLS only; never the plaintext identity line) carries an extra
 body key `geekbridgePort`, the TCP port it accepts connections on. The UDP identity already has `tcpPort`; this lets a

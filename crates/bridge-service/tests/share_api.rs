@@ -32,6 +32,7 @@ use tokio::{
 };
 
 const SHARE: &str = "kdeconnect.share.request";
+const RESULT: &str = bridge_core::share_result::RESULT;
 
 struct Rig {
     _tmp: tempfile::TempDir,
@@ -219,17 +220,37 @@ impl Phone {
     }
 
     fn with_creds(creds: Arc<kde::DeviceCredentials>, caps: &[&str]) -> Arc<Self> {
+        Self::with_caps(creds, caps, caps)
+    }
+
+    /// A GeekBridge phone: it accepts the computer's `geekbridge.share.result` when `answers` is set.
+    fn answered(answers: bool) -> Arc<Self> {
+        let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
+        let out = ["kdeconnect.ping", SHARE];
+        let mut inc = out.to_vec();
+        if answers {
+            inc.push(RESULT);
+        }
+        Self::with_caps(creds, &inc, &out)
+    }
+
+    fn with_caps(
+        creds: Arc<kde::DeviceCredentials>,
+        incoming: &[&str],
+        outgoing: &[&str],
+    ) -> Arc<Self> {
         let mut config = kde::TransportConfig::default();
         config.address_policy.loopback = true;
         config.payload.any_port = true;
         config.payload.accept_timeout = Duration::from_secs(10);
-        let caps: Vec<String> = caps.iter().map(|s| s.to_string()).collect();
+        let incoming: Vec<String> = incoming.iter().map(|s| s.to_string()).collect();
+        let outgoing: Vec<String> = outgoing.iter().map(|s| s.to_string()).collect();
         let endpoint = kde::Endpoint::new(
             creds.clone(),
             "Test Phone",
             kde::DeviceType::Phone,
-            caps.clone(),
-            caps,
+            incoming,
+            outgoing,
             Arc::new(kde::MemoryTrustStore::new()),
             config,
         )
@@ -865,4 +886,260 @@ async fn slow_settings_and_consent_writes_do_not_stall_status() {
     for u in unpairs {
         u.await.unwrap().unwrap();
     }
+}
+
+// ---------------------------------------------------------------- the answer to the phone (geekbridge.share.result)
+
+use bridge_core::share_result::{self, Outcome, ShareResult, Subject};
+
+/// A share packet carrying the phone's own id, as a GeekBridge phone that was told the computer answers.
+fn with_id(mut packet: kde::Packet, id: u64) -> kde::Packet {
+    packet.body.insert(
+        share_result::SHARE_ID_KEY.into(),
+        serde_json::Value::from(id),
+    );
+    packet
+}
+
+async fn file_offer(link: &mut kde::TrustedLink, name: &str, id: Option<u64>) {
+    let ctx = link.payload_context();
+    let listener = ctx.listen().await.unwrap();
+    let mut packet = kshare::file_packet(name, 10, None, listener.port());
+    if let Some(id) = id {
+        packet = with_id(packet, id);
+    }
+    link.send_with_payload(&packet).await.unwrap();
+    // The payload socket is never connected by a refusing computer; keep the listener alive for the test.
+    std::mem::forget(listener);
+}
+
+/// The next answer the phone gets, or None after `wait`.
+async fn next_answer(link: &mut kde::TrustedLink, wait: Duration) -> Option<ShareResult> {
+    timeout(wait, async {
+        loop {
+            match link.recv().await {
+                Ok(kde::LinkEvent::Packet(p)) if p.kind == RESULT => {
+                    return Some(share_result::parse(&p.body).expect("a well-formed answer"));
+                }
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn answer(subject: Subject, outcome: Outcome) -> (Subject, Outcome) {
+    (subject, outcome)
+}
+
+async fn expect(link: &mut kde::TrustedLink, subject: Subject, outcome: Outcome) -> ShareResult {
+    let r = next_answer(link, Duration::from_secs(8))
+        .await
+        .unwrap_or_else(|| panic!("no answer for {subject:?}"));
+    assert_eq!(
+        answer(r.subject, r.outcome),
+        answer(subject, outcome),
+        "{r:?}"
+    );
+    r
+}
+
+async fn allow(rig: &Rig, phone: &Arc<Phone>, auto: bool) {
+    rig.ok(Request::ShareSettings {
+        device_id: phone.id(),
+        receive: Some(true),
+        auto_accept: auto.then_some(true),
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_computer_with_receive_off_tells_the_phone_for_files_text_and_links() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    file_offer(&mut link, "a.bin", Some(5)).await;
+    let r = expect(&mut link, Subject::File(5), Outcome::ReceiveOff).await;
+    assert_eq!(r.reason.as_deref(), Some("not_allowed"));
+    link.send(&with_id(kshare::text_packet("hi"), 6))
+        .await
+        .unwrap();
+    expect(&mut link, Subject::Text(6), Outcome::ReceiveOff).await;
+    link.send(&with_id(kshare::url_packet("https://example.com/"), 7))
+        .await
+        .unwrap();
+    expect(&mut link, Subject::Text(7), Outcome::ReceiveOff).await;
+    assert!(rig.share().await.transfers.is_empty());
+}
+
+#[tokio::test]
+async fn accept_decline_and_expiry_are_each_answered_once() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    allow(&rig, &phone, false).await;
+
+    file_offer(&mut link, "yes.bin", Some(1)).await;
+    let t = rig
+        .wait_transfer("offer", |t| {
+            t.name == "yes.bin" && t.state == TransferState::Offered
+        })
+        .await;
+    rig.ok(Request::ShareDecide {
+        transfer_id: t.transfer_id,
+        accept: true,
+    })
+    .await;
+    expect(&mut link, Subject::File(1), Outcome::Accepted).await;
+
+    file_offer(&mut link, "no.bin", Some(2)).await;
+    let t = rig
+        .wait_transfer("offer", |t| {
+            t.name == "no.bin" && t.state == TransferState::Offered
+        })
+        .await;
+    rig.ok(Request::ShareDecide {
+        transfer_id: t.transfer_id,
+        accept: false,
+    })
+    .await;
+    let r = expect(&mut link, Subject::File(2), Outcome::Declined).await;
+    assert_eq!(r.reason.as_deref(), Some("user"));
+
+    // Nobody answers: the offer lapses (3 s in this rig) and the phone is told, not left to time out.
+    file_offer(&mut link, "late.bin", Some(3)).await;
+    let r = expect(&mut link, Subject::File(3), Outcome::Declined).await;
+    assert_eq!(r.reason.as_deref(), Some("expired"));
+    // Nothing more for any of them.
+    assert!(
+        next_answer(&mut link, Duration::from_millis(500))
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn auto_accept_answers_accepted_and_switching_receive_off_declines_waiting_offers() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    allow(&rig, &phone, false).await;
+    file_offer(&mut link, "wait.bin", Some(10)).await;
+    rig.wait_transfer("offer", |t| t.state == TransferState::Offered)
+        .await;
+    rig.ok(Request::ShareSettings {
+        device_id: phone.id(),
+        receive: Some(false),
+        auto_accept: None,
+    })
+    .await;
+    expect(&mut link, Subject::File(10), Outcome::ReceiveOff).await;
+    allow(&rig, &phone, true).await;
+    file_offer(&mut link, "auto.bin", Some(11)).await;
+    expect(&mut link, Subject::File(11), Outcome::Accepted).await;
+}
+
+#[tokio::test]
+async fn text_and_links_are_acknowledged_as_kept_never_as_opened() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    allow(&rig, &phone, false).await;
+    link.send(&with_id(kshare::text_packet("hello"), 20))
+        .await
+        .unwrap();
+    expect(&mut link, Subject::Text(20), Outcome::Saved).await;
+    link.send(&with_id(kshare::url_packet("https://example.com/x"), 21))
+        .await
+        .unwrap();
+    expect(&mut link, Subject::Text(21), Outcome::LinkSaved).await;
+}
+
+#[tokio::test]
+async fn an_oversized_file_and_a_full_queue_are_answered_with_the_reason() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    allow(&rig, &phone, false).await;
+    let huge = kshare::file_packet("huge.bin", 9 << 30, None, 40_000);
+    link.send_with_payload(&with_id(huge, 30)).await.unwrap();
+    expect(&mut link, Subject::File(30), Outcome::TooLarge).await;
+    for i in 0..3 {
+        file_offer(&mut link, &format!("q{i}.bin"), Some(40 + i)).await;
+    }
+    rig.wait_transfer("three offers", |t| t.name == "q2.bin")
+        .await;
+    file_offer(&mut link, "q3.bin", Some(50)).await;
+    let r = expect(&mut link, Subject::File(50), Outcome::Busy).await;
+    assert_eq!(r.reason.as_deref(), Some("too_many_offers"));
+}
+
+#[tokio::test]
+async fn no_id_or_no_declared_capability_means_no_answer() {
+    // A phone that sends no id (stock KDE Connect, an older GeekBridge build) and a phone that sends an id but never
+    // declared the packet: both keep today's behaviour and are never sent `geekbridge.share.result`.
+    for (declares, sends_id) in [(true, false), (false, true), (false, false)] {
+        let rig = Rig::start().await;
+        let phone = Phone::answered(declares);
+        let mut link = rig.pair(&phone).await;
+        file_offer(&mut link, "a.bin", sends_id.then_some(5)).await;
+        link.send(&if sends_id {
+            with_id(kshare::text_packet("x"), 6)
+        } else {
+            kshare::text_packet("x")
+        })
+        .await
+        .unwrap();
+        assert!(
+            next_answer(&mut link, Duration::from_millis(700))
+                .await
+                .is_none(),
+            "declares={declares} sends_id={sends_id}"
+        );
+        allow(&rig, &phone, false).await;
+        link.send(&if sends_id {
+            with_id(kshare::text_packet("y"), 7)
+        } else {
+            kshare::text_packet("y")
+        })
+        .await
+        .unwrap();
+        rig.wait_transfer("text kept", |t| t.kind == TransferKind::Text)
+            .await;
+        assert!(
+            next_answer(&mut link, Duration::from_millis(500))
+                .await
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_hostile_id_is_treated_as_no_id() {
+    let rig = Rig::start().await;
+    let phone = Phone::answered(true);
+    let mut link = rig.pair(&phone).await;
+    allow(&rig, &phone, false).await;
+    for bad in [
+        serde_json::json!(0),
+        serde_json::json!(-4),
+        serde_json::json!("9"),
+        serde_json::json!(1.5),
+        serde_json::json!([1]),
+        serde_json::json!(u64::MAX),
+    ] {
+        let mut p = kshare::text_packet("z");
+        p.body.insert(share_result::SHARE_ID_KEY.into(), bad);
+        link.send(&p).await.unwrap();
+    }
+    rig.wait_transfer("kept", |t| t.kind == TransferKind::Text)
+        .await;
+    assert!(
+        next_answer(&mut link, Duration::from_millis(500))
+            .await
+            .is_none()
+    );
 }

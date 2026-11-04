@@ -32,6 +32,21 @@ data class Transfer(
     val text: String?,
 )
 
+/** What the computer says became of a share (`geekbridge.share.result`, docs/kdeconnect-interop.md). */
+enum class ShareOutcome { Accepted, Declined, ReceiveOff, TooLarge, Busy, Saved, LinkSaved;
+    /** An answer that ends the share without the file moving. */
+    val refuses: Boolean get() = this == Declined || this == ReceiveOff || this == TooLarge || this == Busy
+}
+
+/** One entry of `transport_status.share_results`. [id] is the transfer id of a file, or the text id of a text or link. */
+data class ShareAnswer(
+    val id: Long,
+    val isText: Boolean,
+    val connectionId: Long,
+    val outcome: ShareOutcome,
+    val reason: String?,
+)
+
 object ShareLimits {
     const val MAX_FILES = 50
     const val MAX_TEXT_BYTES = 48 * 1024
@@ -83,6 +98,34 @@ object ShareProtocol {
     private fun nonNegative(o: JSONObject, key: String): Long? =
         (o.opt(key) as? Number)?.toLong()?.takeIf { it >= 0 }
 
+    private fun outcome(s: String?): ShareOutcome? = when (s) {
+        "accepted" -> ShareOutcome.Accepted
+        "declined" -> ShareOutcome.Declined
+        "receive_off" -> ShareOutcome.ReceiveOff
+        "too_large" -> ShareOutcome.TooLarge
+        "busy" -> ShareOutcome.Busy
+        "saved" -> ShareOutcome.Saved
+        "link_saved" -> ShareOutcome.LinkSaved
+        else -> null
+    }
+
+    /** Parses `share_results`; an entry that is not exactly understood (or pairs a file with a text-only outcome) is dropped. */
+    fun parseAnswers(arr: JSONArray?): List<ShareAnswer> {
+        if (arr == null) return emptyList()
+        val out = ArrayList<ShareAnswer>()
+        for (i in 0 until minOf(arr.length(), ShareLimits.MAX_TRANSFERS)) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = nonNegative(o, "id")?.takeIf { it > 0 } ?: continue
+            val conn = nonNegative(o, "connection_id") ?: continue
+            val isText = when (o.opt("kind") as? String) { "file" -> false; "text" -> true; else -> continue }
+            val outcome = outcome(o.opt("outcome") as? String) ?: continue
+            val savedOutcome = outcome == ShareOutcome.Saved || outcome == ShareOutcome.LinkSaved
+            if (savedOutcome && !isText || outcome == ShareOutcome.Accepted && isText) continue
+            out += ShareAnswer(id, isText, conn, outcome, (o.opt("reason") as? String)?.takeIf { Regex("[a-z0-9_]{1,32}").matches(it) })
+        }
+        return out
+    }
+
     /** Parses `transfers`; entries that are not exactly understood are dropped, never guessed at. */
     fun parseTransfers(arr: JSONArray?): List<Transfer> {
         if (arr == null) return emptyList()
@@ -114,6 +157,50 @@ object ShareProtocol {
         }
         return out
     }
+}
+
+/** The computer's answer, in plain words. Old computers send none; the screen then keeps its older hints. */
+object ShareAnswerText {
+    /** How long a text waits for the answer before the screen falls back to "sent" (the computer may be old or busy). */
+    const val TEXT_WAIT_MS = 8_000L
+
+    fun phrase(a: ShareAnswer, s: Strings): String = when (a.outcome) {
+        ShareOutcome.Accepted -> s.get(R.string.share_answer_accepted)
+        ShareOutcome.Declined -> s.get(if (a.reason == "expired") R.string.share_answer_expired else R.string.share_answer_declined)
+        ShareOutcome.ReceiveOff -> s.get(if (a.isText) R.string.share_answer_receive_off_text else R.string.share_answer_receive_off)
+        ShareOutcome.TooLarge -> s.get(R.string.share_answer_too_large)
+        ShareOutcome.Busy -> s.get(R.string.share_answer_busy)
+        ShareOutcome.Saved -> s.get(R.string.share_answer_saved)
+        ShareOutcome.LinkSaved -> s.get(R.string.share_answer_link_saved)
+    }
+
+    fun tone(a: ShareAnswer): Tone = when (a.outcome) {
+        ShareOutcome.Saved, ShareOutcome.LinkSaved -> Tone.Ok
+        ShareOutcome.Accepted -> Tone.Normal
+        else -> Tone.Warn
+    }
+
+    /**
+     * The line for one item of the share session, or null when the older wording applies. [transfer] is the file's
+     * entry in the snapshot; [answer] the computer's answer if one arrived; [waitedMs] how long a text has waited.
+     */
+    fun line(label: String, isText: Boolean, transfer: Transfer?, answer: ShareAnswer?, handedOver: Boolean, resultExpected: Boolean, waitedMs: Long, s: Strings): Pair<String, Tone>? {
+        if (answer != null) {
+            // Once bytes move the file's own progress is the better news; only a refusal or a bare "accepted" speaks here.
+            val moving = transfer != null && (transfer.state == TransferState.Active || transfer.state == TransferState.Done)
+            if (!isText && moving) return null
+            if (!isText && transfer != null && answer.outcome == ShareOutcome.Accepted && transfer.state.finished) return null
+            return s.get(R.string.share_line, label, phrase(answer, s)) to tone(answer)
+        }
+        if (isText && handedOver && resultExpected && waitedMs <= TEXT_WAIT_MS) {
+            return s.get(R.string.share_line, label, s.get(R.string.share_answer_waiting)) to Tone.Muted
+        }
+        return null
+    }
+
+    /** Keep the session (and the link) open a moment for a text whose answer is still on its way. */
+    fun textStillWaiting(resultExpected: Boolean, answered: Boolean, waitedMs: Long): Boolean =
+        resultExpected && !answered && waitedMs <= TEXT_WAIT_MS
 }
 
 object ShareSessionLogic {

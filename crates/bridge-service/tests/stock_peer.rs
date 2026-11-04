@@ -284,3 +284,25 @@ async fn packets_we_never_declared_are_dropped_unread_and_the_link_survives() {
     // Only one event for the whole burst: the user is told once, not once per packet.
     assert_eq!(all.matches("packet_rejected").count(), 1);
 }
+
+#[tokio::test]
+async fn a_stock_phones_refused_share_is_met_with_silence_never_a_geekbridge_answer() {
+    let rig = Rig::start().await;
+    let phone = stock_phone();
+    let mut phone_link = pair_phone(&rig, &phone).await;
+    // Receive is off (the default): a text, a link and a file offer are all refused. Even if a stock peer's share
+    // carried the GeekBridge id key, no `geekbridge.share.result` is sent: it never declared the packet.
+    for mut p in [
+        bridge_kde::share::text_packet("hello"),
+        bridge_kde::share::url_packet("https://example.com/"),
+    ] {
+        p.body
+            .insert(bridge_core::share_result::SHARE_ID_KEY.into(), json!(3));
+        phone_link.send(&p).await.unwrap();
+    }
+    let seen = quiet(&mut phone_link).await;
+    assert!(
+        seen.iter().all(|k| !k.starts_with("geekbridge.")),
+        "stock phone received {seen:?}"
+    );
+}

@@ -212,7 +212,13 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 ### Files, links and text
 
 * Travels: stock `kdeconnect.share.request`; bytes on a payload socket pinned to the paired certificate; SHA-256 checked
-  ([code] `crates/bridge-service/src/share.rs` module comment).
+  ([code] `crates/bridge-service/src/share.rs` module comment). Between two GeekBridge devices the phone also adds a
+  per-share number to its share packet and the computer answers with `geekbridge.share.result`: only the number, one of
+  seven fixed outcomes (accepted, declined, receive off, too large, busy, saved, link saved) and a fixed reason code. No
+  file name, text or link content is in the answer. It goes inside the paired TLS link only to a phone that declared it
+  (never to stock KDE Connect), and its capability name is kept out of the plaintext identity like every `geekbridge.*`
+  name. The phone keeps the answers in memory (at most 32); the computer keeps nothing extra ([code]
+  `crates/bridge-core/src/share_result.rs`).
 * Stored: received files go to `~/Downloads/GeekBridge` on the computer and `Download/GeekBridge` (through MediaStore)
   on the phone. This is the one thing the product keeps because you asked it to. Names are reduced to one safe component
   and an existing file is never overwritten. Text and links are held for you; never opened and never put on the

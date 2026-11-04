@@ -24,6 +24,7 @@ pub mod photos_link;
 pub mod photos_view;
 pub mod report;
 pub mod share;
+pub mod share_result;
 pub mod statefile;
 pub mod whats_new;
 pub mod why_disconnected;

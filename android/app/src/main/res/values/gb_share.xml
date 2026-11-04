@@ -36,6 +36,16 @@
     <string name="share_fail_io">interrupted; the computer stopped it or the file could not be read</string>
     <string name="share_fail_no_port">the computer could not be reached for the transfer</string>
     <string name="share_fail_busy">the computer is busy with other transfers</string>
+    <string name="share_answer_accepted">the computer accepted it</string>
+    <string name="share_answer_declined">the computer declined it</string>
+    <string name="share_answer_expired">the computer did not answer in time</string>
+    <string name="share_answer_receive_off">the computer is not set to receive files from this phone (on the computer: Share files > Allow this phone to send me files)</string>
+    <string name="share_answer_receive_off_text">the computer is not set to receive text and links from this phone (on the computer: Share files > Allow this phone to send me files, links and text)</string>
+    <string name="share_answer_too_large">the computer refused it: too large</string>
+    <string name="share_answer_busy">the computer is busy with other transfers; try again in a moment</string>
+    <string name="share_answer_saved">received by the computer (shown there, nothing is opened)</string>
+    <string name="share_answer_link_saved">received by the computer as a link (shown there, not opened)</string>
+    <string name="share_answer_waiting">sent, waiting for the computer\'s answer…</string>
     <string name="share_link_stopped_done">Link stopped: the transfers finished and the app is in the background.</string>
     <string name="share_err_finish_saving">Could not finish saving %1$s.</string>
     <string name="share_failed_named">%1$s: %2$s</string>

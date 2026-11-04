@@ -155,3 +155,33 @@ fn stock_android_is_never_offered_recent_photos_and_cannot_use_them() {
     // The stock phone's negotiated sets are exactly what they were before the feature existed.
     assert!(!inc.iter().chain(&out).any(|k| k.contains("photos")));
 }
+
+#[test]
+fn the_share_result_is_offered_only_to_a_phone_that_declared_it() {
+    let stock = stock_android();
+    assert!(
+        !gate::negotiated_outgoing(&stock)
+            .iter()
+            .any(|k| k == gate::SHARE_RESULT)
+    );
+    // A GeekBridge phone lists it as incoming; the computer never lists it as something it accepts.
+    let mut phone = stock;
+    phone
+        .incoming_capabilities
+        .push(gate::SHARE_RESULT.to_owned());
+    assert!(
+        gate::negotiated_outgoing(&phone)
+            .iter()
+            .any(|k| k == gate::SHARE_RESULT)
+    );
+    assert!(!gate::LOCAL_INCOMING.contains(&gate::SHARE_RESULT));
+    // A peer cannot send it to us: it is not in the negotiated incoming set and is rejected.
+    phone
+        .outgoing_capabilities
+        .push(gate::SHARE_RESULT.to_owned());
+    let neg = gate::negotiated_incoming(&phone);
+    assert_eq!(
+        gate::classify_incoming(gate::SHARE_RESULT, &neg),
+        Incoming::Reject
+    );
+}

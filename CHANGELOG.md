@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Added
+- The computer now tells a GeekBridge phone what became of its share (`geekbridge.share.result`, GeekBridge-only, never sent
+  to stock KDE Connect, kept out of the plaintext identity): accepted, declined (or lapsed), receiving off, too large, busy,
+  and for text and links saved (a link is kept, never opened). The Share screen says so in plain words and stops waiting at
+  once on a refusal; an older computer keeps today's hint. See docs/reports/share-result-packet.md.
+
 ### Changed
 - The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile
   data"): the core binds its outgoing connections and the announcement socket to the Wi-Fi IPv4 address, with a fallback

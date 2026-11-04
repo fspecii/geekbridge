@@ -189,6 +189,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "share_result"
+path = "fuzz_targets/share_result.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "debug_link"
 path = "fuzz_targets/debug_link.rs"
 test = false

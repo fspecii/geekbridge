@@ -55,7 +55,7 @@ its `ParcelFileDescriptor` itself (immediately after the call is fine). An inval
 | action | fields | result |
 | --- | --- | --- |
 | `share_send_file` | `connection_id` (u64), `fd` (read, ≥ 0), `name` (display name, ≤ 255 chars; sanitised by the peer too), `size` (u64 ≥ 1, bytes; a provider that cannot report a size cannot be sent), optional `last_modified_ms` (u64) | `{transfer_id}` |
-| `share_send_text` | `connection_id`, `kind` (`"text"` \| `"url"`), `text` (≤ 48 KiB; url ≤ 4 KiB) | `{queued:true}` |
+| `share_send_text` | `connection_id`, `kind` (`"text"` \| `"url"`), `text` (≤ 48 KiB; url ≤ 4 KiB) | `{queued:true, text_id, result_expected}` (`result_expected`: the computer declared `geekbridge.share.result`, so an answer will come) |
 | `share_accept` | `transfer_id`, `fd` (a descriptor **opened for writing**, e.g. a pending MediaStore row) | `{accepted:true}` |
 | `share_decline` | `transfer_id` | `{declined:true}` |
 | `share_cancel` | `transfer_id` (incoming or outgoing, any live state) | `{cancelled:true}` |
@@ -79,6 +79,22 @@ Errors (fixed messages): `not_running`, `unknown_connection`, `not_trusted`, `un
   "text": "…"                       // text/url only, state "done" (= received); ≤ 16 KiB, untrusted
 }
 ```
+
+`transport_status` also gains `share_results` (≤ 32, oldest first): what a GeekBridge computer said became of a share
+(`geekbridge.share.result`, docs/kdeconnect-interop.md). Absent entries mean the computer is older or silent; the phone then
+keeps its earlier wording.
+
+```jsonc
+{ "id": 5,                         // transfer_id of an outgoing file, or the text_id returned by share_send_text
+  "connection_id": 2, "kind": "file" | "text",
+  "outcome": "accepted" | "declined" | "receive_off" | "too_large" | "busy" | "saved" | "link_saved",
+  "reason": "not_allowed" }         // optional, [a-z0-9_]{1,32}
+```
+
+A refusal (`declined`, `receive_off`, `too_large`, `busy`) of a file that has not started moving ends the wait at once: the
+transfer becomes `declined` with `code` = the outcome (`receive_off`, `too_large`, `busy`, or `declined`) instead of
+waiting for the payload socket to time out. The first answer to a share stands; answers about anything this phone did not
+share on that connection are ignored (counted as ignored packets).
 
 Lifecycle: an incoming file arrives as `offered` and is never touched until Kotlin calls `share_accept` with a
 writable descriptor (or `share_decline`; unanswered offers expire after 5 minutes). Incoming `text`/`url` appear

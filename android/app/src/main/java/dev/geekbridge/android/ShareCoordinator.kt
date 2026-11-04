@@ -29,6 +29,11 @@ class ShareItem(val label: String) {
     /** A text or link the core handed to the connection: the computer sends no answer, so this is all that is known. */
     var handedOver = false
 
+    /** The number the computer's answer quotes for a text or link; the answer says what became of it. */
+    var textId: Long? = null
+    var resultExpected = false
+    var handedAtMs = 0L
+
     /** The file descriptor opened up front; null for text items. */
     var source: EarlyOpen<OpenedShare>? = null
 }
@@ -259,7 +264,13 @@ class ShareCoordinator private constructor(app: Context) {
         items = (if (joining) items else emptyList()) + item
         controller.raw(ShareProtocol.sendText(connectionId, kind, text)) { o ->
             item.inFlight = false
-            if (o !is CoreOutcome.Ok) item.error = describe(o) else item.handedOver = true
+            if (o !is CoreOutcome.Ok) item.error = describe(o) else {
+                item.handedOver = true
+                val r = o.result as? JSONObject
+                item.textId = r?.optLong("text_id", -1)?.takeIf { it > 0 }
+                item.resultExpected = item.textId != null && r?.optBoolean("result_expected", false) == true
+                item.handedAtMs = android.os.SystemClock.elapsedRealtime()
+            }
             endIfDone()
             onChange()
         }
@@ -357,7 +368,10 @@ class ShareCoordinator private constructor(app: Context) {
         val ts = controller.snapshot?.transfers.orEmpty()
         val now = android.os.SystemClock.elapsedRealtime()
         val open = items.any { i -> ShareSessionLogic.itemOpen(i.transferId, ts.firstOrNull { it.id == i.transferId }, i.seen, now - i.startedAtMs) }
-        if (open) return
+        // A text or link is done the moment it is handed over, but a computer that answers should be heard first.
+        val answers = controller.snapshot?.shareAnswers.orEmpty()
+        val awaiting = items.any { i -> i.handedOver && ShareAnswerText.textStillWaiting(i.resultExpected, answers.any { it.isText && it.id == i.textId }, now - i.handedAtMs) }
+        if (open || awaiting) return
         sessionActive = false
         AppState.sharing = false
         LinkService.sync(ctx)
@@ -369,6 +383,11 @@ class ShareCoordinator private constructor(app: Context) {
     fun itemLine(i: ShareItem): Pair<String, Tone> {
         i.error?.let { return ctx.getString(R.string.share_item_error, i.label, it) to Tone.Bad }
         val t = i.transferId?.let { id -> controller.snapshot?.transfers?.firstOrNull { it.id == id } }
+        // The computer's own answer, when it sends one (an older computer does not: the wording below stays as it was).
+        val isText = i.textId != null
+        val answer = controller.snapshot?.shareAnswers?.firstOrNull { a -> if (isText) a.isText && a.id == i.textId else !a.isText && a.id == i.transferId }
+        val waited = if (i.handedAtMs == 0L) 0L else android.os.SystemClock.elapsedRealtime() - i.handedAtMs
+        ShareAnswerText.line(i.label, isText, t, answer, i.handedOver, i.resultExpected, waited, ctx.strings)?.let { return it }
         if (t != null) {
             val tone = when (t.state) {
                 TransferState.Done -> Tone.Ok

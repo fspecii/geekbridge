@@ -152,6 +152,8 @@ struct ConnEntry {
     peer_ip: IpAddr,
     /// The computer declared it accepts `geekbridge.debug.log` (see `data::Feature::Debug`).
     peer_debug: bool,
+    /// The computer declared it sends `geekbridge.share.result` (it answers shares; see `share_result`).
+    peer_answers_shares: bool,
     /// What the computer declared it accepts. A packet type outside this list is never sent to it: a stock
     /// KDE Connect computer would at best ignore it, and it must not receive a caller number or a calendar
     /// it cannot use.
@@ -722,6 +724,11 @@ impl Core {
                     .incoming_capabilities
                     .iter()
                     .any(|c| c == bridge_core::debug_link::LOG),
+                peer_answers_shares: info
+                    .peer
+                    .outgoing_capabilities
+                    .iter()
+                    .any(|c| c == bridge_core::share_result::RESULT),
                 peer_accepts: info.peer.incoming_capabilities.clone(),
                 ctl,
                 close,
@@ -930,6 +937,7 @@ impl Core {
         let discovered = st.discovered.clone();
         let last_event_seq = st.next_seq;
         let transfers = self.transfers_json();
+        let share_results = self.share_results_json();
         let counters = json!({
             "inbound_dropped": st.counters.inbound_dropped,
             "inbound_failed": st.counters.inbound_failed,
@@ -980,6 +988,7 @@ impl Core {
             "paired_error": paired.is_err(),
             "events": events,
             "transfers": transfers,
+            "share_results": share_results,
             "last_event_seq": last_event_seq,
             "counters": counters,
         })
@@ -1238,6 +1247,13 @@ async fn run_trusted(
         &link.info().peer.incoming_capabilities,
         &link.info().peer.outgoing_capabilities,
     );
+    // Only a computer that declared the answer packet is believed when it sends one, and only it is given our ids.
+    let answers_shares = link
+        .info()
+        .peer
+        .outgoing_capabilities
+        .iter()
+        .any(|c| c == bridge_core::share_result::RESULT);
     let mut beat = Heartbeat::new(std::time::Instant::now());
     let mut tick = interval_at(Instant::now() + HEARTBEAT_EVERY, HEARTBEAT_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1259,12 +1275,12 @@ async fn run_trusted(
                     break None;
                 }
                 Some(Ctl::SendFile(job)) => {
-                    if !share::start_send(&core, &mut link, *job).await {
+                    if !share::start_send(&core, &mut link, *job, answers_shares).await {
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
                 Some(Ctl::SendText(job)) => {
-                    if !share::send_text(&mut link, job).await {
+                    if !share::send_text(&mut link, job, answers_shares).await {
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
@@ -1297,7 +1313,9 @@ async fn run_trusted(
                             break Some(core.peer_goodbye(id, why));
                         }
                     }
-                    let acted = if p.kind == SHARE_REQUEST || p.kind == SHARE_REQUEST_UPDATE {
+                    let acted = if bridge_core::share_result::is_result_kind(&p.kind) {
+                        answers_shares && core.incoming_share_result(id, &p)
+                    } else if p.kind == SHARE_REQUEST || p.kind == SHARE_REQUEST_UPDATE {
                         core.incoming_share(id, link.payload_context(), &p)
                     } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
                         core.incoming_calls(id, &p)

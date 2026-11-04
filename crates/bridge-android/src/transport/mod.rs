@@ -972,6 +972,8 @@ fn capabilities(
     outgoing.push(bridge_core::heartbeat::MARKER.to_owned());
     // The computer may tell us it is hanging up on purpose (`goodbye`); only GeekBridge computers send it.
     incoming.push(bridge_core::goodbye::GOODBYE.to_owned());
+    // The computer may say what became of a share (`share_result`); only GeekBridge computers send it.
+    incoming.push(bridge_core::share_result::RESULT.to_owned());
     if clipboard {
         incoming.extend(engine::clipboard_incoming_types());
         outgoing.extend(engine::clipboard_outgoing_types());

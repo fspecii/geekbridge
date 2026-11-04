@@ -32,7 +32,9 @@
 #   cancel_desktop  `geekbridge-ctl share cancel` mid-transfer: the phone says so in words
 #   offline         the computer is off when sharing: the Share screen says so; it sends when the computer is back
 #   link_lost       the computer vanishes mid-transfer: failure in words, then a retry works
-#   receive_off     the computer has "receive" off: nothing is stored; what the phone says
+#   receive_off     the computer has "receive" off: nothing is stored; the phone says so in words (geekbridge.share.result)
+#   answer_declined the user declines the phone's file on the computer: the phone says "the computer declined it" at once
+#   answer_saved    a text and a link are kept by the computer: the phone says "received ... not opened" (and not "waiting")
 #   d2p_accept      a computer file offered to the phone: Accept -> sha256 equal; offered again -> unique name
 #   d2p_decline     Decline -> nothing saved; cancel by the computer mid-transfer
 #   d2p_link        a link and a text from the computer: the phone offers Open / Copy
@@ -619,20 +621,57 @@ step_receive_off() {
   sleep 12
   local sc; sc="$(share_screen 1)"; local stl; stl="$(status_lines)"
   local rows1; rows1="$(tx_count)"
-  local hint=0; grep -qiE "allow|permission|turned off|not accepting|refus|declin|not receiving|Share files" <<<"$stl" && hint=1
+  local hint=0; grep -qF "is not set to receive files from this phone" <<<"$stl" && hint=1
   sender_text "text to a computer that is not receiving"
   sleep 6
   local sc2; sc2="$(share_screen 1)"; local stl2; stl2="$(status_lines)"
   local texts; texts="$(ctl share status | grep -cF 'text to a computer that is not receiving')"
-  local hint2=0; grep -qiE "allow|permission|turned off|not accepting|refus|declin|not receiving|Share files" <<<"$stl2" && hint2=1
+  local hint2=0; grep -qF "is not set to receive text and links from this phone" <<<"$stl2" && hint2=1
+  # The file's wait ended with the answer, not after the two minute payload timeout.
+  local waiting=0; grep -qF "waiting for the computer" <<<"$stl" && waiting=1
+  ((waiting)) && hint=0
   if [[ "$rows1" == "$rows0" && -z "$(saved_files)" && "$texts" == 0 ]]; then
-    if ((hint)) && ((hint2)); then rec share_receive_off PASS "receive off: nothing stored; the phone tells why for the file ($stl) and for the text ($stl2)"
+    if ((hint)) && ((hint2)); then rec share_receive_off PASS "receive off: nothing stored; the phone tells why in words, right away, for the file ($stl) and for the text ($stl2)"
     else rec share_receive_off FAIL "nothing stored (good), but the phone gives no clear reason: file screen [$sc] text screen [$sc2]"; fi
   else rec share_receive_off FAIL "something was stored although receive is off: rows $rows0 -> $rows1, files [$(saved_files | tr '\n' ' ')], texts $texts"; fi
   $ADB shell input keyevent KEYCODE_BACK; $ADB shell am force-stop $SENDER_PKG
   ctl share allow "$PHONE_ID" on >/dev/null
 }
 
+step_answer_declined() {
+  ctl share allow "$PHONE_ID" on >/dev/null; ctl share auto-accept "$PHONE_ID" off >/dev/null; fresh; reset_save
+  local before; before="$(last_id)"
+  sender_send "$(gen_uri "decline-me.bin" 30000 81)"
+  local id="" k; for ((k = 0; k < 30; k++)); do id="$(tx_field decline-me.bin 1 '<-')"; [[ -n "$id" && "$id" -gt "$before" ]] && break; sleep 1; done
+  if [[ -z "$id" || "$id" -le "$before" ]]; then rec share_answer_declined FAIL "the offer never reached the computer: $(share_screen 1)"; allow_receive; return 1; fi
+  ctl share decline "$id" >/dev/null 2>&1
+  local words=0; for ((k = 0; k < 15; k++)); do status_lines | grep -qF "the computer declined it" && { words=1; break; }; sleep 1; done
+  local stl; stl="$(status_lines)"
+  if ((words)) && ! grep -qF "waiting for the computer" <<<"$stl" && [[ -z "$(saved_files)" ]]; then rec share_answer_declined PASS "Decline on the computer: the phone says '$stl' within seconds (no wait for the payload timeout), nothing stored"
+  else rec share_answer_declined FAIL "words=$words phone said: $stl"; fi
+  $ADB shell input keyevent KEYCODE_BACK; $ADB shell am force-stop $SENDER_PKG
+  allow_receive
+}
+step_answer_saved() {
+  allow_receive; fresh
+  local before; before="$(last_id)"
+  sender_text "a note the computer keeps"
+  local row; row="$(tx_wait_new "$before" Done 40)"
+  local words=0 k; for ((k = 0; k < 15; k++)); do status_lines | grep -qF "received by the computer (shown there, nothing is opened)" && { words=1; break; }; sleep 1; done
+  local stt; stt="$(status_lines)"
+  $ADB shell input keyevent KEYCODE_BACK; $ADB shell am force-stop $SENDER_PKG
+  fresh; : >"$SHIM_LOG"
+  before="$(last_id)"
+  sender_text "https://example.org/kept-not-opened"
+  local row2; row2="$(tx_wait_new "$before" Done 40)"
+  local words2=0; for ((k = 0; k < 15; k++)); do status_lines | grep -qF "received by the computer as a link (shown there, not opened)" && { words2=1; break; }; sleep 1; done
+  local stl; stl="$(status_lines)"
+  sleep 1
+  local opened=0; grep -q '^xdg-open\|^firefox\|^chromium\|^gio' "$SHIM_LOG" && opened=1
+  if [[ -n "$row" && -n "$row2" ]] && ((words)) && ((words2)) && ((!opened)); then rec share_answer_saved PASS "text: '$stt'; link: '$stl'; the link was not opened"
+  else rec share_answer_saved FAIL "rows '$row' '$row2' words=$words/$words2 opened=$opened text screen: $stt link screen: $stl"; fi
+  $ADB shell input keyevent KEYCODE_BACK; $ADB shell am force-stop $SENDER_PKG
+}
 # Desktop -> phone
 # The first-run wizard covers Home on a freshly paired phone: leave it.
 leave_wizard() {
@@ -725,7 +764,7 @@ stage_share() {
   set_state_bool setup_finished true; phone_restart >/dev/null 2>&1   # no first-run wizard over Home
   local s
   for s in text url mediastore provider_uri multiple names duplicates grant_revoked large survives_screen cancel_phone \
-           survives_background_off second_share cancel_desktop offline link_lost receive_off d2p_accept d2p_decline d2p_link; do
+           survives_background_off second_share cancel_desktop offline link_lost receive_off answer_declined answer_saved d2p_accept d2p_decline d2p_link; do
     step_wanted "$s" || continue
     log "== step $s"
     "step_$s" || true

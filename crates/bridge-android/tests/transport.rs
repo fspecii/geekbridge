@@ -201,6 +201,16 @@ struct Peer {
 }
 
 fn peer_with(c: char, creds: DeviceCredentials, store: Arc<dyn TrustStore>) -> Peer {
+    peer_with_caps(c, creds, store, &[])
+}
+
+/// A desktop that also sends the GeekBridge-only `outgoing_extra` packet types.
+fn peer_with_caps(
+    c: char,
+    creds: DeviceCredentials,
+    store: Arc<dyn TrustStore>,
+    outgoing_extra: &[&str],
+) -> Peer {
     let id = creds.device_id().clone();
     let cert = creds.cert().fingerprint_hex();
     let config = TransportConfig {
@@ -219,12 +229,14 @@ fn peer_with(c: char, creds: DeviceCredentials, store: Arc<dyn TrustStore>) -> P
         "kdeconnect.ping".to_owned(),
         "kdeconnect.share.request".to_owned(),
     ];
+    let mut outgoing = caps.clone();
+    outgoing.extend(outgoing_extra.iter().map(|s| (*s).to_owned()));
     let ep = Endpoint::new(
         Arc::new(creds),
         &format!("Desk {c}"),
         DeviceType::Desktop,
         caps.clone(),
-        caps,
+        outgoing,
         store,
         config,
     )
@@ -246,6 +258,18 @@ impl Peer {
         let id = DeviceId::parse(&c.to_string().repeat(32)).unwrap();
         let creds = DeviceCredentials::generate_with_id(&id).unwrap();
         peer_with(c, creds, Arc::new(MemoryTrustStore::new()))
+    }
+
+    /// A computer that answers shares (declares `geekbridge.share.result`).
+    fn answering(c: char) -> Peer {
+        let id = DeviceId::parse(&c.to_string().repeat(32)).unwrap();
+        let creds = DeviceCredentials::generate_with_id(&id).unwrap();
+        peer_with_caps(
+            c,
+            creds,
+            Arc::new(MemoryTrustStore::new()),
+            &["geekbridge.share.result"],
+        )
     }
 
     fn dial(&self, addr: SocketAddr, target: &str) -> Result<Handshake, KdeError> {
@@ -495,6 +519,7 @@ fn start_reports_identity_listener_and_only_ping() {
     // The phone also accepts the computer's `geekbridge.goodbye`; it never sends one.
     let mut incoming = caps.to_vec();
     incoming.push("geekbridge.goodbye");
+    incoming.push("geekbridge.share.result");
     assert_eq!(hs.info().peer.incoming_capabilities, incoming);
     assert_eq!(hs.info().peer.outgoing_capabilities, caps);
 }
@@ -2014,6 +2039,215 @@ mod sharing {
             ))
             .unwrap();
         assert_eq!(std::fs::read(path).unwrap(), payload(2000));
+    }
+
+    fn answer(peer: &Peer, link: &mut TrustedLink, body: Value) {
+        peer.send(
+            link,
+            "geekbridge.share.result",
+            body.as_object().unwrap().clone(),
+        );
+    }
+
+    fn results(s: &Value) -> &Vec<Value> {
+        Phone::array(s, "share_results")
+    }
+
+    fn send_small(phone: &Phone, cid: u64, name: &str) -> u64 {
+        let mut f = tempfile::tempfile().unwrap();
+        f.write_all(&payload(3000)).unwrap();
+        f.seek(SeekFrom::Start(0)).unwrap();
+        let v = phone.act(
+            "share_send_file",
+            json!({"connection_id": cid, "fd": f.as_raw_fd(), "name": name, "size": 3000}),
+        );
+        ok(&v)["transfer_id"].as_u64().unwrap()
+    }
+
+    fn next_share(peer: &Peer, link: &mut TrustedLink) -> Packet {
+        loop {
+            let LinkEvent::Packet(p) = peer.recv(link).unwrap() else {
+                continue;
+            };
+            if p.kind == "kdeconnect.share.request" {
+                return p;
+            }
+        }
+    }
+
+    #[test]
+    fn the_phone_numbers_its_shares_only_for_a_computer_that_answers() {
+        // A plain computer (stock-like) sees no extra key and gets no id for the text either.
+        let (phone, peer, mut link) = paired();
+        let cid = conn_id(&phone.status());
+        send_small(&phone, cid, "plain.bin");
+        let p = next_share(&peer, &mut link);
+        assert!(p.body.get("geekbridgeShareId").is_none(), "{p:?}");
+        let v = phone.act(
+            "share_send_text",
+            json!({"connection_id": cid, "kind": "text", "text": "hi"}),
+        );
+        assert_eq!(ok(&v)["result_expected"], false);
+        let p = next_share(&peer, &mut link);
+        assert!(p.body.get("geekbridgeShareId").is_none(), "{p:?}");
+        // An answer from a computer that never declared the type is not believed.
+        answer(&peer, &mut link, json!({"textId": 1, "outcome": "saved"}));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(results(&phone.status()).is_empty());
+
+        // A computer that declared it gets the phone's transfer number and the text's number.
+        let phone = Phone::start();
+        let peer = Peer::answering('e');
+        let mut link = pair_by_peer(&phone, &peer);
+        let cid = conn_id(&phone.status());
+        let id = send_small(&phone, cid, "numbered.bin");
+        let p = next_share(&peer, &mut link);
+        assert_eq!(p.body["geekbridgeShareId"], id);
+        let v = phone.act(
+            "share_send_text",
+            json!({"connection_id": cid, "kind": "url", "text": "https://example.com/"}),
+        );
+        let text_id = ok(&v)["text_id"].as_u64().unwrap();
+        assert_eq!(ok(&v)["result_expected"], true);
+        let p = next_share(&peer, &mut link);
+        assert_eq!(p.body["geekbridgeShareId"], text_id);
+    }
+
+    #[test]
+    fn a_refusal_ends_the_wait_at_once_and_is_reported_in_words_codes() {
+        let phone = Phone::start();
+        let peer = Peer::answering('e');
+        let mut link = pair_by_peer(&phone, &peer);
+        let cid = conn_id(&phone.status());
+        let id = send_small(&phone, cid, "refused.bin");
+        let _ = next_share(&peer, &mut link);
+        phone.wait("waiting", |s| transfers(s)[0]["state"] == "waiting");
+        answer(
+            &peer,
+            &mut link,
+            json!({"transferId": id, "outcome": "receive_off", "reason": "not_allowed"}),
+        );
+        let s = phone.wait("the refusal", |s| !results(s).is_empty());
+        let t = &transfers(&s)[0];
+        // Not "waiting" for the two minutes the payload socket would have waited.
+        assert_eq!(t["state"], "declined");
+        assert_eq!(t["code"], "receive_off");
+        let r = &results(&s)[0];
+        assert_eq!(
+            (
+                r["kind"].clone(),
+                r["id"].clone(),
+                r["outcome"].clone(),
+                r["reason"].clone()
+            ),
+            (
+                json!("file"),
+                json!(id),
+                json!("receive_off"),
+                json!("not_allowed")
+            )
+        );
+        // The first answer stands; a later contradictory one changes nothing.
+        answer(
+            &peer,
+            &mut link,
+            json!({"transferId": id, "outcome": "accepted"}),
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        let s = phone.status();
+        assert_eq!(results(&s).len(), 1);
+        assert_eq!(transfers(&s)[0]["state"], "declined");
+    }
+
+    #[test]
+    fn accepted_keeps_the_transfer_going_and_text_answers_are_recorded() {
+        let phone = Phone::start();
+        let peer = Peer::answering('e');
+        let mut link = pair_by_peer(&phone, &peer);
+        let cid = conn_id(&phone.status());
+        let id = send_small(&phone, cid, "ok.bin");
+        let p = next_share(&peer, &mut link);
+        answer(
+            &peer,
+            &mut link,
+            json!({"transferId": id, "outcome": "accepted", "reason": "user"}),
+        );
+        let s = phone.wait("accepted", |s| !results(s).is_empty());
+        assert_eq!(results(&s)[0]["outcome"], "accepted");
+        assert_eq!(transfers(&s)[0]["state"], "waiting");
+        // It still completes when the computer fetches it.
+        let Ok(share::ShareContent::File(offer)) = share::parse_share(&p, 1 << 30) else {
+            panic!()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = link.payload_context();
+        peer.rt
+            .block_on(share::receive_file(
+                &ctx,
+                &offer,
+                dir.path(),
+                1 << 30,
+                &mut |_| {},
+                &bridge_kde::CancelToken::new(),
+            ))
+            .unwrap();
+        phone.wait("done", |s| transfers(s)[0]["state"] == "done");
+
+        let v = phone.act(
+            "share_send_text",
+            json!({"connection_id": cid, "kind": "text", "text": "note"}),
+        );
+        let tid = ok(&v)["text_id"].as_u64().unwrap();
+        let _ = next_share(&peer, &mut link);
+        answer(
+            &peer,
+            &mut link,
+            json!({"textId": tid, "outcome": "saved", "reason": "kept"}),
+        );
+        let s = phone.wait("text answer", |s| results(s).len() == 2);
+        assert_eq!(
+            (
+                results(&s)[1]["kind"].clone(),
+                results(&s)[1]["outcome"].clone()
+            ),
+            (json!("text"), json!("saved"))
+        );
+    }
+
+    #[test]
+    fn answers_about_nothing_the_phone_shared_are_ignored() {
+        let phone = Phone::start();
+        let peer = Peer::answering('e');
+        let mut link = pair_by_peer(&phone, &peer);
+        for body in [
+            json!({"transferId": 4242, "outcome": "declined"}),
+            json!({"textId": 4242, "outcome": "saved"}),
+            json!({"transferId": 0, "outcome": "declined"}),
+            json!({"transferId": "x", "outcome": "declined"}),
+            json!({"transferId": 1, "outcome": "exploded"}),
+            json!({"outcome": "declined"}),
+        ] {
+            answer(&peer, &mut link, body);
+        }
+        // An incoming offer of the computer's own is not the phone's share either.
+        let _serve = desktop_offers(&peer, &mut link, "theirs.bin", payload(10));
+        let s = phone.wait("their offer", |s| !transfers(s).is_empty());
+        let their = transfers(&s)[0]["transfer_id"].clone();
+        answer(
+            &peer,
+            &mut link,
+            json!({"transferId": their, "outcome": "declined"}),
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let s = phone.status();
+        assert!(results(&s).is_empty(), "{s}");
+        assert_eq!(transfers(&s)[0]["state"], "offered");
+        assert!(
+            Phone::array(&s, "connections")[0]["ignored_packets"]
+                .as_u64()
+                .unwrap()
+                >= 6
+        );
     }
 }
 

@@ -69,6 +69,8 @@ data class TransportSnapshot(
     val lastEventSeq: Long,
     /** Share transfers (docs/android-contract.md); empty when the core reports none. */
     val transfers: List<Transfer> = emptyList(),
+    /** What the computer said became of this phone's shares (`geekbridge.share.result`); empty for an older computer. */
+    val shareAnswers: List<ShareAnswer> = emptyList(),
 ) {
     val isRunning: Boolean get() = state == "running"
 }
@@ -291,6 +293,7 @@ object TransportProtocol {
             events = events,
             lastEventSeq = o.long("last_event_seq") ?: 0,
             transfers = ShareProtocol.parseTransfers(o.optJSONArray("transfers")),
+            shareAnswers = ShareProtocol.parseAnswers(o.optJSONArray("share_results")),
         )
     }
 }

@@ -143,3 +143,19 @@ fn agenda_records_survive_hostile_numbers_and_recurrence_text() {
         br#"{"kind":"series","rrule":"FREQ=\u0000","rdates":["x"],"exdates":[]}"#,
     );
 }
+
+#[test]
+fn share_result_and_share_id_survive_hostile_values() {
+    for body in [
+        r#"{"transferId":1,"outcome":"accepted"}"#,
+        r#"{"transferId":1e308,"outcome":"accepted"}"#,
+        r#"{"transferId":18446744073709551616,"outcome":"busy"}"#,
+        r#"{"textId":"1","outcome":"saved"}"#,
+        r#"{"textId":2,"outcome":"saved","reason":"\u0000\u202e"}"#,
+        r#"{"textId":2,"outcome":"saved","reason":["x"]}"#,
+        r#"{"geekbridgeShareId":9007199254740992,"text":"x"}"#,
+        r#"{"geekbridgeShareId":-0,"text":"x"}"#,
+    ] {
+        run("share_result", body.as_bytes());
+    }
+}

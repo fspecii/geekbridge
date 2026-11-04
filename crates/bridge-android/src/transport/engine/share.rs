@@ -9,6 +9,7 @@ use std::fs::File;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use bridge_core::share_result::{self, Outcome, ShareResult, Subject};
 use bridge_kde::share::{self, FileOffer, ShareContent};
 use bridge_kde::{CancelToken, Packet, PayloadContext, PayloadError};
 use serde_json::{Value, json};
@@ -27,6 +28,8 @@ pub(in crate::transport) const MAX_FILE_BYTES: u64 = share::DEFAULT_MAX_FILE_BYT
 /// Received text is shown in status snapshots, so it is kept small.
 const MAX_RECEIVED_TEXT: usize = 16 * 1024;
 const MAX_DISPLAY_NAME_CHARS: usize = 255;
+/// Answers and sent-text ids remembered; older ones are long off the Share screen.
+const MAX_RESULTS: usize = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Dir {
@@ -77,9 +80,18 @@ struct Transfer {
     finished: Option<Instant>,
 }
 
+/// The computer's answer to one of this phone's shares (`geekbridge.share.result`).
+struct Answer {
+    connection_id: u64,
+    result: ShareResult,
+}
+
 #[derive(Default)]
 pub(super) struct Book {
     items: Vec<Transfer>,
+    /// Texts and links handed to a connection: (connection, id). An answer is believed only for one of these.
+    texts_sent: std::collections::VecDeque<(u64, u64)>,
+    answers: std::collections::VecDeque<Answer>,
 }
 
 impl Book {
@@ -150,6 +162,8 @@ impl Book {
             t.cancel.cancel();
         }
         self.items.clear();
+        self.texts_sent.clear();
+        self.answers.clear();
     }
 }
 
@@ -168,6 +182,8 @@ pub(in crate::transport) struct SendJob {
 pub(in crate::transport) struct TextJob {
     pub kind: &'static str,
     pub text: String,
+    /// The number the computer's answer will quote.
+    pub id: u64,
 }
 
 fn unknown_transfer() -> ApiError {
@@ -272,9 +288,23 @@ impl Core {
             return Err(err("invalid_field", "a field has the wrong type or value"));
         }
         let (ctl, _, _) = self.trusted_ctl(connection_id)?;
-        ctl.try_send(Ctl::SendText(TextJob { kind, text }))
+        let answers = self
+            .lock()
+            .conns
+            .get(&connection_id)
+            .is_some_and(|c| c.peer_answers_shares);
+        let id = self.requests.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut book = self.shares();
+            if book.texts_sent.len() >= MAX_RESULTS {
+                book.texts_sent.pop_front();
+            }
+            book.texts_sent.push_back((connection_id, id));
+        }
+        ctl.try_send(Ctl::SendText(TextJob { kind, text, id }))
             .map_err(|_| err("busy", "the connection is busy"))?;
-        Ok(json!({ "queued": true }))
+        // `result_expected`: the computer will say what became of it, so the screen can wait for that answer.
+        Ok(json!({ "queued": true, "text_id": id, "result_expected": answers }))
     }
 
     pub(in crate::transport) fn share_accept(
@@ -467,6 +497,89 @@ impl Core {
         }
     }
 
+    /// A `geekbridge.share.result` from the computer on `connection_id` (the caller checked it declared the type).
+    /// Returns false if it is malformed or about nothing this phone shared on that connection.
+    pub(super) fn incoming_share_result(&self, connection_id: u64, packet: &Packet) -> bool {
+        let Ok(result) = share_result::parse(&packet.body) else {
+            return false;
+        };
+        let mut book = self.shares();
+        match result.subject {
+            Subject::File(id) => {
+                let Some(t) = book.get_mut(id) else {
+                    return false;
+                };
+                if t.dir != Dir::Outgoing
+                    || t.connection_id != connection_id
+                    || t.kind != Kind::File
+                {
+                    return false;
+                }
+                // A refusal ends the wait now instead of after the payload socket's accept timeout. Bytes already
+                // moving mean the computer did fetch it: that transfer is left to finish on its own.
+                if result.outcome.refuses()
+                    && t.state.is_live()
+                    && t.bytes.load(Ordering::Relaxed) == 0
+                {
+                    t.cancel.cancel();
+                    t.state = St::Declined;
+                    t.code = Some(match result.outcome {
+                        Outcome::ReceiveOff => "receive_off",
+                        Outcome::TooLarge => "too_large",
+                        Outcome::Busy => "busy",
+                        _ => "declined",
+                    });
+                    t.offer = None;
+                    t.finished = Some(Instant::now());
+                }
+            }
+            Subject::Text(id) => {
+                if !book.texts_sent.contains(&(connection_id, id)) {
+                    return false;
+                }
+            }
+        }
+        // The first answer to a share stands.
+        if book
+            .answers
+            .iter()
+            .any(|a| a.connection_id == connection_id && a.result.subject == result.subject)
+        {
+            return true;
+        }
+        if book.answers.len() >= MAX_RESULTS {
+            book.answers.pop_front();
+        }
+        book.answers.push_back(Answer {
+            connection_id,
+            result,
+        });
+        true
+    }
+
+    pub(super) fn share_results_json(&self) -> Vec<Value> {
+        self.shares()
+            .answers
+            .iter()
+            .map(|a| {
+                let (kind, id) = match a.result.subject {
+                    Subject::File(i) => ("file", i),
+                    Subject::Text(i) => ("text", i),
+                };
+                let mut o = json!({
+                    "id": id,
+                    "connection_id": a.connection_id,
+                    "kind": kind,
+                    "outcome": a.result.outcome.as_str(),
+                });
+                if let (Some(map), Some(r)) = (o.as_object_mut(), &a.result.reason) {
+                    map.insert("reason".into(), r.clone().into());
+                }
+                o
+            })
+            .collect()
+    }
+
     pub(super) fn transfers_json(&self) -> Vec<Value> {
         let mut book = self.shares();
         book.make_room();
@@ -518,6 +631,7 @@ pub(super) async fn start_send(
     core: &Arc<Core>,
     link: &mut bridge_kde::TrustedLink,
     job: SendJob,
+    answered: bool,
 ) -> bool {
     let ctx = link.payload_context();
     let (bytes, cancel) = {
@@ -534,7 +648,14 @@ pub(super) async fn start_send(
             return true;
         }
     };
-    let packet = share::file_packet(&job.name, job.size, job.last_modified_ms, listener.port());
+    let mut packet = share::file_packet(&job.name, job.size, job.last_modified_ms, listener.port());
+    if answered {
+        // Only a computer that declared the answer packet is given our number; a stock peer sees a plain share.
+        packet.body.insert(
+            share_result::SHARE_ID_KEY.into(),
+            Value::from(job.transfer_id),
+        );
+    }
     if link.send_with_payload(&packet).await.is_err() {
         core.finish_transfer(job.transfer_id, Err("io_error"));
         return false;
@@ -555,12 +676,21 @@ pub(super) async fn start_send(
     true
 }
 
-pub(super) async fn send_text(link: &mut bridge_kde::TrustedLink, job: TextJob) -> bool {
-    let packet = if job.kind == "url" {
+pub(super) async fn send_text(
+    link: &mut bridge_kde::TrustedLink,
+    job: TextJob,
+    answered: bool,
+) -> bool {
+    let mut packet = if job.kind == "url" {
         share::url_packet(&job.text)
     } else {
         share::text_packet(&job.text)
     };
+    if answered {
+        packet
+            .body
+            .insert(share_result::SHARE_ID_KEY.into(), Value::from(job.id));
+    }
     link.send(&packet).await.is_ok()
 }
 
