@@ -541,7 +541,7 @@ impl eframe::App for OverlayApp {
             let wake = ctx.clone();
             if std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() == Ok("ringing") {
                 self.fixture = true;
-                crate::apps::calls::fixture_feed(true, wake)
+                crate::apps::calls::fixture_feed("ringing", wake)
             } else {
                 CallFeed::spawn(move || wake.request_repaint())
             }

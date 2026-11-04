@@ -132,7 +132,10 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
         _ => return Err(USAGE.into()),
     };
     if json {
-        println!("{}", serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?
+        );
     } else {
         print!("{}", describe(&view));
     }

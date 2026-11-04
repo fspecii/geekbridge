@@ -234,6 +234,21 @@ impl CallPanel {
             ctx.request_repaint_after(HANGUP_CONFIRM);
         }
 
+        if view.live().is_none()
+            && let Some(card) = crate::call_wifi_ui::card(status, None)
+            && crate::call_wifi_ui::running(status)
+        {
+            // Audio is playing here but no call row is on screen: the indicator and its Stop stay visible.
+            egui::TopBottomPanel::top("wifi-call-audio")
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(pal.content)
+                        .inner_margin(Margin::symmetric(12, 8)),
+                )
+                .show(ctx, |ui| crate::call_wifi_ui::show(ui, pal, feed, &card));
+        }
+
         if let Some(row) = view.live() {
             let secs = self.seconds(&row.key);
             egui::TopBottomPanel::top("ongoing-call")
@@ -516,6 +531,13 @@ fn ongoing(
     }
     if let Some(why) = &row.missing_control {
         ui.add(egui::Label::new(theme::secondary(pal, why)).wrap());
+    }
+    if let Some(card) = state
+        .status
+        .as_ref()
+        .and_then(|s| crate::call_wifi_ui::card(s, Some(row)))
+    {
+        crate::call_wifi_ui::show(ui, pal, feed, &card);
     }
     notice(ui, pal, state);
 }

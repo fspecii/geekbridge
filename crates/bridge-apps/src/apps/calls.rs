@@ -416,7 +416,8 @@ impl Calls {
 }
 
 /// Screenshot aid: a scripted phone report instead of the service (`GEEKBRIDGE_CALLS_FIXTURE`).
-pub(crate) fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
+pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
+    let ringing = kind == "ringing";
     use bridge_core::{
         calls::{CallState, Sensitive},
         calls_link::{LinkCallReport, PhoneState},
@@ -448,7 +449,7 @@ pub(crate) fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
         notice: None,
         sources: Vec::new(),
         audio_note: None,
-        wifi: None,
+        wifi: wifi_fixture(kind),
     };
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),
@@ -456,6 +457,44 @@ pub(crate) fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
         |_| Ok(()),
         move || wake.request_repaint(),
     )
+}
+
+/// The experimental Wi-Fi call audio part of a screenshot fixture: `active-wifi` offers the button,
+/// `listening-wifi` shows the indicator with "Speak (experimental)", `speaking-wifi` the microphone warning.
+fn wifi_fixture(kind: &str) -> Option<bridge_core::call_wifi_view::CallWifiView> {
+    use bridge_core::call_wifi_view::{CallWifiPhone, CallWifiSession, CallWifiView};
+    let session = |speaking| CallWifiSession {
+        device_id: "fixture".into(),
+        name: "Pixel 9".into(), // i18n-ok: screenshot fixture
+        state: "live".into(),
+        speaking,
+        frames: 4200,
+        lost: 3,
+        depth_ms: 60,
+        seconds: 83,
+    };
+    let session = match kind {
+        "listening-wifi" => Some(session(false)),
+        "speaking-wifi" => Some(session(true)),
+        "active-wifi" => None,
+        _ => return None,
+    };
+    Some(CallWifiView {
+        supported: true,
+        phones: vec![CallWifiPhone {
+            device_id: "fixture".into(),
+            name: "Pixel 9".into(), // i18n-ok: screenshot fixture
+            connected: true,
+            allowed: true,
+            ready: true,
+            listen: true,
+            speak: true,
+            test: "works".into(),
+            in_call: true,
+        }],
+        session,
+        ..CallWifiView::default()
+    })
 }
 
 impl AppView for Calls {
@@ -473,7 +512,10 @@ impl AppView for Calls {
             }
             let wake = ctx.clone();
             match std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() {
-                Ok(kind @ ("ringing" | "active")) => fixture_feed(kind == "ringing", wake),
+                Ok(
+                    kind @ ("ringing" | "active" | "active-wifi" | "listening-wifi"
+                    | "speaking-wifi"),
+                ) => fixture_feed(kind, wake),
                 _ => CallFeed::spawn(move || wake.request_repaint()),
             }
         });

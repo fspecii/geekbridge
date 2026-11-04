@@ -8,7 +8,10 @@ use eframe::egui::{Event, Key, Modifiers};
 
 fn calls_with_fixture(ringing: bool, rig: &Rig) -> Calls {
     let mut c = Calls::default();
-    c.feed = Some(fixture_feed(ringing, rig.ctx.clone()));
+    c.feed = Some(fixture_feed(
+        if ringing { "ringing" } else { "active" },
+        rig.ctx.clone(),
+    ));
     c
 }
 
@@ -44,6 +47,26 @@ fn keypad_and_recents_draw_with_idle_ringing_active_and_down_service() {
             c.tab = Tab::Recents;
             let out = rig.settle(&mut c, 3);
             assert!(shapes(&out) > 5);
+        }
+    }
+}
+
+#[test]
+fn wifi_fixtures_draw_the_experimental_card_at_every_size() {
+    for kind in ["active-wifi", "listening-wifi", "speaking-wifi"] {
+        for (w, h) in [(420.0, 640.0), (300.0, 420.0), (900.0, 700.0)] {
+            let mut rig = Rig::new(AppKind::Calls, w, h);
+            let mut c = Calls::default();
+            c.feed = Some(fixture_feed(kind, rig.ctx.clone()));
+            settle_with_state(&mut c, &mut rig);
+            let status = c.feed.as_ref().unwrap().state().status.unwrap();
+            assert!(status.wifi.is_some(), "{kind}");
+            let card = crate::call_wifi_ui::card(&status, status.view.live()).expect(kind);
+            assert_eq!(
+                matches!(card, crate::call_wifi_ui::WifiCard::Offer { .. }),
+                kind == "active-wifi"
+            );
+            assert!(shapes(&rig.settle(&mut c, 2)) > 5);
         }
     }
 }
