@@ -54,6 +54,47 @@ sends the connect to the `blocking` crate's pool, whose first thread then wakes 
 process (measured: +2 wakeups/s, which put the service exactly on its 3/s budget). With no bus or no watcher the cost is
 the same connection and nothing visible.
 
+## Phone linked: calls, Wi-Fi call audio, Messages (2026-11-05)
+
+`scripts/perf-phone.sh` starts a release `geekbridge-service` in a sandbox (private HOME/XDG/state, private loopback ports, private
+session bus with the tray, stub `pw-cat`, `pactl`, `notify-send` and `geekbridge-calls` so nothing touches a sound server or a
+display) and links a stand-in phone to it (`crates/bridge-service/examples/perf-phone.rs`: a real `bridge_kde` endpoint that pairs
+through the control API, reports calls, answers requests, sends Opus frames, serves contacts and texts). It samples `/proc`
+(RSS, anonymous memory, threads, fds, child processes, CPU ticks, voluntary context switches). No heaptrack or valgrind here, so
+the codec allocations are counted with a global allocator (`crates/bridge-callwifi/tests/alloc.rs`). Idle RSS is the sawtooth
+described above (code pages come back with each ping and go with the next drop): read the settled minimum and the anonymous column.
+
+| Scenario (service, phone linked) | Before | After |
+| --- | --- | --- |
+| Idle, 30 s: RSS min / peak, threads, fds, wakeups | 4.7 / 9.2 MB, 6-7, 18, 1.3/s | 4.5 / 8.9 MB, 6-7, 18, 1.5/s |
+| Idle anonymous memory | 1 364 kB | 1 140 kB (one malloc arena) |
+| 200 x ring, answer on the PC, hang up on the PC: anonymous growth | +140 kB (1 428 -> 1 568) | +48 kB (1 156 -> 1 204), flat after the first 20 cycles |
+| Same: threads, fds, child processes after | 7, 18, 0 (1 card at most while ringing) | 7, 18, 0 |
+| Same: CPU | 63 ticks (incl. the stand-in's polling) | 98 ticks (noisier machine) |
+| 60 s Wi-Fi listen: RSS, CPU (3 001 frames) | 7.0-9.5 MB, 0.93 % | 6.7-7.5 MB, 0.77 % |
+| Same: anonymous at start / live / 1 s after stop | 1 568 / 1 800 / 1 788 kB (+220 kB kept) | 1 204 / 1 420 / 1 244 kB (+40 kB) |
+| Same: threads and fds after stop, `pw-cat` children | 6-7, 18, 0 | 6-7, 18, 0 |
+| Service with 2 000 contacts and 2 600 texts held (the hub caps unsolicited history per thread; 250 threads) | not measured | anonymous 6.5 MB, RSS 11-13.7 MB, settled min 11 MB |
+| `geekbridge-messages` with that data (Xvfb, llvmpipe: absolute numbers are not a GPU desktop's) | 63.1 MB (no data) | 66.2 MB, 58 threads (software GL), budget 75 MB |
+| `geekbridge-service` size | 7 307 664 B | 7 307 792 B |
+
+* **What was found.** No leak: fds, threads and child processes return to the baseline after 200 call cycles and after the
+  listen session; the card supervisor leaves no process behind (0 children 8 s after the last ring); `drop_idle` still works after
+  a session (RSS 7.2 MB live -> 4.4 MB one second after stop). The Opus decoder holds 149 kB and the encoder 122 kB, a decoded
+  frame allocates nothing in steady state, and dropping them returns every byte (`tests/alloc.rs`). What stayed behind was glibc
+  heap: every thread gets its own malloc arena, and the session worker thread's arena kept the decoder's freed pages (+220 kB per
+  session, growing with each one).
+* **Fixes.** `memtrim::single_arena()` (`mallopt(M_ARENA_MAX, 1)` first thing in `main`, glibc only; the service is I/O bound so the one
+  lock is not contended) takes 230 kB off the idle anonymous memory and stops the growth across sessions; `memtrim::trim_heap()` runs
+  once when the Wi-Fi call audio worker ends (after dropping the decoder), never per frame. Tests: `memtrim::tests::trim_heap_returns_freed_heap_to_the_os`
+  and `bridge-callwifi/tests/alloc.rs`. Cost: +128 B of binary.
+* **Measured, not kept.** `opus-pure` at `opt-level = "z"`: service 7 340 944 B (larger, inlining differences). At `opt-level = 3`:
+  7 458 832 B (+150 kB) for 0.67 % instead of ~0.8-1.0 % CPU while listening. Neither is worth it; the decoder at `s` costs under 1 % of one core.
+  Fat LTO, one codegen unit and stripped symbols were already on; no feature of a direct dependency is unused enough to drop cheaply.
+* **Still open.** 5 000 texts could not be held: the hub keeps at most about ten texts per thread unless the user opens it (history is requested a
+  page at a time), so 2 600 is the realistic ceiling for pushed data; the view returns only the newest 100 conversations, so the window
+  stays near its idle size (+3 MB).
+
 ## Size trim 4 (2026-11-04)
 
 Report: `docs/reports/size-trim-4.md`. A/B from two worktrees of origin/main (a29ee30e9), stripped release builds,

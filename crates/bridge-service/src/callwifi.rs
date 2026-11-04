@@ -799,6 +799,9 @@ impl CallWifi {
         if let Some(mut p) = player {
             p.close();
         }
+        // The decoder's 150 kB of state and the pipes' buffers go back to the OS with the session.
+        drop(decoder);
+        crate::memtrim::trim_heap();
     }
 
     /// Once a second: end a quiet session, end it when the call is over, send the receiver report.

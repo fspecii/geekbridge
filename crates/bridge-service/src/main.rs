@@ -34,6 +34,7 @@ fn release_own_console() {
 fn main() -> std::io::Result<()> {
     #[cfg(windows)]
     release_own_console();
+    bridge_service::memtrim::single_arena();
     // Started from a systemd user unit before the compositor exported its environment? Find the
     // session's Wayland socket / Hyprland instance / bus ourselves (docs/omarchy.md).
     bridge_service::session_env::adopt_session_env();
