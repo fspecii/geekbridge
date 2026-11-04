@@ -43,6 +43,7 @@ Measured on the runs in [reports/emulator-ci.md](reports/emulator-ci.md).
 | `call-ui` | `scripts/e2e/call-ui.sh` (headless sway + mako, egui Calls window) | 6 min | blocking; the notification Answer/Decline stage is skipped on the runner, see below |
 | `e2e-android` | `scripts/e2e-android.sh` | 13 min | **non-blocking** |
 | `pair-background` | `scripts/e2e/pair-background.sh` | 6 min | **non-blocking** |
+| `call-audio-wifi` | `scripts/e2e/call-audio-emulator.sh` (google_apis 36 only on CI) | ~25 min | **non-blocking** (experiment: shell-uid helper probes, helper -> Opus/TLS chain; docs/reports/call-audio-wifi-prototype.md) |
 | `sms` | `scripts/e2e/sms.sh` (Messages: incoming text, send, short-code refusal, phone limiter and notice, MMS placeholder, SIM list, no crash/ANR; report: [reports/sms-emulator-e2e.md](reports/sms-emulator-e2e.md)) | 8 min | **non-blocking** until a few nightly runs agree |
 | `contacts-calendar-cases` | `scripts/scale-e2e.sh env,battery,pair,cases` (recurrence, exceptions, all-day, invitations, unicode contacts, edit conflict, consent withdrawal) | 10 min | **non-blocking** until a few nightly runs pass; exits non-zero when any case fails |
 | `share` | `scripts/e2e/share.sh` (Share sheet target, desktop offers, cancel, offline, names, 200 MiB memory; needs the test sender app built by `scripts/e2e/share-sender/build.sh`, packed in the build artifact) | ~20 min | **non-blocking** (new, see [reports/share-e2e.md](reports/share-e2e.md)) |

@@ -95,6 +95,7 @@ jobs:
           - { name: contacts-calendar-cases, run: 'SCALE_TARGET="$E2E_TARGET" SCALE_SCRATCH="$E2E_SCRATCH" SCALE_PREBUILT=1 scripts/scale-e2e.sh env,battery,pair,cases', adb_port: 16150, setup: light, experimental: true }
           - { name: share, run: 'scripts/e2e/share.sh', adb_port: 16190, setup: light, experimental: true }
           - { name: pair-background, run: 'scripts/e2e/pair-background.sh', adb_port: 16110, setup: light, experimental: true }
+          - { name: call-audio-wifi, run: 'GB_CA_IMAGES=36g GB_CA_APK="$E2E_SCRATCH/dist/geekbridge-debug.apk" scripts/e2e/call-audio-emulator.sh', adb_port: 16141, setup: light, experimental: true }
           - { name: update-install, run: 'scripts/e2e/update-install.sh all', adb_port: 16048, setup: full, experimental: false }
     env:
       SKIP: ${{ inputs.only != '' && inputs.only != matrix.name && '1' || '0' }}

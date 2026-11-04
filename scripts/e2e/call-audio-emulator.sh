@@ -39,7 +39,7 @@ RESULTS="$OUT/results.tsv"
 APK="${GB_CA_APK:-$ROOT/android/app/build/outputs/apk/debug/app-debug.apk}"
 PKG=dev.geekbridge.android
 HELPER=dev.geekbridge.android.callaudio.CallAudioHelper
-IMAGES="${GB_CA_IMAGES:-36g 36p 34p}"
+IMAGES="${GB_CA_IMAGES:-36g 36p}"
 # A fresh AVD on a busy machine can take far longer than the default 420 s to boot.
 export GB_EMU_BOOT_TIMEOUT="${GB_EMU_BOOT_TIMEOUT:-1500}"
 fails=0
@@ -105,7 +105,7 @@ for tag in $IMAGES; do
     if grep -q "android.permission.$p: granted=true" "$log/shell-package.txt"; then row INFO "$tag" "shell:$p" granted; else row INFO "$tag" "shell:$p" "not granted"; fi
   done
   # Does pm grant hand CAPTURE_AUDIO_OUTPUT to the app? (expected: no; Android's own message is the evidence)
-  row INFO "$tag" "pm-grant-app" "$(sh pm grant $PKG android.permission.CAPTURE_AUDIO_OUTPUT | head -1 | cut -c1-140)"
+  row INFO "$tag" "pm-grant-app" "$(sh "pm grant $PKG android.permission.CAPTURE_AUDIO_OUTPUT 2>&1; echo exit=\$?" | grep -v '^\s*at ' | head -2 | tr '\n' ' ' | cut -c1-160)"
   sh dumpsys media.audio_policy > "$log/audio-policy.txt"
   if grep -qi "telephony tx\|AUDIO_DEVICE_OUT_TELEPHONY_TX" "$log/audio-policy.txt"; then row INFO "$tag" telephony-tx-in-policy present; else row INFO "$tag" telephony-tx-in-policy absent; fi
 
@@ -135,6 +135,10 @@ for tag in $IMAGES; do
   call="$(sh dumpsys telephony.registry | grep -m1 -o 'mCallState=[0-9]')"
   if [ "$call" = "mCallState=2" ]; then row PASS "$tag" emulated-call "$call (off hook)"; else row FAIL "$tag" emulated-call "${call:-no call state}"; fi
   sh dumpsys telecom > "$log/telecom.txt"
+  # Telecom switches the audio mode to IN_CALL a moment after the call is off hook; the interception API only
+  # answers in IN_CALL. Wait for it (up to 30 s) and say what it was.
+  for _ in $(seq 1 30); do sh dumpsys audio | grep -qE 'mode.*(IN_CALL|MODE_IN_CALL)' && break; sleep 1; done
+  row INFO "$tag" audio-mode "$(sh dumpsys audio | grep -m1 -oE 'mode[^,]*(IN_CALL|NORMAL|RINGTONE|IN_COMMUNICATION)[^,]*' | cut -c1-80)"
   probe incall-shell
 
   # Chain: helper -> adb forward -> lab (Opus over the real TLS link code) -> decoded PCM, injection back.
