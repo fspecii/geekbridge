@@ -707,7 +707,10 @@ impl CallAudioPanel {
             ui.add(egui::Label::new(theme::caption(pal, text)).wrap());
             return;
         };
-        self.verdict(ui, pal, &setup);
+        // While the guided setup runs, its own step line is the status.
+        if !snap.stage.active() {
+            self.verdict(ui, pal, &setup);
+        }
         match setup.verdict {
             Verdict::MacFallback => self.mac(ui, pal),
             Verdict::Unsupported => {}
