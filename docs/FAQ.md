@@ -44,7 +44,7 @@ To hear and speak on the computer, the computer must be the phone's Bluetooth ha
 (a USB adapter works), the phone paired with it as hands-free with Phone calls allowed, and PipeWire plus WirePlumber on Linux.
 Open **Settings > Call audio on this computer** for a checklist with a fix for each step, or run `geekbridge-ctl calling`. There is
 no call audio over Wi-Fi, and on macOS it is not available yet. Bluetooth voice has not been tested on real hardware yet. See
-[call audio](call-audio-options.md).
+[call audio](call-audio-options.md); when a step fails: [call audio troubleshooting](call-audio-troubleshooting.md).
 
 ## Why do I need the phone unlocked to paste its clipboard?
 

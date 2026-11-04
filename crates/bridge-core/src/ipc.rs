@@ -939,6 +939,23 @@ pub enum CallAudioSetupAction {
     Forget,
 }
 
+/// The section of `docs/call-audio-troubleshooting.md` that explains a checklist step.
+pub fn troubleshooting_anchor(step_id: &str) -> Option<&'static str> {
+    Some(match step_id {
+        "adapter" => "adapter-not-found",
+        "rfkill" => "radio-blocked-rfkill",
+        "service" => "bluetooth-service-inactive",
+        "powered" => "adapter-powered-off",
+        "wireplumber" | "telephony" => "the-wireplumber-drop-in",
+        "paired" | "connected" => "pairing-loops",
+        "hfp" => "phone-never-connects-hfp",
+        "card" => "profile-audio-gateway-missing",
+        "devices" => "call-audio-goes-to-the-phone",
+        "voice" => "connected-but-silent",
+        _ => return None,
+    })
+}
+
 /// One step of the "Hear calls on this computer" checklist.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HearCallsStep {
@@ -1030,6 +1047,13 @@ impl HearCalls {
                     out.push('\n');
                 }
             }
+            if matches!(s.state.as_str(), "fail" | "warn")
+                && let Some(a) = troubleshooting_anchor(&s.id)
+            {
+                out.push_str(&format!(
+                    "        more: docs/call-audio-troubleshooting.md#{a}\n"
+                ));
+            }
         }
         out.push_str(if self.ready {
             "  Result: ready. Answer a call from this computer and the voice comes to the devices above.\n"
@@ -1037,7 +1061,7 @@ impl HearCalls {
             "  Result: not ready yet; fix the first FAIL above and run this again.\n"
         });
         out.push_str(
-            "  Details and a hardware test script: docs/reports/call-audio-pc-headset.md\n",
+            "  Details and a hardware test script: docs/reports/call-audio-pc-headset.md; every failing step: docs/call-audio-troubleshooting.md\n",
         );
         out
     }
@@ -2364,5 +2388,86 @@ mod hear_banner_tests {
         assert!(h.banner().contains("not working yet"));
         h.ready = true;
         assert_eq!(h.banner(), "Call audio: ready (phone: Fold).");
+    }
+    #[test]
+    fn open_steps_point_at_their_troubleshooting_section() {
+        let step = |id: &str, state: &str| HearCallsStep {
+            id: id.into(),
+            title: "t".into(),
+            state: state.into(),
+            detail: "d".into(),
+            fix: Some("do this".into()),
+        };
+        let h = HearCalls {
+            steps: vec![
+                step("adapter", "fail"),
+                step("card", "warn"),
+                step("rfkill", "ok"),
+            ],
+            ..Default::default()
+        };
+        let text = h.render();
+        assert!(
+            text.contains("docs/call-audio-troubleshooting.md#adapter-not-found"),
+            "{text}"
+        );
+        assert!(
+            text.contains("docs/call-audio-troubleshooting.md#profile-audio-gateway-missing"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("#radio-blocked-rfkill"),
+            "an ok step needs no pointer: {text}"
+        );
+        for id in [
+            "adapter",
+            "rfkill",
+            "service",
+            "powered",
+            "wireplumber",
+            "telephony",
+            "paired",
+            "connected",
+            "hfp",
+            "card",
+            "devices",
+            "voice",
+        ] {
+            assert!(troubleshooting_anchor(id).is_some(), "{id}");
+        }
+        // every anchor is a real heading of the page (GitHub style: lowercase, spaces to dashes)
+        let doc = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/call-audio-troubleshooting.md"
+        ))
+        .unwrap();
+        let heads: Vec<String> = doc
+            .lines()
+            .filter_map(|l| l.strip_prefix("### ").or_else(|| l.strip_prefix("## ")))
+            .map(|h| {
+                h.to_lowercase()
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                    .collect::<String>()
+                    .replace(' ', "-")
+            })
+            .collect();
+        for id in [
+            "adapter",
+            "rfkill",
+            "service",
+            "powered",
+            "wireplumber",
+            "telephony",
+            "paired",
+            "connected",
+            "hfp",
+            "card",
+            "devices",
+            "voice",
+        ] {
+            let a = troubleshooting_anchor(id).unwrap();
+            assert!(heads.iter().any(|h| h == a), "no heading for {a}");
+        }
     }
 }

@@ -116,7 +116,7 @@ A. **SCO over the USB dongle** (most likely real failure). Known classes: cheap 
    (linux-firmware) and support mSBC only with the kernel's alt-setting quirks; Intel AX200/AX210 (`8087:0029`,
    `8087:0032`, internal USB) work with mSBC on 6.x. PipeWire disables mSBC by itself when the adapter lacks eSCO or USB
    alt 1/6 (log lines above, info level). Symptom: call connects, `State` goes `active`, streams exist, the level check
-   says digital silence. Next step: `bluez5.enable-msbc = false` (narrowband CVSD), then a different dongle. Diagnose
+   says digital silence. Next step: `bluez5.enable-msbc = false` (narrowband CVSD; exact drop-in in [call-audio-troubleshooting.md](../call-audio-troubleshooting.md#wideband-off-msbc-for-a-silent-or-choppy-call)), then a different dongle. Diagnose
    with `scripts/realdevice-report.sh` (USB id, driver, btusb parameters, the alt6/alt1 lines when WirePlumber logs at
    info: `systemctl --user set-environment WIREPLUMBER_DEBUG='spa.bluez5*:4' && systemctl --user restart wireplumber`,
    undo with `systemctl --user unset-environment WIREPLUMBER_DEBUG` and a restart).
