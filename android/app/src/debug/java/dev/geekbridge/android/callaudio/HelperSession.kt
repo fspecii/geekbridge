@@ -134,6 +134,17 @@ class HelperSession(
             "start" -> start(field(json, "source") ?: "VOICE_DOWNLINK", field(json, "inject") ?: "none")
             "stop" -> stop()
             "probe" -> status(probe())
+            // Does the platform hand out an uplink route? Opens and releases it; nothing is ever written, so the far
+            // party cannot hear a test (the full probe injects a tone and must not run during a real call).
+            "uplink_check" -> {
+                val i = openInjector("telephony_tx")
+                val route = i.route
+                try {
+                    i.close()
+                } catch (_: RuntimeException) {
+                }
+                status("{\"uplink\":\"${route.replace("\"", "")}\"}")
+            }
             else -> status("{\"error\":\"unknown_cmd\"}")
         }
         return true

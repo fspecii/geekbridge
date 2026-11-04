@@ -13,6 +13,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 bridge-core.workspace = true
 bridge-kde = { path = "../bridge-kde" }
+# EXPERIMENTAL call audio over Wi-Fi (debug builds only: scripts/build-android.sh enables the feature, the release build never does).
+bridge-callwifi = { path = "../bridge-callwifi", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 base64 = "0.23"
@@ -21,6 +23,11 @@ rqrr = { version = "0.11", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs", "io-util"] }
 # Already in the tree via tokio; used only for TCP keepalive socket options.
 socket2 = { version = "0.6", features = ["all"] }
+
+[features]
+default = []
+# The phone side of docs/design/call-audio-over-wifi.md. Off in release builds: no Opus, no hub, no packet names.
+callwifi = ["dep:bridge-callwifi"]
 
 [dev-dependencies]
 bridge-chaos = { path = "../bridge-chaos" }

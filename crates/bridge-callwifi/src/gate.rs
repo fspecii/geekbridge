@@ -309,8 +309,8 @@ impl Gate {
                         s.last_frame_ms = now_ms;
                         vec![Action::IndicatorOn]
                     } else {
-                        self.session = None;
-                        Vec::new()
+                        // Refused by the computer: tell the host so it releases the helper.
+                        self.end("rejected", false)
                     }
                 }
                 _ => self.drop("answer for no pending offer"),

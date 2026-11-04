@@ -71,6 +71,21 @@ pub(crate) const ACTIONS: [&str; 34] = [
     "transport_wifi_bind_enabled",
 ];
 
+/// EXPERIMENTAL call audio over Wi-Fi actions; empty without the `callwifi` feature, so a release build answers
+/// `unknown_action` to all of them.
+#[cfg(feature = "callwifi")]
+pub(crate) const CALLWIFI_ACTIONS: &[&str] = &[
+    "transport_callwifi_config",
+    "transport_callwifi_call",
+    "transport_callwifi_frame",
+    "transport_callwifi_wait",
+    "transport_callwifi_pull",
+    "transport_callwifi_stop",
+    "transport_callwifi_status",
+];
+#[cfg(not(feature = "callwifi"))]
+pub(crate) const CALLWIFI_ACTIONS: &[&str] = &[];
+
 /// Longest packet line when phone data is enabled: 1 MiB body plus envelope and JSON escaping slack.
 const DATA_PACKET_LINE: usize = 1024 * 1024 + 16 * 1024;
 const DEFAULT_KDE_PORT: u16 = 1716;
@@ -866,6 +881,8 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                 age_ms,
             })
         }
+        #[cfg(feature = "callwifi")]
+        a if a.starts_with("transport_callwifi_") => callwifi_action(host, a, f),
         "transport_calls_config" => {
             let enabled = f.take_bool("enabled")?;
             f.finish()?;
@@ -1057,6 +1074,10 @@ fn capabilities(
         incoming.extend(engine::clipboard_incoming_types());
         outgoing.extend(engine::clipboard_outgoing_types());
     }
+    // EXPERIMENTAL (debug builds with the `callwifi` feature only; empty otherwise). Declared always, acted on only
+    // while the app's switch and the computer's grant are on.
+    incoming.extend(engine::callwifi_incoming_types());
+    outgoing.extend(engine::callwifi_outgoing_types());
     if calls {
         incoming.extend(engine::calls_incoming_types());
         outgoing.extend(engine::calls_outgoing_types());
@@ -1252,6 +1273,64 @@ fn build(args: StartArgs, requests: Arc<AtomicU64>) -> Result<(Running, Value), 
     });
     drop(enter);
     Ok((Running { core, rt }, result))
+}
+
+#[cfg(feature = "callwifi")]
+fn callwifi_action(host: &Host, action: &str, mut f: Fields) -> Result<Value, ApiError> {
+    use bridge_callwifi::selftest::Verdict;
+    use bridge_callwifi::wire::Uplink;
+    let bad = || err("invalid_field", "a field has the wrong type or value");
+    match action {
+        "transport_callwifi_config" => {
+            let enabled = f.take_bool("enabled")?;
+            let helper_up = f.take_bool("helper_up")?;
+            let verdict = Verdict::from_name(&f.take_string("verdict")?).ok_or_else(bad)?;
+            let speak_allowed = f.take_opt_bool("speak_allowed")?.unwrap_or(false);
+            let uplink = match f.take_opt_string("uplink")? {
+                Some(u) => Uplink::from_name(&u).ok_or_else(bad)?,
+                None => Uplink::None,
+            };
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_config(enabled, helper_up, verdict, speak_allowed, uplink))
+        }
+        "transport_callwifi_call" => {
+            let active = f.take_bool("active")?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_call(active))
+        }
+        "transport_callwifi_frame" => {
+            let pcm = f.take_string("pcm")?;
+            let cap = u32::try_from(f.take_u64("cap")?).map_err(|_| bad())?;
+            f.finish()?;
+            let (core, _) = host.running()?;
+            core.callwifi_frame(&pcm, cap)
+        }
+        "transport_callwifi_wait" => {
+            let since = f.take_opt_u64("since")?.unwrap_or(0);
+            let timeout_ms = f.take_opt_u64("timeout_ms")?.unwrap_or(5_000);
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_wait(since, Duration::from_millis(timeout_ms)))
+        }
+        "transport_callwifi_pull" => {
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_pull())
+        }
+        "transport_callwifi_stop" => {
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_stop())
+        }
+        "transport_callwifi_status" => {
+            f.finish()?;
+            let (core, _) = host.running()?;
+            Ok(core.callwifi_status())
+        }
+        _ => Err(err("unknown_action", "unknown action")),
+    }
 }
 
 #[cfg(test)]

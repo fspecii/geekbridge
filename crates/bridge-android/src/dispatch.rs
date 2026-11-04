@@ -370,7 +370,7 @@ fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
         }
         "validate_sms" => validate_sms(fields),
         "validate_clipboard" => validate_clipboard(fields),
-        a if transport::ACTIONS.contains(&a) => {
+        a if transport::ACTIONS.contains(&a) || transport::CALLWIFI_ACTIONS.contains(&a) => {
             // Clipboard text and HTML legitimately exceed the 16 KiB control-message limit; the
             // overall request limit and the clipboard size checks still apply.
             if !matches!(

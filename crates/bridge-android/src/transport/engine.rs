@@ -34,6 +34,7 @@ use bridge_core::heartbeat::{EVERY as HEARTBEAT_EVERY, Heartbeat};
 use bridge_kde::share::{SHARE_REQUEST, SHARE_REQUEST_UPDATE};
 
 mod calls;
+mod callwifi;
 mod clipboard;
 mod data;
 mod permits;
@@ -53,6 +54,12 @@ pub(super) fn data_incoming_types(flags: DataFlags) -> Vec<String> {
 }
 pub(super) fn data_outgoing_types(flags: DataFlags) -> Vec<String> {
     data::outgoing_types(flags)
+}
+pub(super) fn callwifi_incoming_types() -> Vec<String> {
+    callwifi::incoming_types()
+}
+pub(super) fn callwifi_outgoing_types() -> Vec<String> {
+    callwifi::outgoing_types()
 }
 pub(super) fn calls_incoming_types() -> Vec<String> {
     calls::incoming_types()
@@ -139,6 +146,9 @@ enum Ctl {
     Clip(Box<clipboard::Out>),
     Calls(calls::Out),
     Data(data::Out),
+    #[cfg_attr(not(feature = "callwifi"), allow(dead_code))]
+    /// A ready-made packet from an experimental hub (call audio over Wi-Fi).
+    Packet(Box<Packet>),
 }
 
 struct ConnEntry {
@@ -282,6 +292,7 @@ pub(super) struct Core {
     shares: Mutex<share::Book>,
     clip: clipboard::Hub,
     calls: calls::Hub,
+    callwifi: callwifi::Hub,
     data: data::Hub,
     permits: permits::Permits,
     redial: Mutex<redial::Book>,
@@ -326,6 +337,7 @@ impl Core {
             shares: Mutex::new(share::Book::default()),
             clip: clipboard::Hub::default(),
             calls: calls::Hub::default(),
+            callwifi: callwifi::Hub::default(),
             data: data::Hub::default(),
             permits: permits::Permits::default(),
             announce_wake: tokio::sync::Notify::new(),
@@ -355,6 +367,7 @@ impl Core {
     pub(super) fn shutdown(&self) {
         self.clip.shutdown();
         self.calls.shutdown();
+        self.callwifi.shutdown();
         self.data.shutdown();
         self.shares
             .lock()
@@ -764,6 +777,9 @@ impl Core {
         if present && let Some((kind, code)) = event {
             st.event_quiet(kind, Some(id), device.as_ref(), code, quiet_ms);
         }
+        drop(st);
+        // A call-audio session on this link ends with it.
+        self.callwifi.link_lost(id);
     }
 
     fn with_conn(&self, id: u64, f: impl FnOnce(&mut ConnEntry)) {
@@ -1242,6 +1258,7 @@ async fn run_trusted(
         core.remove_conn(id, Some(("link_closed", Some("io_error"))));
         return;
     }
+    core.callwifi_connected(id);
     // Stock KDE Connect shows every ping as a notification: only GeekBridge peers get the heartbeat.
     let heartbeat_peer = bridge_core::heartbeat::is_geekbridge_peer(
         &link.info().peer.incoming_capabilities,
@@ -1299,6 +1316,11 @@ async fn run_trusted(
                         break Some(("link_closed", Some("io_error")));
                     }
                 }
+                Some(Ctl::Packet(p)) => {
+                    if link.send(&p).await.is_err() {
+                        break Some(("link_closed", Some("io_error")));
+                    }
+                }
                 Some(Ctl::Pair(..)) => {}
                 None => break None,
             },
@@ -1319,6 +1341,8 @@ async fn run_trusted(
                         core.incoming_share(id, link.payload_context(), &p)
                     } else if bridge_core::calls_link::is_calls_kind(&p.kind) {
                         core.incoming_calls(id, &p)
+                    } else if callwifi::is_kind(&p.kind) {
+                        core.incoming_callwifi(id, &p)
                     } else if data::is_data_kind(&p.kind) {
                         core.incoming_data(id, &p)
                     } else if bridge_core::clipboard_wire::is_clipboard_kind(&p.kind)

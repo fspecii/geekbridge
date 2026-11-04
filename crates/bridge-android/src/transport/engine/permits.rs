@@ -45,6 +45,8 @@ impl Permits {
 impl Core {
     pub(in crate::transport) fn set_permits(&self, map: PermitMap) {
         self.permits.set(map);
+        // A computer whose grant was withdrawn loses a live call-audio session at once.
+        self.callwifi_revalidate();
     }
 
     /// May the computer on this connection use `feature`?

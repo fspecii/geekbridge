@@ -600,6 +600,7 @@ name = "bridge-android"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "bridge-callwifi",
  "bridge-chaos",
  "bridge-core",
  "bridge-kde",
