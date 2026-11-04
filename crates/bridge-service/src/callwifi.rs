@@ -12,6 +12,10 @@
 //! * **Speak**: a separate step ([`CallWifi::speak`]) that only exists when the phone reported an uplink route
 //!   and its own opt-in. The computer's microphone is captured only while it is on.
 //! * **Stop** from either side, the call ending, the consent going off, the link dropping, or five quiet seconds.
+//! * **Echo guard** while speaking: without echo cancellation the far party's voice comes out of the speakers,
+//!   back into the microphone and to the far party again. The guard sends silence while the far party is heard
+//!   (half duplex, as a speakerphone does). `auto` turns it on unless the output is a headset or the microphone
+//!   is an echo-cancelling one ([`auto_echo_guard`]).
 //!
 //! Privacy: no audio is written to disk or logged; the view carries counts only. Packets from a phone whose
 //! consent is off are dropped unread.
@@ -22,7 +26,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::process::Child;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -30,7 +34,9 @@ use bridge_callwifi::codec::{Decoder, Encoder};
 use bridge_callwifi::gate::{Action, Gate, Side};
 use bridge_callwifi::jitter::{JitterBuffer, JitterConfig};
 use bridge_callwifi::wire::{self, Answer, Dir, FRAME_SAMPLES, Frame, Msg, Ready, Stats};
-use bridge_core::call_wifi_view::{CallWifiAction, CallWifiPhone, CallWifiSession, CallWifiView};
+use bridge_core::call_wifi_view::{
+    CallWifiAction, CallWifiPhone, CallWifiSession, CallWifiView, EchoMode,
+};
 use serde_json::{Map, Value};
 
 /// How long a press waits for the phone's offer before giving up.
@@ -39,6 +45,44 @@ const OFFER_WAIT: Duration = Duration::from_secs(10);
 const TICK: Duration = Duration::from_millis(20);
 /// Gate housekeeping, the receiver report and the "is the call still on" check run this often.
 const HOUSEKEEPING: Duration = Duration::from_secs(1);
+/// A played far-party frame at or above this RMS counts as "the far party is talking" (about -40 dBFS).
+const FAR_TALK_RMS: f64 = 330.0;
+/// The echo guard keeps the microphone closed this long after the far party was last heard (room echo tail,
+/// the output's own buffer).
+const ECHO_HANGOVER_MS: u64 = 300;
+
+/// What `auto` decides from the chosen output and microphone (PipeWire node names and descriptions): no guard for
+/// a headset or an echo-cancelling microphone, the guard otherwise. Returns the decision and the reason in words.
+pub fn auto_echo_guard(output: &str, input: &str) -> (bool, &'static str) {
+    let (o, i) = (output.to_lowercase(), input.to_lowercase());
+    if ["echo-cancel", "echo_cancel", "echo cancel", "echocancel"]
+        .iter()
+        .any(|k| i.contains(k))
+    {
+        return (false, "the microphone cancels echo itself");
+    }
+    if [
+        "headset",
+        "headphone",
+        "earphone",
+        "earbud",
+        "buds",
+        "airpods",
+        "bluez_output",
+        "handsfree",
+        "hands-free",
+        "hfp",
+    ]
+    .iter()
+    .any(|k| o.contains(k))
+    {
+        return (false, "the sound plays in a headset");
+    }
+    (
+        true,
+        "speakers: the microphone closes while the other person talks (a headset avoids this)",
+    )
+}
 
 /// Send one packet to a phone (`device id`, kind, body). False when it could not be queued.
 pub type Sender = Arc<dyn Fn(&str, &'static str, Map<String, Value>) -> bool + Send + Sync>;
@@ -65,6 +109,10 @@ pub trait Audio: Send + Sync {
     fn describe(&self) -> (Option<String>, Option<String>);
     fn open_playback(&self) -> Result<Box<dyn Playback>, String>;
     fn open_capture(&self) -> Result<Box<dyn Capture>, String>;
+    /// What the `auto` echo guard decides for the chosen devices, and why. Asked when speaking starts.
+    fn echo_guard(&self) -> (bool, String) {
+        (true, "the sound devices are unknown".into())
+    }
 }
 
 // ------------------------------------------------------------------------------------------ the system audio
@@ -185,6 +233,21 @@ impl Audio for PipeWireAudio {
     }
 
     #[cfg(target_os = "linux")]
+    fn echo_guard(&self) -> (bool, String) {
+        use bridge_calls::audio::Role;
+        match (self.device(Role::Output), self.device(Role::Input)) {
+            (Ok(o), Ok(i)) => {
+                let (on, why) = auto_echo_guard(
+                    &format!("{} {}", o.name, o.description),
+                    &format!("{} {}", i.name, i.description),
+                );
+                (on, why.to_owned())
+            }
+            _ => (true, "the sound devices are unknown".into()),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     fn open_capture(&self) -> Result<Box<dyn Capture>, String> {
         let dev = self.device(bridge_calls::audio::Role::Input)?;
         let mut child = pw_cat("-r", &dev.name)?;
@@ -280,6 +343,14 @@ impl Drop for PwCapture {
     }
 }
 
+fn frame_rms(pcm: &[i16]) -> f64 {
+    if pcm.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = pcm.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    (sum / pcm.len() as f64).sqrt()
+}
+
 // ------------------------------------------------------------------------------------------------ the hub
 
 struct Phone {
@@ -300,6 +371,11 @@ struct Live {
     speaking: bool,
     /// Stops the microphone thread.
     mic_stop: Option<Arc<AtomicBool>>,
+    /// Microphone frames sent, and how many of them the echo guard silenced.
+    up_sent: u64,
+    up_held: u64,
+    /// The phone's last receiver report for the uplink.
+    peer_up: Option<Stats>,
 }
 
 #[derive(Default)]
@@ -317,6 +393,20 @@ pub struct CallWifi {
     in_call: InCall,
     audio: Arc<dyn Audio>,
     t0: Instant,
+    /// The echo guard: the user's mode (`EchoMode` as 0 auto, 1 on, 2 off), what `auto` decided when speaking
+    /// started (and why), and when (hub ms + 1) the far party was last heard; 0 = not yet.
+    echo_mode: AtomicU8,
+    echo_auto: AtomicBool,
+    echo_note: Mutex<Option<String>>,
+    far_talk_at: AtomicU64,
+}
+
+fn mode_of(v: u8) -> EchoMode {
+    match v {
+        1 => EchoMode::On,
+        2 => EchoMode::Off,
+        _ => EchoMode::Auto,
+    }
 }
 
 fn session_id() -> u64 {
@@ -333,7 +423,35 @@ impl CallWifi {
             in_call,
             audio,
             t0: Instant::now(),
+            echo_mode: AtomicU8::new(0),
+            echo_auto: AtomicBool::new(true),
+            echo_note: Mutex::new(None),
+            far_talk_at: AtomicU64::new(0),
         })
+    }
+
+    /// Is the echo guard closing the microphone right now?
+    fn guard_on(&self) -> bool {
+        match mode_of(self.echo_mode.load(Ordering::Relaxed)) {
+            EchoMode::On => true,
+            EchoMode::Off => false,
+            EchoMode::Auto => self.echo_auto.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The far party was heard within the hangover.
+    fn far_talking(&self, now_ms: u64) -> bool {
+        let at = self.far_talk_at.load(Ordering::Relaxed);
+        at != 0 && now_ms < at + ECHO_HANGOVER_MS
+    }
+
+    pub fn set_echo(&self, mode: EchoMode) {
+        let v = match mode {
+            EchoMode::Auto => 0,
+            EchoMode::On => 1,
+            EchoMode::Off => 2,
+        };
+        self.echo_mode.store(v, Ordering::Relaxed);
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -472,6 +590,11 @@ impl CallWifi {
                     }
                 }
                 Action::SpeakState(on) => self.set_speaking(g, id, on),
+                Action::PeerStats(st) => {
+                    if let Some(l) = g.live.as_mut().filter(|l| l.device == id) {
+                        l.peer_up = Some(st);
+                    }
+                }
             }
         }
     }
@@ -507,7 +630,11 @@ impl CallWifi {
             started: Instant::now(),
             speaking: false,
             mic_stop: None,
+            up_sent: 0,
+            up_held: 0,
+            peer_up: None,
         });
+        self.far_talk_at.store(0, Ordering::Relaxed);
         let me = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("geekbridge-callwifi".into())
@@ -693,6 +820,7 @@ impl CallWifi {
             CallWifiAction::Listen { device_id } => self.listen(&device_id)?,
             CallWifiAction::Stop => self.stop(),
             CallWifiAction::Speak { on } => self.speak(on)?,
+            CallWifiAction::Echo { mode } => self.set_echo(mode),
         }
         Ok(self.view(true))
     }
@@ -731,6 +859,8 @@ impl CallWifi {
         let session = g.live.as_ref().and_then(|l| {
             let p = g.phones.get(&l.device)?;
             let stats = l.jitter.stats();
+            let up = l.peer_up.as_ref();
+            let speaking = l.speaking && p.gate.session().is_some_and(|s| s.up);
             Some(CallWifiSession {
                 device_id: l.device.clone(),
                 name: p.name.clone(),
@@ -740,11 +870,23 @@ impl CallWifi {
                     "starting"
                 }
                 .into(),
-                speaking: l.speaking && p.gate.session().is_some_and(|s| s.up),
+                speaking,
                 frames: stats.got,
                 lost: stats.lost,
                 depth_ms: l.jitter.depth_ms(),
                 seconds: l.started.elapsed().as_secs(),
+                late: stats.late,
+                concealed: stats.underruns,
+                jitter_ms: l.jitter.jitter_ms().round() as u32,
+                up_sent: l.up_sent,
+                up_got: up.map_or(0, |u| u.got),
+                up_lost: up.map_or(0, |u| u.lost),
+                up_dropped: up.map_or(0, |u| u.late),
+                up_depth_ms: up.map_or(0, |u| u.depth_ms),
+                echo_guard: speaking && self.guard_on(),
+                echo_held_pct: (l.up_held * 100)
+                    .checked_div(l.up_sent)
+                    .map_or(0, |p| p.min(100) as u8),
             })
         });
         CallWifiView {
@@ -754,6 +896,12 @@ impl CallWifi {
             session,
             output,
             input,
+            echo: mode_of(self.echo_mode.load(Ordering::Relaxed)),
+            echo_note: self
+                .echo_note
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
         }
     }
 
@@ -824,7 +972,11 @@ impl CallWifi {
             let (Some(p), Some(d)) = (player.as_mut(), decoder.as_mut()) else {
                 break;
             };
-            if p.write(d.render(&slot)).is_err() {
+            let pcm = d.render(&slot);
+            if frame_rms(pcm) >= FAR_TALK_RMS {
+                self.far_talk_at.store(self.now_ms() + 1, Ordering::Relaxed);
+            }
+            if p.write(pcm).is_err() {
                 let mut g = self.lock();
                 if let Some(id) = g
                     .live
@@ -894,14 +1046,23 @@ impl CallWifi {
             self.set_speaking(&mut g, id, false);
             return;
         };
+        // What `auto` means for the devices in use now (asks the sound server once per Speak).
+        let (auto, why) = self.audio.echo_guard();
+        self.echo_auto.store(auto, Ordering::Relaxed);
+        *self.echo_note.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
         let mut pcm = vec![0i16; FRAME_SAMPLES];
         let (mut seq, mut ts) = (0u32, 0u32);
         while !stop.load(Ordering::Relaxed) {
             if cap.read(&mut pcm).is_err() {
                 break;
             }
+            // The echo guard: silence (still sent, so the phone's stream keeps its timing) while the far party talks.
+            let held = self.guard_on() && self.far_talking(self.now_ms());
+            if held {
+                pcm.fill(0);
+            }
             let Ok(opus) = enc.encode(&pcm) else { continue };
-            let g = self.lock();
+            let mut g = self.lock();
             // Off is set under this same lock, so a frame read before the press never goes out after it.
             if stop.load(Ordering::Relaxed) {
                 break;
@@ -931,6 +1092,10 @@ impl CallWifi {
                     opus,
                 }),
             );
+            if let Some(l) = g.live.as_mut() {
+                l.up_sent += 1;
+                l.up_held += u64::from(held);
+            }
             seq = seq.wrapping_add(1);
             ts = ts.wrapping_add(FRAME_SAMPLES as u32);
         }
@@ -1456,5 +1621,119 @@ mod tests {
         assert_eq!(v.session.unwrap().state, "starting");
         let v = r.hub.act(CallWifiAction::Stop).unwrap();
         assert!(v.session.is_none());
+    }
+
+    #[test]
+    fn auto_echo_guard_trusts_headsets_and_echo_cancelling_microphones_only() {
+        assert!(!auto_echo_guard("bluez_output.AA_BB.1 Buds Pro", "alsa_input.pci Built-in").0);
+        assert!(!auto_echo_guard("alsa_output.usb-Jabra Headset", "alsa_input.usb-Jabra").0);
+        assert!(
+            !auto_echo_guard(
+                "alsa_output.pci Speakers",
+                "echo-cancel-source Echo-Cancel Source"
+            )
+            .0
+        );
+        let (on, why) = auto_echo_guard(
+            "alsa_output.pci-0000 Built-in Audio Analog Stereo",
+            "alsa_input.pci Mic",
+        );
+        assert!(on && why.contains("headset"), "{why}");
+    }
+
+    /// Live, speaking, with the far party's tone arriving the whole time.
+    fn speaking_with_far_talk(r: &Rig) -> (u64, std::thread::JoinHandle<()>) {
+        phone(r, true, true);
+        let s = go_live(r);
+        r.hub.speak(true).unwrap();
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Speak {
+                session: s,
+                on: true,
+            },
+        );
+        let hub = r.hub.clone();
+        let t = std::thread::spawn(move || {
+            let (mut enc, mut tone) = (Encoder::new().unwrap(), Tone::new(440.0, 8000.0));
+            for seq in 0..60u32 {
+                let opus = enc.encode(&tone.frame()).unwrap();
+                let f = Msg::Frame(Frame {
+                    session: s,
+                    dir: Dir::Down,
+                    seq,
+                    ts: seq * 320,
+                    cap: 0,
+                    opus,
+                });
+                hub.on_packet("p1", f.kind(), &wire::body(&f));
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        (s, t)
+    }
+
+    #[test]
+    fn the_echo_guard_silences_the_microphone_while_the_far_party_talks_unless_off() {
+        let r = rig();
+        let (_, t) = speaking_with_far_talk(&r);
+        wait("held microphone frames", || {
+            r.hub
+                .view(false)
+                .session
+                .is_some_and(|s| s.up_sent >= 15 && s.echo_held_pct >= 50)
+        });
+        let v = r.hub.view(false);
+        assert!(v.session.as_ref().unwrap().echo_guard);
+        assert_eq!(v.echo, EchoMode::Auto);
+        assert!(v.echo_note.is_some());
+        t.join().unwrap();
+        r.hub.stop();
+
+        let r = rig();
+        r.hub.set_echo(EchoMode::Off);
+        let (_, t) = speaking_with_far_talk(&r);
+        wait("microphone frames", || {
+            r.hub.view(false).session.is_some_and(|s| s.up_sent >= 15)
+        });
+        let s = r.hub.view(false).session.unwrap();
+        assert!(!s.echo_guard && s.echo_held_pct == 0, "{s:?}");
+        t.join().unwrap();
+        r.hub.stop();
+    }
+
+    #[test]
+    fn the_phones_uplink_report_shows_in_the_view() {
+        let r = rig();
+        phone(&r, true, true);
+        let s = go_live(&r);
+        r.hub.speak(true).unwrap();
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Speak {
+                session: s,
+                on: true,
+            },
+        );
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Stats(Stats {
+                session: s,
+                dir: Dir::Up,
+                got: 48,
+                lost: 2,
+                late: 1,
+                depth_ms: 40,
+            }),
+        );
+        let v = r.hub.view(false).session.unwrap();
+        assert_eq!(
+            (v.up_got, v.up_lost, v.up_dropped, v.up_depth_ms),
+            (48, 2, 1, 40)
+        );
+        r.hub.stop();
     }
 }

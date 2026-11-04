@@ -48,6 +48,8 @@ pub enum Action {
     PeerReady(Ready),
     /// "Speak back" is now on (true) or off (false) for the live session: start or stop the uplink path.
     SpeakState(bool),
+    /// Computer: the phone's receiver report for the uplink of the live session (numbers only).
+    PeerStats(crate::wire::Stats),
 }
 
 #[derive(Clone, Debug)]
@@ -391,6 +393,16 @@ impl Gate {
                 }
             }
             (Side::Computer, Msg::Ready(r)) => vec![Action::PeerReady(r)],
+            // The phone reports what it received of the computer's microphone; only for the live session.
+            (Side::Computer, Msg::Stats(st))
+                if st.dir == Dir::Up
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.live && s.id == st.session) =>
+            {
+                vec![Action::PeerStats(st)]
+            }
             (_, Msg::Stats(_)) => Vec::new(),
             _ => self.drop("not for this side"),
         }
@@ -687,5 +699,28 @@ mod tests {
             )[0],
             Action::Drop(_)
         ));
+    }
+
+    #[test]
+    fn the_phones_uplink_report_reaches_the_computer_only_for_its_live_session() {
+        use crate::wire::Stats;
+        let (_, mut c) = live_pair();
+        let st = |session, dir| Stats {
+            session,
+            dir,
+            got: 50,
+            lost: 1,
+            late: 0,
+            depth_ms: 40,
+        };
+        assert_eq!(
+            c.on_msg(Msg::Stats(st(7, Dir::Up)), 2),
+            vec![Action::PeerStats(st(7, Dir::Up))]
+        );
+        assert!(c.on_msg(Msg::Stats(st(8, Dir::Up)), 2).is_empty());
+        assert!(c.on_msg(Msg::Stats(st(7, Dir::Down)), 2).is_empty());
+        let mut idle = Gate::new(Side::Computer);
+        idle.set_consent(true, false);
+        assert!(idle.on_msg(Msg::Stats(st(7, Dir::Up)), 2).is_empty());
     }
 }

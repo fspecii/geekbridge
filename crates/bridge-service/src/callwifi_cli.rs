@@ -2,12 +2,12 @@
 //! `geekbridge-ctl callwifi`: EXPERIMENTAL call audio over Wi-Fi from the command line (off by default;
 //! Bluetooth hands-free stays the supported path). The text is built here from the service's view so it is tested
 //! without a service. Nothing here carries call content, only counts.
-use bridge_core::call_wifi_view::{CallWifiAction, CallWifiView};
+use bridge_core::call_wifi_view::{CallWifiAction, CallWifiView, EchoMode};
 use bridge_core::ipc::{self, Request, Response, Token};
 use std::fmt::Write as _;
 
-pub const USAGE: &str =
-    "usage: geekbridge-ctl callwifi [status | listen [DEVICE_ID] | stop | speak on|off] [--json]";
+pub const USAGE: &str = "usage: geekbridge-ctl callwifi [status | listen [DEVICE_ID] | stop | speak on|off | \
+echo auto|on|off | setup ...] [--json]";
 
 /// The state as plain lines.
 pub fn describe(v: &CallWifiView) -> String {
@@ -51,8 +51,38 @@ pub fn describe(v: &CallWifiView) -> String {
                 ""
             }
         );
+        let _ = writeln!(
+            out,
+            "  far party: jitter {} ms, {} late, {} concealed",
+            s.jitter_ms, s.late, s.concealed
+        );
+        if s.speaking {
+            let _ = writeln!(
+                out,
+                "  your microphone: {} frames sent; the phone got {}, {} missing, {} dropped, {} ms queued{}",
+                s.up_sent,
+                s.up_got,
+                s.up_lost,
+                s.up_dropped,
+                s.up_depth_ms,
+                if s.echo_guard {
+                    format!("; echo guard on ({} % silenced)", s.echo_held_pct)
+                } else {
+                    "; echo guard off".to_owned()
+                }
+            );
+        }
         let _ = writeln!(out, "  stop it: geekbridge-ctl callwifi stop");
     }
+    let _ = writeln!(
+        out,
+        "  echo guard: {}{}",
+        v.echo.as_str(),
+        v.echo_note
+            .as_deref()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default()
+    );
     if v.phones.is_empty() {
         let _ = writeln!(
             out,
@@ -129,6 +159,15 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
         ["stop"] => ask(port, token, CallWifiAction::Stop)?,
         ["speak", "on"] => ask(port, token, CallWifiAction::Speak { on: true })?,
         ["speak", "off"] => ask(port, token, CallWifiAction::Speak { on: false })?,
+        ["echo", m] => {
+            let mode = match *m {
+                "auto" => EchoMode::Auto,
+                "on" => EchoMode::On,
+                "off" => EchoMode::Off,
+                _ => return Err(USAGE.into()),
+            };
+            ask(port, token, CallWifiAction::Echo { mode })?
+        }
         _ => return Err(USAGE.into()),
     };
     if json {
@@ -184,6 +223,11 @@ mod tests {
         let t = describe(&v);
         assert!(t.contains("LIVE with Phone a") && t.contains("YOUR MICROPHONE IS ON"));
         assert!(t.contains("callwifi stop"));
+        assert!(
+            t.contains("your microphone: 0 frames sent") && t.contains("echo guard off"),
+            "{t}"
+        );
+        assert!(t.contains("echo guard: auto"));
         v.supported = false;
         v.problem = Some("no pw-cat".into());
         assert!(describe(&v).contains("not available on this computer: no pw-cat"));

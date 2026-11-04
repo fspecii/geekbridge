@@ -61,6 +61,12 @@ struct Inner {
     offered_at: u64,
     sent: u64,
     got_up: u64,
+    /// The uplink of the live session, for the receiver report to the computer: the last sequence number, frames
+    /// missing in the sequence, frames dropped because the helper did not take them in time, the last report.
+    up_last_seq: Option<u32>,
+    up_lost: u64,
+    up_dropped: u64,
+    up_reported_at: u64,
 }
 
 pub(in crate::transport) struct Hub {
@@ -94,6 +100,10 @@ impl Default for Hub {
                 offered_at: 0,
                 sent: 0,
                 got_up: 0,
+                up_last_seq: None,
+                up_lost: 0,
+                up_dropped: 0,
+                up_reported_at: 0,
             }),
             cv: Condvar::new(),
             epoch: Instant::now(),
@@ -129,6 +139,10 @@ impl Inner {
                         self.down_seq = 0;
                         self.offered_at = now_ms;
                         self.uplink.clear();
+                        self.up_last_seq = None;
+                        self.up_lost = 0;
+                        self.up_dropped = 0;
+                        self.got_up = 0;
                         self.event(
                             json!({"ev": "start", "session": session, "computer": computer}),
                         );
@@ -151,6 +165,14 @@ impl Inner {
                 }
                 Action::Accept(f) => {
                     self.got_up += 1;
+                    if let Some(last) = self.up_last_seq {
+                        let gap = f.seq.wrapping_sub(last).wrapping_sub(1);
+                        // A huge jump is a restart of the computer's microphone, not a loss.
+                        if gap < 500 {
+                            self.up_lost += u64::from(gap);
+                        }
+                    }
+                    self.up_last_seq = Some(f.seq);
                     if self.dec.is_none() {
                         self.dec = Decoder::new().ok();
                     }
@@ -158,11 +180,12 @@ impl Inner {
                         let pcm = d.render(&JitterOut::Packet(f.opus)).to_vec();
                         if self.uplink.len() >= MAX_UPLINK {
                             self.uplink.pop_front();
+                            self.up_dropped += 1;
                         }
                         self.uplink.push_back(pcm);
                     }
                 }
-                Action::Drop(_) | Action::PeerReady(_) => {}
+                Action::Drop(_) | Action::PeerReady(_) | Action::PeerStats(_) => {}
             }
         }
         out
@@ -444,9 +467,28 @@ impl Core {
         body
     }
 
-    /// Kotlin: decoded microphone frames for the helper's injection route (speak back), as base64 s16le.
+    /// Kotlin: decoded microphone frames for the helper's injection route (speak back), as base64 s16le. While
+    /// speaking, about once a second it also sends the computer a receiver report for the uplink (numbers only).
     pub(in crate::transport) fn callwifi_pull(&self) -> Value {
+        let now = self.callwifi.now_ms();
         let mut g = self.callwifi.lock();
+        let report = match g.gate.session() {
+            Some(s) if s.live && s.up && now.saturating_sub(g.up_reported_at) >= 1000 => {
+                Some(Msg::Stats(wire::Stats {
+                    session: s.id,
+                    dir: Dir::Up,
+                    got: g.got_up,
+                    lost: g.up_lost,
+                    late: g.up_dropped,
+                    depth_ms: (g.uplink.len() * 20) as u32,
+                }))
+            }
+            _ => None,
+        };
+        let report_conn = report.as_ref().and_then(|_| g.conn.as_ref().map(|c| c.0));
+        if report_conn.is_some() {
+            g.up_reported_at = now;
+        }
         let frames: Vec<String> = g
             .uplink
             .drain(..)
@@ -458,6 +500,10 @@ impl Core {
                 base64::engine::general_purpose::STANDARD.encode(b)
             })
             .collect();
+        drop(g);
+        if let (Some(r), Some(c)) = (report, report_conn) {
+            self.callwifi_send(c, vec![r]);
+        }
         json!({"frames": frames})
     }
 
@@ -468,6 +514,8 @@ impl Core {
             "session": g.gate.session().map(|s| json!({"id": s.id, "live": s.live, "speaking": s.up})),
             "sent": g.sent,
             "got_up": g.got_up,
+            "up_lost": g.up_lost,
+            "up_dropped": g.up_dropped,
             "dropped": g.gate.dropped,
         })
     }

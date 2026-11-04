@@ -21,6 +21,30 @@ pub enum CallWifiAction {
     Stop,
     /// Turn "Speak (experimental)" on or off for the live session.
     Speak { on: bool },
+    /// The echo guard while speaking: `auto` (on unless the output is a headset or the microphone already cancels
+    /// echo), `on` (always), `off` (never). Kept until the service restarts.
+    Echo { mode: EchoMode },
+}
+
+/// Without echo cancellation, the far party's voice from the speakers goes back into the microphone and they hear
+/// themselves. The guard closes the microphone while the far party is heard (half duplex, like a speakerphone).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EchoMode {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+impl EchoMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
 }
 
 /// One paired phone.
@@ -55,6 +79,32 @@ pub struct CallWifiSession {
     pub lost: u64,
     pub depth_ms: u32,
     pub seconds: u64,
+    /// Far party: frames that came too late to play, gaps filled with concealment, and the arrival jitter
+    /// (RFC 3550 estimate, ms). Together with `depth_ms` this is the delay added on this computer.
+    #[serde(default)]
+    pub late: u64,
+    #[serde(default)]
+    pub concealed: u64,
+    #[serde(default)]
+    pub jitter_ms: u32,
+    /// Speaking: microphone frames sent, and the phone's last receiver report for them (got, missing, dropped
+    /// because the phone's helper did not take them in time, queued on the phone in ms).
+    #[serde(default)]
+    pub up_sent: u64,
+    #[serde(default)]
+    pub up_got: u64,
+    #[serde(default)]
+    pub up_lost: u64,
+    #[serde(default)]
+    pub up_dropped: u64,
+    #[serde(default)]
+    pub up_depth_ms: u32,
+    /// The echo guard is closing the microphone while the far party is heard, and the share of sent frames it
+    /// silenced (percent).
+    #[serde(default)]
+    pub echo_guard: bool,
+    #[serde(default)]
+    pub echo_held_pct: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +117,11 @@ pub struct CallWifiView {
     /// The headphones and microphone a session would use (the Bluetooth path's choice), by description.
     pub output: Option<String>,
     pub input: Option<String>,
+    /// The echo guard setting (`auto`, `on`, `off`) and, for `auto`, what it decided and why.
+    #[serde(default)]
+    pub echo: EchoMode,
+    #[serde(default)]
+    pub echo_note: Option<String>,
 }
 
 impl CallWifiView {
@@ -136,6 +191,9 @@ mod tests {
             },
             CallWifiAction::Stop,
             CallWifiAction::Speak { on: true },
+            CallWifiAction::Echo {
+                mode: EchoMode::Off,
+            },
         ] {
             let j = serde_json::to_string(&a).unwrap();
             assert_eq!(serde_json::from_str::<CallWifiAction>(&j).unwrap(), a);

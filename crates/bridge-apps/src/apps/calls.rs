@@ -474,6 +474,7 @@ fn wifi_fixture(kind: &str) -> Option<bridge_core::call_wifi_view::CallWifiView>
         lost: 3,
         depth_ms: 60,
         seconds: 83,
+        ..Default::default()
     };
     let session = match kind {
         "listening-wifi" => Some(session(false)),
