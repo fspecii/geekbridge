@@ -288,6 +288,9 @@ pub struct CallHub {
     /// grace re-check all call it, and a view built before another caller's update must not undo
     /// that update (a ring forgotten for a moment comes back as a new ring with a second banner).
     announcing: Mutex<()>,
+    /// Wakes the parked watchdog: it runs only while there is something to watch (a ring, a call
+    /// on a link, a card, a dropped link's rings), so an idle service gains no wake-ups.
+    wake: Arc<(Mutex<bool>, std::sync::Condvar)>,
     timings: Timings,
 }
 
@@ -304,21 +307,47 @@ impl CallHub {
             notifier: Mutex::new(None),
             overlay: Mutex::new(None),
             announcing: Mutex::new(()),
+            wake: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
             timings,
         });
         let weak = Arc::downgrade(&hub);
+        let wake = hub.wake.clone();
         let _ = std::thread::Builder::new()
             .name("geekbridge-calls-watchdog".into())
             .spawn(move || {
                 loop {
                     std::thread::sleep(timings.tick);
-                    match weak.upgrade() {
+                    let keep = match weak.upgrade() {
                         Some(hub) => hub.tick(),
                         None => return,
+                    };
+                    if keep {
+                        continue;
                     }
+                    // Nothing to watch: park until poked. The timeout only lets the thread notice
+                    // that the hub is gone.
+                    let (flag, cv) = &*wake;
+                    let mut woken = flag.lock().unwrap_or_else(|e| e.into_inner());
+                    while !*woken {
+                        if weak.strong_count() == 0 {
+                            return;
+                        }
+                        woken = cv
+                            .wait_timeout(woken, Duration::from_secs(30))
+                            .unwrap_or_else(|e| e.into_inner())
+                            .0;
+                    }
+                    *woken = false;
                 }
             });
         hub
+    }
+
+    /// Let the watchdog run (it parks while nothing needs watching).
+    fn poke_watchdog(&self) {
+        let (flag, cv) = &*self.wake;
+        *flag.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        cv.notify_one();
     }
 
     /// Start the incoming-call card through `launcher` whenever a call rings.
@@ -553,6 +582,9 @@ impl CallHub {
                         report.apply(&mut phone.state);
                         phone.last_state = Instant::now();
                         phone.probe = None;
+                        if report.state != link::PhoneState::Idle {
+                            self.poke_watchdog();
+                        }
                         if report.state != link::PhoneState::Ringing {
                             // The phone's word on the ring that a dropped link left open.
                             suspended.retain(|s| s.device != device_id);
@@ -957,7 +989,8 @@ impl CallHub {
     /// The watchdog: runs every [`Timings::tick`]. Asks a quiet phone that is ringing or in a call
     /// for its state and clears the call when it never answers, forgets old link flaps, and lets the
     /// card supervisor reap or stop the card process.
-    pub fn tick(self: &Arc<Self>) {
+    /// True while there is something left to watch.
+    pub fn tick(self: &Arc<Self>) -> bool {
         let t = self.timings;
         let now = Instant::now();
         let busy = {
@@ -1024,6 +1057,16 @@ impl CallHub {
         if busy || card {
             self.announce_new_calls();
         }
+        let inner = self.inner();
+        busy || card
+            || !inner.rings.is_empty()
+            || !inner.suspended.is_empty()
+            || inner.links.values().any(|p| {
+                p.enabled
+                    && p.report
+                        .as_ref()
+                        .is_some_and(|r| r.state != link::PhoneState::Idle)
+            })
     }
 
     /// Number the rings in `view`, announce the new ones (banner once per ring, after
@@ -1126,6 +1169,12 @@ impl CallHub {
             .as_mut()
         {
             o.update(&ringing_now, now);
+            if o.card_running() {
+                self.poke_watchdog();
+            }
+        }
+        if !ringing_now.is_empty() || !self.inner().suspended.is_empty() {
+            self.poke_watchdog();
         }
         let Some(notifier) = self
             .notifier

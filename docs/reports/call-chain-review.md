@@ -70,6 +70,11 @@ The card now starts at the first sight of a ring. Before, it started after the b
 "wait for the caller's name". The Android app reports no number, so every ring paid that delay. The
 card fills in the name when one arrives; the banner still waits.
 
+The watchdog thread parks while nothing needs watching: no ring, no call on a link, no card, no
+dropped link's rings. Something to watch wakes it. An idle service has the same wake-ups as before:
+2/s locally with `scripts/perf-check.sh`. The first push ticked 4/s and CI measured the idle budget's
+limit, 6/s.
+
 ## Seams checked and found sound (no change)
 
 * **Dual-SIM duplicates.** The phone merges `default`, `sub2/slot1` and `broadcast` before reporting.

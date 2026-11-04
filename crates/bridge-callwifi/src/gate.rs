@@ -466,7 +466,13 @@ mod tests {
     fn a_phone_cannot_answer_speak_off_with_on() {
         let (_p, mut c) = listen_pair();
         c.ask_speak(false);
-        let r = c.on_msg(Msg::Speak { session: 7, on: true }, 3);
+        let r = c.on_msg(
+            Msg::Speak {
+                session: 7,
+                on: true,
+            },
+            3,
+        );
         assert!(matches!(r[0], Action::Drop(_)));
         assert!(!c.may_send(Dir::Up));
     }
