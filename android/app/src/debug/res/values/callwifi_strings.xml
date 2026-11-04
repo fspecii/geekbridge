@@ -15,7 +15,7 @@
     <string name="cw_open_dev">Open Developer options</string>
     <string name="cw_inapp_later">Pairing from inside the app (without a computer) is not built yet.</string>
     <string name="cw_test_title">2. Test with a call</string>
-    <string name="cw_test_body">First a check with no call (so silence can be told from sound), then a real call: the app listens to the call source for a few seconds and says whether the other person\'s voice gets through. Only levels are measured; nothing is kept.</string>
+    <string name="cw_test_body">First a check with no call (so silence can be told from sound; if that check is refused or delivers nothing, the answer will be Unsure, never Works), then a real call: the app listens to the call source for a few seconds and says whether the other person\'s voice gets through. Only levels are measured; nothing is kept.</string>
     <string name="cw_test_control">Step 1: check with no call</string>
     <string name="cw_test_call">Step 2: test during a call</string>
     <string name="cw_last_result">Last result: %1$s</string>

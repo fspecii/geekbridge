@@ -5,6 +5,9 @@
 //! A real phone is silent or refuses without a call; an emulator (and possibly a quirky HAL) produces a loud signal
 //! either way, which proves nothing about the far party. The Kotlin twin (`SelfTestVerdict.kt`) is checked against
 //! the same vectors.
+//!
+//! The control only counts if it really ran (opened and delivered samples). A refused, empty or missing control
+//! cannot rule out a test signal, so the verdict is `Unsure`, never `Works`.
 
 /// RMS (of 16-bit samples) below which a capture counts as silence (about -60 dBFS).
 pub const SILENT_RMS: u32 = 30;
@@ -19,7 +22,7 @@ pub enum Verdict {
     Silent,
     /// Android refused the capture (permission or policy).
     Refused,
-    /// Loud even with no call: the phone's sound path produces a test signal, so the result proves nothing.
+    /// The no-call control was loud, refused, empty or missing: a test signal is not ruled out, so the result proves nothing.
     Unsure,
 }
 
@@ -54,11 +57,14 @@ impl Verdict {
 pub struct Capture {
     /// The source opened and delivered frames. False = refused (exception, failed init, policy).
     pub opened: bool,
+    /// Samples actually received. 0 = the source opened but delivered nothing (no evidence either way).
+    pub frames: u32,
     pub rms: u32,
     pub silenced: bool,
 }
 
-/// Decide from the two captures. `call` is the one taken during a call.
+/// Decide from the two captures. `call` is the one taken during a call. `Works` needs a valid control (opened, with
+/// samples) that was quiet; anything else about the control gives `Unsure`.
 pub fn classify(control: Option<Capture>, call: Option<Capture>) -> Verdict {
     let Some(call) = call else {
         return Verdict::NotRun;
@@ -69,9 +75,12 @@ pub fn classify(control: Option<Capture>, call: Option<Capture>) -> Verdict {
     if call.silenced || call.rms < SILENT_RMS {
         return Verdict::Silent;
     }
-    if let Some(c) = control
-        && c.opened
-        && !c.silenced
+    // The control proves nothing unless it really ran: opened and delivered samples. A refused, empty or missing
+    // control (an emulator refuses the call source outside a call) cannot rule out a test signal, so: unsure.
+    let Some(c) = control.filter(|c| c.opened && c.frames > 0) else {
+        return Verdict::Unsure;
+    };
+    if !c.silenced
         && c.rms >= SILENT_RMS
         // Loud with no call, at least half as loud as with one: not the far party.
         && u64::from(c.rms) * 2 >= u64::from(call.rms)
@@ -87,6 +96,7 @@ mod tests {
     fn cap(opened: bool, rms: u32, silenced: bool) -> Capture {
         Capture {
             opened,
+            frames: if opened { 48_000 } else { 0 },
             rms,
             silenced,
         }
@@ -110,12 +120,25 @@ mod tests {
             classify(quiet, Some(cap(true, 4000, false))),
             Verdict::Works
         );
-        assert_eq!(classify(None, Some(cap(true, 4000, false))), Verdict::Works);
-        // Control refused or silent: fine. Control loud: unsure.
+        // No valid control (missing, refused, or opened with no samples): cannot rule out a test signal.
+        let loud = Some(cap(true, 4000, false));
+        assert_eq!(classify(None, loud), Verdict::Unsure);
+        assert_eq!(classify(Some(cap(false, 0, false)), loud), Verdict::Unsure);
+        let empty = Capture {
+            frames: 0,
+            ..cap(true, 0, false)
+        };
+        assert_eq!(classify(Some(empty), loud), Verdict::Unsure);
+        // A silenced control did deliver samples: a valid, quiet control.
+        assert_eq!(classify(Some(cap(true, 0, true)), loud), Verdict::Works);
+        // The call's own verdicts do not depend on the control.
+        assert_eq!(classify(None, Some(cap(false, 0, false))), Verdict::Refused);
+        assert_eq!(classify(None, Some(cap(true, 3, false))), Verdict::Silent);
         assert_eq!(
-            classify(Some(cap(false, 0, false)), Some(cap(true, 4000, false))),
-            Verdict::Works
+            classify(Some(empty), Some(cap(true, 3, false))),
+            Verdict::Silent
         );
+        // Control loud: unsure.
         assert_eq!(
             classify(Some(cap(true, 15000, false)), Some(cap(true, 15000, false))),
             Verdict::Unsure

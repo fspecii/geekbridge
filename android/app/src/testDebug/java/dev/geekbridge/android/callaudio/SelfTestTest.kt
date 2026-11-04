@@ -20,8 +20,15 @@ class SelfTestTest {
         assertEquals(Verdict.Silent, SelfTestVerdict.classify(quiet, cap(true, 5)))
         assertEquals(Verdict.Silent, SelfTestVerdict.classify(quiet, cap(true, 4000, true)))
         assertEquals(Verdict.Works, SelfTestVerdict.classify(quiet, cap(true, 4000)))
-        assertEquals(Verdict.Works, SelfTestVerdict.classify(null, cap(true, 4000)))
-        assertEquals(Verdict.Works, SelfTestVerdict.classify(cap(false, 0), cap(true, 4000)))
+        // No valid control (missing, refused, or opened with no samples): cannot rule out a test signal.
+        assertEquals(Verdict.Unsure, SelfTestVerdict.classify(null, cap(true, 4000)))
+        assertEquals(Verdict.Unsure, SelfTestVerdict.classify(cap(false, 0), cap(true, 4000)))
+        assertEquals(Verdict.Unsure, SelfTestVerdict.classify(Capture(true, 0, frames = 0), cap(true, 4000)))
+        // A silenced control did deliver samples: a valid, quiet control.
+        assertEquals(Verdict.Works, SelfTestVerdict.classify(cap(true, 0, true), cap(true, 4000)))
+        assertEquals(Verdict.Refused, SelfTestVerdict.classify(null, cap(false, 0)))
+        assertEquals(Verdict.Silent, SelfTestVerdict.classify(null, cap(true, 3)))
+        assertEquals(Verdict.Silent, SelfTestVerdict.classify(Capture(true, 0, frames = 0), cap(true, 3)))
         assertEquals(Verdict.Unsure, SelfTestVerdict.classify(cap(true, 15000), cap(true, 15000)))
         assertEquals(Verdict.Works, SelfTestVerdict.classify(cap(true, 1000), cap(true, 4000)))
         for (v in Verdict.entries) assertEquals(v, Verdict.fromWire(v.wire))

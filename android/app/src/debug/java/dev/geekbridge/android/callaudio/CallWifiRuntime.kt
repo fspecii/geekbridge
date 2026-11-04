@@ -287,7 +287,8 @@ object CallWifiRuntime {
                 val loud = control.values.any { it.opened && it.rms >= SelfTestVerdict.SILENT_RMS }
                 say(
                     if (loud) "Without a call the phone still produced sound on a call source. That cannot be the other person, so the test may end as Unsure."
-                    else "Good: with no call the call sources are silent or refused. Now make a call and press step 2.",
+                    else if (control.values.none { it.opened && it.frames > 0 }) "The no-call check got no audio from any call source (refused or empty), so it cannot rule out a test signal; the test will end as Unsure. You can still run step 2."
+                    else "Good: with no call the call sources are quiet. Now make a call and press step 2.",
                 )
             } finally {
                 testRunning = false
@@ -327,10 +328,10 @@ object CallWifiRuntime {
     }
 
     fun describe(v: Verdict, noControl: Boolean): String = when (v) {
-        Verdict.Works -> "Works: the other person's voice reaches the helper." + if (noControl) " (No no-call check was run first, so this is less certain.)" else ""
+        Verdict.Works -> "Works: the other person's voice reaches the helper, and the no-call check was quiet."
         Verdict.Silent -> "Silent: this phone opens the call source but delivers silence. Samsung may block it. Bluetooth stays the way to hear calls."
         Verdict.Refused -> "Refused: Android denied the capture. This phone does not allow it."
-        Verdict.Unsure -> "Unsure: the phone makes the same sound with no call, so this proves nothing. Treat it as not working."
+        Verdict.Unsure -> "Unsure: the no-call check did not run cleanly (the phone refused it, delivered nothing, or made the same sound with no call), so this cannot prove the other person's voice. Treat it as not working."
         Verdict.NotRun -> "Not run yet."
     }
 

@@ -9,7 +9,9 @@ Background: [design](../design/call-audio-over-wifi.md), [prototype results](cal
   framing, self-test verdict (moved out of `experiments/callaudio-wifi`, which now re-exports it).
 * Gate now listens only; "speak back" is a separate `geekbridge.callaudio.speak` step that needs the phone's own opt-in
   and a phone-reported uplink route. The phone can switch it off alone. New `ready` packet (helper up, self-test verdict).
-* Self-test verdicts in plain words: works / silent / refused / unsure (loud with no call, so it proves nothing).
+* Self-test verdicts in plain words: works / silent / refused / unsure. `works` needs a valid no-call control (the capture opened and delivered samples) that was quiet.
+  `unsure` = the control was loud, refused, empty or missing (e.g. the android-36p emulator refuses `DOWNLINK_EXTRACTION` outside a
+  call, so a loud in-call signal cannot be told from a test signal); treated as not working, never offers Listen.
 * Hostile tests: no packet sequence opens a gate whose consents are missing; mutation fuzzing covers `ready` and `speak`.
 * Control API types (`Request::CallWifi`, `CallWifiView`), consent `call_audio_wifi`, phone grant `callaudio`,
   `docs/privacy.md` tables. The daemon answers `CallWifi` with an empty view (placeholder).

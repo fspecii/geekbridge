@@ -168,7 +168,7 @@ for tag in $IMAGES; do
   st=""; for _ in $(seq 1 40); do sleep 1; st="$(cwstatus)"; [ "$(cwfield "$st" verdict)" != not_run ] && [ -n "$st" ] && break; done
   v="$(cwfield "$st" verdict)"
   case "$v" in
-    works|silent|refused|unsure) row PASS "$tag" integrated-selftest "verdict=$v (emulator: unsure is the honest answer, its call sources sound with no call) status=$st" ;;
+    works|silent|refused|unsure) row PASS "$tag" integrated-selftest "verdict=$v (emulator: the no-call control is refused or loud, so unsure is the honest answer; works would be a false positive) status=$st" ;;
     *) row FAIL "$tag" integrated-selftest "no verdict: ${st:-no status}" ;;
   esac
   cw STOP | grep -q "result=1" && row PASS "$tag" integrated-stop ok || row FAIL "$tag" integrated-stop "receiver did not accept"

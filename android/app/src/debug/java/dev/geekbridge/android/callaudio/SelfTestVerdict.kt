@@ -18,8 +18,8 @@ enum class Verdict(val wire: String) {
     }
 }
 
-/** One capture attempt: [opened] false = Android refused; [rms] of 16-bit samples. */
-data class Capture(val opened: Boolean, val rms: Int, val silenced: Boolean = false)
+/** One capture attempt: [opened] false = Android refused; [frames] samples received; [rms] of 16-bit samples. */
+data class Capture(val opened: Boolean, val rms: Int, val silenced: Boolean = false, val frames: Int = if (opened) 48_000 else 0)
 
 object SelfTestVerdict {
     const val SILENT_RMS = 30
@@ -28,9 +28,9 @@ object SelfTestVerdict {
         if (call == null) return Verdict.NotRun
         if (!call.opened) return Verdict.Refused
         if (call.silenced || call.rms < SILENT_RMS) return Verdict.Silent
-        if (control != null && control.opened && !control.silenced && control.rms >= SILENT_RMS &&
-            control.rms.toLong() * 2 >= call.rms.toLong()
-        ) {
+        // The control proves nothing unless it really ran: opened and delivered samples. Refused, empty or missing: unsure.
+        if (control == null || !control.opened || control.frames <= 0) return Verdict.Unsure
+        if (!control.silenced && control.rms >= SILENT_RMS && control.rms.toLong() * 2 >= call.rms.toLong()) {
             return Verdict.Unsure
         }
         return Verdict.Works

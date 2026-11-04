@@ -86,7 +86,7 @@ class HelperCapturePort(
             conn.command("stop")
             if (m.refused) return Capture(opened = false, rms = 0)
             val rms = if (m.n > 0) sqrt(m.sumSq / m.n).toInt() else 0
-            return Capture(opened = true, rms = rms, silenced = m.silenced)
+            return Capture(opened = true, rms = rms, silenced = m.silenced, frames = m.n.coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
         } finally {
             conn.listener = null
         }
