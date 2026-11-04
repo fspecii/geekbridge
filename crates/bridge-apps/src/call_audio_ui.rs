@@ -335,6 +335,9 @@ pub fn fixture(name: &str) -> Option<Setup> {
 
 pub struct CallAudioPanel {
     feed: Option<Feed>,
+    /// The last time the checklist said "no adapter"; an adapter showing up afterwards is a hotplug.
+    was_no_adapter: bool,
+    adapter_found: bool,
     copied: Option<(StepId, Instant)>,
     opened_note: Option<String>,
 }
@@ -349,6 +352,8 @@ impl CallAudioPanel {
     pub fn new() -> Self {
         Self {
             feed: None,
+            was_no_adapter: false,
+            adapter_found: false,
             copied: None,
             opened_note: None,
         }
@@ -374,6 +379,78 @@ impl CallAudioPanel {
                 }
             }
         })
+    }
+
+    /// The checklist verdict, starting the background check on first use. `None` until the service answered.
+    /// Also notices an adapter appearing after it was missing (a USB dongle plugged in).
+    pub fn current_verdict(&mut self, ctx: &egui::Context) -> Option<Verdict> {
+        let v = self.feed(ctx).snapshot().setup.map(|s| s.verdict);
+        match v {
+            Some(Verdict::NoBluetooth) => self.was_no_adapter = true,
+            Some(Verdict::MacFallback | Verdict::Unsupported) | None => {}
+            Some(_) => {
+                if self.was_no_adapter {
+                    self.adapter_found = true;
+                }
+                self.was_no_adapter = false;
+            }
+        }
+        v
+    }
+
+    /// Non-blocking warning when this computer has no Bluetooth adapter. Returns whether it was drawn.
+    pub fn banner(&mut self, ui: &mut egui::Ui, pal: &Palette) -> bool {
+        if self.current_verdict(&ui.ctx().clone()) != Some(Verdict::NoBluetooth) {
+            return false;
+        }
+        let r = ui
+            .horizontal_top(|ui| {
+                theme::dot(ui, pal.warn, false);
+                ui.add(egui::Label::new(theme::caption(pal, tr("callaudio.banner"))).wrap());
+            })
+            .response;
+        a11y::describe(
+            ui.ctx(),
+            r.id,
+            tr("callaudio.a11y.banner"),
+            Some(tr("callaudio.banner")),
+        );
+        true
+    }
+
+    /// "Bluetooth adapter found" card after a hotplug. `true` when the user pressed its button.
+    pub fn found_card(&mut self, ui: &mut egui::Ui, pal: &Palette) -> bool {
+        self.current_verdict(&ui.ctx().clone());
+        if !self.adapter_found {
+            return false;
+        }
+        let mut go = false;
+        ui.add(egui::Label::new(RichText::new(tr("callaudio.found")).color(pal.text)).wrap());
+        ui.horizontal(|ui| {
+            go = theme::pill_button(
+                ui,
+                pal,
+                tr("callaudio.found.button"),
+                ButtonKind::Primary,
+                true,
+            )
+            .clicked();
+            if theme::pill_button(
+                ui,
+                pal,
+                tr("callaudio.found.dismiss"),
+                ButtonKind::Plain,
+                true,
+            )
+            .clicked()
+            {
+                self.adapter_found = false;
+            }
+        });
+        if go {
+            self.adapter_found = false;
+        }
+        go
     }
 
     /// Draws the whole checklist. `compact` drops the intro line (the Calls window is narrow).
@@ -838,6 +915,33 @@ mod tests {
         }
         assert_eq!(*sent.lock().unwrap(), ["test", "choose Some(\"o2\")"]);
         assert!(*polls.lock().unwrap() >= 1);
+    }
+
+    #[test]
+    fn banner_only_for_no_bluetooth_and_hotplug_is_noticed() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx, bridge_core::AppKind::Calls);
+        let pal = theme::palette(bridge_core::AppKind::Calls, false);
+        let mut p = CallAudioPanel::with_feed(Feed::fixed(fixture("no-bluetooth").unwrap()));
+        let mut drawn = false;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| drawn = p.banner(ui, &pal));
+        });
+        assert!(drawn);
+        let mut q = CallAudioPanel::with_feed(Feed::fixed(fixture("ready").unwrap()));
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| drawn = q.banner(ui, &pal));
+        });
+        assert!(!drawn);
+        assert!(!q.adapter_found, "never missing, so no hotplug card");
+        // Missing, then present: the card appears.
+        p.current_verdict(&ctx);
+        *p.feed.as_ref().unwrap().state.lock().unwrap() = Snapshot {
+            setup: fixture("connect"),
+            problem: None,
+        };
+        p.current_verdict(&ctx);
+        assert!(p.adapter_found);
     }
 
     #[test]

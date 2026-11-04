@@ -54,6 +54,21 @@ voice itself are exercised only through canned data and stand-in programs. See "
 `docs/call-audio-options.md` rewritten as "Hear and talk through your computer" with the per-OS decision table; the user guide
 section, README feature row, `privacy.md` permission row and `android-calls.md` updated.
 
+## Owner decision update: Bluetooth only, banner, hotplug card
+* No-adapter **warning banner** (non-blocking, a11y name "Warning: no Bluetooth on this computer") with the owner's text: "This
+  computer has no Bluetooth. You can see and answer calls here, but talking needs Bluetooth (add a USB adapter). Messages,
+  contacts and the other features work normally." Shown in the Calls window (keypad and Recents), on the Home Calls tile
+  (short form "No Bluetooth: talking needs an adapter") and in `geekbridge-ctl doctor`. Goldens `calls-keypad-no-bluetooth` and
+  `home-no-bluetooth` (light/dark, std/min). The Calls keypad tab now scrolls so the banner is never clipped.
+* **Hotplug card**: when the checklist goes from "no adapter" to "adapter found" while a window is open, the Calls window shows
+  "Bluetooth adapter found. Set up call audio." with a button to the checklist (polling is 3 s; no udev watcher).
+* Quickstart for the dongle day added to `docs/call-audio-options.md`.
+* **Not done**: (a) the tray tooltip warning and `geekbridge-ctl calling` text (the tray status line is shared with the update and
+  phone logic; left alone to avoid conflicts); (b) the seamless "single primary button that pairs, trusts and connects": the
+  readiness/progress API from the call-backend agent was not available on origin/main when I built this, so the window shows live
+  steps and fixes but does not drive pairing itself. When that API lands the primary button should call it and the steps auto-advance;
+  the model (`Step`, `StepState`, `Fix`) is ready for it. Android needs no change (the phone cannot know the PC has no Bluetooth).
+
 ## Correction to the brief, macOS
 The brief says macOS does not expose HFP-HF to third-party apps. The project's macOS research notes (which cite Apple's
 documentation) say otherwise: Apple publishes `IOBluetoothHandsFreeDevice` (`connectSCO`, `transferAudioToComputer`). What is

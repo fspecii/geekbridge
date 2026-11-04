@@ -839,6 +839,8 @@ impl HomeApp {
         let size = vec2(w, TILE_H);
 
         let phone = phone_line(&self.connections.state);
+        let no_bluetooth = self.call_audio.current_verdict(ui.ctx())
+            == Some(bridge_core::call_audio::Verdict::NoBluetooth);
         let ringing = self
             .calls
             .as_ref()
@@ -923,7 +925,12 @@ impl HomeApp {
                                     "IDLE",
                                     false,
                                     crate::i18n::tr("home.app.calls").to_owned(),
-                                    crate::i18n::tr("home.tile.calls.none").to_owned(),
+                                    crate::i18n::tr(if no_bluetooth {
+                                        "home.tile.calls.no_bluetooth"
+                                    } else {
+                                        "home.tile.calls.none"
+                                    })
+                                    .to_owned(),
                                 ),
                                 None => (
                                     "---",

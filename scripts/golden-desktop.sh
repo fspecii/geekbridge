@@ -77,7 +77,7 @@ for _ in $(seq 50); do [ -s "$RUN/mock.port" ] && break; kill -0 $MOCK 2>/dev/nu
 MOCKP=$(cat "$RUN/mock.port")
 
 export GOLDEN_NOW=1781524800   # 2026-06-15 12:00:00 UTC, a Monday
-DET=(TZ=UTC LANG=en_US.UTF-8 LC_ALL= LANGUAGE= GEEKBRIDGE_CLOCK=24 GEEKBRIDGE_BUNDLED_FONTS_ONLY=1 GEEKBRIDGE_NO_TRAY=1 GEEKBRIDGE_FIXED_CALL_SECONDS=83
+DET=(TZ=UTC LANG=en_US.UTF-8 LC_ALL= LANGUAGE= GEEKBRIDGE_CLOCK=24 GEEKBRIDGE_BUNDLED_FONTS_ONLY=1 GEEKBRIDGE_NO_TRAY=1 GEEKBRIDGE_FIXED_CALL_SECONDS=83 GEEKBRIDGE_CALLAUDIO_FIXTURE=ready
      GEEKBRIDGE_FIREWALL_FIXTURE=none GEEKBRIDGE_AUTOSTART_FIXTURE=on   # the first-run guide reads this computer's firewall and autostart: pinned
      GEEKBRIDGE_NO_UPDATE_CHECK=1 GEEKBRIDGE_UPDATE_BASE_URL=http://127.0.0.1:$MOCKP GOLDEN_NOW=$GOLDEN_NOW LD_PRELOAD="$RUN/fakeclock.so"
      XDG_CONFIG_HOME="$RUN/xdg" XDG_DATA_HOME="$RUN/xdg-data" HOME=/tmp/gb-golden-home)
@@ -204,6 +204,7 @@ shot() { # worker display app theme name keys [ENV=VAL...]
 tasks_home() { # theme: screens of the home window; they show the unread count, so they run before Messages is opened
   local t=$1
   echo "geekbridge|$t|home|-|"
+  echo "geekbridge|$t|home-no-bluetooth|-|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"
   echo "geekbridge|$t|pair|ctrl+2|"
   echo "geekbridge|$t|settings|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"   # the fixture keeps the machine's real Bluetooth out of the picture
   echo "geekbridge|$t|settings-call-audio|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=connect GEEKBRIDGE_OPEN_CALLAUDIO=1"
@@ -226,6 +227,7 @@ tasks_rest() { # theme
   echo "geekbridge-share|$t|share-photos-detail|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_SELECT_FIRST=1"
   echo "geekbridge-share|$t|share-photos-off|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_FIXTURE=offered"
   echo "geekbridge-calls|$t|calls-keypad|-|"
+  echo "geekbridge-calls|$t|calls-keypad-no-bluetooth|-|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"
   echo "geekbridge-calls|$t|calls-audio-setup|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLAUDIO_FIXTURE=connect"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"

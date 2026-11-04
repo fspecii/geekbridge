@@ -245,7 +245,14 @@ impl Calls {
         if let Some(reason) = blocker {
             ui.vertical_centered(|ui| theme::blocked_note(ui, pal, &reason));
         }
-        ui.vertical_centered(|ui| call_ui::audio_note(ui, pal, &self.sources));
+        if self.audio.banner(ui, pal) {
+            ui.add_space(4.0);
+        } else {
+            ui.vertical_centered(|ui| call_ui::audio_note(ui, pal, &self.sources));
+        }
+        if self.audio.found_card(ui, pal) {
+            self.tab = Tab::Recents;
+        }
     }
 
     /// "Call +49...?" sheet. Esc or Cancel drops it; only the Call button sends the request.
@@ -390,7 +397,9 @@ impl Calls {
             );
         });
         ui.add_space(24.0);
-        call_ui::audio_note(ui, pal, &sources);
+        if !self.audio.banner(ui, pal) {
+            call_ui::audio_note(ui, pal, &sources);
+        }
         ui.add_space(8.0);
         call_ui::sources(ui, pal, &sources);
         ui.add_space(18.0);
@@ -476,7 +485,12 @@ impl AppView for Calls {
         });
         self.panel.top(ctx, pal, &feed);
         central(ctx, pal, Margin::symmetric(16, 10), |ui| match self.tab {
-            Tab::Keypad => self.keypad(ui, env),
+            Tab::Keypad => {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .id_salt("calls-keypad")
+                    .show(ui, |ui| self.keypad(ui, env));
+            }
             Tab::Recents => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])

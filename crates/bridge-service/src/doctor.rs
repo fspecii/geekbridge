@@ -400,7 +400,7 @@ pub fn calls_check(c: &CallingStatus) -> Check {
         return check(
             Level::Ok,
             "Calls",
-            "No Bluetooth controller on this computer. Call control works over the phone link (answer, decline, hang up, dial), but the call audio stays on the phone: you will not hear the other person here.",
+            "No Bluetooth controller. This computer has no Bluetooth. You can see and answer calls here, but talking needs Bluetooth (add a USB adapter). Messages, contacts and the other features work normally.",
             Some(
                 "to hear calls on this computer add a USB Bluetooth adapter and pair the phone as a hands-free device (docs/call-audio-options.md); otherwise nothing to do",
             ),
@@ -868,11 +868,11 @@ mod tests {
         };
         let k = calls_check(&c);
         assert_eq!(k.level, Level::Ok, "not a fault");
-        assert!(k.detail.contains("control works") && k.detail.contains("stays on the phone"));
+        assert!(k.detail.contains("no Bluetooth") && k.detail.contains("talking needs Bluetooth"));
         assert!(k.fix.as_deref().is_some_and(|f| f.contains("USB")));
         c.verdict = "no_phone".into();
         c.bluetooth_controllers = Some(1);
-        assert!(!calls_check(&c).detail.contains("stays on the phone"));
+        assert!(!calls_check(&c).detail.contains("talking needs Bluetooth"));
     }
 
     // ---- test-gaps-4: every branch of the firewall, session, phone and capability rules

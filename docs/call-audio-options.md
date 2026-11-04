@@ -70,3 +70,13 @@ geekbridge-ctl calling                # raw backend summary
 geekbridge-ctl doctor                 # includes the call audio line for your OS
 geekbridge-call-probe                 # read-only evidence report
 ```
+
+## Quickstart: the day the USB Bluetooth adapter arrives
+
+1. Plug the adapter into a USB 2.0 port. Within a few seconds the Calls window shows "Bluetooth adapter found. Set up call audio." (and the warning "This computer has no Bluetooth..." disappears).
+2. Open Settings, Call audio on this computer (or press the card's button). Work down the list; each failing step shows a fix, and a **Copy command** button where there is a command.
+3. On the phone: GeekBridge, Answer calls, **Pair phone with your computer for call audio**. Pair in Android's Bluetooth settings and allow Phone calls (One UI: Bluetooth, the gear, Call audio on). Back in GeekBridge the step shows whether the phone sees the computer as connected.
+4. Press **Test call audio**: you should hear a two-note tone in the chosen headphones and see the meter move when you speak.
+5. Call the phone from another number, answer on the computer, and talk. Write down what happened (voice both ways? echo? delay?) and run `geekbridge-ctl call-audio` and `geekbridge-ctl doctor` for the report.
+
+The automatic pairing and routing behind step 2 and 3 belongs to the call backend work; this window shows the state and the fixes but does not itself pair or connect.
