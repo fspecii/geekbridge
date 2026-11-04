@@ -92,9 +92,9 @@ fn step(label: &str, ok: bool, detail: impl Into<String>) -> TestStep {
 const WIFI: &str =
     "Make sure the phone and this computer are on the same Wi-Fi network (not a guest network).";
 const GUEST: &str = "Guest and public Wi-Fi often block devices from talking to each other (\"client isolation\"). Use your main Wi-Fi.";
-const VPN: &str = "Turn off any VPN on the phone and on this computer while pairing.";
+const VPN: &str = "Turn off any VPN on the phone and on this computer while linking.";
 const FIREWALL: &str = "Allow GeekBridge through this computer's firewall on your home/private network (TCP and UDP 1716-1764).";
-const OPEN_APP: &str = "Open GeekBridge on the phone and keep the screen on while pairing.";
+const OPEN_APP: &str = "Open GeekBridge on the phone and keep the screen on while linking.";
 
 pub fn build_report(m: &Measured) -> ConnectionTest {
     let mut steps = Vec::new();
@@ -204,7 +204,7 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
         }
         add(FIREWALL);
     } else if probe_ok {
-        headline = "Your phone is reachable - you can pair now".to_owned();
+        headline = "Your phone is reachable - you can link now".to_owned();
     } else if m.probe == Probe::Refused {
         headline = "The phone is reachable, but GeekBridge is not listening on it".to_owned();
         add(OPEN_APP);
@@ -269,7 +269,7 @@ pub fn explain_failure(reason: &str) -> Explained {
     {
         (
             "This is not the computer you scanned.",
-            "Nothing was paired. Check you are on your own Wi-Fi, then scan the code again.",
+            "Nothing was linked. Check you are on your own Wi-Fi, then scan the code again.",
         )
     } else if has("clock") {
         (
@@ -278,20 +278,20 @@ pub fn explain_failure(reason: &str) -> Explained {
         )
     } else if has("rejected_locally") || has("rejected locally") || has("declined") {
         (
-            "Pairing was declined on this device.",
-            "Start again and tap Pair when you are ready.",
+            "Linking was declined on this device.",
+            "Start again and tap Link when you are ready.",
         )
     } else if has("rejected_by_peer")
         || has("rejected or cancelled")
         || has("pairing_rejected_by_peer")
     {
         (
-            "The other device declined the pairing.",
+            "The other device declined to link.",
             "Start again and confirm on both devices.",
         )
     } else if has("pairing_timeout") || has("pairing request timed out") {
         (
-            "Pairing timed out before it was confirmed.",
+            "Linking timed out before it was confirmed.",
             "Start again and confirm on both devices within half a minute.",
         )
     } else if has("refused") || has("connection_refused") {
@@ -312,12 +312,12 @@ pub fn explain_failure(reason: &str) -> Explained {
         )
     } else if has("link_closed") || has("peer_closed") || has("closed") || has("park_timeout") {
         (
-            "The connection closed before pairing finished.",
+            "The connection closed before linking finished.",
             "Keep both apps open and the screens on, then try again.",
         )
     } else {
         (
-            "Pairing did not work.",
+            "Linking did not work.",
             "Run \"Test connection\" for a step-by-step check.",
         )
     };

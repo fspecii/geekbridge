@@ -1232,7 +1232,7 @@ impl Daemon {
         let id = parse_id(device_id)?;
         match self.store.get(&id) {
             Ok(Some(_)) => {}
-            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not paired")),
+            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not linked")),
             Err(e) => return Err(err(ErrorCode::Failed, reason(&e))),
         }
         self.share.set_settings(device_id, receive, auto_accept)
@@ -1250,7 +1250,7 @@ impl Daemon {
                 .ok_or_else(|| {
                     err(
                         ErrorCode::NotConnected,
-                        "the device is not connected and paired",
+                        "the device is not connected and linked",
                     )
                 })?;
             if !link.negotiated_out.iter().any(|k| k == SHARE_REQUEST) {
@@ -1431,7 +1431,7 @@ impl Daemon {
         if link.status.phase != LinkPhase::Unpaired {
             return Err(err(
                 ErrorCode::NotUnpaired,
-                "the link is not waiting to be paired",
+                "the link is not waiting to be linked",
             ));
         }
         link.cmd
@@ -1448,11 +1448,11 @@ impl Daemon {
         let challenge = core
             .challenges
             .get_mut(challenge_id)
-            .ok_or_else(|| err(ErrorCode::NotFound, "no such pairing challenge"))?;
+            .ok_or_else(|| err(ErrorCode::NotFound, "no such link request"))?;
         if challenge.expires <= Instant::now() {
             return Err(err(
                 ErrorCode::ChallengeExpired,
-                "the pairing challenge has expired",
+                "the link code has expired",
             ));
         }
         let bound = core.links.get(&challenge.view.device_id).is_some_and(|l| {
@@ -1476,7 +1476,7 @@ impl Daemon {
         })?;
         decision
             .send(approve)
-            .map_err(|_| err(ErrorCode::ChallengeStale, "the pairing attempt has ended"))
+            .map_err(|_| err(ErrorCode::ChallengeStale, "the linking attempt has ended"))
     }
 
     /// Remove the live link and wait until its task is gone, so nothing it was doing can still
@@ -1723,7 +1723,7 @@ impl Daemon {
         };
         self.forget_consent_off_worker(device_id).await?;
         if !removed {
-            return Err(err(ErrorCode::NotFound, "device is not paired"));
+            return Err(err(ErrorCode::NotFound, "device is not linked"));
         }
         self.core().emit(Some(device_id), EventKind::Unpaired);
         Ok(())
@@ -1764,7 +1764,7 @@ impl Daemon {
         let id = parse_id(device_id)?;
         match self.store.get(&id) {
             Ok(Some(_)) => {}
-            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not paired")),
+            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not linked")),
             Err(e) => return Err(err(ErrorCode::Failed, reason(&e))),
         }
         self.consents()
@@ -1823,7 +1823,7 @@ impl Daemon {
         parse_id(device_id)?;
         match self.store.get(&parse_id(device_id)?) {
             Ok(Some(_)) => {}
-            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not paired")),
+            Ok(None) => return Err(err(ErrorCode::NotFound, "device is not linked")),
             Err(e) => return Err(err(ErrorCode::Failed, reason(&e))),
         }
         let connected = self
@@ -1865,7 +1865,7 @@ impl Daemon {
             .ok_or_else(|| {
                 err(
                     ErrorCode::NotConnected,
-                    "the device is not connected and paired",
+                    "the device is not connected and linked",
                 )
             })?;
         let consents = self.consents();

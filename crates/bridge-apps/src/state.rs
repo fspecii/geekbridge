@@ -145,7 +145,7 @@ impl DiscoveryModel {
             ),
             Self::Ready { devices, .. } if devices.iter().any(|d| d.trusted) => h(
                 Tone::Info,
-                "Paired phone reported",
+                "Linked phone reported",
                 "Phone features are not available in this build yet.".into(),
             ),
             Self::Ready { devices, .. } => {
@@ -153,11 +153,11 @@ impl DiscoveryModel {
                 h(
                     Tone::Info,
                     if n == 1 {
-                        "Phone found, not paired"
+                        "Phone found, not linked"
                     } else {
-                        "Phones found, none paired"
+                        "Phones found, none linked"
                     },
-                    "GeekBridge can see that it's nearby, nothing more. Pairing isn't available yet."
+                    "GeekBridge can see that it's nearby, nothing more. Linking isn't available yet."
                         .into(),
                 )
             }
@@ -182,11 +182,11 @@ impl DiscoveryModel {
                 s(Tone::Neutral, "No phone found", true)
             }
             Self::Ready { devices, .. } if devices.len() == 1 => {
-                s(Tone::Info, "Phone nearby · not paired", false)
+                s(Tone::Info, "Phone nearby · not linked", false)
             }
             Self::Ready { devices, .. } => Strip {
                 tone: Tone::Info,
-                label: format!("{} phones nearby · none paired", devices.len()),
+                label: format!("{} phones nearby · none linked", devices.len()),
                 hollow: false,
             },
         }
@@ -276,7 +276,7 @@ impl DiscoveryModel {
                 ..
             } => "phone search isn't working".into(),
             Self::Ready { devices, .. } if devices.is_empty() => "no phone found".into(),
-            Self::Ready { .. } => "pairing isn't available yet".into(),
+            Self::Ready { .. } => "linking isn't available yet".into(),
         })
     }
 
@@ -323,8 +323,8 @@ mod tests {
         let model = DiscoveryModel::from_snapshot(AppKind::Messages, &snap);
         assert_eq!(model.devices()[0].name, "Pixel7");
         assert!(!model.devices()[0].trusted && model.devices()[0].advertises_feature);
-        assert_eq!(model.headline().title, "Phone found, not paired");
-        assert!(model.action_blocker().unwrap().contains("pairing"));
+        assert_eq!(model.headline().title, "Phone found, not linked");
+        assert!(model.action_blocker().unwrap().contains("linking"));
         assert!(
             !DiscoveryModel::from_snapshot(AppKind::Calls, &snap).devices()[0].advertises_feature
         );
@@ -361,8 +361,8 @@ mod tests {
         );
         snap.devices.push(device(&[]));
         let model = DiscoveryModel::from_snapshot(AppKind::Calls, &snap);
-        assert_eq!(model.strip().label, "Phone nearby · not paired");
-        assert!(model.blocked_line("send").unwrap().contains("pairing"));
+        assert_eq!(model.strip().label, "Phone nearby · not linked");
+        assert!(model.blocked_line("send").unwrap().contains("linking"));
         // No state ever reports a connected phone or lets an action through.
         for m in [
             DiscoveryModel::Checking,

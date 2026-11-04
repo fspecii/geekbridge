@@ -289,7 +289,7 @@ fn setup(args: &[String], port: u16, token: &Token) -> Result<(), String> {
                 let code = h.setup.passkey.clone().unwrap_or_default();
                 if !std::io::stdin().is_terminal() {
                     println!(
-                        "Pairing code {code}: answer with geekbridge-ctl call setup --confirm yes (or no)"
+                        "Code {code}: answer with geekbridge-ctl call setup --confirm yes (or no)"
                     );
                     return Ok(());
                 }

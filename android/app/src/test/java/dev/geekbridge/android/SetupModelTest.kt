@@ -33,7 +33,7 @@ class SetupModelTest {
 
     @Test fun stepOrderIsStable() {
         assertEquals(
-            listOf(StepId.Pair, StepId.Notifications, StepId.Contacts, StepId.Calendar, StepId.PhoneState, StepId.AnswerCalls, StepId.CallerNumber, StepId.Sms, StepId.Battery),
+            listOf(StepId.Pair, StepId.Notifications, StepId.Battery, StepId.Contacts, StepId.Calendar, StepId.PhoneState, StepId.AnswerCalls, StepId.CallerNumber, StepId.Sms),
             SetupModel.steps(TestStrings, inputs()).map { it.id },
         )
     }
@@ -71,7 +71,9 @@ class SetupModelTest {
 
     @Test fun firstOpenSkipsDoneAndInfo() {
         val all = SetupModel.steps(TestStrings, inputs(paired = 1, notifications = PermissionStatus.Granted))
-        assertEquals(StepId.Contacts, SetupModel.firstOpen(all)?.id)
+        assertEquals(StepId.Battery, SetupModel.firstOpen(all)?.id) // required before optional: Skip cannot walk past it unasked
+        val batteryDone = SetupModel.steps(TestStrings, inputs(paired = 1, notifications = PermissionStatus.Granted, battery = BatteryState.Unrestricted))
+        assertEquals(StepId.Contacts, SetupModel.firstOpen(batteryDone)?.id)
         val done = SetupModel.steps(TestStrings, 
             inputs(
                 paired = 1, notifications = PermissionStatus.Granted, contacts = PermissionStatus.Granted,

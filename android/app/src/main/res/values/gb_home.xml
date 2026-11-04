@@ -13,7 +13,7 @@
     <string name="word_waiting">Waiting</string>
     <string name="word_linking">Linking</string>
     <string name="word_offline">Offline</string>
-    <string name="word_unpaired">Unpaired</string>
+    <string name="word_unpaired">Unlinked</string>
     <string name="word_on">On</string>
     <string name="word_off">Off</string>
     <string name="word_needs_setup">Needs setup</string>
@@ -38,10 +38,10 @@
     <string name="setup_label">Setup</string>
     <string name="diagnostics_label">Diagnostics</string>
     <string name="channel_link">Background connection</string>
-    <string name="channel_link_desc">Quiet notice shown while GeekBridge stays reachable from your paired computers.</string>
+    <string name="channel_link_desc">Quiet notice shown while GeekBridge stays reachable from your linked computers.</string>
     <plurals name="notif_ready">
-        <item quantity="one">Ready for your computer · %1$d paired</item>
-        <item quantity="other">Ready for your computer · %1$d paired</item>
+        <item quantity="one">Ready for your computer · %1$d linked</item>
+        <item quantity="other">Ready for your computer · %1$d linked</item>
     </plurals>
     <string name="notif_battery">Battery optimisation is on</string>
     <string name="notif_stop">Stop</string>

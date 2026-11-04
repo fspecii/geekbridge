@@ -4,36 +4,36 @@
 <resources>
     <!-- Explained: headline + advice -->
     <string name="help_not_scanned_h">This is not the computer you scanned.</string>
-    <string name="help_not_scanned_a">Nothing was paired. Check that you are on your own Wi-Fi, then scan the code again.</string>
+    <string name="help_not_scanned_a">Nothing was linked. Check that you are on your own Wi-Fi, then scan the code again.</string>
     <string name="help_different_device_h">A different device answered at that address.</string>
-    <string name="help_different_device_a">Nothing was paired. Check the Wi-Fi and scan again.</string>
+    <string name="help_different_device_a">Nothing was linked. Check the Wi-Fi and scan again.</string>
     <string name="help_clock_h">The clocks on the two devices disagree.</string>
     <string name="help_clock_a">Turn on automatic date and time on the phone and the computer.</string>
-    <string name="help_declined_local_h">Pairing was declined on this phone.</string>
-    <string name="help_declined_local_a">Start again and tap Pair when you are ready.</string>
+    <string name="help_declined_local_h">Linking was declined on this phone.</string>
+    <string name="help_declined_local_a">Start again and tap Link when you are ready.</string>
     <string name="help_qr_rejected_h">The computer did not accept the QR code.</string>
     <string name="help_qr_rejected_a">It may have expired or been used already. The code on the computer renews by itself: scan the one on the screen now.</string>
-    <string name="help_declined_peer_h">The computer declined the pairing.</string>
+    <string name="help_declined_peer_h">The computer declined to link.</string>
     <string name="help_declined_peer_a">Start again and confirm on both devices.</string>
-    <string name="help_pair_timeout_h">Pairing timed out before it was confirmed.</string>
+    <string name="help_pair_timeout_h">Linking timed out before it was confirmed.</string>
     <string name="help_pair_timeout_a">Start again and confirm on both devices within half a minute.</string>
     <string name="help_no_answer_h">The computer did not answer.</string>
     <string name="help_no_answer_a">Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the computer\'s firewall (TCP and UDP 1716-1764). Still stuck? Run geekbridge-ctl doctor on the computer.</string>
     <string name="help_other_network_h">The computer is on a different network.</string>
     <string name="help_other_network_a">Put both devices on the same Wi-Fi and switch off VPNs.</string>
-    <string name="help_closed_h">The connection closed before pairing finished.</string>
+    <string name="help_closed_h">The connection closed before linking finished.</string>
     <string name="help_closed_a">Keep both apps open and the screens on, then try again. Still failing? Tap Test connection to check the Wi-Fi.</string>
     <string name="help_tls_h">A secure connection could not be set up.</string>
     <string name="help_tls_a">Try again. If it keeps failing, restart GeekBridge on the computer.</string>
-    <string name="help_default_h">Pairing did not work.</string>
+    <string name="help_default_h">Linking did not work.</string>
     <string name="help_default_a">Tap \"Test connection\" for a step-by-step check.</string>
 
     <!-- NetCheck advice lines -->
     <string name="help_adv_wifi">Make sure the phone and the computer are on the same Wi-Fi network (not a guest network).</string>
     <string name="help_adv_guest">Guest and public Wi-Fi often block devices from talking to each other (\"client isolation\"). Use your main Wi-Fi.</string>
-    <string name="help_adv_vpn">Turn off any VPN on the phone and on the computer while pairing.</string>
+    <string name="help_adv_vpn">Turn off any VPN on the phone and on the computer while linking.</string>
     <string name="help_adv_firewall">Allow GeekBridge through the computer\'s firewall on your home network (TCP and UDP 1716-1764).</string>
-    <string name="help_adv_open_app">Open GeekBridge on the computer and keep both screens on while pairing.</string>
+    <string name="help_adv_open_app">Open GeekBridge on the computer and keep both screens on while linking.</string>
     <string name="help_adv_connect_phone">Connect the phone to the same Wi-Fi as the computer.</string>
     <string name="help_adv_start_service">Start the GeekBridge service on the computer (it starts at login once installed).</string>
 
@@ -59,7 +59,7 @@
     <!-- NetCheck headlines -->
     <string name="help_head_no_wifi">This phone is not on Wi-Fi</string>
     <string name="help_head_not_found">No computer has been found yet</string>
-    <string name="help_head_ok">Your computer is reachable - you can pair now</string>
+    <string name="help_head_ok">Your computer is reachable - you can link now</string>
     <string name="help_head_refused">The computer is reachable, but GeekBridge is not listening on it</string>
     <string name="help_head_different">The computer seems to be on a different network</string>
     <string name="help_head_no_answer">The computer does not answer</string>

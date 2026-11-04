@@ -55,7 +55,7 @@ impl ControlState {
             .is_some_and(|s| !s.challenges.is_empty())
         {
             Strip {
-                label: "Compare the pairing code".into(),
+                label: "Compare the code".into(),
                 tone: Tone::Warning,
                 hollow: false,
             }
@@ -291,9 +291,9 @@ fn absorb_events(state: &mut ControlState, events: &[ipc::Event]) {
 fn request_notice(request: &Request) -> &'static str {
     match request {
         Request::Connect { .. } => "Connection requested. Waiting for the phone.",
-        Request::Pair { .. } => "Pairing requested. Compare the code on both devices.",
-        Request::Approve { .. } => "Approval sent. Waiting for pairing to finish.",
-        Request::Deny { .. } => "Pairing declined.",
+        Request::Pair { .. } => "Link requested. Compare the code on both devices.",
+        Request::Approve { .. } => "Approval sent. Waiting for linking to finish.",
+        Request::Deny { .. } => "Link declined.",
         Request::Disconnect { .. } => "Disconnect requested.",
         Request::Unpair { .. } => "Phone unlinked.",
         Request::SetDeviceName { .. } => "Name saved. Phones show it from their next connection.",
@@ -447,7 +447,7 @@ impl Connections {
         };
         ui.label(theme::caption(
             pal,
-            "Pairing by name (not by QR code): pair only after the same code shows on this computer and your phone.",
+            "Linking by name (not by QR code): link only after the same code shows on this computer and your phone.",
         ));
         if let Some(notice) = &self.state.notice {
             ui.add(egui::Label::new(theme::secondary(pal, notice)).wrap());
@@ -462,13 +462,13 @@ impl Connections {
                     pal,
                     match link.phase {
                         LinkPhase::Connecting => "Connecting…",
-                        LinkPhase::Unpaired => "Not paired",
-                        LinkPhase::Pairing => "Pairing…",
+                        LinkPhase::Unpaired => "Not linked",
+                        LinkPhase::Pairing => "Linking…",
                         LinkPhase::Connected => "Connected securely",
                     },
                 ));
                 if link.phase == LinkPhase::Unpaired
-                    && ui.add_enabled(enabled, egui::Button::new("Pair")).clicked()
+                    && ui.add_enabled(enabled, egui::Button::new("Link")).clicked()
                 {
                     self.submit(Request::Pair {
                         device_id: link.device_id.clone(),
@@ -498,7 +498,7 @@ impl Connections {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(display_text(&phone.name), 13.0));
                 if !seen.contains(&phone.device_id) {
-                    ui.label(theme::caption(pal, "Paired · offline"));
+                    ui.label(theme::caption(pal, "Linked · offline"));
                     if ui
                         .add_enabled(enabled, egui::Button::new("Connect"))
                         .clicked()
@@ -526,7 +526,7 @@ impl Connections {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(&phone.name, 13.0));
                 ui.label(theme::caption(pal, "Nearby"));
-                if ui.add_enabled(enabled, egui::Button::new("Pair")).clicked() {
+                if ui.add_enabled(enabled, egui::Button::new("Link")).clicked() {
                     self.one_tap_pair(&phone.id);
                 }
             });
@@ -578,7 +578,7 @@ impl Connections {
             self.entered_code.clear();
         }
         if let Some(challenge) = challenge {
-            egui::Window::new("Pair phone")
+            egui::Window::new("Link phone")
                 .id(egui::Id::new("pair-phone"))
                 .collapsible(false)
                 .resizable(false)
@@ -605,7 +605,7 @@ impl Connections {
                         egui::TextEdit::singleline(&mut self.entered_code)
                             .hint_text(crate::theme::hint(ui, "Code from phone"))
                             .char_limit(8),
-                    ), "Pairing code from the phone");
+                    ), "Code from the phone");
                     ui.horizontal(|ui| {
                         let enabled = !self.state.busy && challenge.expires_in_ms > 0;
                         if ui
@@ -623,7 +623,7 @@ impl Connections {
                                         &self.entered_code,
                                         &challenge.verification_key,
                                     ),
-                                egui::Button::new("Approve pairing"),
+                                egui::Button::new("Approve link"),
                             )
                             .clicked()
                         {

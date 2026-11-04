@@ -85,7 +85,7 @@ impl WindowsHost {
                     .unwrap_or("No phone is paired with this PC over Bluetooth.")
                     .to_owned(),
             ),
-            None => Some("Choose which paired phone to use for calls.".to_owned()),
+            None => Some("Choose which linked phone to use for calls.".to_owned()),
             Some(d) => {
                 self.label = d
                     .name

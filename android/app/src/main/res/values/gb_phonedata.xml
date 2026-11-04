@@ -6,7 +6,7 @@
     <string name="pd_calendar">Share calendar</string>
     <string name="pd_calendar_sub">Read-only by default: events (with calendar, reminders and attendee names) from the calendars you tick, from 7 days back to 90 days ahead. Includes Google Calendar accounts that sync on this phone.</string>
     <string name="pd_calendar_edit">Let the computer edit my calendar</string>
-    <string name="pd_calendar_edit_sub">Lets a paired computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
+    <string name="pd_calendar_edit_sub">Lets a linked computer you allowed add, change and delete one-off events in the calendars you ticked (never repeating events). Android asks for calendar write access only when you switch this on.</string>
     <string name="pd_calendar_google">GeekBridge never signs in to Google. Edits are written to this phone\'s calendar and Google Calendar receives them through the phone\'s own sync. Remove the permission here or in Android settings to stop it at any time.</string>
     <string name="pd_calendar_pick">Choose calendars…</string>
     <string name="pd_calendar_none">No calendar ticked: nothing is shared yet</string>
@@ -45,12 +45,12 @@
     <string name="pd_grant">Allow access</string>
     <string name="pd_sms_special">Short codes and premium numbers</string>
     <string name="pd_sms_special_sub">Off: the computer cannot text numbers shorter than 7 digits or premium-rate ranges. They can cost money.</string>
-    <string name="pd_sms_honest">Android restricts SMS: reading and sending needs the SMS permissions (read, send, receive), and Google Play only allows them for the default messaging app. This build asks for them only when you switch this on. On Android 13+, an app installed outside a store may first need “Allow restricted settings” in its App info (⋮ menu). GeekBridge does not become your default messaging app. Not supported: MMS pictures, group texts, RCS chats. Message text goes only to your paired computer and is never logged.</string>
+    <string name="pd_sms_honest">Android restricts SMS: reading and sending needs the SMS permissions (read, send, receive), and Google Play only allows them for the default messaging app. This build asks for them only when you switch this on. On Android 13+, an app installed outside a store may first need “Allow restricted settings” in its App info (⋮ menu). GeekBridge does not become your default messaging app. Not supported: MMS pictures, group texts, RCS chats. Message text goes only to your linked computer and is never logged.</string>
     <string name="sms_perm_read">read your texts</string>
     <string name="sms_perm_send">send texts</string>
     <string name="sms_perm_receive">see new texts</string>
     <string name="channel_sms_limit">Texts held back</string>
-    <string name="channel_sms_limit_desc">Tells you when a paired computer asked this phone to send more texts than normal and the rest were held back.</string>
+    <string name="channel_sms_limit_desc">Tells you when a linked computer asked this phone to send more texts than normal and the rest were held back.</string>
     <string name="sms_limit_title">Texts held back</string>
     <string name="sms_limit_text">%1$s asked this phone to send many texts in a short time, or to many different numbers. The rest were not sent. Texts cost money, so check that this was you.</string>
     <string name="sms_state_ready">Ready: an allowed computer can use Messages.</string>

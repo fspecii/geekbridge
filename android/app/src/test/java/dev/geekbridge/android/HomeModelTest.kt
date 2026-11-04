@@ -18,7 +18,7 @@ class HomeModelTest {
     @Test fun unpairedAsksToPair() {
         val h = hero(names = emptyList())
         assertEquals(HeroAction.Pair, h.action)
-        assertEquals("No computer paired", h.title)
+        assertEquals("No computer linked", h.title)
     }
 
     @Test fun connectedNamesTheComputer() {
@@ -43,7 +43,7 @@ class HomeModelTest {
     }
 
     @Test fun tileSubtitles() {
-        assertEquals("Pair a computer first", HomeModel.tileSubtitle(TestStrings, 0, emptyList()))
+        assertEquals("Link a computer first", HomeModel.tileSubtitle(TestStrings, 0, emptyList()))
         assertEquals("To Desk", HomeModel.tileSubtitle(TestStrings, 1, listOf("Desk")))
         assertEquals("Computer not connected", HomeModel.tileSubtitle(TestStrings, 1, emptyList()))
     }

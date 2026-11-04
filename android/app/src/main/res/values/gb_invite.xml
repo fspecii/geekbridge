@@ -25,7 +25,7 @@
     <string name="scan_hint">Point the camera at the QR code on your computer’s screen. It reads on its own; nothing is recorded or sent.</string>
     <string name="scan_preview_cd">Camera view. Point it at the QR code on your computer.</string>
     <string name="scan_found">QR code found</string>
-    <string name="scan_not_ours">That QR code is not a GeekBridge pairing code. On your computer click “Link a phone” and scan that one.</string>
+    <string name="scan_not_ours">That QR code is not a GeekBridge QR code. On your computer click “Link a phone” and scan that one.</string>
     <string name="scan_perm_title">Allow the camera to scan</string>
     <string name="scan_perm_body">GeekBridge uses the camera only on this screen, to read the QR code your computer shows. Nothing is recorded, saved or sent. You can also open the link from your camera app or paste it instead.</string>
     <string name="scan_perm_allow">Allow camera</string>

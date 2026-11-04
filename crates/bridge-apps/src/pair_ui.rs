@@ -286,7 +286,7 @@ impl Connections {
         ui.add(
             egui::Label::new(theme::caption(
                 pal,
-                "Or open GeekBridge on your phone: it appears below by name. Tap Pair and confirm the same code on both screens.",
+                "Or open GeekBridge on your phone: it appears below by name. Tap Link and confirm the same code on both screens.",
             ))
             .wrap(),
         );

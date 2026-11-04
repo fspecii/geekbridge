@@ -3,7 +3,7 @@
     <string name="share_label">Send to computer</string>
     <string name="grant_choose">Allowed computers…</string>
     <string name="grant_title">Which computers may use this?</string>
-    <string name="grant_body">Only the computers you tick can use it. A computer you pair later starts with none.</string>
+    <string name="grant_body">Only the computers you tick can use it. A computer you link later starts with none.</string>
     <string name="send_confirm_title">Send this text to your computer?</string>
     <string name="send_confirm_send">Send</string>
 </resources>

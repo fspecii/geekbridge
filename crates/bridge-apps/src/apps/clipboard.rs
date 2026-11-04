@@ -202,7 +202,7 @@ pub(crate) fn sync_body(
             ui.add(
                 egui::Label::new(theme::secondary(
                     pal,
-                    "No paired phones yet. Pair one from the GeekBridge window: Link a phone.",
+                    "No linked phones yet. Link one from the GeekBridge window: Link a phone.",
                 ))
                 .wrap(),
             );

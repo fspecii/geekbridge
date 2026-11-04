@@ -18,7 +18,7 @@
     <string name="share_state_declined">declined</string>
     <string name="share_state_failed">failed</string>
     <string name="share_state_failed_code">failed (%1$s)</string>
-    <string name="share_err_not_connected">The computer is not connected and paired.</string>
+    <string name="share_err_not_connected">The computer is not connected and linked.</string>
     <string name="share_err_not_waiting">That transfer is no longer waiting.</string>
     <string name="share_err_invalid_fd">The file could not be opened for transfer.</string>
     <string name="share_err_too_large">The file is over the 8 GiB limit.</string>
@@ -61,7 +61,7 @@
     <string name="share_item_queued">%1$s — queued</string>
     <string name="share_item_error">%1$s — %2$s</string>
     <string name="share_channel_name">File sharing</string>
-    <string name="share_channel_desc">Progress and results of sharing files with a paired computer</string>
+    <string name="share_channel_desc">Progress and results of sharing files with a linked computer</string>
     <string name="share_notif_sending">Sending to computer</string>
     <string name="share_notif_received">File received</string>
     <string name="share_notif_failed">Transfer failed</string>

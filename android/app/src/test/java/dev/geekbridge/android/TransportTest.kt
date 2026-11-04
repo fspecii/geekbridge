@@ -257,7 +257,7 @@ class TransportControllerTest {
             .put("events", JSONArray().put(JSONObject().put("seq", 6).put("kind", "peer_unpaired")))
         c.eventsUpTo(6)
         assertEquals(before + 1, f.actions().count { it == "transport_status" })
-        assertTrue(c.notice!!.text.contains("removed the pairing"))
+        assertTrue(c.notice!!.text.contains("removed the link"))
         c.eventsUpTo(6) // already seen
         assertEquals(before + 1, f.actions().count { it == "transport_status" })
     }
@@ -294,7 +294,7 @@ class TransportControllerTest {
         val c = controller(f); c.start(opts)
         val p = c.pendingPrompt()!!
         c.decide(p, true)
-        assertTrue(c.notice!!.text.contains("not paired until"))
+        assertTrue(c.notice!!.text.contains("not linked until"))
         assertTrue(c.snapshot!!.connections.none { it.trusted })
         // The prompt that was answered is not offered again even if the core still lists it.
         assertNull(c.pendingPrompt())

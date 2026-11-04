@@ -218,7 +218,7 @@ impl HostCalls for MacHelperHost {
         }
         if self.unselected {
             return Err(
-                "Choose which paired phone to use for Mac calling; none is selected yet."
+                "Choose which linked phone to use for Mac calling; none is selected yet."
                     .to_owned(),
             );
         }
@@ -367,7 +367,7 @@ mod tests {
         let helper = fake_helper(dir.path(), &pushes(), &log);
         let mut h = spawn(&helper, None);
         let err = h.poll(Duration::from_millis(300)).unwrap_err();
-        assert!(err.contains("Choose which paired phone"));
+        assert!(err.contains("Choose which linked phone"));
         assert!(!log.exists(), "the helper must not be asked to connect");
     }
 

@@ -14,7 +14,7 @@
     <string name="widget_word_connected">Connected</string>
     <string name="widget_word_offline">Offline</string>
     <string name="widget_word_ringing">Ringing</string>
-    <string name="widget_word_unpaired">Not paired</string>
+    <string name="widget_word_unpaired">Not linked</string>
     <string name="widget_computer_none">No computer</string>
 
     <!-- What TalkBack reads: words, never dots. -->
@@ -22,7 +22,7 @@
     <string name="widget_a11y_offline">Offline. %1$s is not connected. Tap to open GeekBridge.</string>
     <string name="widget_a11y_offline_nameless">Offline. Tap to open GeekBridge.</string>
     <string name="widget_a11y_ringing">Phone is ringing. %1$s can answer. Tap to open GeekBridge.</string>
-    <string name="widget_a11y_unpaired">No computer paired. Tap to pair.</string>
+    <string name="widget_a11y_unpaired">No computer linked. Tap to link.</string>
 
     <string name="widget_q_send_file">Send file</string>
     <string name="widget_q_send_clip">Send clipboard</string>
@@ -33,7 +33,7 @@
     <string name="widget_q_paste_a11y">Paste from your computer</string>
     <string name="widget_q_answer_on_a11y">Answer calls from your computer: on. Double tap to turn off.</string>
     <string name="widget_q_answer_off_a11y">Answer calls from your computer: off. Double tap to set up.</string>
-    <string name="widget_q_pair_first_a11y">%1$s. Pair a computer first.</string>
+    <string name="widget_q_pair_first_a11y">%1$s. Link a computer first.</string>
     <string name="widget_paste_hint">Send the clipboard from your computer; it lands on this phone, then paste anywhere.</string>
     <string name="widget_answer_off_toast">Answering calls from the computer is off.</string>
 

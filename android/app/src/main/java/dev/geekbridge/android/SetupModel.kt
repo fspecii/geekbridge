@@ -3,7 +3,7 @@ package dev.geekbridge.android
 
 import android.os.Build
 
-enum class StepId { Pair, Notifications, Contacts, Calendar, PhoneState, AnswerCalls, CallerNumber, Sms, Battery }
+enum class StepId { Pair, Notifications, Battery, Contacts, Calendar, PhoneState, AnswerCalls, CallerNumber, Sms }
 
 /** What the user (and Android) have done about one runtime permission. */
 enum class PermissionStatus { Granted, NotAsked, Denied, Blocked }
@@ -73,6 +73,9 @@ object SetupModel {
         } else {
             StepInfo(StepId.Notifications, StepStatus.Done, true, s.get(R.string.setup_detail_notif_na))
         }
+        // The required battery step comes before the optional ones: someone who taps "Skip" through six optional pages
+        // must not reach the end without having been asked the one thing that keeps the connection alive.
+        out += batteryStep(s, i)
         out += permissionStep(s, StepId.Contacts, i.contacts, required = false)
         out += permissionStep(s, StepId.Calendar, i.calendar, required = false)
         out += permissionStep(s, StepId.PhoneState, i.phoneState, required = false)
@@ -82,7 +85,6 @@ object SetupModel {
             StepId.Sms, StepStatus.Info, required = false,
             detail = s.get(R.string.setup_detail_sms),
         )
-        out += batteryStep(s, i)
         return out
     }
 

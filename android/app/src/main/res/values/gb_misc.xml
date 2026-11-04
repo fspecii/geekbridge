@@ -51,8 +51,8 @@
     <string name="setup_title_battery">Battery</string>
 
     <!-- Home model -->
-    <string name="hm_none_title">No computer paired</string>
-    <string name="hm_none_sub">Pair this phone with your computer to send files and the clipboard between them.</string>
+    <string name="hm_none_title">No computer linked</string>
+    <string name="hm_none_sub">Link this phone with your computer to send files and the clipboard between them.</string>
     <string name="hm_your_computer">your computer</string>
     <string name="hm_connected">Connected to %1$s</string>
     <string name="hm_connected_more">Connected to %1$s +%2$d</string>
@@ -64,7 +64,7 @@
     <string name="hm_not_connected">Not connected</string>
     <string name="hm_bg_off">Staying connected in the background is off. The phone connects while this app is open.</string>
     <string name="hm_bg_not_running">The background connection is not running. Check battery settings, then reopen the app.</string>
-    <string name="hm_pair_first">Pair a computer first</string>
+    <string name="hm_pair_first">Link a computer first</string>
     <string name="hm_to">To %1$s</string>
     <string name="hm_not_connected_sub">Computer not connected</string>
 
@@ -76,10 +76,10 @@
     <string name="signer_not_newer">The downloaded file is version code %1$d, not newer than the installed %2$d, so it was not offered.</string>
     <string name="signer_mismatch">The update is signed with a different key (%1$s) than the installed app (%2$s). Android would refuse it, so it was not offered. Uninstall and reinstall the release APK to switch keys; app data is lost.</string>
     <!-- QR pairing errors -->
-    <string name="qr_err_not_geekbridge">That is not a GeekBridge pairing code.</string>
-    <string name="qr_err_version">That pairing code is from a different GeekBridge version. Update both apps.</string>
-    <string name="qr_err_malformed">That pairing code is damaged. Show a new one on the computer and try again.</string>
-    <string name="qr_err_unreadable">The pairing code could not be read.</string>
+    <string name="qr_err_not_geekbridge">That is not a GeekBridge QR code.</string>
+    <string name="qr_err_version">That QR code is from a different GeekBridge version. Update both apps.</string>
+    <string name="qr_err_malformed">That QR code is damaged. Show a new one on the computer and try again.</string>
+    <string name="qr_err_unreadable">The QR code could not be read.</string>
     <string name="qr_err_core_missing">GeekBridge\'s network core is not available on this phone.</string>
     <string name="whatsnew_fallback">See the release notes</string>
 

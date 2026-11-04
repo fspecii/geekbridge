@@ -248,11 +248,11 @@ class CallControlTest {
     }
 
     @Test fun computerNamesAreMadeSafeToShow() {
-        assertEquals("a paired computer", CallRules.cleanComputer(null, TestStrings))
-        assertEquals("a paired computer", CallRules.cleanComputer("\u202e\n ", TestStrings))
+        assertEquals("a linked computer", CallRules.cleanComputer(null, TestStrings))
+        assertEquals("a linked computer", CallRules.cleanComputer("\u202e\n ", TestStrings))
         assertEquals("Desk PC", CallRules.cleanComputer("De\u202esk\n\u200bPC", TestStrings).replace("  ", " ").replace("De sk", "Desk"))
         assertTrue(CallRules.cleanComputer("x".repeat(500), TestStrings).length <= 40)
-        assertEquals("Dialing \u20665550100\u2069 requested by \u2068a paired computer\u2069", CallRules.dialNotice("5550100", "", TestStrings))
+        assertEquals("Dialing \u20665550100\u2069 requested by \u2068a linked computer\u2069", CallRules.dialNotice("5550100", "", TestStrings))
     }
 
     @Test fun withConfirmationOnNothingIsDialedUntilTheOwnerAllows() {

@@ -138,9 +138,9 @@ pub fn status_report(app: AppKind, api_port: u16, model: &DiscoveryModel) -> Str
             device.kind,
             device.address,
             if device.trusted {
-                "paired"
+                "linked"
             } else {
-                "discovered, not paired"
+                "discovered, not linked"
             }
         ));
     }

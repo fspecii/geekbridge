@@ -375,6 +375,30 @@ pub fn tr_n(key: &str, n: u64, args: &[(&str, &dyn std::fmt::Display)]) -> Strin
 mod tests {
     use super::*;
 
+    /// One word for the phone-to-computer relationship: "link". "Pair" stays only for Bluetooth (call audio) and the
+    /// internal `pair.*` keys. A user must never see "Paired" next to "Link a phone".
+    #[test]
+    fn english_says_link_not_pair_outside_bluetooth() {
+        let text = include_str!("../i18n/en.properties");
+        for (n, line) in text.lines().enumerate() {
+            let Some((key, value)) = line.split_once(" = ") else {
+                continue;
+            };
+            if key.starts_with("callaudio.")
+                || key.starts_with("tray.call_audio")
+                || value.contains("Bluetooth")
+            {
+                continue;
+            }
+            let v = value.to_ascii_lowercase();
+            assert!(
+                !v.contains("pair"),
+                "line {}: {key} says pair: {value}",
+                n + 1
+            );
+        }
+    }
+
     #[test]
     fn tag_follows_posix_precedence_and_normalises() {
         assert_eq!(

@@ -332,7 +332,7 @@ impl Contacts {
             .iter()
             .find_map(|d| phone_ui::state_line(d.contacts, phone_ui::Noun::Contacts))
             .unwrap_or_else(|| {
-                "Nothing has been shared from a phone yet. Allow Contacts for a paired phone below."
+                "Nothing has been shared from a phone yet. Allow Contacts for a linked phone below."
                     .into()
             })
     }

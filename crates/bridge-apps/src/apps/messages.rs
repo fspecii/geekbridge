@@ -1286,9 +1286,9 @@ impl Messages {
                     ui.label(theme::secondary(
                         pal,
                         if device.trusted {
-                            "Paired"
+                            "Linked"
                         } else {
-                            "Found nearby, not paired"
+                            "Found nearby, not linked"
                         },
                     ));
                 });
@@ -1325,7 +1325,7 @@ impl Messages {
                     .find(|d| d.device_id == device.id)
                     .map_or_else(
                         || {
-                            "Not shared. Pair this phone and allow Messages from the Conversations page."
+                            "Not shared. Link this phone and allow Messages from the Conversations page."
                                 .to_owned()
                         },
                         |d| {

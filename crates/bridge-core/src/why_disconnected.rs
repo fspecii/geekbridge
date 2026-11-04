@@ -100,7 +100,7 @@ impl ReasonCode {
                 "Quit KDE Connect or GSConnect if it is running, then restart GeekBridge."
             }
             Self::PausedByUser => "Open the GeekBridge app on the phone, or connect it from here.",
-            Self::PairingLost => "Pair the phone with this computer again.",
+            Self::PairingLost => "Link the phone with this computer again.",
             Self::FirewallBlocking => {
                 "Allow TCP and UDP 1716-1764 on your LAN (run geekbridge-ctl firewall)."
             }
