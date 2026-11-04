@@ -125,6 +125,49 @@ directory. Tools: `nm -S --size-sort`, `size`, `readelf -S`, `/proc/PID/smaps` (
 Run `scripts/perf-check.sh --build [--ui] [--window N]`; it exits 1 when any row is over. Override a
 budget with e.g. `BUDGET_RSS_KIB=9000`. The UI rows need a display.
 
+## Final footprint 2026-11-04
+
+Measured at origin/main `3bfefaae7` (clean worktree, private cargo target dirs), after the day's features (notification mirroring, recent photos,
+battery, call-audio state and routing, Wi-Fi bind, pairing scanner with `rqrr`, dial, share results). Desktop: x86_64 Linux, release build, private Xvfb
+with software GL (llvmpipe). Android: AVD clone `gbfoot` (Android 16 x86_64, from `gb36`), debug APK from `scripts/build-android.sh`, paired with a sandbox
+desktop service, every feature switched on one step at a time (per-computer grants, phone master switches, notification access for one app, desktop
+consents), then 30 minutes idle with the link connected (`scripts/e2e/features.sh env,pair,footprint`; `FOOT_MINUTES`, `FOOT_INTERVAL`). Report with all
+raw numbers: [reports/final-footprint.md](reports/final-footprint.md).
+
+| Metric | Prior (date, source) | 2026-11-04 | Budget |
+| --- | --- | --- | --- |
+| Service idle RSS, settled (min of samples every 5 s) | 3.4-3.6 MB (11-03, round 3) | 3.7-3.8 MB (peak sample 4.4-5.3 MB) | 6000 kB |
+| Service threads / fds / wakeups per s / CPU | 5 / 12-20 / 2-3 / 0 | 4-5 (tray 5) / 18-19 / 2-3 / 0-1 ticks | 8 / 20 / 3 / 2 |
+| Service startup to discovery line | 7-14 ms | 10-11 ms | 300 ms |
+| `geekbridge-service` / `geekbridge-ctl` | 5 846 328 B / 1 249 056 B (11-03) | 6 600 376 B / 1 455 512 B | 6 650 000 B / 1 480 000 B |
+| GUI binaries (home, calls, messages, agenda, contacts) | messages 7 868 672 B (11-03) | 8.26, 8.08, 8.00, 8.03, 7.92 MB | not budgeted |
+| GUI idle RSS under Xvfb + llvmpipe (home / calls / messages / agenda / contacts) | 66.3 / 64.1 MB (round 3) | 66.2 / 62.3 / 64.5 / 65.5 / 63.2 MB (anon 33-35 MB, 58-59 threads) | `--ui` messages 75 MB: 64.7 MB, 3 wakeups/s (budget 12) |
+| Android release APK, arm64 only (unsigned, R8) | 3 194 339 B (11-03) | 3 498 723 B (+304 384 B) | none |
+| Android release APK, arm64 + x86_64 | 6 425 676 B (11-03) | 7 015 964 B | none |
+| `libgeekbridge_android.so` stripped, arm64 / x86_64 | 2 758 592 / 3 220 952 B | 3 028 752 / 3 514 872 B (+270 160 / +293 920 B) | none |
+| Android debug APK | n/a | 8 709 379 B | none |
+| Android classes.dex / resources.arsc (release, arm64) | n/a | 573 352 B / 110 764 B | none |
+| Android release, fresh install, Home idle PSS | 23.5 MB (11-03) | 23.9 MB, 23 threads | none |
+| Android release cold start `am start -W` (5 starts) | 910-970 ms | 972-1137 ms (emulator, host load low; not distinguishable from noise at that spread) | none |
+| Android debug, paired, all features on: PSS / RSS / Java / native / code | n/a | 58-62 MB / 163-168 MB / 12.5-14 MB / 16 MB / 6.2 MB, flat over 30 min | none |
+| Android debug threads / open fds | n/a | 35 / 146 | none |
+| Android app CPU over 30 min idle linked (batterystats) | n/a | 1.5 s user + 0.6 s system (about 0.12 %) | none |
+| Android alarms, wake locks, jobs of the app (dumpsys alarm / batterystats) | none by design | none (no alarm entry, no wake lock, no job) | none |
+| Android debug cold start, all features on / fresh | n/a | 944-1520 ms (7 starts) / 1053-1160 ms | none |
+
+What each feature costs on the phone (debug build, a fresh process per step, settled 45 s): calls only 57.97 MB PSS, + contacts/calendar/sms 57.92, +
+battery 57.74, + notifications 58.10, + photos 57.91 (threads 35-36, fds 145-146 throughout). The opt-in features are lazy: switching them on adds
+nothing measurable at idle (+-0.4 MB, measurement noise); their cost is code size (the library grew 270 kB since 11-03, mostly the pairing scanner,
+call-audio state/flow, photos and Wi-Fi bind code in `bridge-core`/`bridge-android`) and per-request work when the computer asks. Emulator numbers are a
+regression baseline, not phone numbers.
+
+**Service RSS method (2026-11-04).** Idle RSS is a sawtooth, not a level: `codepages::drop_idle` runs 2 s after start, after each 20 s session-bus
+probe and now after each 15 s LAN announcement, and the next periodic job faults the touched code back in. One read can land anywhere between 3.5
+and 8 MB on the same binary (the CI job flipped on 8028-8156 kB readings against the 8000 kB limit). `scripts/perf-check.sh` therefore reads
+`VmRSS` every 5 s over the window (at least 4 samples after the 3 s settle) and the budget applies to the lowest, the settled idle figure; the peak
+sample is printed but not budgeted. The budget numbers did not change. The announcement trim (`memtrim::after_announce`) lowered the steady sawtooth
+from 5.0-5.6 MB to 4.1-4.3 MB.
+
 ## Android responsiveness round (2026-11-03)
 
 Emulator (AVD clone, Android 16 x86_64, software GPU, host load average 3-13 from other jobs), release build with R8 signed with the

@@ -305,6 +305,7 @@ impl Daemon {
             for target in targets {
                 let _ = socket.send_to(&line, target).await;
             }
+            crate::memtrim::after_announce();
         })
         .await
     }

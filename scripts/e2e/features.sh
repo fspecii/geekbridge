@@ -3,7 +3,7 @@
 # Emulator end-to-end coverage for three phone features that otherwise only have unit/loopback tests:
 # battery sharing, notification mirroring and PC dial (`geekbridge-ctl call dial`).
 #
-#   scripts/e2e/features.sh [--stop] [STAGE[,STAGE...]]     stages: env pair battery mirror dial   (default: all)
+#   scripts/e2e/features.sh [--stop] [STAGE[,STAGE...]]     stages: env pair battery mirror dial footprint   (default: all but footprint)
 #
 # Everything is private (nothing touches the real service, ~/.config, ports 1716/17381/8000 or the session bus):
 #   * `dbus-run-session`   a private session bus (the service's notify-send has no daemon to talk to; that is fine)
@@ -63,7 +63,7 @@ ctl() { timeout 90 "${CTL[@]}" "$@"; }
 jget() { python3 -c "import json,sys;d=json.JSONDecoder().raw_decode(sys.stdin.read())[0];print($1)" 2>/dev/null; }
 
 PRIV="$RUN/priv"; mkdir -p "$PRIV"/{config,data,state,cache}
-XRT="/tmp/gb-feat-xdg-$UID"; mkdir -p "$XRT"; chmod 700 "$XRT"
+XRT="${FEAT_XRT:-$FEAT_WORK/xdg}"; mkdir -p "$XRT"; chmod 700 "$XRT"
 SERVICE_LOG="$LOGS/e2e-features-service.log"
 APP_ENV=(env -u LD_LIBRARY_PATH -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u SWAYSOCK -u NIRI_SOCKET
   XDG_RUNTIME_DIR="$XRT" XDG_CONFIG_HOME="$PRIV/config" XDG_DATA_HOME="$PRIV/data" XDG_STATE_HOME="$PRIV/state"
@@ -419,6 +419,85 @@ stage_dial() {
   $ADB shell cmd statusbar collapse >/dev/null 2>&1
   end_call
   ctl consent "$PHONE_ID" telephony off >/dev/null
+}
+
+# ---------------------------------------------------------------- footprint (not part of the default run)
+# Memory, threads, fds, wakeups and start-up of the debug APK with the features switched on one by one, then a long idle run
+# with everything on. Results (TSV): $FOOT_OUT (default $FEAT_WORK/footprint). FOOT_MINUTES (30) and FOOT_INTERVAL (60 s).
+APP_PID() { $ADB shell pidof $PKG 2>/dev/null | tr -d '\r' | awk '{print $1}'; }
+foot_sample() { # label -> one TSV row: pss rss java native code stack graphics threads fds service_rss service_threads
+  local pid mem pss rss jh nh code stk gfx thr fds spid srss sthr
+  pid="$(APP_PID)"; [[ -n "$pid" ]] || { printf '%s\tno-process\n' "$1"; return 0; }
+  mem="$($ADB shell dumpsys meminfo $PKG 2>/dev/null | tr -d '\r')"
+  pss="$(awk '/TOTAL PSS:/ {print $3}' <<<"$mem")"; rss="$(awk '/TOTAL RSS:/ {for(i=1;i<=NF;i++) if($i=="RSS:") {print $(i+1); exit}}' <<<"$mem")"
+  [[ -n "$pss" ]] || pss="$(awk '$1=="TOTAL" {print $2; exit}' <<<"$mem")"
+  jh="$(awk '/^ *Java Heap:/ {print $3}' <<<"$mem")"; nh="$(awk '/^ *Native Heap:/ {print $3}' <<<"$mem")"
+  code="$(awk '/^ *Code:/ {print $2}' <<<"$mem")"; stk="$(awk '/^ *Stack:/ {print $2}' <<<"$mem")"; gfx="$(awk '/^ *Graphics:/ {print $2}' <<<"$mem")"
+  thr="$($ADB shell "grep ^Threads /proc/$pid/status" 2>/dev/null | tr -d '\r' | awk '{print $2}')"
+  fds="$($ADB shell "run-as $PKG sh -c 'ls /proc/$pid/fd | wc -l'" 2>/dev/null | tr -d '\r ')"
+  spid="$(pgrep -f "^$SVC --state-dir $RUN/state" | head -1)"
+  srss=""; sthr=""
+  [[ -n "$spid" ]] && srss="$(awk '/^VmRSS/ {print $2}' /proc/$spid/status)" && sthr="$(awk '/^Threads/ {print $2}' /proc/$spid/status)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$pss" "$rss" "$jh" "$nh" "$code" "$stk" "$gfx" "$thr" "$fds" "$srss" "$sthr"
+}
+foot_alarms() { $ADB shell dumpsys alarm 2>/dev/null | tr -d '\r' | grep -E "dev\.geekbridge\.android.*(wakeups|alarms)" | head -3 | tr '\n' ' '; }
+foot_uid() { $ADB shell "stat -c %u /data/data/$PKG" 2>/dev/null | tr -d '\r'; }
+foot_batt() { # uid -> cpu, wakeup alarms, wakelocks, jobs, network from the checkin dump
+  $ADB shell dumpsys batterystats --checkin 2>/dev/null | tr -d '\r' | awk -F, -v u="$1" '$2==u && ($4=="cpu"||$4=="wua"||$4=="wl"||$4=="jb"||$4=="nt"||$4=="awl") {print}' | tr '\n' ' '
+}
+foot_cold_start() { # n -> cold start times (ms), am start -W
+  local i t out=""
+  for ((i = 0; i < $1; i++)); do
+    $ADB shell am force-stop $PKG; sleep 2
+    t="$($ADB shell am start -W -n "$PKG/.HomeActivity" 2>/dev/null | tr -d '\r' | awk '/TotalTime/ {print $2}')"
+    out+="${t:-?} "; sleep 3
+  done
+  echo "$out"
+}
+stage_footprint() {
+  [[ "$STOPPING" == 1 ]] && return 0
+  load_ids
+  local OUT="${FOOT_OUT:-$FEAT_WORK/footprint}"; mkdir -p "$OUT"
+  local HDR=$'label\tpss_kb\trss_kb\tjava_kb\tnative_kb\tcode_kb\tstack_kb\tgraphics_kb\tthreads\tfds\tsvc_rss_kb\tsvc_threads'
+  for p in READ_PHONE_STATE ANSWER_PHONE_CALLS READ_CALL_LOG READ_CONTACTS WRITE_CONTACTS READ_CALENDAR WRITE_CALENDAR READ_SMS SEND_SMS RECEIVE_SMS CALL_PHONE READ_MEDIA_IMAGES POST_NOTIFICATIONS; do
+    $ADB shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done
+  $ADB shell cmd deviceidle whitelist +$PKG >/dev/null 2>&1
+  # 1. Feature steps: a fresh process per step, 45 s settled, then a sample.
+  local steps=("calls:calls" "contacts+calendar+sms:calls contacts calendar calendar_edit sms" "battery:calls contacts calendar calendar_edit sms battery"
+    "notifications:calls contacts calendar calendar_edit sms battery notifications" "photos:calls contacts calendar calendar_edit sms battery notifications photos")
+  printf '%s\n' "$HDR" >"$OUT/steps.tsv"
+  local st name grants b n
+  for st in "${steps[@]}"; do
+    name="${st%%:*}"; grants="${st#*:}"; b=false; n=false
+    [[ "$grants" == *battery* ]] && b=true
+    [[ "$grants" == *notifications* ]] && n=true
+    phone_config "$grants" $b $n false com.android.shell || true
+    for f in $grants; do ctl consent "$PHONE_ID" "$f" on >/dev/null 2>&1; done
+    $ADB shell cmd notification allow_listener "$MIRROR_SVC" >/dev/null 2>&1
+    sleep 45
+    foot_sample "+$name" | tee -a "$OUT/steps.tsv"
+  done
+  # 2. Start-up with everything on.
+  local cold; cold="$(foot_cold_start 7)"; echo "cold_start_ms: $cold" | tee "$OUT/startup.txt"
+  link_up 120 || true
+  # 3. Long idle run.
+  local uid; uid="$(foot_uid)"
+  $ADB shell dumpsys batterystats --enable full-wake-history >/dev/null 2>&1
+  $ADB shell dumpsys batterystats --reset >/dev/null 2>&1
+  $ADB shell dumpsys battery unplug >/dev/null 2>&1; $ADB shell dumpsys battery set level 80 >/dev/null 2>&1
+  foot_alarms >"$OUT/alarms-start.txt"; foot_batt "$uid" >"$OUT/batt-start.txt"
+  printf '%s\n' "$HDR" >"$OUT/idle.tsv"
+  local n_samples=$(( ${FOOT_MINUTES:-30} * 60 / ${FOOT_INTERVAL:-60} )) i
+  for ((i = 0; i <= n_samples; i++)); do
+    foot_sample "t+$(( i * ${FOOT_INTERVAL:-60} ))s" | tee -a "$OUT/idle.tsv"
+    ((i < n_samples)) && sleep "${FOOT_INTERVAL:-60}"
+  done
+  foot_alarms >"$OUT/alarms-end.txt"; foot_batt "$uid" >"$OUT/batt-end.txt"
+  $ADB shell dumpsys alarm >"$OUT/dumpsys-alarm.txt" 2>&1
+  $ADB shell dumpsys batterystats --checkin >"$OUT/batterystats-checkin.txt" 2>&1
+  $ADB shell dumpsys meminfo $PKG >"$OUT/meminfo-end.txt" 2>&1
+  $ADB shell dumpsys battery reset >/dev/null 2>&1
+  is_connected && rec feat_footprint PASS "samples in $OUT" || rec feat_footprint FAIL "link was not connected at the end; samples in $OUT"
 }
 
 main_features() {
