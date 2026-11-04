@@ -47,6 +47,13 @@ object CallAudioHelper {
         override fun getAttributionTag(): String? = null
         override fun getApplicationContext(): Context = this
         override fun getDeviceId(): Int = 0
+
+        // Client-side pre-checks (AudioPolicy.Builder, AudioManager) ask the context; the shell holds these
+        // permissions and audioserver/system_server enforce them again on the real uid, so answering here grants
+        // nothing the uid does not already have.
+        override fun checkCallingOrSelfPermission(permission: String): Int = android.content.pm.PackageManager.PERMISSION_GRANTED
+        override fun checkSelfPermission(permission: String): Int = android.content.pm.PackageManager.PERMISSION_GRANTED
+        override fun getMainLooper(): android.os.Looper = android.os.Looper.getMainLooper()
         override fun getAttributionSource(): AttributionSource =
             AttributionSource.Builder(Process.myUid()).setPackageName(SHELL_PKG).build()
     }
@@ -287,6 +294,8 @@ object CallAudioHelper {
         var sum = 0.0
         var silenced = false
         var err = 0
+        val window = ShortArray(RATE / 2)
+        var w = 0
         val end = System.nanoTime() + ms * 1_000_000L
         while (System.nanoTime() < end) {
             val r = cap.read(buf)
@@ -295,6 +304,8 @@ object CallAudioHelper {
                 break
             }
             for (i in 0 until r) {
+                window[w % window.size] = buf[i]
+                w++
                 sum += buf[i].toDouble() * buf[i]
                 peak = maxOf(peak, kotlin.math.abs(buf[i].toInt()))
             }
@@ -310,8 +321,73 @@ object CallAudioHelper {
             silenced -> "silenced"
             else -> "silent"
         }
+        val hz = if (peak > 0) dominantHz(window, minOf(w, window.size)) else 0
         return "{\"source\":${q(name)},\"outcome\":\"$outcome\",\"samples\":$n,\"rms\":${rms.toInt()},\"peak\":$peak," +
-            "\"silenced\":$silenced,\"readError\":$err}"
+            "\"hz\":$hz,\"silenced\":$silenced,\"readError\":$err}"
+    }
+
+    /** Strongest frequency 100..4000 Hz (10 Hz steps). Numbers only; the samples are dropped. */
+    private fun dominantHz(x: ShortArray, n: Int): Int {
+        var best = 0
+        var bp = -1.0
+        var f = 100
+        while (f <= 4000) {
+            val p = goertzel(x, n, f.toDouble())
+            if (p > bp) {
+                bp = p
+                best = f
+            }
+            f += 10
+        }
+        return best
+    }
+
+    /**
+     * During a call: does audio written to the call-uplink injection track show up in what the platform reports
+     * as the uplink? Plays 1 kHz through getCallUplinkInjectionAudioTrack while recording VOICE_UPLINK, and
+     * compares the 1 kHz power with the same recording without injection. On a real phone the decisive test is the
+     * far party hearing it; this is the on-device half.
+     */
+    private fun uplinkLoopTest(): String {
+        lastError = ""
+        fun power1k(withTone: Boolean): Double? {
+            val track = if (withTone) (callInterception("getCallUplinkInjectionAudioTrack") as? AudioTrack ?: return null) else null
+            val rec = openCapture("VOICE_UPLINK") ?: return null.also { track?.release() }
+            track?.play()
+            val tone = ToneCapture(1000.0, paced = false)
+            val out = ShortArray(HelperProtocol.FRAME_SAMPLES)
+            val window = ShortArray(RATE)
+            var w = 0
+            val end = System.nanoTime() + 900_000_000L
+            val inBuf = ShortArray(HelperProtocol.FRAME_SAMPLES)
+            while (System.nanoTime() < end) {
+                if (track != null) {
+                    tone.read(out)
+                    track.write(out, 0, out.size, AudioTrack.WRITE_NON_BLOCKING)
+                }
+                val r = rec.read(inBuf)
+                if (r <= 0) break
+                for (i in 0 until r) {
+                    window[w % window.size] = inBuf[i]
+                    w++
+                }
+            }
+            rec.close()
+            track?.let {
+                try {
+                    it.stop()
+                } catch (_: IllegalStateException) {
+                }
+                it.release()
+            }
+            val n = minOf(w, window.size)
+            return if (n == 0) null else goertzel(window, n, 1000.0) / n
+        }
+        val base = power1k(false) ?: return "{\"outcome\":\"no_uplink_capture\",\"error\":${q(lastError)}}"
+        val inj = power1k(true) ?: return "{\"outcome\":\"no_injection_track\",\"error\":${q(lastError)}}"
+        val ratio = inj / (base + 1.0)
+        return "{\"outcome\":\"${if (ratio > 10) "tone_in_uplink" else "tone_not_seen"}\"," +
+            "\"ratio\":${String.format(Locale.ROOT, "%.1f", ratio)}}"
     }
 
     /** Register the VoIP mix, play a 1 kHz tone into it and listen with a VOICE_COMMUNICATION recorder. */
@@ -385,6 +461,7 @@ object CallAudioHelper {
             "\"telephonyTxDevice\":${tx != null},\"telephonyTxNote\":${q(txNote)}," +
             "\"pstnInterceptable\":${interceptable()}," +
             "\"uplinkInjectionTrack\":{\"outcome\":\"$injOutcome\",\"error\":${q(injErr)}}," +
+            "\"uplinkLoop\":${if (mode == AudioManager.MODE_IN_CALL) uplinkLoopTest() else "null"}," +
             "\"voipMix\":${voipMixSelfTest()}}"
     }
 
@@ -392,9 +469,13 @@ object CallAudioHelper {
     fun main(args: Array<String>) {
         val a = args.toList()
         fun arg(k: String) = a.indexOf(k).takeIf { it >= 0 }?.let { a.getOrNull(it + 1) }
+        // AudioPolicy and AudioManager want a main looper for their event handlers.
+        if (android.os.Looper.getMainLooper() == null) android.os.Looper.prepareMainLooper()
         if ("--probe" in a) {
             println(probe())
-            return
+            System.out.flush()
+            // Audio framework threads are not daemons; without this the process outlives its answer.
+            System.exit(0)
         }
         val name = arg("--listen") ?: return System.err.println("usage: --probe | --listen NAME --token T [--app-uid U]")
         val token = arg("--token") ?: return System.err.println("--token is required")
