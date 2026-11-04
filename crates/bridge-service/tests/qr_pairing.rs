@@ -276,9 +276,11 @@ async fn test_connection_tells_reachable_from_closed() {
     };
     assert!(!t.ok);
     assert!(
-        t.steps
-            .iter()
-            .any(|s| s.label == "Phone answers" && !s.ok && s.detail.contains("refused")),
+        t.steps.iter().any(|s| s.label == "Phone answers"
+                && !s.ok
+                // Windows does not report a refusal for a closed loopback port; it just times out.
+                && (s.detail.contains("refused")
+                    || (cfg!(windows) && s.detail == "No answer"))),
         "{t:?}"
     );
 }
