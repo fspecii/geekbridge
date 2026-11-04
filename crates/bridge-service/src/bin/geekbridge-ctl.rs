@@ -1404,6 +1404,10 @@ fn diagnose_text(port: u16, state_dir: &std::path::Path) -> Result<String, Strin
         Some(Response::Update(u)) => Some(*u),
         _ => None,
     };
+    let call_trace = match ask(Request::CallTrace { clear: false }, "call trace") {
+        Some(Response::CallTrace { events }) => Some(events),
+        _ => None,
+    };
     let host = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
     Ok(render(
         &Inputs {
@@ -1413,6 +1417,7 @@ fn diagnose_text(port: u16, state_dir: &std::path::Path) -> Result<String, Strin
             clipboard,
             update,
             phone_logs: phone_log_sizes(state_dir, &status_ids),
+            call_trace,
             notes,
         },
         &host,

@@ -6,7 +6,9 @@ use bridge_core::calls_view::{CallRow, ControlPath};
 use bridge_core::ipc::{self, CallAction, CallsStatus, Request, Response, Token};
 use std::io::{BufRead, IsTerminal, Write};
 
-pub const USAGE: &str = "  calls [--reveal]                    ringing and live calls, the controls that really exist,
+pub const USAGE: &str = "  calls --trace [--json] [--clear]    what the service saw during calls (state changes, card, answer/decline
+                                      requests, audio route; hashed ids, last two digits only); --clear empties it
+  calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to
@@ -308,6 +310,30 @@ fn setup(args: &[String], port: u16, token: &Token) -> Result<(), String> {
     }
 }
 
+/// `calls --trace [--json] [--clear]`: the service's redacted call-event trace.
+fn trace(args: &[String], port: u16, token: &Token) -> Result<(), String> {
+    let clear = args.iter().any(|a| a == "--clear");
+    let json = args.iter().any(|a| a == "--json");
+    let events =
+        match ipc::call(port, token, &Request::CallTrace { clear }).map_err(|e| e.to_string())? {
+            Response::CallTrace { events } => events,
+            Response::Error(e) => return Err(e.message),
+            _ => return Err("unexpected reply from the service (is it an older version?)".into()),
+        };
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&events).map_err(|e| e.to_string())?
+        );
+    } else {
+        print!("{}", crate::call_trace::render(&events));
+    }
+    if clear {
+        eprintln!("Trace cleared.");
+    }
+    Ok(())
+}
+
 pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
     if args.get(1).map(String::as_str) == Some("setup")
         && args.first().map(String::as_str) == Some("call")
@@ -318,6 +344,9 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
         && args.first().map(String::as_str) == Some("call")
     {
         return audio_devices(args, port, token);
+    }
+    if args.first().map(String::as_str) == Some("calls") && args.iter().any(|a| a == "--trace") {
+        return trace(args, port, token);
     }
     let reveal = args.iter().any(|a| a == "--reveal");
     let words: Vec<&str> = args

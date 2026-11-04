@@ -968,6 +968,13 @@ impl Daemon {
                 }
                 Ok(Response::Calls(Box::new(status)))
             }
+            Request::CallTrace { clear } => {
+                let events = crate::call_trace::snapshot();
+                if clear {
+                    crate::call_trace::clear();
+                }
+                Ok(Response::CallTrace { events })
+            }
             Request::CallAction { target, action } => {
                 let hub = self.calls.clone();
                 blocking(move || hub.act(&target, action)).await

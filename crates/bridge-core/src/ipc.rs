@@ -450,6 +450,12 @@ pub enum Request {
     /// and the audio route. Carries phone numbers and names, so it is only served on this
     /// authenticated control channel and the apps must keep it out of logs.
     Calls,
+    /// The service's local call-event trace (redacted: no names, no full numbers), oldest first.
+    /// `clear` empties it after reading. Answered with `Response::CallTrace`.
+    CallTrace {
+        #[serde(default)]
+        clear: bool,
+    },
     /// Answer, decline or end a call. `target` must be one the latest `Calls` view offered.
     CallAction {
         target: crate::calls_view::ActionTarget,
@@ -899,6 +905,16 @@ pub enum CallAction {
     Hangup,
 }
 
+/// One line of the call-event trace. `detail` is already redacted by the service (`key=value`
+/// words; calls are shown as a short salted hash, numbers as their last two digits).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceEvent {
+    /// Milliseconds since the Unix epoch.
+    pub ms: u64,
+    pub kind: String,
+    pub detail: String,
+}
+
 /// Answer to [`Request::Calls`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallsStatus {
@@ -1332,6 +1348,10 @@ pub enum Response {
         text: String,
     },
     Calls(Box<CallsStatus>),
+    /// Answer to [`Request::CallTrace`].
+    CallTrace {
+        events: Vec<TraceEvent>,
+    },
     CallAudioDevices(Box<CallAudioDevices>),
     HearCalls(Box<HearCalls>),
     CallWifi(Box<crate::call_wifi_view::CallWifiView>),
@@ -1368,6 +1388,7 @@ fn every_response_is_parsed(r: &Response) {
         | Response::CallAudioSetup(_)
         | Response::PhoneDebugState { .. }
         | Response::Calls(_)
+        | Response::CallTrace { .. }
         | Response::CallAudioDevices(_)
         | Response::HearCalls(_)
         | Response::CallWifi(_)
@@ -1405,6 +1426,10 @@ impl Response {
             text: String,
         }
         #[derive(Deserialize)]
+        struct Events {
+            events: Vec<TraceEvent>,
+        }
+        #[derive(Deserialize)]
         struct SendId {
             send_id: u64,
         }
@@ -1425,6 +1450,9 @@ impl Response {
                 text: p::<Text>(json)?.text,
             },
             "calls" => Response::Calls(Box::new(p(json)?)),
+            "call_trace" => Response::CallTrace {
+                events: p::<Events>(json)?.events,
+            },
             "call_audio_devices" => Response::CallAudioDevices(Box::new(p(json)?)),
             "hear_calls" => Response::HearCalls(Box::new(p(json)?)),
             "call_wifi" => Response::CallWifi(Box::new(p(json)?)),

@@ -16,7 +16,7 @@ What works, how it is wired, what it needs, and what has **not** been tried on a
 - **Honest controls.** A button exists only if the service offered a target for it (`CallRow.answer/reject/hangup`).
   If a ringing call cannot be answered from here the popup says why ("Answer on the phone. To answer from here, allow
   GeekBridge to answer calls in the phone app's setup.") instead of showing a dead button.
-- **Scripts.** `geekbridge-ctl calls [--reveal]`, `call answer|reject|hangup`, `call mute on|off`, `call audio`,
+- **Scripts.** `geekbridge-ctl calls [--reveal]` (`calls --trace [--json] [--clear]` shows the redacted call-event trace), `call answer|reject|hangup`, `call mute on|off`, `call audio`,
   `call dial NUMBER [--yes]` (numbers masked unless `--reveal`).
 - **Dialing.** The keypad's Call button opens a confirmation sheet ("Call +49... with Pixel?", saying where the voice
   will be); only its Call button sends the request. `geekbridge-ctl call dial NUMBER` asks `[y/N]` on a terminal and

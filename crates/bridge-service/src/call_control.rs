@@ -78,6 +78,14 @@ impl Default for Timings {
 pub const STALE_CALL_NOTICE: &str =
     "The phone stopped confirming the call, so it is no longer shown here. Check the phone.";
 
+/// One word (or the refusal) for a result in the call trace. Messages are fixed text, no numbers.
+fn outcome(r: &Result<(), ErrorBody>) -> String {
+    match r {
+        Ok(()) => "ok".into(),
+        Err(e) => format!("refused ({:?}): {}", e.code, e.message),
+    }
+}
+
 fn err(code: ErrorCode, message: &str) -> ErrorBody {
     ErrorBody {
         code,
@@ -268,6 +276,8 @@ struct Inner {
     /// When a ring was first seen without a name or number (see [`UNNAMED_GRACE`]).
     unnamed_since: BTreeMap<u64, Instant>,
     suspended: Vec<Suspended>,
+    /// What the call trace last recorded about the view (only changes are written).
+    trace: crate::call_trace::ViewMemo,
     /// `notice` is the phone's "no such call" for an answer or decline that raced the phone (the
     /// user picked up by hand, the caller gave up); the next report that shows the call moved on
     /// explains it, so it is cleared then.
@@ -402,6 +412,7 @@ impl CallHub {
                     let polled = host.poll(HOST_POLL);
                     {
                         let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        let before = (g.problem.clone(), g.snapshots.len());
                         match polled {
                             Ok(snaps) => {
                                 g.snapshots = snaps;
@@ -411,6 +422,16 @@ impl CallHub {
                                 g.snapshots.clear();
                                 g.problem = Some(problem);
                             }
+                        }
+                        if before != (g.problem.clone(), g.snapshots.len()) {
+                            crate::call_trace::record(
+                                "bluetooth",
+                                &format!(
+                                    "phones_for_calls={} problem={}",
+                                    g.snapshots.len(),
+                                    g.problem.as_deref().unwrap_or("none")
+                                ),
+                            );
                         }
                         g.notes = host.notes();
                     }
@@ -458,6 +479,13 @@ impl CallHub {
         let mut inner = self.inner();
         inner.next_generation += 1;
         let generation = inner.next_generation;
+        crate::call_trace::record(
+            "link",
+            &format!(
+                "up phone={} calls_consent={enabled}",
+                crate::call_trace::hash(device_id)
+            ),
+        );
         inner.links.insert(
             device_id.to_owned(),
             LinkPhone {
@@ -476,6 +504,10 @@ impl CallHub {
     }
 
     pub fn link_down(self: &Arc<Self>, device_id: &str) {
+        crate::call_trace::record(
+            "link",
+            &format!("down phone={}", crate::call_trace::hash(device_id)),
+        );
         {
             let mut inner = self.inner();
             Self::suspend(&mut inner, device_id);
@@ -523,6 +555,10 @@ impl CallHub {
             {
                 return;
             }
+            crate::call_trace::record(
+                "link",
+                &format!("down phone={}", crate::call_trace::hash(device_id)),
+            );
             Self::suspend(&mut inner, device_id);
             inner.links.remove(device_id);
         }
@@ -579,6 +615,23 @@ impl CallHub {
             match kind {
                 link::STATE => match LinkCallReport::parse(body) {
                     Ok(report) => {
+                        let seen = (report.state, phone.report.as_ref().map(|r| r.state));
+                        if seen.1 != Some(seen.0) {
+                            crate::call_trace::record(
+                                "link",
+                                &format!(
+                                    "state phone={} {} -> {} can_answer={} can_end={} number={}",
+                                    crate::call_trace::hash(device_id),
+                                    seen.1.map_or("none", |s| s.as_str()),
+                                    seen.0.as_str(),
+                                    report.can_answer,
+                                    report.can_end,
+                                    report.number.as_ref().map_or("-".to_owned(), |n| {
+                                        crate::call_trace::tail(n.expose())
+                                    }),
+                                ),
+                            );
+                        }
                         report.apply(&mut phone.state);
                         phone.last_state = Instant::now();
                         phone.probe = None;
@@ -608,6 +661,17 @@ impl CallHub {
                 },
                 link::RESULT => match link::parse_result(body) {
                     Ok((id, outcome)) => {
+                        crate::call_trace::record(
+                            "request",
+                            &format!(
+                                "phone replied to {id} on {}: {}",
+                                crate::call_trace::hash(device_id),
+                                match &outcome {
+                                    Ok(()) => "ok".to_owned(),
+                                    Err(reason) => format!("{reason:?}").to_lowercase(),
+                                }
+                            ),
+                        );
                         let action = phone
                             .pending
                             .iter()
@@ -805,6 +869,19 @@ impl CallHub {
     /// Send a live call's audio back to the phone. Only Bluetooth hands-free sources carry the
     /// audio here, so only they can.
     pub fn audio_to_phone(&self, source: &str) -> Result<(), ErrorBody> {
+        let result = self.audio_to_phone_inner(source);
+        crate::call_trace::record(
+            "request",
+            &format!(
+                "audio to phone src={}: {}",
+                crate::call_trace::hash(source),
+                outcome(&result)
+            ),
+        );
+        result
+    }
+
+    fn audio_to_phone_inner(&self, source: &str) -> Result<(), ErrorBody> {
         let live = self.view().rows.iter().any(|r| {
             r.hangup
                 .as_ref()
@@ -823,6 +900,25 @@ impl CallHub {
 
     /// Execute a user's decision. Blocking (host commands wait for the backend thread).
     pub fn act(
+        self: &Arc<Self>,
+        target: &ActionTarget,
+        action: CallAction,
+    ) -> Result<(), ErrorBody> {
+        let trace_what = format!(
+            "{action:?} call={} via={}",
+            crate::call_trace::hash(&format!("{}|{}", target.source, target.call.as_str())),
+            match target.path {
+                ControlPath::Hfp => "bluetooth",
+                ControlPath::Link => "phone-link",
+            }
+        )
+        .to_lowercase();
+        let result = self.act_inner(target, action);
+        crate::call_trace::record("request", &format!("{trace_what}: {}", outcome(&result)));
+        result
+    }
+
+    fn act_inner(
         self: &Arc<Self>,
         target: &ActionTarget,
         action: CallAction,
@@ -868,6 +964,12 @@ impl CallHub {
     }
 
     pub fn mute(&self, source: &str, muted: bool) -> Result<(), ErrorBody> {
+        let result = self.mute_inner(source, muted);
+        crate::call_trace::record("request", &format!("mute={muted}: {}", outcome(&result)));
+        result
+    }
+
+    fn mute_inner(&self, source: &str, muted: bool) -> Result<(), ErrorBody> {
         let offered = self.view().mute.is_some_and(|m| m.source == source);
         if !offered {
             return Err(err(ErrorCode::Unsupported, "muting is not available now"));
@@ -876,6 +978,19 @@ impl CallHub {
     }
 
     pub fn connect_audio(&self, source: &str) -> Result<(), ErrorBody> {
+        let result = self.connect_audio_inner(source);
+        crate::call_trace::record(
+            "request",
+            &format!(
+                "audio to computer src={}: {}",
+                crate::call_trace::hash(source),
+                outcome(&result)
+            ),
+        );
+        result
+    }
+
+    fn connect_audio_inner(&self, source: &str) -> Result<(), ErrorBody> {
         let offered = self.view().audio.connect.as_deref() == Some(source);
         if !offered {
             return Err(err(
@@ -890,6 +1005,20 @@ impl CallHub {
     /// consent for Telephony is on, the phone reported it may place calls and no call is going on),
     /// and `number` must be plain digits. Blocking.
     pub fn dial(self: &Arc<Self>, source: &str, number: &Sensitive) -> Result<(), ErrorBody> {
+        let result = self.dial_inner(source, number);
+        crate::call_trace::record(
+            "request",
+            &format!(
+                "dial number={} src={}: {}",
+                crate::call_trace::tail(number.expose()),
+                crate::call_trace::hash(source),
+                outcome(&result)
+            ),
+        );
+        result
+    }
+
+    fn dial_inner(self: &Arc<Self>, source: &str, number: &Sensitive) -> Result<(), ErrorBody> {
         if !link::valid_dial_number(number.expose()) {
             return Err(err(
                 ErrorCode::BadRequest,
@@ -1081,6 +1210,7 @@ impl CallHub {
         let (fresh, ringing_now) = {
             let mut guard = self.inner();
             let inner = &mut *guard;
+            inner.trace.observe(&view);
             inner
                 .suspended
                 .retain(|s| now.saturating_duration_since(s.at) < flap);
@@ -1459,6 +1589,74 @@ mod tests {
             &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
         );
         assert!(hub.view().rows.is_empty());
+    }
+
+    #[test]
+    fn a_call_leaves_a_redacted_trace_of_states_requests_and_the_route() {
+        let (dev, number, name) = ("trace-dev-77", "+4915112345678", "Zelda Quux");
+        let hub = CallHub::new();
+        let mut rx = hub.link_up(dev, "Pixel", true);
+        hub.on_packet(
+            dev,
+            link::STATE,
+            &body(json!({"state":"ringing","number":number,"name":name,"canAnswer":true,"canEnd":true})),
+        );
+        let target = hub.view().ringing().unwrap().answer.clone().unwrap();
+        hub.act(&target, CallAction::Answer).unwrap();
+        let _ = rx.try_recv();
+        let stale = ActionTarget {
+            source: target.source.clone(),
+            call: CallId::new("nope"),
+            path: target.path,
+        };
+        assert!(hub.act(&stale, CallAction::Hangup).is_err());
+        hub.on_packet(
+            dev,
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+
+        let phone = crate::call_trace::hash(dev);
+        let all = crate::call_trace::snapshot();
+        let mine: Vec<String> = all
+            .iter()
+            .map(|e| format!("{} {}", e.kind, e.detail))
+            .filter(|l| {
+                l.contains(&phone)
+                    || l.contains("src=link")
+                    || l.contains("answer")
+                    || l.contains("hangup")
+            })
+            .collect();
+        let text = mine.join("\n");
+        assert!(text.contains(&format!("link up phone={phone}")), "{text}");
+        assert!(
+            text.contains("state phone") && text.contains("none -> ringing"),
+            "{text}"
+        );
+        assert!(text.contains("-> idle"), "{text}");
+        assert!(
+            text.contains("new src=link") && text.contains("incoming"),
+            "{text}"
+        );
+        assert!(
+            text.contains("controls=ar-") || text.contains("controls=a"),
+            "{text}"
+        );
+        assert!(
+            text.contains("answer call=") && text.contains(": ok"),
+            "{text}"
+        );
+        assert!(
+            text.contains("refused") && text.contains("that call changed"),
+            "{text}"
+        );
+        assert!(text.contains("number=..78"), "{text}");
+        assert!(text.contains("gone src=link"), "{text}");
+        let everything = crate::call_trace::render(&all);
+        for secret in ["4915112345678", "12345678", "Zelda", "Quux", dev] {
+            assert!(!everything.contains(secret), "trace leaked {secret}");
+        }
     }
 
     #[test]

@@ -281,6 +281,8 @@ pub struct Supervisor {
     /// When a ring was last seen.
     last_ring: Option<Instant>,
     linger: Duration,
+    /// The call trace already said there is a live call with no card (once per call).
+    noted_live: bool,
 }
 
 impl Supervisor {
@@ -295,6 +297,7 @@ impl Supervisor {
             launched_for: BTreeSet::new(),
             last_ring: None,
             linger,
+            noted_live: false,
         }
     }
 
@@ -302,8 +305,8 @@ impl Supervisor {
     /// `live`: a call is going on (answered, dialing or held); the card shows it and must not be killed.
     pub fn update(&mut self, ringing: &BTreeSet<u64>, live: bool, now: Instant) {
         let running = self.card.as_mut().is_some_and(|c| c.running());
-        if !running {
-            self.card = None; // an exited card was reaped by running()
+        if !running && self.card.take().is_some() {
+            crate::call_trace::record("card", "exited by itself");
         }
         self.launched_for.retain(|r| ringing.contains(r));
         if !ringing.is_empty() {
@@ -314,22 +317,34 @@ impl Supervisor {
                 // a missing display is not retried four times a second, and a card that dies during
                 // its ring is not restarted in a loop.
                 self.launched_for.extend(ringing.iter().copied());
-                if let Ok(card) = self.launcher.launch() {
-                    self.card = Some(card);
+                match self.launcher.launch() {
+                    Ok(card) => {
+                        crate::call_trace::record("card", "launched for a ring");
+                        self.card = Some(card);
+                    }
+                    Err(why) => {
+                        crate::call_trace::record("card", &format!("launch failed: {}", why.code()))
+                    }
                 }
             }
             return;
         }
         if live {
             self.last_ring = Some(now);
+            if !running && !self.noted_live {
+                self.noted_live = true;
+                crate::call_trace::record("card", "live call but no card is running");
+            }
             return;
         }
+        self.noted_live = false;
         if running
             && self
                 .last_ring
                 .is_none_or(|t| now.saturating_duration_since(t) >= self.linger)
             && let Some(mut card) = self.card.take()
         {
+            crate::call_trace::record("card", "stopped: no ring or live call");
             card.kill();
         }
     }
@@ -705,6 +720,32 @@ mod tests {
         s.update(&rings(&[]), false, t + Duration::from_secs(6));
         s.update(&rings(&[8]), false, t + Duration::from_secs(7));
         assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn card_launches_failures_and_stops_are_traced() {
+        let fake = Arc::new(Fake::default());
+        fake.fail.store(true, Ordering::SeqCst);
+        let mut s = Supervisor::new(fake.clone());
+        let t = Instant::now();
+        s.update(&rings(&[9]), false, t);
+        // Answered, but the card never started: say so once, not on every look.
+        for i in 1..5 {
+            s.update(&rings(&[]), true, t + Duration::from_secs(i));
+        }
+        fake.fail.store(false, Ordering::SeqCst);
+        s.update(&rings(&[10]), false, t + Duration::from_secs(10));
+        s.update(&rings(&[]), false, t + Duration::from_secs(30));
+        let text = crate::call_trace::render(&crate::call_trace::snapshot());
+        assert!(text.contains("launch failed: no-display"), "{text}");
+        assert_eq!(
+            text.matches("live call but no card is running")
+                .count()
+                .min(1),
+            1
+        );
+        assert!(text.contains("launched for a ring"), "{text}");
+        assert!(text.contains("stopped: no ring or live call"), "{text}");
     }
 
     #[test]

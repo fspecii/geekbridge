@@ -173,6 +173,15 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   confirmation ([doc] CHANGELOG 0.1.0; tested with a stand-in phone only, **UNVERIFIED** on hardware).
 * Logged: the `diagnose` report and logs mask numbers ([code] `scrub` in `crates/bridge-service/src/diagnose.rs`).
 * Bluetooth hands-free audio is a separate path between phone and computer and is not part of this link.
+* **Call-event trace** (so a call that did nothing can be understood afterwards). The service records, with a time:
+  call-state changes per source, the phone link going up or down, the Bluetooth hands-free state, card launches and
+  stops, answer/decline/hang-up/mute/audio/dial requests and how they ended, the audio route, and the Wi-Fi call
+  audio session. A call, phone or source is shown only as a 6-hex-digit hash salted per run; a number only as its last
+  two digits; **no name, full number, message text or address is recorded**. It is local only (never sent to the phone
+  or the network), capped (128 KiB in memory, 256 KiB in `call-trace.log`, oldest lines dropped), and cleared when the
+  service starts or with `geekbridge-ctl calls --trace --clear`. `geekbridge-ctl calls --trace [--json]` prints it;
+  `geekbridge-ctl report` and `diagnose` include the newest 30 lines (also scrubbed) and `doctor` points to it
+  ([code] `crates/bridge-service/src/call_trace.rs`; [test] `call_trace` unit tests and `privacy_doc.rs`).
 
 ### Display privacy: what a banner or the call card shows
 
@@ -329,6 +338,7 @@ Desktop state directory: `$XDG_DATA_HOME/geekbridge/service` (Linux, default `~/
 | `trusted_peers.json` | paired phones, pinned certificate, device name | yes | until unpair |
 | `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `privacy` (three display switches), `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
 | `ipc-token` | local control token | yes (local) | until purge; replaced if damaged |
+| `call-trace.log` | redacted call-event trace (hashed call ids, last two digits of numbers, no names) | low | emptied when the service starts, capped at 256 KiB, `geekbridge-ctl calls --trace --clear` empties it |
 | `phone-logs/<id>.log` | debug-build phone log (redacted) | medium | rotated at 5 MiB, 3 old files; removed on unpair and when `debug` consent is withdrawn |
 | `~/Downloads/GeekBridge/` | files and photos you received or saved | yes | until you delete |
 | `<save dir>/.geekbridge-photo-copy/` | photo sent to the clipboard | yes | emptied at start, files older than 10 minutes swept |

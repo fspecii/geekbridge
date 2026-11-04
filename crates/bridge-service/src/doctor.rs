@@ -447,7 +447,10 @@ pub fn calls_check(c: &CallingStatus) -> Check {
     check(
         level,
         "Calls",
-        verdict_in_words(&c.verdict),
+        format!(
+            "{} If a call misbehaves, `geekbridge-ctl calls --trace` shows what the service saw.",
+            verdict_in_words(&c.verdict)
+        ),
         call_audio_hint(&c.platform),
     )
 }

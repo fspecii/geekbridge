@@ -12,6 +12,7 @@ pub mod call_audio_host;
 pub mod call_cli;
 pub mod call_control;
 pub mod call_overlay;
+pub mod call_trace;
 pub mod calling;
 pub mod callwifi;
 pub mod callwifi_cli;
@@ -509,6 +510,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     } else {
         Arc::new(calling::DisabledCallingProbe)
     };
+    call_trace::init(&config.state_dir);
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
     options.call_overlay = Some(Arc::new(call_overlay::ProcessLauncher::new(
         call_overlay::Launch {

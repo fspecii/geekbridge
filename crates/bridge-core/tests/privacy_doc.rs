@@ -123,6 +123,34 @@ fn privacy_doc_lists_the_phone_grants_as_in_code() {
 }
 
 #[test]
+fn privacy_doc_describes_the_call_trace_as_in_code() {
+    let doc = doc();
+    for needle in [
+        "call-trace.log",
+        "calls --trace --clear",
+        "two digits",
+        "128 KiB",
+        "256 KiB",
+    ] {
+        assert!(
+            doc.contains(needle),
+            "docs/privacy.md lost its call-trace entry ({needle})"
+        );
+    }
+    let src =
+        std::fs::read_to_string(root().join("crates/bridge-service/src/call_trace.rs")).unwrap();
+    assert!(
+        src.contains("MEMORY_CAP: usize = 128 * 1024"),
+        "update the cap in docs/privacy.md"
+    );
+    assert!(
+        src.contains("FILE_CAP: usize = 256 * 1024"),
+        "update the cap in docs/privacy.md"
+    );
+    assert!(src.contains("pub const FILE: &str = \"call-trace.log\""));
+}
+
+#[test]
 fn readme_and_user_guide_link_the_privacy_review() {
     assert!(
         std::fs::read_to_string(root().join("README.md"))

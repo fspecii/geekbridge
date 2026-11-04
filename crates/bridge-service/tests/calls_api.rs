@@ -559,6 +559,53 @@ fn ctl_runner(
 }
 
 #[tokio::test]
+async fn ctl_calls_trace_shows_the_states_without_numbers_prints_json_and_clears() {
+    let rig = Rig::start().await;
+    let phone = calls_phone();
+    let mut phone_link = pair_phone(&rig, &phone).await;
+    let ctl = ctl_runner(&rig);
+    rig.ok(Request::SetConsent {
+        device_id: phone.id(),
+        feature: Feature::Telephony,
+        enabled: true,
+    })
+    .await;
+    phone_link
+        .send(&report(PhoneState::Ringing, true))
+        .await
+        .unwrap();
+    wait_calls(&rig, "ringing", |c| c.view.ringing().is_some()).await;
+
+    let (ok, text) = ctl(vec!["calls", "--trace"]).await.unwrap();
+    assert!(ok && text.contains("-> ringing"), "{text}");
+    assert!(
+        text.contains("new src=link") && text.contains("incoming"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("+15550100") && !text.contains("5550100") && !text.contains("Ada"),
+        "{text}"
+    );
+    let (ok, text) = ctl(vec!["calls", "--trace", "--json"]).await.unwrap();
+    assert!(ok, "{text}");
+    let events: Vec<bridge_core::ipc::TraceEvent> = serde_json::from_str(&text).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == "call" && e.detail.contains("incoming"))
+    );
+    assert!(events.iter().all(|e| !e.detail.contains("5550100")));
+
+    let (ok, text) = ctl(vec!["calls", "--trace", "--clear"]).await.unwrap();
+    assert!(
+        ok && text.contains("-> ringing") && text.contains("Trace cleared"),
+        "{text}"
+    );
+    let (ok, text) = ctl(vec!["calls", "--trace"]).await.unwrap();
+    assert!(ok && !text.contains("-> ringing"), "{text}");
+}
+
+#[tokio::test]
 async fn ctl_calls_masks_numbers_and_each_control_says_plainly_when_it_is_missing() {
     let rig = Rig::start().await;
     let phone = calls_phone();

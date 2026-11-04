@@ -490,6 +490,14 @@ impl CallWifi {
     fn start_worker(self: &Arc<Self>, g: &mut Inner, id: &str, asked: Option<(u64, Instant)>) {
         g.epoch += 1;
         let epoch = g.epoch;
+        crate::call_trace::record(
+            "wifi",
+            &format!(
+                "session started phone={} by={}",
+                crate::call_trace::hash(id),
+                if asked.is_some() { "computer" } else { "phone" }
+            ),
+        );
         g.live = Some(Live {
             device: id.to_owned(),
             epoch,
@@ -548,6 +556,21 @@ impl CallWifi {
 
     /// "Listen here (Wi-Fi, experimental)" for `id`'s current call.
     pub fn listen(self: &Arc<Self>, id: &str) -> Result<(), String> {
+        let result = self.listen_inner(id);
+        crate::call_trace::record(
+            "wifi",
+            &format!(
+                "listen phone={}: {}",
+                crate::call_trace::hash(id),
+                result
+                    .as_ref()
+                    .map_or_else(|e| format!("refused: {e}"), |()| "asked".into())
+            ),
+        );
+        result
+    }
+
+    fn listen_inner(self: &Arc<Self>, id: &str) -> Result<(), String> {
         self.audio.supported()?;
         let mut g = self.lock();
         if g.live.is_some() {
@@ -596,6 +619,10 @@ impl CallWifi {
     }
 
     fn stop_locked(self: &Arc<Self>, g: &mut Inner, id: &str, reason: &str) {
+        crate::call_trace::record(
+            "wifi",
+            &format!("stop phone={} reason={reason}", crate::call_trace::hash(id)),
+        );
         let asked = g.live.as_ref().and_then(|l| l.asked).map(|(s, _)| s);
         let actions = g
             .phones
@@ -620,6 +647,20 @@ impl CallWifi {
 
     /// "Speak (experimental)" on or off.
     pub fn speak(self: &Arc<Self>, on: bool) -> Result<(), String> {
+        let result = self.speak_inner(on);
+        crate::call_trace::record(
+            "wifi",
+            &format!(
+                "speak={on}: {}",
+                result
+                    .as_ref()
+                    .map_or_else(|e| format!("refused: {e}"), |()| "ok".into())
+            ),
+        );
+        result
+    }
+
+    fn speak_inner(self: &Arc<Self>, on: bool) -> Result<(), String> {
         let mut g = self.lock();
         let id = g
             .live

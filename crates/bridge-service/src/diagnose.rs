@@ -21,8 +21,14 @@ pub struct Inputs {
     pub update: Option<UpdateStatus>,
     /// (device id, bytes on disk) of each phone's captured debug log (`phone_debug`); content is never read.
     pub phone_logs: Vec<(String, u64)>,
+    /// The service's redacted call-event trace (`call_trace`), oldest first.
+    pub call_trace: Option<Vec<bridge_core::ipc::TraceEvent>>,
     pub notes: Vec<String>,
 }
+
+/// How many of the newest trace lines a report carries (links have a size limit; the whole trace is
+/// `geekbridge-ctl calls --trace`).
+const TRACE_LINES: usize = 30;
 
 /// Replaces anything that looks like an IPv4/IPv6 address, a long hex string (fingerprints, ids)
 /// or a phone-number-like digit run in a service-generated message, and bounds its length.
@@ -188,6 +194,28 @@ pub fn render(i: &Inputs, host: &str) -> String {
             "{}: {bytes} bytes captured on this computer (geekbridge-ctl phone-log / phone-state; lines are not included here)",
             alias(s, id)
         );
+    }
+
+    let _ = writeln!(o, "\n== Call trace (last {TRACE_LINES}) ==");
+    match &i.call_trace {
+        Some(t) if !t.is_empty() => {
+            for e in &t[t.len().saturating_sub(TRACE_LINES)..] {
+                // Time of day only (UTC), then the already-redacted words.
+                let _ = writeln!(
+                    o,
+                    "{} {} {}",
+                    &crate::call_trace::clock(e.ms)[11..],
+                    scrub(&e.kind),
+                    scrub(&e.detail)
+                );
+            }
+        }
+        Some(_) => {
+            let _ = writeln!(o, "no call events since the service started");
+        }
+        None => {
+            let _ = writeln!(o, "not available from this service version");
+        }
     }
 
     let _ = writeln!(o, "\n== Capabilities ==");
@@ -404,6 +432,7 @@ mod tests {
                 clipboard: None,
                 update: None,
                 phone_logs: Vec::new(),
+                call_trace: None,
                 notes: vec![format!("events: {reason}")],
             },
             "linux x86_64",
