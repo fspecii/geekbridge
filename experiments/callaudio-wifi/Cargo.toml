@@ -1,0 +1,38 @@
+# Deliberately NOT a member of the GeekBridge workspace: nothing in the default build, CI, release, notices or
+# supply-chain checks includes it. Build and test it on its own:
+#   cd experiments/callaudio-wifi && cargo test
+[package]
+name = "bridge-callaudio"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "GPL-3.0-or-later"
+publish = false
+description = "PARKED EXPERIMENT (owner chose Bluetooth for call audio): call audio over the GeekBridge link (geekbridge.callaudio.*): wire format, consent gate, Opus 16 kHz mono, jitter buffer, PipeWire I/O and a loopback lab. Not wired into the service; see docs/design/call-audio-over-wifi.md"
+
+[lib]
+name = "bridge_callaudio"
+
+[[bin]]
+name = "geekbridge-callaudio-lab"
+path = "src/bin/lab.rs"
+
+[dependencies]
+bridge-kde = { path = "../../crates/bridge-kde" }
+bridge-chaos = { path = "../../crates/bridge-chaos" }
+serde_json = "1"
+base64 = "0.22"
+# Pure-Rust Opus (RFC 6716), BSD-3-Clause, no C, no build script, no dependencies. Evaluated in
+# docs/reports/call-audio-wifi-prototype.md (size, speed, licence) against the `opus` crate (libopus bindings).
+opus-pure = "=0.2.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+# Its own (empty) workspace, so the root workspace never picks it up.
+[workspace]
+
+# The codec in an unoptimised test build is slow enough to distort the latency tests on a busy machine.
+[profile.dev.package.opus-pure]
+opt-level = 3
