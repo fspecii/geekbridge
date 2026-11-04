@@ -9,7 +9,7 @@
     <string name="cw_switch">Call audio over Wi-Fi (ADB helper)</string>
     <string name="cw_switch_sub">Off by default. Each call still needs your press on the computer.</string>
     <string name="cw_helper_title">1. Start the helper</string>
-    <string name="cw_helper_steps">On the phone: Settings, Developer options, turn on USB debugging or Wireless debugging. On your computer, with the phone connected to adb, run scripts/callaudio-enable.sh and answer y. The helper runs until you reboot the phone or run it with --stop.</string>
+    <string name="cw_helper_steps">On the phone: Settings, Developer options, turn on Wireless debugging (or USB debugging). On your computer run geekbridge-ctl callwifi setup and follow it: it pairs with the code the phone shows and starts the helper. The helper runs until you reboot the phone or run setup --stop.</string>
     <string name="cw_helper_up">Helper connected.</string>
     <string name="cw_helper_down">Helper not running.</string>
     <string name="cw_open_dev">Open Developer options</string>
@@ -19,11 +19,16 @@
     <string name="cw_test_control">Step 1: check with no call</string>
     <string name="cw_test_call">Step 2: test during a call</string>
     <string name="cw_last_result">Last result: %1$s</string>
+    <string name="cw_speaktest_title">Step 3: test speaking (during a call)</string>
+    <string name="cw_speaktest_body">The phone cannot tell by itself whether the other person hears audio put into the call. This plays short beeps through three possible routes: 1 beep, then 2 beeps, then 3 beeps. Ask the other person how many beeps they heard (warn them first), then tap the answer. Speak uses that route.</string>
+    <string name="cw_speaktest_run">Play the beeps now</string>
+    <string name="cw_speaktest_heard">They heard %1$d beep(s)</string>
+    <string name="cw_speaktest_none">They heard nothing</string>
     <string name="cw_who_title">3. Which computers</string>
     <string name="cw_who_body">Only the computers you tick may ask to listen, and only during a call, after a press on that computer.</string>
     <string name="cw_speak">Speak (experimental)</string>
     <string name="cw_speak_sub">Let the computer\'s microphone be heard by the other person. Separate from listening; the other person may or may not hear it.</string>
-    <string name="cw_speak_unavailable">Needs a test that works and an uplink route first.</string>
+    <string name="cw_speak_unavailable">Needs a listening test that works and a speaking test the other person heard first.</string>
     <string name="cw_live_title">Sharing now</string>
     <string name="cw_live">Call audio is being shared with %1$s.</string>
     <string name="cw_live_speaking">The computer\'s microphone is also sent into the call.</string>

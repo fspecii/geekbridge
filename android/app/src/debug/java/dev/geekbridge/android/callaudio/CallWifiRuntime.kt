@@ -66,6 +66,16 @@ object CallWifiRuntime {
     @Volatile var speaking = false
         private set
 
+    /** "Test speaking": the helper's per-route result (numbers and route names only), and its plain-words summary. */
+    @Volatile var uplinkTest: String = ""
+        private set
+    @Volatile var uplinkSummary: String = ""
+        private set
+
+    /** The helper's last report while sharing: frames from the computer, frames written to the route, its level. */
+    @Volatile var injectNote: String = ""
+        private set
+
     private var conn: HelperConnection? = null
     private var control: Map<String, Capture> = emptyMap()
     private var loop: Thread? = null
@@ -98,7 +108,8 @@ object CallWifiRuntime {
         speakOptIn = p.getBoolean("speak", false)
         verdict = Verdict.fromWire(p.getString("verdict", null))
         source = p.getString("source", null) ?: "VOICE_DOWNLINK"
-        uplink = p.getString("uplink", null) ?: "none"
+        uplink = p.getString("uplink", null)?.takeIf { it == "none" || UplinkRoutes.valid(it) } ?: "none"
+        uplinkSummary = p.getString("uplink_summary", null) ?: ""
         // The helper does not survive a reboot or a process death with us; a stored verdict still says what to expect.
         if (enabled) ensureLoop()
     }
@@ -116,11 +127,12 @@ object CallWifiRuntime {
         changed()
     }
 
-    /** Test hook (adb only): a stored verdict and capture source, as the self-test would leave them. Uplink stays none. */
-    fun setTestConfig(v: String?, src: String?) {
+    /** Test hook (adb only): a stored verdict and capture source, as the self-test would leave them. The uplink route
+     *  stays none unless [up] names one (the linked emulator e2e of Speak). */
+    fun setTestConfig(v: String?, src: String?, up: String? = null) {
         if (v != null) verdict = Verdict.fromWire(v)
         if (!src.isNullOrEmpty()) source = src
-        uplink = "none"
+        uplink = up?.takeIf { UplinkRoutes.valid(it) } ?: "none"
         prefs?.edit()?.putString("verdict", verdict.wire)?.putString("source", source)?.putString("uplink", uplink)?.apply()
         pushConfig()
         changed()
@@ -316,7 +328,8 @@ object CallWifiRuntime {
                 val r = SelfTestRunner(HelperCapturePort(c)).duringCall(control)
                 verdict = r.verdict
                 source = r.source ?: source
-                uplink = if (r.uplink == "none") "none" else "telephony_tx"
+                // Keep a route the speaking test already confirmed; otherwise "the first that opens", or none.
+                if (r.uplink == "none") uplink = "none" else if (!uplink.startsWith("tx_")) uplink = "telephony_tx"
                 prefs?.edit()?.putString("verdict", verdict.wire)?.putString("source", source)?.putString("uplink", uplink)?.apply()
                 say(describe(r.verdict, control.isEmpty()))
                 pushConfig()
@@ -325,6 +338,63 @@ object CallWifiRuntime {
                 changed()
             }
         }, "gb-callwifi-selftest").apply { isDaemon = true; start() }
+    }
+
+    /**
+     * Step 3, during a call: beeps through each uplink route in turn (1, 2, then 3 beeps). The other person says how
+     * many they heard; [heard] stores that route for Speak. The phone alone cannot know whether they heard anything.
+     */
+    fun runSpeakTest() {
+        val c = conn
+        if (c == null || !helperUp) return say("Start the helper first (geekbridge-ctl callwifi setup on the computer).")
+        if (sharingWith != null || testRunning) return say("Wait until the current test or sharing is finished.")
+        if (!callActive()) return say("Start a call first, with someone who agrees to hear a few beeps.")
+        testRunning = true
+        Thread({
+            try {
+                say("Playing beeps into the call: 1 beep, then 2, then 3. Ask the other person how many they heard.")
+                val result = java.util.concurrent.atomic.AtomicReference<String?>(null)
+                val prev = c.listener
+                c.listener = object : HelperConnection.Listener {
+                    override fun onPcm(samples: ShortArray, cap: Int) {}
+                    override fun onStatus(json: String) {
+                        if (json.contains("\"uplinkTest\"")) result.set(json)
+                    }
+                    override fun onClosed() = quietListener.onClosed()
+                }
+                c.command("uplink_test")
+                val end = System.currentTimeMillis() + 20_000
+                while (result.get() == null && System.currentTimeMillis() < end && !c.closed) Thread.sleep(50)
+                c.listener = prev
+                val r = result.get() ?: return@Thread say("The helper did not answer the speaking test.")
+                uplinkTest = r.take(1500)
+                val opened = UplinkRoutes.ALL.filter { Regex("\"route\":\"$it\"[^}]*\"outcome\":\"played\"").containsMatchIn(r) }
+                uplinkSummary = if (opened.isEmpty()) {
+                    "No route opened (the phone refused all three). Speaking into the call is not possible on this phone."
+                } else {
+                    "Played: " + opened.joinToString(", ") { "${UplinkRoutes.ALL.indexOf(it) + 1} beep(s)" } +
+                        ". How many beeps did the other person hear?"
+                }
+                prefs?.edit()?.putString("uplink_summary", uplinkSummary)?.apply()
+                say(uplinkSummary)
+            } finally {
+                testRunning = false
+                changed()
+            }
+        }, "gb-callwifi-speaktest").apply { isDaemon = true; start() }
+    }
+
+    /** The other person heard [beeps] beeps (0 = nothing): that route is used for Speak, or none. */
+    fun heard(beeps: Int) {
+        uplink = UplinkRoutes.ofBeeps(beeps) ?: "none"
+        uplinkSummary = if (uplink == "none") {
+            "The other person heard no beep: speaking into the call does not work on this phone."
+        } else {
+            "The other person heard $beeps beep(s): Speak will use route ${uplink.removePrefix("tx_")}."
+        }
+        prefs?.edit()?.putString("uplink", uplink)?.putString("uplink_summary", uplinkSummary)?.apply()
+        pushConfig()
+        changed()
     }
 
     fun describe(v: Verdict, noControl: Boolean): String = when (v) {
@@ -425,17 +495,24 @@ object CallWifiRuntime {
             }
             override fun onStatus(json: String) {
                 if (json.contains("\"error\"")) endSession()
+                if (json.contains("\"injectIn\"")) {
+                    fun n(k: String) = Regex("\"$k\":\"?([A-Za-z0-9_()]+)").find(json)?.groupValues?.get(1) ?: "?"
+                    injectNote = "route ${n("injectRoute")}: ${n("injectIn")} frames from the computer, " +
+                        "${n("injected")} written, level ${n("injectRms")}"
+                    changed()
+                }
             }
             override fun onClosed() = quietListener.onClosed()
         }
+        injectNote = ""
         c.command("start", "source" to source, "inject" to "none")
     }
 
     private fun startSpeaking() {
         val c = conn ?: return
-        if (!speakOptIn || uplink == "none") return
+        if (!speakOptIn || !UplinkRoutes.valid(uplink)) return
         // Restart the capture with the uplink route open; the helper stops the previous capture first.
-        c.command("start", "source" to source, "inject" to "telephony_tx")
+        c.command("start", "source" to source, "inject" to uplink)
         speaking = true
         injectThread?.interrupt()
         injectThread = Thread({

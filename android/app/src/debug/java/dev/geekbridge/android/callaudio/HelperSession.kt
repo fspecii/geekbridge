@@ -79,6 +79,8 @@ class HelperSession(
     private val openInjector: (String) -> PcmInjector,
     private val probe: () -> String,
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** "Test speaking" ([UplinkTest]); only during a call, and it plays beeps the other person hears. */
+    private val uplinkTest: () -> String = { "{\"uplinkTest\":[],\"error\":\"unsupported\"}" },
 ) {
     @Volatile private var capture: PcmCapture? = null
     @Volatile private var injector: PcmInjector = NoInjector
@@ -90,6 +92,10 @@ class HelperSession(
         private set
     @Volatile var injected = 0L
         private set
+
+    /** Sum of squares of the injected samples since the last STATUS (the level that went into the route). */
+    @Volatile private var injSumSq = 0.0
+    @Volatile private var injSamples = 0L
 
     private fun status(json: String) = HelperProtocol.write(output, HelperProtocol.text(HelperProtocol.STATUS, json))
 
@@ -104,6 +110,10 @@ class HelperSession(
                     }
                     is HelperProtocol.Frame.Pcm -> if (f.type == HelperProtocol.INJECT && authed) {
                         framesIn++
+                        var sq = 0.0
+                        for (v in f.samples) sq += v.toDouble() * v
+                        injSumSq += sq
+                        injSamples += f.samples.size
                         if (injector.write(f.samples)) injected++
                     }
                 }
@@ -134,6 +144,11 @@ class HelperSession(
             "start" -> start(field(json, "source") ?: "VOICE_DOWNLINK", field(json, "inject") ?: "none")
             "stop" -> stop()
             "probe" -> status(probe())
+            // Beeps into the call through each uplink route in turn; capture stops first (one thing at a time).
+            "uplink_test" -> {
+                stop()
+                status(uplinkTest())
+            }
             // Does the platform hand out an uplink route? Opens and releases it; nothing is ever written, so the far
             // party cannot hear a test (the full probe injects a tone and must not run during a real call).
             "uplink_check" -> {
@@ -195,9 +210,13 @@ class HelperSession(
                 seq++
                 if (seq % 50 == 0) {
                     val rms = sqrt(sumSq / (50.0 * buf.size))
+                    val injRms = if (injSamples > 0) sqrt(injSumSq / injSamples).toInt() else 0
+                    injSumSq = 0.0
+                    injSamples = 0
                     status(
                         "{\"frames\":$framesOut,\"rms\":${rms.toInt()},\"peak\":$peak,\"silenced\":$silencedSeen," +
-                            "\"injectRoute\":\"${injector.route}\",\"injectIn\":$framesIn,\"injected\":$injected}",
+                            "\"injectRoute\":\"${injector.route}\",\"injectIn\":$framesIn,\"injected\":$injected," +
+                            "\"injectRms\":$injRms}",
                     )
                     sumSq = 0.0
                     peak = 0

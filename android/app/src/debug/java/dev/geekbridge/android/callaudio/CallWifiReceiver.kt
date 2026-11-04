@@ -12,6 +12,10 @@ import android.content.Intent
  * hooks (ENABLE, SELFTEST, STATUS) for the emulator e2e script.
  */
 class CallWifiReceiver : BroadcastReceiver() {
+    /** Words, numbers and route names only, safe inside a JSON string. */
+    private fun clean(s: String, max: Int = 160) =
+        s.map { if (it.isLetterOrDigit() || it in " .,:_()=/-[]{}") it else if (it == '"') '\'' else ' ' }.joinToString("").take(max)
+
     override fun onReceive(context: Context, intent: Intent) {
         CallWifiRuntime.init(context)
         when (intent.action) {
@@ -31,7 +35,11 @@ class CallWifiReceiver : BroadcastReceiver() {
                 resultCode = 1
             }
             "dev.geekbridge.callwifi.SELFTEST" -> {
-                if (intent.getStringExtra("step") == "call") CallWifiRuntime.runCallTest() else CallWifiRuntime.runControl()
+                when (intent.getStringExtra("step")) {
+                    "call" -> CallWifiRuntime.runCallTest()
+                    "speak" -> CallWifiRuntime.runSpeakTest()
+                    else -> CallWifiRuntime.runControl()
+                }
                 resultCode = 1
             }
             // Linked-emulator e2e only: allow (or withdraw) the experiment for one paired computer, as the Settings row does.
@@ -48,7 +56,17 @@ class CallWifiReceiver : BroadcastReceiver() {
             // Linked-emulator e2e only: stand in for a finished self-test, because the emulator's call sources cannot
             // give a real verdict (they sound with no call). Source TONE is the helper's synthetic far party.
             "dev.geekbridge.callwifi.CONFIG" -> {
-                CallWifiRuntime.setTestConfig(intent.getStringExtra("verdict"), intent.getStringExtra("source"))
+                CallWifiRuntime.setTestConfig(intent.getStringExtra("verdict"), intent.getStringExtra("source"), intent.getStringExtra("uplink"))
+                resultCode = 1
+            }
+            // The answer to "Test speaking" (how many beeps the other person heard; 0 = none), as the screen's buttons.
+            "dev.geekbridge.callwifi.HEARD" -> {
+                CallWifiRuntime.heard(intent.getIntExtra("beeps", 0))
+                resultCode = 1
+            }
+            // The phone's own "Speak (experimental)" opt-in, as the screen's switch.
+            "dev.geekbridge.callwifi.SPEAK" -> {
+                CallWifiRuntime.setSpeak(intent.getBooleanExtra("on", false))
                 resultCode = 1
             }
             "dev.geekbridge.callwifi.STATUS" -> {
@@ -56,7 +74,9 @@ class CallWifiReceiver : BroadcastReceiver() {
                 resultCode = 1
                 resultData = "{\"enabled\":${CallWifiRuntime.enabled},\"helper\":${CallWifiRuntime.helperUp}," +
                     "\"verdict\":\"${CallWifiRuntime.verdict.wire}\",\"uplink\":\"${CallWifiRuntime.uplink.take(24)}\"," +
-                    "\"progress\":\"${CallWifiRuntime.progress.filter { it.isLetterOrDigit() || it == ' ' || it == '.' }.take(120)}\",\"sharing\":${CallWifiRuntime.sharingWith != null},\"speaking\":${CallWifiRuntime.speaking}}"
+                    "\"progress\":\"${CallWifiRuntime.progress.filter { it.isLetterOrDigit() || it == ' ' || it == '.' }.take(120)}\",\"sharing\":${CallWifiRuntime.sharingWith != null},\"speaking\":${CallWifiRuntime.speaking}," +
+                    "\"speakOptIn\":${CallWifiRuntime.speakOptIn},\"inject\":\"${clean(CallWifiRuntime.injectNote)}\"," +
+                    "\"uplinkTest\":\"${clean(CallWifiRuntime.uplinkTest, 600)}\"}"
             }
             "dev.geekbridge.callwifi.STOP" -> {
                 CallWifiRuntime.endSession()

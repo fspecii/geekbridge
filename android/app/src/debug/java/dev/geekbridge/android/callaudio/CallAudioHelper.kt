@@ -171,10 +171,15 @@ object CallAudioHelper {
     }
 
     class TrackInjector(override val route: String, private val track: AudioTrack, private val keep: Any? = null) : PcmInjector {
-        init {
-            track.play()
+        private var writes = 0
+
+        // The first three frames (60 ms) are written before play(): a small cushion against Wi-Fi jitter, so the
+        // track does not start by running dry. After that the track's own buffer (200 ms) absorbs bursts.
+        override fun write(buf: ShortArray): Boolean {
+            val ok = track.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING) > 0
+            if (++writes == 3) track.play()
+            return ok
         }
-        override fun write(buf: ShortArray): Boolean = track.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING) > 0
         override fun close() {
             try {
                 track.stop()
@@ -194,27 +199,49 @@ object CallAudioHelper {
         note(e)
     }
 
-    fun openInjector(route: String): PcmInjector = when (route) {
-        "telephony_tx" -> telephonyTx() ?: NoInjector
-        "voip_mix" -> voipMix()?.first ?: NoInjector
-        else -> NoInjector
+    fun openInjector(route: String): PcmInjector = openRoute(route) ?: NoInjector
+
+    /**
+     * One uplink route (see [UplinkRoutes]), or null with the reason in [lastError]. "telephony_tx" is the first of
+     * them that opens: the interception API, then an AudioTrack with the TELEPHONY_TX ("in-call music") device
+     * preferred, as a voice track and then as a media track (AudioPolicyManager gives an explicitly routed music or
+     * voice track the INCALL_MUSIC output during a call, for a caller with MODIFY_PHONE_STATE).
+     */
+    fun openRoute(route: String): PcmInjector? {
+        lastError = ""
+        return when (route) {
+            "telephony_tx" -> UplinkRoutes.ALL.firstNotNullOfOrNull { openRoute(it) }
+            "tx_interception" -> (callInterception("getCallUplinkInjectionAudioTrack") as? AudioTrack)
+                ?.let { TrackInjector("tx_interception", it) }
+            "tx_voice" -> preferredTx("tx_voice", AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            "tx_music" -> preferredTx("tx_music", AudioAttributes.USAGE_MEDIA)
+            "voip_mix" -> voipMix()?.first
+            else -> null.also { lastError = "unknown route" }
+        }
     }
 
-    /** First the interception API, then an AudioTrack routed to the TELEPHONY_TX ("in-call music") device. */
-    private fun telephonyTx(): PcmInjector? {
-        (callInterception("getCallUplinkInjectionAudioTrack") as? AudioTrack)?.let {
-            return TrackInjector("telephony_tx(interception)", it)
-        }
+    private fun preferredTx(name: String, usage: Int): PcmInjector? {
         val dev = telephonyTxDevice() ?: return null.also { if (lastError.isEmpty()) lastError = "no TELEPHONY output device" }
         return try {
             val t = AudioTrack.Builder()
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION).build())
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(usage).build())
                 .setAudioFormat(fmtOut()).setBufferSizeInBytes(RATE / 5 * 2).build()
-            t.setPreferredDevice(dev)
-            TrackInjector("telephony_tx(preferred device)", t)
+            if (t.state != AudioTrack.STATE_INITIALIZED) {
+                t.release()
+                lastError = "track not initialised"
+                return null
+            }
+            if (!t.setPreferredDevice(dev)) lastError = "preferred device refused"
+            TrackInjector(name, t)
         } catch (e: RuntimeException) {
             note(e)
         }
+    }
+
+    /** "Test speaking" during a call: beeps through each route (see [UplinkTest]). */
+    fun uplinkTest(): String {
+        if (audioManager?.mode != AudioManager.MODE_IN_CALL) return "{\"uplinkTest\":[],\"error\":\"no_call\"}"
+        return UplinkTest(::openRoute, { lastError }, ::openCapture).run()
     }
 
     /**
@@ -491,7 +518,7 @@ object CallAudioHelper {
             val hello = "{\"v\":1,\"uid\":${Process.myUid()},\"sdk\":${Build.VERSION.SDK_INT},\"token\":\"$token\"}"
             println("connected $port uid=${Process.myUid()} sdk=${Build.VERSION.SDK_INT}")
             System.out.flush()
-            HelperSession(sock.getInputStream(), sock.getOutputStream(), token, hello, ::openCapture, ::openInjector, ::probe).run()
+            HelperSession(sock.getInputStream(), sock.getOutputStream(), token, hello, ::openCapture, ::openInjector, ::probe, uplinkTest = ::uplinkTest).run()
             sock.close()
             System.exit(0)
         }
@@ -514,7 +541,7 @@ object CallAudioHelper {
                 continue
             }
             val hello = "{\"v\":1,\"uid\":${Process.myUid()},\"sdk\":${Build.VERSION.SDK_INT},\"peerUid\":$peer}"
-            HelperSession(s.inputStream, s.outputStream, token, hello, ::openCapture, ::openInjector, ::probe).run()
+            HelperSession(s.inputStream, s.outputStream, token, hello, ::openCapture, ::openInjector, ::probe, uplinkTest = ::uplinkTest).run()
             s.close()
             if ("--once" in a) return
         }

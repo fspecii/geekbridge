@@ -117,6 +117,18 @@ class CallWifiActivity : Activity() {
             ).apply { setPadding(0, kit.dp(8), 0, 0) },
         )
 
+        // 3b. Speaking: beeps through each uplink route; the other person counts them.
+        val st3 = kit.ui.card(root, getString(R.string.cw_speaktest_title))
+        st3.addView(kit.text(getString(R.string.cw_speaktest_body), 14f))
+        kit.button(st3, getString(R.string.cw_speaktest_run), BtnStyle.Tonal, rt.helperUp) { rt.runSpeakTest() }
+        if (rt.uplinkSummary.isNotEmpty()) {
+            st3.addView(kit.text(rt.uplinkSummary, 14f, Tone.Normal).apply { setPadding(0, kit.dp(8), 0, 0) })
+        }
+        if (rt.uplinkTest.isNotEmpty()) {
+            for (n in 1..3) kit.button(st3, getString(R.string.cw_speaktest_heard, n), BtnStyle.Tonal) { rt.heard(n) }
+            kit.button(st3, getString(R.string.cw_speaktest_none), BtnStyle.Tonal) { rt.heard(0) }
+        }
+
         // 4. Which computers.
         val who = kit.ui.card(root, getString(R.string.cw_who_title))
         who.addView(kit.text(getString(R.string.cw_who_body), 14f))
@@ -124,7 +136,7 @@ class CallWifiActivity : Activity() {
 
         // 5. Speak back: a separate opt-in.
         val speak = kit.panel(root, 8)
-        val canSpeak = v == Verdict.Works && rt.uplink != "none"
+        val canSpeak = v == Verdict.Works && UplinkRoutes.valid(rt.uplink)
         val st = kit.toggle(rt.speakOptIn && canSpeak) { on -> rt.setSpeak(on) }
         st.isEnabled = canSpeak
         st.contentDescription = getString(R.string.cw_speak)
@@ -138,6 +150,7 @@ class CallWifiActivity : Activity() {
             val live = kit.ui.card(root, getString(R.string.cw_live_title), accent = true)
             live.addView(kit.text(getString(R.string.cw_live, who2), 14f))
             if (rt.speaking) live.addView(kit.text(getString(R.string.cw_live_speaking), 14f, Tone.Warn))
+            if (rt.injectNote.isNotEmpty()) live.addView(kit.text(rt.injectNote, 12f, Tone.Muted))
             kit.button(live, getString(R.string.cw_stop), BtnStyle.Primary) { rt.endSession() }
         }
         screen.announcePage(getString(R.string.cw_title))
