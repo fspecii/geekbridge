@@ -96,6 +96,9 @@ pub struct DaemonOptions {
     /// Bluetooth hands-free backend for answering calls from this computer. `None` (tests, and
     /// platforms without an adapter) leaves only the phone link.
     pub call_host: Mutex<Option<Box<dyn HostCalls>>>,
+    /// The sound output/input for EXPERIMENTAL Wi-Fi call audio. `None` uses PipeWire (`pw-cat`) on the device
+    /// chosen for calls; tests install a stand-in so nothing plays on a real speaker.
+    pub callwifi_audio: Mutex<Option<Arc<dyn crate::callwifi::Audio>>>,
     /// Desktop notification with Answer/Decline for a ringing call. `None` shows none.
     pub call_notifier: Option<Arc<dyn CallNotifier>>,
     /// Desktop notification for a newly arrived text (sender only). `None` shows none.
@@ -132,6 +135,7 @@ impl DaemonOptions {
             share: ShareOptions::default(),
             share_notifier: None,
             call_host: Mutex::new(None),
+            callwifi_audio: Mutex::new(None),
             call_notifier: None,
             sms_notifier: None,
             sms_show_content: false,
@@ -361,9 +365,16 @@ impl Daemon {
             crate::callwifi::CallWifi::new(
                 Arc::new(move |id, kind, body| send_to.send_stock(id, kind, body)),
                 Arc::new(move |id| calls_of.phone_in_call(id)),
-                Arc::new(crate::callwifi::PipeWireAudio::new(
-                    consents.dir().map(std::path::Path::to_path_buf),
-                )),
+                options
+                    .callwifi_audio
+                    .get_mut()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                    .unwrap_or_else(|| {
+                        Arc::new(crate::callwifi::PipeWireAudio::new(
+                            consents.dir().map(std::path::Path::to_path_buf),
+                        ))
+                    }),
             )
         };
         let mirror = crate::mirror::Mirror::default();
