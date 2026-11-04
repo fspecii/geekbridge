@@ -10,7 +10,7 @@ numbers, and the host load average was 15 to 97 during the timing runs.
 ## Verdict
 
 No release blocker in the APK itself. Two defects were found and fixed (CI built a different native library than the one that
-was measured, and `docs/privacy.md` did not justify 11 of the 27 permissions). One size budget is exceeded (see Size). Items that
+was measured, and `docs/privacy.md` did not justify 14 of the 27 permissions). One size budget is exceeded (see Size). Items that
 need an owner or a real phone are at the end.
 
 ## Results
@@ -68,7 +68,7 @@ and R8 dex about 25% since. `adb install` of the incremental kind leaves the pac
    `docs/android-perf.md` and had never been the binary tested on the emulator. The three workflows now build with
    `--profile android` and the same linker flags, copy from `target/<triple>/android/`, and `release.yml` / `check.yml` fail the
    build if any `LOAD` segment is aligned below 16 KiB (`llvm-readelf`). The local equivalent already had that check.
-2. **`docs/privacy.md` justified only 16 of the 27 release permissions.** `INTERNET` (in prose only), `WAKE_LOCK`,
+2. **`docs/privacy.md` justified only 13 of the 27 release permissions.** `INTERNET` (in prose only), `WAKE_LOCK`,
    `FOREGROUND_SERVICE*`, `ACCESS_NETWORK_STATE`, `CHANGE_NETWORK_STATE`, `CHANGE_WIFI_MULTICAST_STATE`, `RECEIVE_BOOT_COMPLETED`,
    `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `REQUEST_INSTALL_PACKAGES`, `READ_PHONE_STATE`, `READ_EXTERNAL_STORAGE`, `BLUETOOTH`
    and `POST_NOTIFICATIONS` had no entry. New section "Android permissions in the release APK" with one row per permission,
