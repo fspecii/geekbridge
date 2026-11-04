@@ -7,7 +7,6 @@
 //!   card profile, a microphone mute, the phone's RejectSCO flag). Written before each change,
 //!   removed after the undo, and replayed at the next start if the process died in between.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -100,11 +99,7 @@ impl Paths {
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("json.tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
+    crate::private_file::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path)
 }
 

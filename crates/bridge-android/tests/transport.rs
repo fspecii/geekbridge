@@ -2466,6 +2466,89 @@ fn a_picture_without_a_code_or_with_a_wrong_shape_is_refused_plainly() {
     );
 }
 
+/// Security review 7 (S7-1): a hostile frame (the camera sees whatever is held up to it) at the biggest size the
+/// core accepts must come back with a plain answer in bounded time: no panic out of the decoder, no runaway work.
+#[test]
+fn hostile_camera_frames_at_the_largest_size_are_answered_in_bounded_time() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let phone = Phone::start();
+    let (w, h) = (960usize, 720usize);
+    let mut frames: Vec<(&str, Vec<u8>)> = Vec::new();
+    frames.push((
+        "checkerboard",
+        (0..w * h)
+            .map(|i| {
+                if ((i % w) / 3 + (i / w) / 3) % 2 == 0 {
+                    0
+                } else {
+                    255
+                }
+            })
+            .collect(),
+    ));
+    frames.push((
+        "stripes",
+        (0..w * h)
+            .map(|i| if (i % w) % 2 == 0 { 0 } else { 255 })
+            .collect(),
+    ));
+    // Finder-pattern spam: 7x7 module squares (1:1:3:1:1 rings) all over the frame.
+    let mut finders = vec![255u8; w * h];
+    for oy in (0..h - 28).step_by(30) {
+        for ox in (0..w - 28).step_by(30) {
+            for y in 0..21 {
+                for x in 0..21 {
+                    let (mx, my) = (x / 3, y / 3);
+                    let dark = mx == 0
+                        || mx == 6
+                        || my == 0
+                        || my == 6
+                        || (2..=4).contains(&mx) && (2..=4).contains(&my);
+                    finders[(oy + y) * w + ox + x] = if dark { 0 } else { 255 };
+                }
+            }
+        }
+    }
+    frames.push(("finder spam", finders));
+    let mut seed = 0x2545_F491_4F6C_DD1Du64;
+    frames.push((
+        "noise",
+        (0..w * h)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect(),
+    ));
+    frames.push(("black", vec![0u8; w * h]));
+    for (name, img) in frames {
+        let started = std::time::Instant::now();
+        let v = phone.act(
+            "pairing_decode_qr",
+            json!({"luma": STANDARD.encode(&img), "width": w, "height": h}),
+        );
+        assert!(
+            v.get("error").is_some() || v.get("result").is_some(),
+            "{name}: an answer of some kind"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{name}: took {:?}",
+            started.elapsed()
+        );
+    }
+    // The extreme shapes the limit allows: very wide and very tall.
+    for (w, h) in [(21600usize, 32usize), (32, 21600)] {
+        let v = phone.act(
+            "pairing_decode_qr",
+            json!({"luma": STANDARD.encode(vec![90u8; w * h]), "width": w, "height": h}),
+        );
+        assert!(v.get("error").is_some() || v.get("result").is_some());
+    }
+}
+
 // ------------------------------------------------------------------------------- announce pause (test-gaps-4)
 
 #[test]

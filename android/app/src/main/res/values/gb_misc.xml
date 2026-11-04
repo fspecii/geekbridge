@@ -72,6 +72,8 @@
     <string name="signer_unreadable_installed">Couldn\'t read the signing certificate of the installed app, so the update was not offered. Download the APK from the release page instead.</string>
     <string name="signer_unreadable_download">Couldn\'t read the signing certificate of the downloaded update, so the update was not offered. Download the APK from the release page instead.</string>
     <string name="signer_debug_build">This is a developer (debug-signed) build. The release is signed with the release key, which Android won\'t accept over it. To switch, uninstall this build once and install the release APK; app data is lost.</string>
+    <string name="signer_wrong_app">The downloaded file is for another app (%1$s), so it was not offered.</string>
+    <string name="signer_not_newer">The downloaded file is version code %1$d, not newer than the installed %2$d, so it was not offered.</string>
     <string name="signer_mismatch">The update is signed with a different key (%1$s) than the installed app (%2$s). Android would refuse it, so it was not offered. Uninstall and reinstall the release APK to switch keys; app data is lost.</string>
     <!-- QR pairing errors -->
     <string name="qr_err_not_geekbridge">That is not a GeekBridge pairing code.</string>

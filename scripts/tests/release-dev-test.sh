@@ -62,12 +62,12 @@ grep -q ' dev-manifest.json$' "$o/SHA256SUMS" && grep -q ' geekbridge-debug.apk$
 
 # 2. --publish refuses a dirty tree
 echo c >>a
-if $S --publish --yes --assets-from "$T/assets" >"$T/o2" 2>&1; then bad "publish accepted a dirty tree"; else has "dirty tree refused" "$(cat "$T/o2")" "uncommitted changes"; fi
+if $S --publish --yes --allow-unpinned --assets-from "$T/assets" >"$T/o2" 2>&1; then bad "publish accepted a dirty tree"; else has "dirty tree refused" "$(cat "$T/o2")" "uncommitted changes"; fi
 git checkout -q a
 
 # 3. first publish: draft prerelease, not latest, then undraft
 : >"$GH_LOG"
-$S --publish --yes --assets-from "$T/assets" >"$T/o3" 2>&1 || { cat "$T/o3"; bad "first publish failed"; }
+$S --publish --yes --allow-unpinned --assets-from "$T/assets" >"$T/o3" 2>&1 || { cat "$T/o3"; bad "first publish failed"; }
 log="$(cat "$GH_LOG")"
 has "creates as draft prerelease" "$log" "release create dev"
 has "create is a prerelease" "$log" "--prerelease --latest=false --draft"
@@ -76,7 +76,7 @@ has "undrafts without latest" "$log" "--draft=false --prerelease --latest=false"
 
 # 4. later publish: clobber, manifest last, tag moved, stale asset deleted
 : >"$GH_LOG"; export GH_EXISTS=1
-$S --publish --yes --assets-from "$T/assets" >"$T/o4" 2>&1 || { cat "$T/o4"; bad "update publish failed"; }
+$S --publish --yes --allow-unpinned --assets-from "$T/assets" >"$T/o4" 2>&1 || { cat "$T/o4"; bad "update publish failed"; }
 log="$(cat "$GH_LOG")"
 has "uploads with clobber" "$log" "--clobber"
 has "deletes a stale asset" "$log" "release delete-asset dev old-leftover.zip"
@@ -90,17 +90,26 @@ case "$log" in *"release delete dev"*|*"push"*) bad "deleted the release or push
 
 # 5. dev must never end up as "latest"
 export GH_LATEST=dev
-if $S --publish --yes --assets-from "$T/assets" >"$T/o5" 2>&1; then bad "did not notice latest=dev"; else has "latest=dev reported" "$(cat "$T/o5")" "became the repository's latest"; fi
+if $S --publish --yes --allow-unpinned --assets-from "$T/assets" >"$T/o5" 2>&1; then bad "did not notice latest=dev"; else has "latest=dev reported" "$(cat "$T/o5")" "became the repository's latest"; fi
 unset GH_LATEST
 
 # 6. not on main
 git checkout -q -b topic
-if $S --publish --yes --assets-from "$T/assets" >"$T/o6" 2>&1; then bad "publish from a topic branch"; else has "non-main refused" "$(cat "$T/o6")" "not on main"; fi
+if $S --publish --yes --allow-unpinned --assets-from "$T/assets" >"$T/o6" 2>&1; then bad "publish from a topic branch"; else has "non-main refused" "$(cat "$T/o6")" "not on main"; fi
 
 # 7. no confirmation, no publish
 git checkout -q main; : >"$GH_LOG"
 if echo "no" | $S --publish --assets-from "$T/assets" >"$T/o7" 2>&1; then bad "published without confirmation"; else has "needs the typed confirmation" "$(cat "$T/o7")" "not confirmed"; fi
 eq "no gh call without confirmation" "$(cat "$GH_LOG")" ""
+
+# 8. security review 7: a publish with no typed confirmation (--yes) and no pinned signer is refused, because nobody
+#    is looking at the signer line: the pin is the defence against a wrong or substituted keystore
+git checkout -q main; : >"$GH_LOG"
+unset GB_DEV_SIGNER_SHA256; export HOME="$T/home"; mkdir -p "$HOME"
+if $S --publish --yes --assets-from "$T/assets" >"$T/o8" 2>&1; then bad "unattended publish without a pinned signer"; else has "unpinned unattended publish refused" "$(cat "$T/o8")" "pinned dev signer"; fi
+eq "no gh call without a pin" "$(cat "$GH_LOG")" ""
+# ... and with a pin that the APK cannot show (no apksigner here) it is refused too, never waved through
+if GB_DEV_SIGNER_SHA256="$(printf 'ab%.0s' {1..32})" PATH="/usr/bin:/bin:$T/bin" $S --publish --yes --assets-from "$T/assets" >"$T/o9" 2>&1; then bad "publish with an unverifiable pin"; else has "unverifiable pin refused" "$(cat "$T/o9")" "differs from the pinned dev signer"; fi
 
 [[ $fail == 0 ]] && echo "release-dev test OK"
 exit $fail

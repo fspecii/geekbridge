@@ -27,6 +27,10 @@ pub const PAYLOAD_VERSION: u32 = 1;
 pub const TOKEN_TTL: Duration = Duration::from_secs(120);
 /// Tokens that may be outstanding at once (each "show QR" issues one).
 const MAX_OUTSTANDING: usize = 4;
+/// When a new code is issued the earlier ones stay valid for this long and no longer (a scan that was already
+/// under way when the code renewed itself), so two codes are never both good for minutes
+/// (docs/reports/security-review-7.md S7-4).
+pub const REPLACED_GRACE_MS: u64 = 5_000;
 /// Wrong tokens tolerated from one source before that source is refused until the next QR code.
 /// Other sources and the outstanding tokens are not affected, so a stranger on the network cannot
 /// revoke the code its owner is about to scan (docs/reports/security-review-2.md S2-2).
@@ -102,6 +106,9 @@ impl TokenBook {
     /// [`issue`](Self::issue) with a caller-chosen token (tests).
     pub fn issue_with(&mut self, token: &str, now_ms: u64, ttl: Duration) -> (String, u64) {
         self.live.retain(|t| t.expires_ms > now_ms);
+        for t in &mut self.live {
+            t.expires_ms = t.expires_ms.min(now_ms + REPLACED_GRACE_MS);
+        }
         // A new QR replaces the oldest one: a bounded number of live secrets.
         while self.live.len() >= MAX_OUTSTANDING {
             self.live.remove(0);
@@ -260,6 +267,13 @@ fn decode_component(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// Format characters that draw nothing or reorder text (bidi controls, zero-width, joiners, BOM).
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 impl QrPayload {
     pub fn encode(&self) -> String {
         let mut s = format!(
@@ -333,6 +347,9 @@ impl QrPayload {
         if name.chars().any(char::is_control) {
             return Err(PayloadError::Malformed);
         }
+        // The name is chosen by whoever made the code: direction overrides and zero-width characters
+        // could make "Connect to <name>?" read as something else.
+        let name: String = name.chars().filter(|c| !is_invisible_format(*c)).collect();
         Ok(Self {
             device_id: device_id.to_owned(),
             name: name.chars().take(64).collect(),
@@ -445,6 +462,36 @@ mod tests {
         assert_eq!(book.outstanding(0), MAX_OUTSTANDING);
         // The oldest were dropped.
         assert_eq!(book.redeem(&seen[0], 1), Err(RedeemError::Unknown));
+        // Only the newest is still good once the grace has run out.
+        assert_eq!(book.outstanding(REPLACED_GRACE_MS + 1), 1);
+    }
+
+    /// Security review 7: a refreshed code must not leave the previous one valid for its whole lifetime
+    /// (two live tokens for up to two minutes). The old one gets a few seconds of grace for a scan that
+    /// was already under way, then it is dead.
+    #[test]
+    fn a_new_code_ends_the_previous_one_after_a_short_grace() {
+        let mut book = TokenBook::new();
+        let (old, _) = book.issue(0, TTL).unwrap();
+        let (new, _) = book.issue(60_000, TTL).unwrap();
+        assert_eq!(book.outstanding(60_000 + REPLACED_GRACE_MS + 1), 1);
+        assert_eq!(
+            book.redeem(&old, 60_000 + REPLACED_GRACE_MS + 1),
+            Err(RedeemError::Expired)
+        );
+        assert_eq!(book.redeem(&new, 70_000), Ok(()));
+        // Within the grace the old code still works once (a scan that began just before the refresh).
+        let (old2, _) = book.issue(100_000, TTL).unwrap();
+        let (_new2, _) = book.issue(101_000, TTL).unwrap();
+        assert_eq!(book.redeem(&old2, 101_000 + REPLACED_GRACE_MS - 1), Ok(()));
+    }
+
+    #[test]
+    fn a_payload_name_loses_direction_overrides_and_zero_width_characters() {
+        let mut p = payload();
+        p.name = "Ana\u{202E}gpj.exe\u{200B}\u{2066}".into();
+        let parsed = QrPayload::parse(&p.encode()).unwrap();
+        assert_eq!(parsed.name, "Anagpj.exe");
     }
 
     #[test]

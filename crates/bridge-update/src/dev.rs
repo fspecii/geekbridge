@@ -57,7 +57,7 @@ impl DevManifest {
         let built_at: String = raw
             .built_at
             .chars()
-            .filter(|c| !c.is_control())
+            .filter(|c| !c.is_control() && !crate::release::is_invisible_format(*c))
             .take(40)
             .collect();
         Ok(DevManifest {
@@ -121,6 +121,15 @@ mod tests {
         assert_eq!(m.label(), "dev-0123456789ab");
         assert!(valid_label(&m.label()));
         assert_eq!(m.built_at, "2026-11-04T10:00:00Z");
+    }
+
+    #[test]
+    fn built_at_loses_direction_overrides() {
+        let m = DevManifest::parse(
+            br#"{"commit":"0123456789abcdef","versionCode":20161,"builtAt":"2026\u202e-11-04\u200b"}"#,
+        )
+        .unwrap();
+        assert_eq!(m.built_at, "2026-11-04");
     }
 
     #[test]

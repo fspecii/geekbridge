@@ -114,6 +114,32 @@ cannot be installed over a dev build; `scripts/e2e/update-install.sh` builds its
 `-Pgb.formulaVersionCode=1` for that reason. Debug builds from before the dev channel have code 10099, which is lower
 than any dev code, so the first dev build installs over them.
 
+**Trust, and what is shown.** The dev channel adds no trust beyond GitHub's account security. The manifest, the
+`SHA256SUMS` file and the installer all come from the same release, so whoever can edit that release can change all
+three; the checksum protects against corruption and a bad CDN edge, not against a compromised release. What is checked
+where:
+
+* **Android** is the strong case. Android installs an update only over the same signing key, and the app compares the
+  downloaded APK's signer, package name and version code with the installed app's *before* offering Install
+  (`SignerCheck`). A compromised release cannot get an attacker-signed APK onto a phone that runs a dev or release build
+  signed by the owner's key; the user is told why instead. The pinned dev signer
+  (`GB_DEV_SIGNER_SHA256` / `DEV_SIGNER_SHA256`) is enforced where the APK is made and published (`release-dev.sh`,
+  `dev-release.yml`), not inside the app: the app's pin is the key of the build that is already installed.
+  Switching a phone from a debug build to a release build (or the other way) is an uninstall, so the one moment a
+  hostile APK could be accepted is when a user uninstalls on purpose to switch channels.
+* **Desktop** archives are not signed. The app downloads into a private folder, verifies the SHA-256 (and GitHub's own
+  digest, when both exist), and leaves installing to the user. The settings note says so.
+* The manifest's `versionCode` only decides "newer?". It cannot downgrade anything: an APK that is not newer than the
+  installed one is refused by the app and by Android.
+* Release notes and the build time are shown with direction overrides and zero-width characters removed.
+
+**Protecting the dev key.** `dev-release.yml` signs only on `main`, builds with no secret in the environment, and
+decodes the keystore only in the signing step. A manual run on another branch still runs that branch's copy of the
+workflow, so also store `DEV_KEYSTORE_B64`, `DEV_KEYSTORE_PASSWORD` and `DEV_KEY_ALIAS` as secrets of an *environment*
+(Settings, Environments) that allows deployments from `main` only, and set the repository variable `DEV_SIGNER_SHA256`.
+`release-dev.sh --publish --yes` refuses to publish an APK without a pinned signer (`--allow-unpinned` overrides, for
+tests and a first publish from a new machine). `scripts/tests/workflow-secrets-test.sh` checks these rules.
+
 **Publishing** (owner only): `scripts/release-dev.sh` builds locally and is a **dry run unless `--publish`**; the
 GitHub Actions workflow `dev-release.yml` builds the desktop binaries on every push to main (artifacts only) and can
 build and publish the APK too once the owner stores the debug keystore as the secret `DEV_KEYSTORE_B64`. See

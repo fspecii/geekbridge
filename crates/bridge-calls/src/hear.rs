@@ -540,6 +540,8 @@ pub fn write_wp_dropin(config_home: &Path, cfg: &WpConfig) -> std::io::Result<Op
     let path = dir.join(WP_DROPIN);
     // The temporary name does not end in `.conf`, so WirePlumber never reads it.
     let tmp = path.with_extension("conf.tmp");
+    // A planted link at the temporary name is replaced, never written through to whatever it points at.
+    remove_if_present(&tmp)?;
     std::fs::write(&tmp, &text)?;
     if let Some(Err(e)) = spa_json_dump(&tmp) {
         let _ = std::fs::remove_file(&tmp);
@@ -552,13 +554,22 @@ pub fn write_wp_dropin(config_home: &Path, cfg: &WpConfig) -> std::io::Result<Op
     }
     let bak = path.with_extension("conf.bak");
     if path.exists() {
+        remove_if_present(&bak)?;
         std::fs::copy(&path, &bak)?;
-    } else if bak.exists() {
+    } else if bak.symlink_metadata().is_ok() {
         // A backup from an older, since deleted copy must not come back on an undo.
         std::fs::remove_file(&bak)?;
     }
     std::fs::rename(&tmp, &path)?;
     Ok(Some(path))
+}
+
+/// Remove `path` itself (a symbolic link is removed, not followed); absent is fine.
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// Take GeekBridge's fragment back: the previous copy if there was one (`.bak`), else none.

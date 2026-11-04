@@ -182,4 +182,11 @@ class UpdateModelTest {
         assertEquals("geekbridge-android.apk", UpdateModel.pickApk(listOf("z.apk" to 5L, "geekbridge-android.apk" to 5L))!!.first)
         assertNotNull(UpdateModel.pickApk(listOf("a.apk" to 5L)))
     }
+
+    /** Security review 7 (S7-9): release notes and the manifest's time come from the release page. */
+    @Test fun notesAndBuiltAtLoseDirectionOverridesAndZeroWidthCharacters() {
+        assertEquals("safe exe.txt x", UpdateModel.cleanNotes("safe \u202Eexe.txt\u200B \u2066x\u2069"))
+        val m = UpdateModel.parseDevManifest("""{"commit":"0123456789abcdef","versionCode":20161,"builtAt":"2026\u202e-11-04\u200b"}""")
+        assertEquals("2026-11-04", m.builtAt)
+    }
 }

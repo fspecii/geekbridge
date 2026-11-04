@@ -132,9 +132,9 @@ pub fn load_remembered(dir: &std::path::Path) -> Option<Remembered> {
 pub fn save_remembered(dir: &std::path::Path, r: &Remembered) -> std::io::Result<()> {
     let path = dir.join(REMEMBERED_FILE);
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(
+    crate::private_file::write(
         &tmp,
-        serde_json::to_vec_pretty(r).map_err(std::io::Error::other)?,
+        &serde_json::to_vec_pretty(r).map_err(std::io::Error::other)?,
     )?;
     std::fs::rename(tmp, path)
 }
@@ -174,6 +174,53 @@ pub struct DeviceInfo {
     pub hfp_gateway: bool,
 }
 
+/// Format characters that draw nothing or reorder text (bidi controls, zero-width, joiners, BOM).
+fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
+/// A Bluetooth name as it may be shown: every device in range chooses its own, so escape sequences, line breaks,
+/// direction overrides and zero-width characters are dropped and the length is bounded.
+pub fn clean_remote_name(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control() && !is_invisible_format(*c))
+        .take(48)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// `Name (AA:BB:CC:DD:EE:FF)` from a BlueZ device object path (`.../dev_AA_BB_CC_DD_EE_FF`): the address is the part
+/// the user can compare with the phone's own Bluetooth address, and the part a lookalike name cannot fake.
+pub fn device_label(path: &str, name: &str) -> String {
+    let addr = path
+        .rsplit('/')
+        .next()
+        .and_then(|l| l.strip_prefix("dev_"))
+        .map(|a| a.replace('_', ":"))
+        .filter(|a| a.len() == 17 && a.bytes().all(|b| b.is_ascii_hexdigit() || b == b':'));
+    match addr {
+        Some(a) => format!("{name} ({a})"),
+        None => name.to_owned(),
+    }
+}
+
+/// The profiles of a phone's call audio: hands-free, headset, A2DP and AVRCP.
+const AUDIO_SERVICES: [&str; 8] = [
+    "0000111e", "0000111f", "00001108", "00001112", "0000110a", "0000110b", "0000110c", "0000110e",
+];
+
+/// May BlueZ connect `uuid` for `device`? Only for a device the user confirmed during this setup, and only the
+/// profiles that carry call audio. Anything else that connects while the agent is registered is refused.
+fn service_allowed(confirmed: &HashSet<String>, device: &str, uuid: &str) -> bool {
+    confirmed.contains(device)
+        && uuid
+            .get(..8)
+            .is_some_and(|p| AUDIO_SERVICES.iter().any(|a| a.eq_ignore_ascii_case(p)))
+}
+
 impl DeviceInfo {
     fn from(path: &str, d: &HashMap<String, OwnedValue>) -> Self {
         Self {
@@ -182,9 +229,11 @@ impl DeviceInfo {
                 .unwrap_or_default()
                 .to_ascii_uppercase(),
             address_type: get_str(d, "AddressType").unwrap_or_default(),
-            name: get_str(d, "Alias")
-                .or_else(|| get_str(d, "Name"))
-                .unwrap_or_default(),
+            name: clean_remote_name(
+                &get_str(d, "Alias")
+                    .or_else(|| get_str(d, "Name"))
+                    .unwrap_or_default(),
+            ),
             icon: get_str(d, "Icon").unwrap_or_default(),
             paired: get_bool(d, "Paired"),
             trusted: get_bool(d, "Trusted"),
@@ -376,6 +425,8 @@ struct Agent {
     names: Arc<Mutex<HashMap<String, String>>>,
     /// Bumped by `Cancel()`; a waiting request sees it change and gives up.
     cancels: Arc<AtomicU64>,
+    /// Device paths whose pairing the user confirmed during this setup: the only ones whose services are authorized.
+    confirmed: Arc<Mutex<HashSet<String>>>,
 }
 
 #[derive(zbus::DBusError, Debug)]
@@ -396,7 +447,7 @@ impl Agent {
             .get(device)
             .cloned();
         if let Some(n) = known.filter(|n| !n.is_empty()) {
-            return n;
+            return device_label(device, &n);
         }
         // A phone that starts the pairing itself can be new to BlueZ: ask for its name.
         let r = conn
@@ -405,8 +456,17 @@ impl Agent {
         r.ok()
             .and_then(|m| m.body().deserialize::<OwnedValue>().ok())
             .and_then(|v| String::try_from(v).ok())
+            .map(|n| clean_remote_name(&n))
             .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "a Bluetooth device".into())
+            .map(|n| device_label(device, &n))
+            .unwrap_or_else(|| device_label(device, "a Bluetooth device"))
+    }
+
+    fn confirm(&self, device: &str) {
+        self.confirmed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(device.to_owned());
     }
 
     /// Ask the user and wait for the answer without blocking the connection, so BlueZ's
@@ -471,7 +531,9 @@ impl Agent {
         passkey: u32,
     ) -> Result<(), AgentError> {
         let name = self.name_of(conn, device.as_str()).await;
-        self.ask(name, Some(passkey)).await
+        self.ask(name, Some(passkey)).await?;
+        self.confirm(device.as_str());
+        Ok(())
     }
     /// An incoming pairing without a code to compare ("just works"). Phones compare codes, so
     /// this is unusual: the user is asked instead of letting anything nearby pair.
@@ -481,12 +543,22 @@ impl Agent {
         device: OwnedObjectPath,
     ) -> Result<(), AgentError> {
         let name = self.name_of(conn, device.as_str()).await;
-        self.ask(name, None).await
-    }
-    fn authorize_service(&self, _device: OwnedObjectPath, _uuid: String) -> Result<(), AgentError> {
-        // Only registered while the user runs setup; the phone connects its profiles right after
-        // pairing, before it is trusted.
+        self.ask(name, None).await?;
+        self.confirm(device.as_str());
         Ok(())
+    }
+    fn authorize_service(&self, device: OwnedObjectPath, uuid: String) -> Result<(), AgentError> {
+        // Registered only while the user runs setup, and the phone connects its profiles right after pairing, before
+        // it is trusted: so the device the user just confirmed gets its call-audio profiles. Any other device that
+        // connects in this window (it is discoverable) gets nothing.
+        let confirmed = self.confirmed.lock().unwrap_or_else(|e| e.into_inner());
+        if service_allowed(&confirmed, device.as_str(), &uuid) {
+            Ok(())
+        } else {
+            Err(AgentError::Rejected(
+                "this device was not confirmed in the setup".into(),
+            ))
+        }
     }
     fn cancel(&self) {
         self.cancels.fetch_add(1, Ordering::SeqCst);
@@ -573,6 +645,7 @@ pub fn run(
                 timeout: opts.confirm_timeout.min(BLUEZ_AGENT_TIMEOUT),
                 names: names.clone(),
                 cancels: Arc::new(AtomicU64::new(0)),
+                confirmed: Arc::new(Mutex::new(HashSet::new())),
             },
         )
         .map_err(|e| e.to_string())?
@@ -1078,6 +1151,84 @@ mod tests {
         assert!(!benign(
             "org.bluez.Error.Failed: br-connection-page-timeout"
         ));
+    }
+
+    /// Security review 7 (S7-10): any device in range chooses the name it shows, with no pairing needed. The name
+    /// reaches the terminal and the setup window, so it must carry nothing that moves the cursor or reorders text.
+    #[test]
+    fn a_remote_device_name_is_cleaned_before_it_is_shown() {
+        let mut d: HashMap<String, OwnedValue> = HashMap::new();
+        d.insert(
+            "Alias".into(),
+            OwnedValue::try_from(Value::from("Ana\u{1b}[2J\u{202E}'s Galaxy\n\u{200B}")).unwrap(),
+        );
+        assert_eq!(
+            DeviceInfo::from("/org/bluez/hci0/dev_AA", &d).name,
+            "Ana[2J's Galaxy"
+        );
+        let long = clean_remote_name(&"x".repeat(500));
+        assert_eq!(long.chars().count(), 48);
+        assert_eq!(
+            device_label("/org/bluez/hci0/dev_AA_BB_CC_00_11_22", "Pixel"),
+            "Pixel (AA:BB:CC:00:11:22)"
+        );
+        assert_eq!(device_label("/weird", "Pixel"), "Pixel");
+    }
+
+    /// S7-11: while the agent is registered it must not wave through services for devices the user did not confirm.
+    #[test]
+    fn services_are_authorized_only_for_the_device_the_user_confirmed_and_only_audio_ones() {
+        let confirmed: HashSet<String> = ["/org/bluez/hci0/dev_AA".to_owned()].into();
+        assert!(service_allowed(
+            &confirmed,
+            "/org/bluez/hci0/dev_AA",
+            HFP_AG_UUID
+        ));
+        assert!(service_allowed(
+            &confirmed,
+            "/org/bluez/hci0/dev_AA",
+            "0000110B-0000-1000-8000-00805F9B34FB"
+        ));
+        // another device, even asking for hands-free
+        assert!(!service_allowed(
+            &confirmed,
+            "/org/bluez/hci0/dev_BB",
+            HFP_AG_UUID
+        ));
+        // the confirmed device asking for something that is not about call audio (phone book, files, keyboard)
+        assert!(!service_allowed(
+            &confirmed,
+            "/org/bluez/hci0/dev_AA",
+            "0000112f-0000-1000-8000-00805f9b34fb"
+        ));
+        assert!(!service_allowed(
+            &confirmed,
+            "/org/bluez/hci0/dev_AA",
+            "00001124-0000-1000-8000-00805f9b34fb"
+        ));
+        assert!(!service_allowed(
+            &HashSet::new(),
+            "/org/bluez/hci0/dev_AA",
+            HFP_AG_UUID
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_remembered_phone_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let r = Remembered {
+            address: "AA:BB:CC:00:11:22".into(),
+            name: "Pixel".into(),
+            geekbridge_name: None,
+        };
+        save_remembered(d.path(), &r).unwrap();
+        let mode = std::fs::metadata(d.path().join(REMEMBERED_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "mode {mode:o}");
     }
 
     #[test]

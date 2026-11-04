@@ -51,6 +51,20 @@ class QrPairingTest {
         assertNull(QrProtocol.parseTarget(result(JSONArray().put(JSONObject().put("host", "x").put("port", 70000)))))
     }
 
+    /** Security review 7 (S7-2): every screen that names the computer uses t.name, so it must already be safe. */
+    @Test fun theNameFromTheLinkLosesDirectionOverridesAndControlCharacters() {
+        val t = QrProtocol.parseTarget(result().put("name", "Ana\u202Egpj.exe\u200B\u0007"))!!
+        assertEquals("Anagpj.exe", t.name)
+    }
+
+    /** S7-3: a result handed back by a scanner app (any app can answer that intent) is confirmed like a link from outside. */
+    @Test fun onlyAPastedLinkSkipsTheConfirmationPage() {
+        assertTrue(QrConfirmPolicy.required(QrSource.Intent))
+        assertTrue(QrConfirmPolicy.required(QrSource.ScannerApp))
+        assertTrue(QrConfirmPolicy.required(QrSource.InAppCamera))
+        assertFalse(QrConfirmPolicy.required(QrSource.Pasted))
+    }
+
     @Test fun theTokenNeverAppearsInText() {
         assertFalse(target("10.0.0.5").toString().contains(token))
     }

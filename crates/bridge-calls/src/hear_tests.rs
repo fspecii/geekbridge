@@ -594,3 +594,30 @@ fn a_fragment_wireplumber_does_not_survive_is_taken_back() {
         .collect();
     assert_eq!(left, vec![WP_DROPIN.to_owned()]);
 }
+
+/// Security review 7 (S7-12): "no overwrite of user files". A link planted at the backup or temporary name must be
+/// replaced, never written through: `std::fs::copy` and `fs::write` follow links.
+#[cfg(unix)]
+#[test]
+fn the_drop_in_never_writes_through_a_link_at_its_backup_or_temporary_name() {
+    let cfg = WpConfig {
+        roles: Some(vec!["a2dp_sink".into()]),
+        ..WpConfig::default()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let victim = home.path().join("victim.txt");
+    std::fs::write(&victim, "the user's own file").unwrap();
+    let p = write_wp_dropin(home.path(), &cfg).unwrap().unwrap();
+    std::os::unix::fs::symlink(&victim, p.with_extension("conf.bak")).unwrap();
+    std::os::unix::fs::symlink(&victim, p.with_extension("conf.tmp")).unwrap();
+    write_wp_dropin(home.path(), &cfg).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&victim).unwrap(),
+        "the user's own file"
+    );
+    assert!(
+        std::fs::read_to_string(p.with_extension("conf.bak"))
+            .unwrap()
+            .contains("hfp_hf")
+    );
+}

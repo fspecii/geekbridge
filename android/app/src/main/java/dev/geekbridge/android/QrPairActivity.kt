@@ -167,9 +167,9 @@ class QrPairActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         when (requestCode) {
             REQ_SCAN -> if (resultCode == RESULT_OK) {
-                // The user just scanned it on purpose: no extra confirmation step, the final "Pair?" still applies.
+                // Any installed app can answer this intent, so the result is confirmed like a link from outside.
                 val text = QrProtocol.linkText(data?.getStringExtra("SCAN_RESULT"))
-                if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
+                if (text != null) { linkPending = true; mode = Mode.Reading; render(); parse(text, confirm = QrConfirmPolicy.required(QrSource.ScannerApp)) } else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
             }
             REQ_CAMERA -> if (resultCode == RESULT_OK) {
                 // Scanned on purpose, but the page still names the computer and asks before anything connects.
@@ -290,7 +290,7 @@ class QrPairActivity : Activity() {
         }
         kit.button(card, getString(R.string.qr_continue), BtnStyle.Primary) {
             val text = QrProtocol.linkText(field.text)
-            if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
+            if (text != null) parse(text, confirm = QrConfirmPolicy.required(QrSource.Pasted)) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
         }
         kit.button(root, getString(R.string.qr_close), BtnStyle.Plain) { finish() }
     }
@@ -319,7 +319,7 @@ class QrPairActivity : Activity() {
 
     private fun connecting(root: LinearLayout, t: QrTarget) {
         val card = kit.panel(root)
-        card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(t.name.ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
+        card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
         card.addView(kit.text(getString(R.string.qr_connecting_hint), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) {
             gate.supersede()

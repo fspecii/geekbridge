@@ -96,6 +96,10 @@ jobs:
 
   android:
     name: Android debug APK (needs the DEV_KEYSTORE_B64 secret)
+    # The dev signing key is only ever used from main. A manual run on another branch runs this workflow file as that
+    # branch has it, so this line alone does not protect the secret: also give the secret to an environment that only
+    # main may deploy to (docs/updates.md#dev-channel, "Protecting the dev key").
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -149,7 +153,19 @@ jobs:
           cp target/aarch64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
           cp target/x86_64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
           "$bin/llvm-strip" android/app/src/main/jniLibs/*/libgeekbridge_android.so
-      - name: Build and sign the debug APK with the dev keystore
+      # Build first, with no secret in the environment and no keystore on disk: Gradle runs build scripts and plugins
+      # from the repository and from the network, and none of that needs to be able to read the signing key.
+      - name: Build the debug APK (no secrets)
+        if: env.HAS_DEV_KEY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          (cd android && ./gradlew --no-daemon :app:assembleDebug)
+          mkdir -p dist
+          unsigned="$(ls android/app/build/outputs/apk/debug/*.apk | head -n1)"
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+      - name: Sign with the dev keystore
         id: sign
         if: env.HAS_DEV_KEY == 'true'
         shell: bash
@@ -166,12 +182,7 @@ jobs:
           ks="$RUNNER_TEMP/dev.keystore"
           ( umask 077; echo "$DEV_KEYSTORE_B64" | base64 -d > "$ks" )
           trap 'rm -f "$ks"' EXIT
-          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
-          (cd android && ./gradlew --no-daemon :app:assembleDebug)
-          mkdir -p dist
-          unsigned="$(ls android/app/build/outputs/apk/debug/*.apk | head -n1)"
           # The runner has its own throw-away debug key; the APK is re-signed with the dev key (v1+v2+v3), as release.yml does.
-          "$bt/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
           export KSPASS="${DEV_KEYSTORE_PASSWORD:-android}"
           "$bt/apksigner" sign --ks "$ks" --ks-pass env:KSPASS --ks-key-alias "${DEV_KEY_ALIAS:-androiddebugkey}" \
             --key-pass env:KSPASS --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
@@ -184,7 +195,7 @@ jobs:
             echo "::error::signer $signer does not match the repository variable DEV_SIGNER_SHA256 ($want): wrong keystore, phones could not update in place"
             exit 1
           fi
-          [[ -n "$want" ]] || echo "::warning::DEV_SIGNER_SHA256 is not set, so the dev signing key is not pinned. Set it to $signer."
+          [[ -n "$want" ]] || echo "::warning::DEV_SIGNER_SHA256 is not set, so the dev signing key is not pinned (and publishing from CI will refuse until it is). Set it to $signer."
           want_code="$(scripts/version-code.sh --dev)"
           got_code="$("$bt/aapt2" dump badging dist/geekbridge-debug.apk | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p")"
           [[ "$got_code" == "$want_code" ]] || { echo "::error::APK versionCode $got_code differs from 20000 + commit count ($want_code)"; exit 1; }

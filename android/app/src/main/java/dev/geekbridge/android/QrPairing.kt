@@ -69,7 +69,8 @@ object QrProtocol {
             if (host.isEmpty() || host.length > 64 || port !in 1..65535) null else QrAddress(host, port)
         }
         if (addresses.isEmpty()) return null
-        return QrTarget(id, Bounds.clip(o.optString("name"), 48), cert, token, addresses)
+        // The name is chosen by whoever made the link: it is cleaned here, so no screen can show it raw.
+        return QrTarget(id, QrConfirmText.safeName(o.optString("name")), cert, token, addresses)
     }
 
     /** What to tell the user when the core rejects the text. */
@@ -141,6 +142,19 @@ class QrPlan(val target: QrTarget, private val dialTimeoutMs: Long = 6_000) {
         dialStartedAt = nowMs
         return QrStep.Dial(target.addresses[index])
     }
+}
+
+/** Where a pairing link came from. */
+enum class QrSource { Intent, ScannerApp, InAppCamera, Pasted }
+
+/**
+ * Which sources must show the "Connect to this computer?" page first. A link typed or pasted by the user is their own
+ * act; everything else can come from outside: another app's intent, or the answer of whatever app handles the
+ * `com.google.zxing.client.android.SCAN` action (any installed app can claim it), so those never start a connection
+ * without the page that names the address and the certificate fingerprint.
+ */
+object QrConfirmPolicy {
+    fun required(source: QrSource): Boolean = source != QrSource.Pasted
 }
 
 /** Whether a recreated QrPairActivity reads its launch link again. */

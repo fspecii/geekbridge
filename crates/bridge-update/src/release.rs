@@ -251,10 +251,19 @@ pub fn find_checksum(listing: &str, name: &str) -> Option<String> {
 }
 
 /// Release notes for display: control characters dropped, length bounded.
+pub fn is_invisible_format(c: char) -> bool {
+    matches!(c,
+        '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+        | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}')
+}
+
 pub fn clean_notes(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        // Release notes come from the release page: no direction overrides or zero-width characters that
+        // could make the text show something else than it says.
+        .filter(|c| !is_invisible_format(*c))
         .map(|c| if c == '\t' { ' ' } else { c })
         .collect();
     let mut out: String = cleaned.trim().chars().take(MAX_NOTES_CHARS).collect();
@@ -572,6 +581,14 @@ mod tests {
         assert!(Release::parse(b"{}").is_err());
         assert!(Release::parse(br#"{"tag_name":""}"#).is_err());
         assert!(Release::parse(br#"{"tag_name":"v1.0.0"}"#).is_ok());
+    }
+
+    #[test]
+    fn notes_lose_direction_overrides_and_zero_width_characters() {
+        assert_eq!(
+            clean_notes("safe \u{202E}exe.txt\u{200B} \u{2066}x\u{2069}"),
+            "safe exe.txt x"
+        );
     }
 
     #[test]

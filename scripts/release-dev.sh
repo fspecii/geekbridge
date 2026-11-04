@@ -10,7 +10,10 @@
 #                   ones, the manifest last), move the `dev` tag to this commit, keep the release a prerelease and never
 #                   the repository's "latest". Asks you to type `publish dev` unless --yes. Needs `gh` logged in with write
 #                   access. Nothing else is ever touched: no stable tag, no stable release.
-#   --yes           skip the confirmation prompt of --publish (for a script you wrote yourself)
+#   --yes           skip the confirmation prompt of --publish (for a script you wrote yourself). Refused for an APK unless the
+#                   signer is pinned (GB_DEV_SIGNER_SHA256 or the file below) or --allow-unpinned is given: nobody reads the
+#                   signer line in an unattended run, and the pin is what stops a wrong or substituted keystore.
+#   --allow-unpinned  with --yes: publish an APK although no signer is pinned (tests; the first publish from a new machine)
 #   --skip-android  no APK (the release then carries only the desktop archives)
 #   --skip-desktop  no Linux archive
 #   --extra-assets DIR  also include geekbridge-{windows,macos}-*.{zip,tar.gz} found in DIR (artifacts of dev-release.yml
@@ -34,12 +37,13 @@ IFS=$'\n\t'
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT"
 
-DRY=1 PUBLISH=0 YES=0 ANDROID=1 DESKTOP=1 EXTRA="" FROM="" NOTES="" REPO="" OUT=""
+DRY=1 PUBLISH=0 YES=0 UNPINNED=0 ANDROID=1 DESKTOP=1 EXTRA="" FROM="" NOTES="" REPO="" OUT=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run) DRY=1; PUBLISH=0 ;;
         --publish) PUBLISH=1; DRY=0 ;;
         --yes) YES=1 ;;
+        --allow-unpinned) UNPINNED=1 ;;
         --skip-android) ANDROID=0 ;;
         --skip-desktop) DESKTOP=0 ;;
         --extra-assets) EXTRA="${2:?--extra-assets DIR}"; shift ;;
@@ -151,6 +155,8 @@ if [[ -f "$OUT/geekbridge-debug.apk" ]]; then
     if [[ -n "$want" ]]; then
         [[ "$SIGNER" == "$want" ]] || die "APK signer $SIGNER differs from the pinned dev signer $want: wrong keystore, phones could not update in place"
         note "signer matches the pinned dev signer"
+    elif (( PUBLISH && YES && ! UNPINNED )); then
+        die "no pinned dev signer (GB_DEV_SIGNER_SHA256 or ~/.config/geekbridge/dev-signer-sha256) and no one to read the signer line: pin it, or pass --allow-unpinned knowingly"
     else
         warn "no dev signer is pinned (GB_DEV_SIGNER_SHA256 or ~/.config/geekbridge/dev-signer-sha256); write $SIGNER there once you have checked it is the key of your phones' current debug builds"
     fi

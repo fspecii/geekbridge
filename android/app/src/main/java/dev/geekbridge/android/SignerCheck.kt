@@ -20,11 +20,20 @@ object SignerCheck {
         object Match : Verdict()
         class Mismatch(val installed: Set<String>, val offered: Set<String>) : Verdict()
         class Unreadable(val installedApp: Boolean) : Verdict()
+        /** Signed by the right key but not this app (another package name), or not newer than the installed version. */
+        class WrongApp(val packageName: String) : Verdict()
+        class NotNewer(val offered: Long, val installed: Long) : Verdict()
     }
+
+    /** Who a package file says it is. */
+    class Identity(val packageName: String, val versionCode: Long)
 
     interface Source {
         fun installed(): Signers?
         fun archive(path: String): Signers?
+        /** The package file's own package name and version code; `null` when unknown (the system still enforces both). */
+        fun installedIdentity(): Identity? = null
+        fun archiveIdentity(path: String): Identity? = null
     }
 
     fun compare(installed: Signers?, offered: Signers?): Verdict {
@@ -36,13 +45,28 @@ object SignerCheck {
         return Verdict.Mismatch(installed.current, offered.current)
     }
 
-    fun check(source: Source, apkPath: String): Verdict = compare(source.installed(), source.archive(apkPath))
+    fun check(source: Source, apkPath: String): Verdict {
+        val signer = compare(source.installed(), source.archive(apkPath))
+        if (signer !is Verdict.Match) return signer
+        // The manifest's and the release's words are not the file's: it must be this app and a newer version. Android
+        // refuses anything else, but only after the user has been walked to the installer; say it here instead.
+        return identity(source.installedIdentity(), source.archiveIdentity(apkPath))
+    }
+
+    fun identity(installed: Identity?, offered: Identity?): Verdict {
+        if (installed == null || offered == null) return Verdict.Match
+        if (offered.packageName != installed.packageName) return Verdict.WrongApp(offered.packageName)
+        if (offered.versionCode <= installed.versionCode) return Verdict.NotNewer(offered.versionCode, installed.versionCode)
+        return Verdict.Match
+    }
 
     /** User-facing text for a blocking verdict; null for [Verdict.Match]. [debugBuild] is the running app's `BuildConfig.DEBUG`. */
     fun message(s: Strings, v: Verdict, debugBuild: Boolean): String? = when (v) {
         Verdict.Match -> null
         is Verdict.Unreadable ->
             s.get(if (v.installedApp) R.string.signer_unreadable_installed else R.string.signer_unreadable_download)
+        is Verdict.WrongApp -> s.get(R.string.signer_wrong_app, Bounds.name(v.packageName, 60))
+        is Verdict.NotNewer -> s.get(R.string.signer_not_newer, v.offered, v.installed)
         is Verdict.Mismatch ->
             if (debugBuild) {
                 s.get(R.string.signer_debug_build)
@@ -71,6 +95,24 @@ object SignerCheck {
         } catch (_: RuntimeException) {
             null
         }
+
+        override fun installedIdentity(): Identity? = try {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(packageName, 0).let { Identity(it.packageName, codeOf(it)) }
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        }
+
+        override fun archiveIdentity(path: String): Identity? = try {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(path, 0)?.let { Identity(it.packageName, codeOf(it)) }
+        } catch (_: RuntimeException) {
+            null
+        }
+
+        @Suppress("DEPRECATION")
+        private fun codeOf(i: PackageInfo): Long =
+            if (Build.VERSION.SDK_INT >= 28) i.longVersionCode else i.versionCode.toLong()
 
         @Suppress("DEPRECATION")
         private fun flags(): Int =

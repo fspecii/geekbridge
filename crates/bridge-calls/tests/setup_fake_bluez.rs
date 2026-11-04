@@ -246,7 +246,8 @@ fn a_phone_whose_bluetooth_name_differs_is_set_up_when_it_pairs_from_its_own_sid
     assert_eq!(r.address, "AA:BB:CC:00:33:44");
     assert_eq!(r.name, "Galaxy Z Fold5");
     assert!(
-        seen.iter().any(|l| l == "confirm: Galaxy Z Fold5 482910"),
+        seen.iter()
+            .any(|l| l == "confirm: Galaxy Z Fold5 (AA:BB:CC:00:33:44) 482910"),
         "{seen:#?}"
     );
     // The already paired, absent sandbox phone was not taken for it.

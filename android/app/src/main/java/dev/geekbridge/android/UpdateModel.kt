@@ -224,7 +224,7 @@ object UpdateModel {
             name.all { it.isLetterOrDigit() && it.code < 128 || it == '.' || it == '-' || it == '_' || it == '+' }
 
     fun cleanNotes(text: String?): String {
-        val kept = (text ?: "").filter { !Character.isISOControl(it) || it == '\n' }.trim()
+        val kept = (text ?: "").filter { (!Character.isISOControl(it) || it == '\n') && !Bounds.isInvisibleFormat(it) }.trim()
         return if (kept.length > MAX_NOTES_CHARS) kept.substring(0, MAX_NOTES_CHARS - 1) + "…" else kept
     }
 
@@ -328,7 +328,7 @@ object UpdateModel {
         if (commit.length !in 7..40 || !commit.all { it in '0'..'9' || it in 'a'..'f' }) throw bad
         val code = o.optLong("versionCode", 0)
         if (code <= DEV_CODE_BASE || code > 2_000_000_000L) throw bad
-        val builtAt = o.optString("builtAt", "").filter { !Character.isISOControl(it) }.take(40)
+        val builtAt = o.optString("builtAt", "").filter { !Character.isISOControl(it) && !Bounds.isInvisibleFormat(it) }.take(40)
         return DevManifest(commit, code.toInt(), builtAt, o.optString("notes", ""))
     }
 

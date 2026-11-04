@@ -104,6 +104,8 @@ pub(crate) struct Host {
     slot: Mutex<Slot>,
     /// Pairing request ids, never reset, so an id from before a restart can never match again.
     requests: Arc<AtomicU64>,
+    /// A camera picture is being decoded on its own thread (see [`decode_qr`]): at most one at a time.
+    qr_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for Host {
@@ -111,6 +113,7 @@ impl Default for Host {
         Self {
             slot: Mutex::new(Slot::Stopped),
             requests: Arc::new(AtomicU64::new(1)),
+            qr_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -520,11 +523,25 @@ fn parse_qr(text: &str) -> Result<Value, ApiError> {
 /// Most pixels one camera frame may carry (960 x 720 and similar): bigger frames are the caller's to shrink.
 pub(crate) const MAX_QR_FRAME_PIXELS: u64 = 960 * 720;
 
+/// How long one camera picture may keep the caller waiting. A picture built to make the decoder slow (hundreds of
+/// finder-pattern lookalikes) takes seconds on a phone; the camera loop must move on and the work must not pile up.
+pub(crate) const QR_DECODE_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Find a QR code in one grey camera frame (`luma`: base64 of `width * height` brightness bytes, row
 /// after row). Pure: nothing is stored or dialled, and the decoded text is only returned, never logged.
-fn decode_qr(luma: &str, width: u64, height: u64) -> Result<Value, ApiError> {
+///
+/// Bounded in memory (the frame size is capped, and the base64 text is checked before it is decoded), in time
+/// (the decoder runs on its own thread and the caller waits at most [`QR_DECODE_BUDGET`]) and in concurrency (while a
+/// picture is still being decoded the next one is answered "nothing found" at once, so a hostile picture can hold
+/// one thread, never more).
+fn decode_qr(host: &Host, luma: &str, width: u64, height: u64) -> Result<Value, ApiError> {
     use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::sync::atomic::Ordering;
     if width < 32 || height < 32 || width.saturating_mul(height) > MAX_QR_FRAME_PIXELS {
+        return Err(invalid_field());
+    }
+    // Base64 is 4 characters per 3 bytes: refuse a longer text before allocating for it.
+    if (luma.len() as u64) > width * height / 3 * 4 + 8 {
         return Err(invalid_field());
     }
     let bytes = STANDARD.decode(luma).map_err(|_| invalid_field())?;
@@ -532,15 +549,43 @@ fn decode_qr(luma: &str, width: u64, height: u64) -> Result<Value, ApiError> {
     if bytes.len() != w * h {
         return Err(invalid_field());
     }
-    let mut image = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
-        bytes.get(y * w + x).copied().unwrap_or(0)
-    });
-    for grid in image.detect_grids() {
-        if let Ok((_, text)) = grid.decode() {
-            return Ok(json!({ "text": text }));
-        }
+    let not_found = || err("qr_not_found", "no QR code in this picture");
+    if host.qr_busy.swap(true, Ordering::AcqRel) {
+        return Err(not_found());
     }
-    Err(err("qr_not_found", "no QR code in this picture"))
+    let busy = host.qr_busy.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("gb-qr-decode".into())
+        .spawn(move || {
+            // Clears the flag even when the decoder panics.
+            struct Done(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for Done {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Release);
+                }
+            }
+            let _done = Done(busy);
+            let text = std::panic::catch_unwind(|| {
+                let mut image = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
+                    bytes.get(y * w + x).copied().unwrap_or(0)
+                });
+                image
+                    .detect_grids()
+                    .into_iter()
+                    .find_map(|grid| grid.decode().ok().map(|(_, text)| text))
+            })
+            .unwrap_or(None);
+            let _ = tx.send(text);
+        });
+    if spawned.is_err() {
+        host.qr_busy.store(false, Ordering::Release);
+        return Err(not_found());
+    }
+    match rx.recv_timeout(QR_DECODE_BUDGET) {
+        Ok(Some(text)) => Ok(json!({ "text": text })),
+        _ => Err(not_found()),
+    }
 }
 
 fn token(f: &mut Fields, key: &'static str) -> Result<Option<String>, ApiError> {
@@ -713,7 +758,7 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let width = f.take_u64("width")?;
             let height = f.take_u64("height")?;
             f.finish()?;
-            decode_qr(&luma, width, height)
+            decode_qr(host, &luma, width, height)
         }
         "transport_pair_decision" => {
             let request_id = f.take_u64("request_id")?;

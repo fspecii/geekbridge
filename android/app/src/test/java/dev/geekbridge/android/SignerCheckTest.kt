@@ -15,6 +15,25 @@ class SignerCheckTest {
         override fun archive(path: String): SignerCheck.Signers? { asked = path; return archive }
     }
 
+    /** Security review 7 (S7-8): the file must be this app and newer, whatever the release page and manifest say. */
+    @Test fun aFileForAnotherAppOrNotNewerIsBlockedBeforeTheInstaller() {
+        val me = SignerCheck.Identity("dev.geekbridge.android", 20200)
+        assertTrue(SignerCheck.identity(me, SignerCheck.Identity("dev.geekbridge.android", 20201)) is SignerCheck.Verdict.Match)
+        assertTrue(SignerCheck.identity(me, SignerCheck.Identity("com.evil.app", 99999)) is SignerCheck.Verdict.WrongApp)
+        assertTrue(SignerCheck.identity(me, SignerCheck.Identity("dev.geekbridge.android", 20200)) is SignerCheck.Verdict.NotNewer)
+        assertTrue(SignerCheck.identity(me, SignerCheck.Identity("dev.geekbridge.android", 100)) is SignerCheck.Verdict.NotNewer)
+        // Unknown identity is left to the system, which enforces both.
+        assertTrue(SignerCheck.identity(me, null) is SignerCheck.Verdict.Match)
+        // check() applies it after the signer comparison.
+        val src = object : SignerCheck.Source {
+            override fun installed() = s("aa")
+            override fun archive(path: String) = s("aa")
+            override fun installedIdentity() = me
+            override fun archiveIdentity(path: String) = SignerCheck.Identity("com.evil.app", 99999)
+        }
+        assertTrue(SignerCheck.check(src, "x.apk") is SignerCheck.Verdict.WrongApp)
+    }
+
     @Test fun sameCertificateMatches() {
         assertTrue(SignerCheck.compare(s("aa"), s("aa")) is SignerCheck.Verdict.Match)
         assertTrue(SignerCheck.compare(s("aa", "bb"), s("bb", "aa")) is SignerCheck.Verdict.Match)
