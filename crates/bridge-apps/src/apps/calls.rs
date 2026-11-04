@@ -394,7 +394,7 @@ impl Calls {
 }
 
 /// Screenshot aid: a scripted phone report instead of the service (`GEEKBRIDGE_CALLS_FIXTURE`).
-fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
+pub(crate) fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
     use bridge_core::{
         calls::{CallState, Sensitive},
         calls_link::{LinkCallReport, PhoneState},

@@ -23,6 +23,15 @@ pub enum Command {
         api_port: u16,
         theme: ThemeChoice,
     },
+    /// `geekbridge-calls --overlay`: the small incoming-call card instead of the app window.
+    Overlay {
+        api_port: u16,
+        theme: ThemeChoice,
+        /// Show the caller's name only, never the number.
+        name_only: bool,
+        /// A fake ring for 10 seconds with disabled buttons (`geekbridge-ctl call-overlay-test`).
+        test: bool,
+    },
 }
 
 pub fn parse_port(value: &str) -> Result<u16, String> {
@@ -47,11 +56,15 @@ pub fn parse_theme(value: &str) -> Result<ThemeChoice, String> {
 pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, String> {
     let mut args = args.into_iter();
     let (mut port, mut help, mut status) = (DEFAULT_API_PORT, false, false);
+    let (mut overlay, mut name_only, mut test) = (false, false, false);
     let mut theme = ThemeChoice::System;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--help" | "-h" => help = true,
             "--status" => status = true,
+            "--overlay" => overlay = true,
+            "--name-only" => name_only = true,
+            "--test" => test = true,
             "--api-port" => {
                 let value = args.next().ok_or("--api-port needs a port number")?;
                 port = parse_port(&value)?;
@@ -74,6 +87,13 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Command, St
         Command::Help
     } else if status {
         Command::Status { api_port: port }
+    } else if overlay {
+        Command::Overlay {
+            api_port: port,
+            theme,
+            name_only,
+            test,
+        }
     } else {
         Command::Run {
             api_port: port,
@@ -91,11 +111,18 @@ pub fn help_text(app: AppKind) -> String {
          --api-port PORT   Local geekbridge-service API port (default {DEFAULT_API_PORT})\n    \
          --theme MODE      Appearance: light, dark or system (default system)\n    \
          --status          Print service and device discovery status, then exit\n    \
-         -h, --help        Show this help\n\n\
+         -h, --help        Show this help\n{extra}\n\
          This app opens its own window. It reads only public discovery data from the local\n\
          service; pairing is not implemented, so phone features are unavailable.\n",
         name = app.name(),
-        subtitle = app.subtitle()
+        subtitle = app.subtitle(),
+        extra = if app == AppKind::Calls {
+            "    --overlay         Show only the small incoming-call card (started by the service)\n    \
+             --name-only       With --overlay: never show the caller's number\n    \
+             --test            With --overlay: a fake ring for 10 seconds, buttons off\n"
+        } else {
+            ""
+        }
     )
 }
 
@@ -167,6 +194,22 @@ mod tests {
             })
         );
         assert_eq!(parse(&["--status", "-h"]), Ok(Command::Help));
+        assert_eq!(
+            parse(&["--overlay", "--api-port", "9000", "--name-only"]),
+            Ok(Command::Overlay {
+                api_port: 9000,
+                theme: ThemeChoice::System,
+                name_only: true,
+                test: false
+            })
+        );
+        assert!(matches!(
+            parse(&["--overlay"]),
+            Ok(Command::Overlay {
+                name_only: false,
+                ..
+            })
+        ));
     }
 
     #[test]

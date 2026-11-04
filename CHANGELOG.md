@@ -17,6 +17,10 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   default to Dev; **Update channel: Stable / Dev** in the App updates card) and `bridge-update`
   (`geekbridge-ctl update channel dev`, `GEEKBRIDGE_UPDATE_CHANNEL`, Details panel) can follow it. Debug APKs now have
   `versionCode = 20000 + commit count`, so each main build is accepted as an update of the previous one.
+- Incoming-call card: the service starts `geekbridge-calls --overlay` on every ring, a small always-on-top Answer / Reject
+  card in the top-right corner (not inside the Calls window), closing itself when the call ends. Hyprland rules in
+  `geekbridge-ctl hotkey install`, `geekbridge-ctl call-overlay-test`, a `doctor` line, `GEEKBRIDGE_CALL_OVERLAY=off|name`.
+  See docs/omarchy.md.
 
 ### Changed
 - The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile

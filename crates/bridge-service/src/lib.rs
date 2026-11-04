@@ -8,6 +8,7 @@ pub mod autostart;
 pub mod calendar_edit;
 pub mod call_cli;
 pub mod call_control;
+pub mod call_overlay;
 pub mod calling;
 pub mod clipboard;
 #[cfg(target_os = "macos")]
@@ -502,6 +503,11 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     } else {
         Arc::new(calling::DisabledCallingProbe)
     };
+    call_overlay::configure(call_overlay::Launch {
+        state_dir: config.state_dir.clone(),
+        api_port: config.api_port,
+        control_port: config.control_port,
+    });
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
     options.dev_loopback = config.dev_loopback;
     options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));

@@ -151,7 +151,7 @@ shot_once() { # display app theme name keys [ENV=VAL...]   keys is an xdotool ke
   local pid wid="" i floor=3 apport=$AP e
   for e in "$@"; do case $e in GOLDEN_API_PORT=*) apport=${e#*=} ;; esac; done   # a screen backed by the fresh service
   env -u WAYLAND_DISPLAY "${DET[@]}" DISPLAY=$disp GEEKBRIDGE_STATE_DIR="$RUN/state" GEEKBRIDGE_CONTROL_PORT=$CP "$@" \
-    timeout 90 $T/$app $([ "$app" = geekbridge-share ] || echo "--api-port $apport") --theme "$theme" >"$RUN/app.$name-$theme.log" 2>&1 &
+    timeout 90 $T/${app%%+*} $([ "$app" = geekbridge-share ] || echo "--api-port $apport") $([ "$app" = geekbridge-calls+overlay ] && echo --overlay) --theme "$theme" >"$RUN/app.$name-$theme.log" 2>&1 &
   pid=$!
   for i in $(seq 100); do   # up to 30 s for the window
     wid=$(DISPLAY=$disp xdotool search --onlyvisible --pid $pid 2>/dev/null | head -1)
@@ -164,7 +164,7 @@ shot_once() { # display app theme name keys [ENV=VAL...]   keys is an xdotool ke
   sleep $floor
   if [ "$keys" != "-" ]; then DISPLAY=$disp timeout 10 xdotool windowfocus --sync "$wid" key --delay 150 $keys; sleep 1.5; fi
   grab "$disp" "$wid" "$RUN/raw/$name-$theme-std.png" 8 || : >"$RUN/fail/$name-$theme"
-  read -r mw mh <<<"${MINSZ[$app]}"
+  read -r mw mh <<<"${MINSZ[$app]:-360 96}"   # the call card (geekbridge-calls+overlay) is fixed-size: min = std
   DISPLAY=$disp timeout 10 xdotool windowsize --sync "$wid" "$mw" "$mh"; sleep 1.5
   grab "$disp" "$wid" "$RUN/raw/$name-$theme-min.png" || : >"$RUN/fail/$name-$theme"
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
@@ -224,6 +224,7 @@ tasks_rest() { # theme
   echo "geekbridge-calls|$t|calls-keypad|-|"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
+  echo "geekbridge-calls+overlay|$t|call-overlay|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-contacts|$t|contacts|-|"
   echo "geekbridge-contacts|$t|contacts-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"
   echo "geekbridge-contacts|$t|contacts-details|-|GEEKBRIDGE_CONTACTS_SELECT_FIRST=1"

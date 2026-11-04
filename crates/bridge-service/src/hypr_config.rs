@@ -30,6 +30,11 @@ pub const POPUP_WINDOWS: [(&str, u32, u32); 2] = [
     ("dev.geekbridge.Share", 480, 640),
 ];
 
+/// The incoming-call card's window class and size (see `bridge_core::call_overlay`).
+pub const OVERLAY_CLASS: &str = bridge_core::call_overlay::APP_ID;
+const CARD_WIDTH: f32 = bridge_core::call_overlay::CARD_WIDTH;
+const CARD_HEIGHT: f32 = bridge_core::call_overlay::CARD_HEIGHT;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavor {
     /// Hyprland's Lua configuration (`hl.bind`, `hl.window_rule`), used by current Omarchy.
@@ -322,7 +327,56 @@ pub fn rules_body(flavor: Flavor, o: &Options) -> Vec<String> {
             },
         }
     }
+    v.extend(overlay_rules(flavor, o));
     v
+}
+
+/// The incoming-call card (`geekbridge-calls --overlay`, app_id `dev.geekbridge.CallOverlay`): a
+/// floating, pinned 360x96 window `MARGIN` px from the top-right corner of the monitor it opens on,
+/// which neither takes focus when it appears nor animates in. Always pinned (it must follow the
+/// user across workspaces and stay over fullscreen), whatever `pin` says for the other popups.
+///
+/// `nofocus` is deliberately not used: on Hyprland it can also stop the card taking the click on
+/// Answer. `noinitialfocus` is what keeps typing uninterrupted.
+pub fn overlay_rules(flavor: Flavor, o: &Options) -> Vec<String> {
+    let (w, h, m) = (
+        CARD_WIDTH as u32,
+        CARD_HEIGHT as u32,
+        bridge_core::call_overlay::MARGIN as u32,
+    );
+    let re = format!("^({})$", OVERLAY_CLASS.replace('.', "\\."));
+    match flavor {
+        Flavor::Lua => vec![{
+            let re = re.replace('\\', "\\\\");
+            format!(
+                "hl.window_rule({{ match = {{ class = \"{re}\" }}, float = true, pin = true, size = {{ {w}, {h} }}, move = {{ \"(monitor_w-window_w-{m})\", {m} }}, no_initial_focus = true, no_anim = true }})"
+            )
+        }],
+        Flavor::Conf => match o.syntax {
+            RuleSyntax::Current => {
+                let mt = format!("match:class {re}");
+                vec![
+                    format!("windowrule = float on, {mt}"),
+                    format!("windowrule = pin on, {mt}"),
+                    format!("windowrule = size {w} {h}, {mt}"),
+                    format!("windowrule = move (monitor_w-window_w-{m}) {m}, {mt}"),
+                    format!("windowrule = no_initial_focus on, {mt}"),
+                    format!("windowrule = no_anim on, {mt}"),
+                ]
+            }
+            RuleSyntax::Legacy => {
+                let mt = format!("class:{re}");
+                vec![
+                    format!("windowrulev2 = float, {mt}"),
+                    format!("windowrulev2 = pin, {mt}"),
+                    format!("windowrulev2 = size {w} {h}, {mt}"),
+                    format!("windowrulev2 = move 100%-w-{m} {m}, {mt}"),
+                    format!("windowrulev2 = noinitialfocus, {mt}"),
+                    format!("windowrulev2 = noanim, {mt}"),
+                ]
+            }
+        },
+    }
 }
 
 /// The file after installing the blocks `o` asks for. Blocks it does not ask for are left alone.
@@ -573,13 +627,71 @@ mod tests {
         assert!(lua.contains("float = true, center = true, size = { 400, 700 }"));
         let mut o = opts();
         o.pin = false;
-        assert!(!rules_body(Flavor::Lua, &o).join("").contains("pin"));
-        assert!(!rules_body(Flavor::Conf, &o).join("").contains("pin"));
+        // Only the call card stays pinned without `pin` (it must follow the user).
+        let popups = |f| {
+            rules_body(f, &o)
+                .into_iter()
+                .filter(|l| !l.contains("CallOverlay"))
+                .collect::<Vec<_>>()
+                .join("")
+        };
+        assert!(!popups(Flavor::Lua).contains("pin"));
+        assert!(!popups(Flavor::Conf).contains("pin"));
         let cur = rules_body(Flavor::Conf, &opts()).join("\n");
         assert!(cur.contains("windowrule = pin on, match:class ^(dev\\.geekbridge\\.Share)$"));
         o.syntax = RuleSyntax::Legacy;
         let leg = rules_body(Flavor::Conf, &o).join("\n");
         assert!(leg.contains("windowrulev2 = float, class:^(dev\\.geekbridge\\.Calls)$"));
+    }
+
+    #[test]
+    fn the_call_card_gets_its_own_top_right_rules_in_every_syntax() {
+        let mut o = opts();
+        o.pin = false;
+        let lua = overlay_rules(Flavor::Lua, &o).join("\n");
+        assert_eq!(
+            lua,
+            "hl.window_rule({ match = { class = \"^(dev\\\\.geekbridge\\\\.CallOverlay)$\" }, float = true, pin = true, size = { 360, 96 }, move = { \"(monitor_w-window_w-16)\", 16 }, no_initial_focus = true, no_anim = true })"
+        );
+        assert!(
+            !lua.contains("no_focus"),
+            "nofocus could swallow the click on Answer"
+        );
+        let cur = overlay_rules(Flavor::Conf, &o).join("\n");
+        for want in [
+            "windowrule = float on, match:class ^(dev\\.geekbridge\\.CallOverlay)$",
+            "windowrule = pin on, match:class",
+            "windowrule = size 360 96, match:class",
+            "windowrule = move (monitor_w-window_w-16) 16, match:class",
+            "windowrule = no_initial_focus on, match:class",
+            "windowrule = no_anim on, match:class",
+        ] {
+            assert!(cur.contains(want), "missing {want} in {cur}");
+        }
+        o.syntax = RuleSyntax::Legacy;
+        let leg = overlay_rules(Flavor::Conf, &o).join("\n");
+        assert!(leg.contains(
+            "windowrulev2 = move 100%-w-16 16, class:^(dev\\.geekbridge\\.CallOverlay)$"
+        ));
+        assert!(
+            leg.contains("windowrulev2 = noinitialfocus,")
+                && leg.contains("windowrulev2 = noanim,")
+        );
+        // The Calls window's own rule must not catch the card, nor the card's rule the Calls window.
+        assert!(!cur.contains("^(dev\\.geekbridge\\.Calls)$"));
+    }
+
+    #[test]
+    fn the_call_card_rules_are_part_of_the_installed_block_and_the_dry_run_diff() {
+        let new = install(LUA, Flavor::Lua, &opts()).unwrap();
+        assert!(new.contains("CallOverlay") && new.contains("no_initial_focus = true"));
+        let d = diff(Path::new("bindings.lua"), LUA, &new);
+        assert!(d.contains(
+            "+hl.window_rule({ match = { class = \"^(dev\\\\.geekbridge\\\\.CallOverlay)$\""
+        ));
+        // Re-installing is idempotent and removal restores the file.
+        assert_eq!(install(&new, Flavor::Lua, &opts()).unwrap(), new);
+        assert_eq!(uninstall(&new, Flavor::Lua).unwrap(), LUA);
     }
 
     #[test]

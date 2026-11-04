@@ -46,7 +46,7 @@ pub fn open_app_with_env(name: &str, var: &str, value: &str) {
     detach(cmd);
 }
 
-fn app_path(name: &str) -> PathBuf {
+pub(crate) fn app_path(name: &str) -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.join(name)))

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Incoming-call answering through the REAL desktop UI (not just `geekbridge-ctl call answer`).
 #
-#   scripts/e2e/call-ui.sh [--stop] [STAGE[,STAGE...]]     stages: env pair notify popup   (default: all)
+#   scripts/e2e/call-ui.sh [--stop] [STAGE[,STAGE...]]     stages: env pair notify popup overlay   (default: all)
 #
 # What runs, all private (nothing touches the real session bus, ~/.config, display or clipboard):
 #   * `dbus-run-session`      a private session bus, so the notification daemon and the service never see the user's bus
@@ -15,6 +15,11 @@
 #           then the action is invoked through the daemon (`makoctl invoke`): Answer -> modem off-hook, Decline -> idle
 #   popup   the Calls window (geekbridge-calls): screenshot ringing, click Answer (off-hook), in-call panel + the
 #           "Answered on the phone" audio hint, click Hang up (idle), ring again and click Decline (idle)
+#   overlay the incoming-call card (`geekbridge-calls --overlay`, class dev.geekbridge.CallOverlay), started BY THE SERVICE on
+#           ring (no Calls window open): it must appear 360x96 at the top-right of the screen (16 px margin), be a
+#           notification-type window, Answer must go off-hook and the card must close; Reject must idle; the X must hide
+#           the card while the call keeps ringing. On Xvfb (no window manager) so position/size are exactly what the
+#           app asked for; Wayland/Hyprland placement is by window rules (docs/omarchy.md) and is not checked here
 # Results: dist/android/logs/e2e-callui-results.tsv   Pictures: dist/screenshots/desktop/call-popup-*.png, call-notification-*.png
 # Needs: sway mako makoctl grim Xvfb xdotool import dbus-run-session dbus-monitor tesseract, the .tools Android toolchain,
 # release binaries in target/call-ui (`CARGO_TARGET_DIR=target/call-ui cargo build --release -p bridge-service -p bridge-apps --bins`)
@@ -28,7 +33,7 @@ if [[ -z "${CALLUI_INNER:-}" ]]; then
   exec dbus-run-session -- env CALLUI_INNER=1 "${BASH_SOURCE[0]}" "$@"
 fi
 
-STAGES="env,pair,notify,popup"
+STAGES="env,pair,notify,popup,overlay"
 STOPPING=0
 for a in "$@"; do
   case "$a" in
@@ -314,13 +319,65 @@ stage_popup() {
   hang_up_all
 }
 
+# ---------------------------------------------------------------- the incoming-call card (started by the service)
+OVL_W=360 OVL_H=96 OVL_MARGIN=16 OVL_SCREEN_W=1280
+OVL_ANSWER_X=${OVL_ANSWER_X:-294} OVL_ANSWER_Y=${OVL_ANSWER_Y:-28} OVL_REJECT_Y=${OVL_REJECT_Y:-64} OVL_CLOSE_X=${OVL_CLOSE_X:-219} OVL_CLOSE_Y=${OVL_CLOSE_Y:-25}
+overlay_wid() { DISPLAY=$XDISP xdotool search --class dev.geekbridge.CallOverlay 2>/dev/null | head -1; }
+overlay_visible_wid() { DISPLAY=$XDISP xdotool search --onlyvisible --class dev.geekbridge.CallOverlay 2>/dev/null | head -1; }
+overlay_gone() { [[ -z "$(overlay_wid)" ]]; }
+overlay_up() { APPWID="$(overlay_visible_wid)"; [[ -n "$APPWID" ]]; }
+stage_overlay() {
+  pkill -f "^$CALLS_BIN" 2>/dev/null; sleep 0.5
+  hang_up_all; sway_env makoctl dismiss -a >/dev/null 2>&1
+  # --- ring: the card must come up on its own, with no Calls window open
+  ring "$NUMBER_E" || { rec callui_overlay_ring FAIL "desktop never saw the call ringing"; return 1; }
+  wait_for 20 overlay_up || { rec callui_overlay_ring FAIL "no incoming-call card after the ring (service log: $(grep -i overlay "$SERVICE_LOG" | tail -2 | tr '\n' '|'); status: $(cat "$RUN/state/call-overlay-status" 2>/dev/null))"; return 1; }
+  rec callui_overlay_ring PASS "the service started the card by itself on RINGING (window $APPWID)"
+  sleep 1.5
+  eval "$(win_geometry)"
+  local want_x=$((OVL_SCREEN_W - OVL_W - OVL_MARGIN))
+  if ((X == want_x && Y == OVL_MARGIN && WIDTH == OVL_W && HEIGHT == OVL_H)); then
+    rec callui_overlay_geometry PASS "card at ${X},${Y} size ${WIDTH}x${HEIGHT}: top-right, ${OVL_MARGIN}px margin"
+  else rec callui_overlay_geometry FAIL "card at ${X},${Y} size ${WIDTH}x${HEIGHT}, expected ${want_x},${OVL_MARGIN} ${OVL_W}x${OVL_H}"; fi
+  local type; type="$(DISPLAY=$XDISP xprop -id "$APPWID" _NET_WM_WINDOW_TYPE 2>/dev/null)"
+  grep -q NOTIFICATION <<<"$type" && rec callui_overlay_type PASS "window type: notification" || rec callui_overlay_type FAIL "window type: ${type:-none}"
+  app_shot call-overlay-ringing.png
+  # The card shows the number/name and two coloured buttons (green Answer, red Reject), checked by colour.
+  local g r; g="$(px call-overlay-ringing.png "$OVL_ANSWER_X" "$OVL_ANSWER_Y")"; r="$(px call-overlay-ringing.png "$OVL_ANSWER_X" "$OVL_REJECT_Y")"
+  read -r gr gg gb <<<"$g"; read -r rr rg rb <<<"$r"
+  if ((gg > gr + 40 && gg > gb + 20)) && ((rr > 170 && rg < 90)); then rec callui_overlay_buttons PASS "green Answer rgb=$g, red Reject rgb=$r"
+  else rec callui_overlay_buttons FAIL "buttons not where expected: answer rgb=$g reject rgb=$r"; fi
+  # --- the X hides the card, the call keeps ringing
+  click_at "$OVL_CLOSE_X" "$OVL_CLOSE_Y"
+  sleep 1.5
+  if [[ -z "$(overlay_visible_wid)" ]] && [[ "$(modem_state)" == 1 ]]; then rec callui_overlay_dismiss PASS "X hid the card; the modem is still ringing"
+  else rec callui_overlay_dismiss FAIL "after X: visible card '$(overlay_visible_wid)', modem $(modem_state)"; fi
+  hang_up_all
+  wait_for 12 overlay_gone && rec callui_overlay_autoclose PASS "the card closed itself when the call ended" || rec callui_overlay_autoclose FAIL "card still present after the call ended"
+  # --- Answer
+  ring "$NUMBER_A" && wait_for 20 overlay_up || { rec callui_overlay_answer FAIL "no card for the second call"; return 1; }
+  sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"
+  if wait_modem 2 12; then rec callui_overlay_answer PASS "click on Answer -> modem off-hook"; else rec callui_overlay_answer FAIL "modem $(modem_state) after clicking Answer"; fi
+  sleep 1; app_shot call-overlay-answered.png
+  ocr call-overlay-answered.png | grep -qi "Answered" && rec callui_overlay_confirm PASS "the card says 'Answered on phone'" || rec callui_overlay_confirm FAIL "no confirmation on the card: $(ocr call-overlay-answered.png | head -c 120)"
+  wait_for 12 overlay_gone && rec callui_overlay_closed PASS "the card closed after the answer" || rec callui_overlay_closed FAIL "card still present after answering"
+  ctl call hangup >/dev/null 2>&1; wait_modem 0 8 || hang_up_all
+  # --- Reject
+  ring "$NUMBER_B" && wait_for 20 overlay_up || { rec callui_overlay_reject FAIL "no card for the third call"; return 1; }
+  sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_REJECT_Y"
+  if wait_modem 0 12; then rec callui_overlay_reject PASS "click on Reject -> modem idle"; else rec callui_overlay_reject FAIL "modem $(modem_state) after clicking Reject"; fi
+  wait_for 12 overlay_gone && rec callui_overlay_gone PASS "the card closed after Reject" || rec callui_overlay_gone FAIL "card still present after Reject"
+  hang_up_all
+  rm -f "$DESK_SHOTS/call-overlay-probe.png"
+}
+
 main_callui() {
   : >"$LOGS/e2e-run.log"
   if [[ "$STOPPING" == 1 ]]; then
     $ADB emu kill >/dev/null 2>&1; systemctl --user stop "gbe2e-emulator${E2E_TAG:-}" >/dev/null 2>&1
     stop_desktop; return 0
   fi
-  [[ "$STAGES" == env,pair,notify,popup ]] && : >"$RESULTS"
+  [[ "$STAGES" == env,pair,notify,popup,overlay ]] && : >"$RESULTS"
   local st
   IFS=, read -r -a sts <<<"$STAGES"
   for st in "${sts[@]}"; do log "== stage $st"; "stage_$st" || log "stage $st reported a failure"; done

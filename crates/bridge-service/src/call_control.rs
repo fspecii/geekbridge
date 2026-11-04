@@ -142,6 +142,8 @@ impl CallNotifier for NotifySendCalls {
         reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
         let args = Self::args(caller, can_answer, can_decline);
+        // The top-right card with Answer / Reject; the banner below stays as the fallback.
+        crate::call_overlay::ring();
         std::thread::spawn(move || {
             let out = std::process::Command::new("notify-send")
                 .args(&args)

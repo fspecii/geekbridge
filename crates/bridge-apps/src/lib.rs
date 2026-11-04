@@ -6,6 +6,7 @@ mod a11y_tests;
 pub mod apps;
 pub mod calendar_model;
 pub mod call_feed;
+pub mod call_overlay;
 pub mod call_ui;
 pub mod cli;
 pub mod clipboard_link;
@@ -61,6 +62,32 @@ pub fn main_for(app: AppKind) -> ExitCode {
             let model = state::DiscoveryModel::from_fetch(app, fetch_snapshot(api_port));
             print!("{}", cli::status_report(app, api_port, &model));
             ExitCode::from(cli::status_exit_code(&model) as u8)
+        }
+        Ok(cli::Command::Overlay {
+            theme,
+            name_only,
+            test,
+            ..
+        }) => {
+            if app != AppKind::Calls {
+                eprintln!(
+                    "{}: --overlay belongs to geekbridge-calls",
+                    identity::binary_name(app)
+                );
+                return ExitCode::from(2);
+            }
+            let reveal = if name_only {
+                bridge_core::call_overlay::Reveal::NameOnly
+            } else {
+                bridge_core::call_overlay::Reveal::Full
+            };
+            match call_overlay::run(theme, reveal, test) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => {
+                    eprintln!("{}: cannot open window: {err}", identity::binary_name(app));
+                    ExitCode::FAILURE
+                }
+            }
         }
         Ok(cli::Command::Run { api_port, theme }) => {
             match shell::run(app, api_port, theme, apps::view_for(app)) {

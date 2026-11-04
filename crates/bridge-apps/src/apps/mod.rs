@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! The four independent app bodies. Nothing here switches between apps.
 mod calendar;
-mod calls;
+pub(crate) mod calls;
 pub(crate) mod clipboard;
 mod contacts;
 mod messages;

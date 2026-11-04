@@ -88,6 +88,7 @@ Commands:
   share cancel|dismiss TRANSFER_ID    stop a transfer / forget a finished one
   share allow DEVICE_ID on|off        let the device send us files, links and text (default off)
   share auto-accept DEVICE_ID on|off  accept files from the device without asking (default off)
+  call-overlay-test                   show the incoming-call card with a fake call for 10 seconds (no phone)
   doctor                              why something does not work, in plain words, with the fix: service,
                                       firewall (ufw/firewalld ports 1716-1764), desktop session, paired
                                       phones, clipboard, calls, Messages; exits 1 on a failed check
@@ -205,6 +206,26 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "phone-state" {
         return phone_state_command(&args[1..], port, &state_dir);
+    }
+    if command == "call-overlay-test" {
+        println!(
+            "Showing a test call card in the top-right corner for 10 seconds (nobody is calling)..."
+        );
+        return match bridge_service::call_overlay::test(
+            &state_dir,
+            bridge_core::DEFAULT_API_PORT,
+            port,
+        ) {
+            Ok(()) => {
+                println!("Done. If you saw the card, incoming calls will show it too.");
+                Ok(())
+            }
+            Err(c) => Err(format!(
+                "incoming-call overlay cannot start: {} ({})",
+                c.code(),
+                c.explain()
+            )),
+        };
     }
     if command == "doctor" {
         return doctor_command(port, &state_dir);
@@ -974,7 +995,7 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
             (Ok(status), clipboard, calling, data)
         }
     };
-    let checks = doctor::run(&Inputs {
+    let mut checks = doctor::run(&Inputs {
         status,
         clipboard,
         calling,
@@ -995,6 +1016,17 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
                     .map(|h| std::path::Path::new(&h).join(".config/systemd/user")),
             )
             .any(|d| d.join("geekbridge-service.service").exists()),
+    });
+    let (ok, line) = bridge_service::call_overlay::doctor_line(state_dir);
+    checks.push(doctor::Check {
+        level: if ok {
+            doctor::Level::Ok
+        } else {
+            doctor::Level::Warn
+        },
+        title: "Incoming-call overlay".into(),
+        detail: line,
+        fix: None,
     });
     print!("{}", doctor::render(&checks));
     match doctor::failures(&checks) {

@@ -124,6 +124,7 @@ impl CallNotifier for BannerNotifier {
         _can_decline: bool,
         _reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
+        crate::call_overlay::ring();
         show(
             tr("banner.incoming_call"),
             &tr_args("banner.call_body", &[("caller", &isolate(caller, 80))]),

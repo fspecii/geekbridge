@@ -90,6 +90,35 @@ workspace), `--no-bind` writes only the rules, `--legacy-rules` uses the pre-0.5
 files (newer `.conf` syntax is the default). To change the sizes, edit the numbers inside the block; reinstalling
 resets them.
 
+### The incoming-call card (top-right)
+
+When a call rings the service starts `geekbridge-calls --overlay` **by itself** (no banner click, no open window
+needed): a small borderless card, 360x96, with the caller, **Answer** (green), **Reject** (red) and an X that only hides
+the card (the phone keeps ringing). It closes itself when the call ends, is answered on the phone, or after you pick.
+After a click it shows the result from the service: "Answered on phone" or "Couldn't answer: <reason>". Enter answers and
+Esc hides the card, but only while the card has the keyboard; it never takes focus when it appears, so typing elsewhere is
+not interrupted. Esc deliberately does not reject. The notification banner is still sent as an extra signal.
+
+The same `install` block carries the card's rule (app id `dev.geekbridge.CallOverlay`, different from the Calls window):
+
+```lua
+hl.window_rule({ match = { class = "^(dev\\.geekbridge\\.CallOverlay)$" }, float = true, pin = true, size = { 360, 96 }, move = { "(monitor_w-window_w-16)", 16 }, no_initial_focus = true, no_anim = true })
+```
+
+`.conf` files get the same as `windowrule = move (monitor_w-window_w-16) 16, match:class ...` (`move 100%-w-16 16` with
+`--legacy-rules`). `geekbridge-ctl hotkey install` (dry run) prints the diff first. `nofocus` is not used: on Hyprland it can
+also stop the card taking the click on Answer; `no_initial_focus` is what keeps your typing uninterrupted. The card is
+pinned even with `--no-pin` (it must follow you across workspaces).
+
+Check it without a call: `geekbridge-ctl call-overlay-test` shows a clearly labelled "Test call" card for 10 seconds
+(buttons off). `geekbridge-ctl doctor` has an "Incoming-call overlay" line: "can launch", or "cannot: <code>"
+(`disabled`, `helper-missing`, `no-display`, `spawn-failed: ...`); the service also logs one line with the code to the
+journal when a ring could not show it. A service started without the session variables (systemd before login imported
+them, a bare terminal) falls back to the `wayland-*` socket in `XDG_RUNTIME_DIR`, then to an X11 socket. Switch it off with
+`GEEKBRIDGE_CALL_OVERLAY=off`, or show names only (never the number) with `=name`; the same word in the state folder file
+`call-overlay` works when the variable is not set. Layer-shell (a real overlay layer) was not used: it would need a second
+GUI stack next to egui; the window rules give the same place and stacking.
+
 ### Tiling and forced sizes
 
 Messages, Contacts, Agenda and Clipboard are not floated: they tile like any window. Each declares a minimum inner size

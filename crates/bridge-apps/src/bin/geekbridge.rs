@@ -29,6 +29,10 @@ fn main() -> ExitCode {
             eprintln!("geekbridge: --status is not supported here; use geekbridge-ctl status");
             ExitCode::from(2)
         }
+        Ok(cli::Command::Overlay { .. }) => {
+            eprintln!("geekbridge: --overlay belongs to geekbridge-calls");
+            ExitCode::from(2)
+        }
         Ok(cli::Command::Run { api_port, theme }) => match home_app::run(api_port, theme) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
