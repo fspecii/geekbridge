@@ -173,6 +173,7 @@ impl Audio for PipeWireAudio {
         let dev = self.device(bridge_calls::audio::Role::Output)?;
         let mut child = pw_cat("-p", &dev.name)?;
         let stdin = child.stdin.take().ok_or("pw-cat has no input")?;
+        set_nonblocking(&stdin);
         Ok(Box::new(PwPlayback {
             child,
             stdin: Some(stdin),
@@ -196,6 +197,21 @@ impl Audio for PipeWireAudio {
     }
 }
 
+/// A sound output that does not take its samples (suspended, not linked, stalled) must not block the playback worker
+/// in a full pipe: the worker is what stops pw-cat at the end of a session. Frames the pipe cannot take are dropped.
+#[cfg(target_os = "linux")]
+fn set_nonblocking(w: &std::process::ChildStdin) {
+    use std::os::fd::AsRawFd;
+    let fd = w.as_raw_fd();
+    // SAFETY: fcntl on a descriptor this process owns, with plain flag arguments.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        if flags >= 0 {
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 struct PwPlayback {
     child: Child,
@@ -210,7 +226,13 @@ impl Playback for PwPlayback {
             bytes.extend_from_slice(&s.to_le_bytes());
         }
         match self.stdin.as_mut() {
-            Some(w) => w.write_all(&bytes),
+            Some(w) => match w.write(&bytes) {
+                // A full pipe (the output is not taking samples): this 20 ms frame is dropped, never waited for.
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+                // A partial write would leave half a frame in the stream: the rest is dropped too.
+                Ok(_) => Ok(()),
+                Err(e) => Err(e),
+            },
             None => Err(std::io::ErrorKind::BrokenPipe.into()),
         }
     }

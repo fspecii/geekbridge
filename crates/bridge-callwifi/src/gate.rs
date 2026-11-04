@@ -218,6 +218,14 @@ impl Gate {
         }
     }
 
+    /// A frame this side produced was sent: the session is not idle. The phone of a listen-only session only ever
+    /// sends, so without this the idle stop would end every session five seconds after it began.
+    pub fn note_sent(&mut self, now_ms: u64) {
+        if let Some(s) = self.session.as_mut().filter(|s| s.live) {
+            s.last_frame_ms = now_ms;
+        }
+    }
+
     /// May a locally produced frame in `dir` be sent now?
     pub fn may_send(&self, dir: Dir) -> bool {
         let ok_dir = matches!(
@@ -637,6 +645,18 @@ mod tests {
         let (_, mut c) = live_pair();
         assert!(c.tick(IDLE_TIMEOUT_MS - 1).is_empty());
         assert!(c.tick(IDLE_TIMEOUT_MS + 1).contains(&Action::IndicatorOff));
+    }
+
+    #[test]
+    fn a_phone_that_keeps_sending_is_not_idle_but_one_that_stops_is() {
+        let (mut p, _) = live_pair();
+        let mut t = 0;
+        while t < 20_000 {
+            t += 20;
+            p.note_sent(t);
+            assert!(p.tick(t).is_empty(), "idle at {t} ms while frames go out");
+        }
+        assert!(p.tick(t + IDLE_TIMEOUT_MS + 1).contains(&Action::IndicatorOff));
     }
 
     #[test]

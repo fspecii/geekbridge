@@ -402,6 +402,7 @@ impl Core {
             if !g.gate.may_send(Dir::Down) {
                 return Ok(json!({"sent": false}));
             }
+            g.gate.note_sent(self.callwifi.now_ms());
             let Some(session) = g.gate.session().map(|s| s.id) else {
                 return Ok(json!({"sent": false}));
             };
