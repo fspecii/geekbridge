@@ -99,9 +99,10 @@ Even in the best case (shell helper started over Wireless debugging, downlink re
 | Image | Probe in app uid, no call | Probe in app uid, call active | `pm grant ... CAPTURE_AUDIO_OUTPUT` | scrcpy shell-uid `voice-call-downlink` / `voice-call-uplink` / `voice-call`, call active | `adb root` |
 |---|---|---|---|---|---|
 | API 36 `google_apis` (userdebug, dev-keys) | `ILLEGAL_STATE` | `ILLEGAL_STATE` (`AudioFlinger could not create record track, status: -1`; `AudioRecord` init error -20) | `SecurityException: Permission android.permission.CAPTURE_AUDIO_OUTPUT is managed by role` | server started, file written; mean -9.0 / -8.9 / -9.0 dB, max 0.0 dB (loud) | not run (userdebug) |
+| API 34 `google_apis_playstore` (user, release-keys) | `ILLEGAL_STATE` | `ILLEGAL_STATE` (same two log lines) | `Exception occurred while executing 'grant'` (SecurityException) | file written, loud (about -9 dB) | not run |
 | API 36 `google_apis_playstore` (user, release-keys) | `ILLEGAL_STATE` | `ILLEGAL_STATE` (same two log lines) | same `SecurityException ... managed by role` | same: file written; mean -9.0 / -8.9 / -9.0 dB, max 0.0 dB | `adbd cannot run as root in production builds` |
 
-Not run: `NO_RECORD_AUDIO` (only with the grant withheld), `SECURITY_EXCEPTION` (Android reported the refusal as a failed `AudioRecord` init, not a thrown exception, on this image), `SILENCED_BY_POLICY`, `SILENT`, `AUDIO_PRESENT` from the app uid. Not run: API 34, a root-uid probe, the `app_process` helper, any uplink injection (AudioPolicy/AudioMix, `REMOTE_SUBMIX`; scrcpy PRs #6439/#7004, issue #3880 were not read or tried).
+Not run: `NO_RECORD_AUDIO` (only with the grant withheld), `SECURITY_EXCEPTION` (Android reported the refusal as a failed `AudioRecord` init, not a thrown exception, on this image), `SILENCED_BY_POLICY`, `SILENT`, `AUDIO_PRESENT` from the app uid. 
 
 What these rows do establish:
 
@@ -110,15 +111,37 @@ What these rows do establish:
 3. **The shell uid is accepted by audioserver for the voice-call sources**: scrcpy's server captured on both images without error, on the production image too (no root needed). [measured]
 4. **That shell-uid capture is not evidence of call audio.** A control run with *no call* gave the same loud signal (`voice-call-downlink`, no call: mean -8.9 dB, max 0.0 dB), while the plain `mic` source gave about -77 dB. So the emulator HAL feeds a synthetic signal into the voice-call sources whether or not a call exists. Do not treat "non-zero audio" as success without a no-call control and listening to the recording. [measured]
 
+### Own shell-uid helper and uplink injection (measured 2026-11-04)
+
+`scripts/callaudio-helper/ShellProbe.java` (built to a dex jar by `build.sh`, run by `run.sh` through `adb shell CLASSPATH=... app_process`) is a small independent helper that runs as the shell uid and uses hidden APIs by reflection. `capture` reads an `AudioRecord` source and prints samples, RMS, peak. `inject` registers an `AudioPolicy` with an injector `AudioMix` (`MIX_ROLE_INJECTOR`, `ROUTE_FLAG_LOOP_BACK`) on the capture presets (MIC, DEFAULT, CAMCORDER, VOICE_RECOGNITION, VOICE_COMMUNICATION, UNPROCESSED, VOICE_PERFORMANCE), plays a 1 kHz tone into it through `createAudioTrackSource`, and records a source meanwhile. The method is the one described in the scrcpy discussion ([issue 3880](https://github.com/Genymobile/scrcpy/issues/3880): AudioPolicy with an injected mix, `MODIFY_AUDIO_ROUTING`; [PR 7004](https://github.com/Genymobile/scrcpy/pull/7004): AudioPolicy injection on those presets, "requires Android 13 or newer", cannot be combined with `voice-call`/`voice-call-uplink`; [PR 6439](https://github.com/Genymobile/scrcpy/pull/6439): same author's earlier version, open, a tester reported the caller hearing it only inconsistently and a Samsung phone's call app keeping its internal mic). I read those pages through a summariser and wrote the helper myself from the API names; none of their code was copied.
+
+RMS is of the 16 kHz mono capture. "Call" rows were taken with an emulated call accepted (`mCallState=2`).
+
+| Image | uid | capture `voice-downlink` no call / call | capture `voice-uplink` call | capture `mic` call | inject 1 kHz, record `mic` / `voice-comm` (call) | inject, record `voice-uplink` (call) |
+|---|---|---|---|---|---|---|
+| API 36 userdebug | shell | rms 12444 / 11783 | 11992 | 4 | policy registered (rc 0); rms 8478 both = the tone | rms 11585, tone 0: unchanged |
+| API 36 userdebug | root (`adb root`) | n/a / 11585 | 11585 | 4 | rc 0; rms 8478 | not run |
+| API 36 playstore (user) | shell | 11992 / 12212 | 11585 | 2 | rc 0; rms 8415 both | rms 11585, tone 0 |
+| API 34 playstore (user) | shell | 12445 / 11585 | 11585 | 4 | rc 0; rms 8483 both | rms 11585, tone 0 |
+
+Findings (all emulator):
+
+1. My own helper reproduces the scrcpy result: the shell uid reads the voice-call sources on API 34 and 36, on production images, without root. The same loud level with no call confirms they are synthetic in the emulator. Root behaves identically to shell.
+2. **Injection works for microphone-type clients.** With the injector policy registered from the shell uid, an `AudioRecord` on `MIC` or `VOICE_COMMUNICATION` receives the injected tone (rms about 8450 vs 2-4 without it) on all three images. `MODIFY_AUDIO_ROUTING` is available to the shell uid on API 34 and 36 (registration returns 0). `CAPTURE_AUDIO_OUTPUT` and `MODIFY_AUDIO_ROUTING` are therefore reachable only from a process that runs as shell.
+3. **Injection does not reach the call taps.** Recording `voice-uplink`/`voice-downlink`/`voice-call` during the injection returned the same synthetic signal with zero tone. This is expected, and it is the core problem for a cellular call: the policy replaces what *app-level microphone clients* hear; on a phone the uplink to the network is taken from the modem/DSP audio path, not from an `AudioRecord`. So the technique helps VoIP/in-app recorders, and would reach a cellular call's far party only on a device whose call path reads the mic through the Android audio framework. scrcpy's own discussion reports that on a Samsung phone the call app kept using the internal microphone. **Unproven for a real cellular call; the emulator cannot answer it.**
+4. In this emulator `VOICE_UPLINK` is not even a clean loopback of the mic, so "tone absent in uplink" tells us nothing about a real modem. The only valid test is on the real phone: inject, then ask the far party (or record the far end) whether the tone is heard.
+
+Not run: scrcpy's `output`/`playback` sources, a real `REMOTE_SUBMIX` capture (the injector mix above is the loopback variant), an app-uid `AudioPolicy` (the app has no `MODIFY_AUDIO_ROUTING`).
+
 Consequence for the probe: `AUDIO_PRESENT` means only "non-zero samples". On a real phone, always run the same probe once with no call and compare before believing it (the script's no-call step should be added to the owner's procedure).
 
-Cleanup: emulators stopped, the three scratch AVDs deleted, the unused API 34 playstore image uninstalled. The API 36 playstore system image stays in the shared SDK for the next run. Raw logs and recordings are in `/home/ambsd/.cache/gb-wifi-out/` (not committed).
+Cleanup: emulators stopped, the scratch AVDs deleted. The API 36 playstore system image stays in the shared SDK for the next run (the API 34 one was uninstalled again). Raw logs and recordings are in `/home/ambsd/.cache/gb-wifi-out/` (not committed).
 
 ## 7. Open questions, cheapest first
 
 1. Run the probe script on the Fold5 during an iPhone-to-phone call (owner, real device). Records the app-uid result and the scrcpy shell-uid result. This is the single measurement that turns most **[GUESS]** items into facts.
 2. Does the scrcpy recording contain far-party speech on One UI 8 / Android 16-17, over VoLTE and over Wi-Fi calling?
-3. Is there any uplink route at all for the shell uid (e.g. `MODIFY_AUDIO_ROUTING` plus an audio policy mix)? Not found; not investigated beyond desk search.
+3. Does the shell-uid AudioPolicy injection (section "Own shell-uid helper") reach the far party of a real cellular call on the Fold5? Works for mic clients on the emulator; the call path on a phone is the open question. Test: `run.sh ... inject voice-comm 30 1000` during a call and ask the far party.
 4. Does a Samsung phone route call audio to a USB UAC headset? Only relevant if a gadget device were ever in scope.
 
 ## Sources
