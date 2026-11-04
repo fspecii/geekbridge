@@ -202,3 +202,66 @@ fn no_packet_sequence_opens_a_gate_without_its_consents() {
         }
     }
 }
+
+/// Inside a live, consented, listen-only session nothing a peer sends turns speaking back on: not on the phone
+/// without its own opt-in (even with an uplink route), not on the computer without its own press. No microphone
+/// frame is accepted and the computer never sends one.
+#[test]
+fn no_packet_inside_a_live_listen_only_session_turns_speaking_on() {
+    use wire::Msg;
+    let mut r = Rng(0xFEED_5EA7);
+    for round in 0..200 {
+        let mut p = Gate::new(Side::Phone);
+        let mut c = Gate::new(Side::Computer);
+        p.set_consent(false, true);
+        c.set_consent(true, false);
+        p.set_call_active(true);
+        p.uplink_route = wire::Uplink::TelephonyTx;
+        p.speak_allowed = false;
+        let offer = match p.on_msg(Msg::Request { session: 7 }, 0).remove(0) {
+            Action::Send(m) => m,
+            other => panic!("{other:?}"),
+        };
+        let answer = match c.on_msg(offer, 0).remove(0) {
+            Action::Send(m) => m,
+            other => panic!("{other:?}"),
+        };
+        p.on_msg(answer, 0);
+        assert!(p.session().is_some_and(|s| s.live) && c.session().is_some_and(|s| s.live));
+        let mut t = 0u64;
+        for _ in 0..100 {
+            let seed = SEEDS[r.below(SEEDS.len())].as_bytes();
+            let input = mutate(&mut r, seed);
+            let Ok(Value::Object(body)) = serde_json::from_slice::<Value>(&input) else {
+                continue;
+            };
+            for kind in wire::ALL {
+                let Ok(mut m) = wire::parse(kind, &body) else {
+                    continue;
+                };
+                // Aim at the live session (id 7) so the packets get past the id check.
+                match &mut m {
+                    Msg::Speak { session, .. } => *session = 7,
+                    Msg::Frame(f) => f.session = 7,
+                    _ => {}
+                }
+                t += 3;
+                for g in [&mut p, &mut c] {
+                    let acts = g.on_msg(m.clone(), t);
+                    assert!(
+                        !acts.iter().any(|a| matches!(
+                            a,
+                            Action::SpeakState(true)
+                                | Action::Send(Msg::Speak { on: true, .. })
+                                | Action::Send(Msg::Frame(_))
+                        )),
+                        "round {round}: {m:?} -> {acts:?}"
+                    );
+                }
+                // The phone never takes a microphone frame, the computer never has one to send.
+                assert!(!p.session().is_some_and(|s| s.up));
+                assert!(!c.session().is_some_and(|s| s.up));
+            }
+        }
+    }
+}

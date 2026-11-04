@@ -122,7 +122,11 @@ impl Gate {
     /// The computer user pressed "Speak (experimental)" (or turned it off) during a live session.
     pub fn ask_speak(&mut self, on: bool) -> Vec<Action> {
         match (&self.session, self.side) {
-            (Some(s), Side::Computer) if s.live && s.down && self.speak_asked.is_none() => {
+            // Only one request at a time, except that "off" always goes through: a press of off while the phone has
+            // not yet answered an "on" must win (the late "on" answer is then dropped as unasked).
+            (Some(s), Side::Computer)
+                if s.live && s.down && (self.speak_asked.is_none() || !on) =>
+            {
                 let id = s.id;
                 self.speak_asked = Some((id, on));
                 vec![Action::Send(Msg::Speak { session: id, on })]
@@ -543,6 +547,106 @@ mod tests {
         // The computer follows the phone's "off" without having asked, but never an unasked "on".
         assert_eq!(c.on_msg(back, 21), vec![Action::SpeakState(false)]);
         assert!(!c.may_send(Dir::Up));
+    }
+
+    #[test]
+    fn off_pressed_before_the_phone_answers_on_wins() {
+        let (mut p, mut c) = listen_pair();
+        p.set_speak_allowed(true);
+        let on = sent(&c.ask_speak(true)).remove(0);
+        // A second "on" while one is in flight is refused; "off" is not.
+        assert!(matches!(c.ask_speak(true)[0], Action::Drop(_)));
+        let off = sent(&c.ask_speak(false)).remove(0);
+        // The phone answers the first request: on. The computer never wants it any more.
+        let late_on = sent(&p.on_msg(on, 1)).remove(0);
+        assert!(matches!(late_on, Msg::Speak { on: true, .. }));
+        assert!(matches!(c.on_msg(late_on, 2)[0], Action::Drop(_)));
+        assert!(!c.may_send(Dir::Up));
+        // The phone then gets the off and answers it; both sides end up off.
+        let back = sent(&p.on_msg(off, 3)).remove(0);
+        assert!(matches!(back, Msg::Speak { on: false, .. }));
+        assert_eq!(c.on_msg(back, 4), vec![Action::SpeakState(false)]);
+        assert!(!p.may_send(Dir::Up) && !c.may_send(Dir::Up));
+    }
+
+    #[test]
+    fn speaking_never_survives_an_ending() {
+        for ending in 0..4 {
+            let (mut p, mut c) = live_pair();
+            match ending {
+                0 => {
+                    p.link_lost();
+                    c.link_lost();
+                }
+                1 => {
+                    p.set_call_active(false);
+                    c.on_msg(
+                        Msg::Stop {
+                            session: 7,
+                            reason: None,
+                        },
+                        5,
+                    );
+                }
+                2 => {
+                    p.set_consent(false, false);
+                    c.set_consent(false, false);
+                }
+                _ => {
+                    p.stop();
+                    c.stop();
+                }
+            }
+            assert!(!p.may_send(Dir::Down) && !p.may_send(Dir::Up), "{ending}");
+            assert!(!c.may_send(Dir::Up), "{ending}");
+            // A replayed "speak on" or microphone frame for the old session does nothing.
+            let on = Msg::Speak {
+                session: 7,
+                on: true,
+            };
+            assert!(!p.on_msg(on.clone(), 6).contains(&Action::SpeakState(true)));
+            assert!(!c.on_msg(on, 6).contains(&Action::SpeakState(true)));
+            assert!(matches!(
+                p.on_msg(frame(7, Dir::Up, 1), 6)[0],
+                Action::Drop(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn speak_needs_the_phones_opt_in_and_a_route_each_time() {
+        // No opt-in: a speak request is answered off and no microphone frame is ever accepted.
+        let (mut p, mut c) = listen_pair();
+        let ask = sent(&c.ask_speak(true)).remove(0);
+        let reply = p.on_msg(ask, 1);
+        assert!(!reply.contains(&Action::SpeakState(true)));
+        assert!(matches!(sent(&reply)[0], Msg::Speak { on: false, .. }));
+        assert!(matches!(
+            p.on_msg(frame(7, Dir::Up, 1), 2)[0],
+            Action::Drop(_)
+        ));
+        // Opt-in but no route (the phone offered Uplink::None): still off.
+        let mut p = Gate::new(Side::Phone);
+        p.set_consent(false, true);
+        p.set_call_active(true);
+        p.set_speak_allowed(true);
+        let offer = sent(&p.on_msg(Msg::Request { session: 3 }, 0)).remove(0);
+        let mut c = Gate::new(Side::Computer);
+        c.set_consent(true, false);
+        let ans = sent(&c.on_msg(offer, 0)).remove(0);
+        p.on_msg(ans, 0);
+        let ask = sent(&c.ask_speak(true)).remove(0);
+        assert!(!p.on_msg(ask, 1).contains(&Action::SpeakState(true)));
+        assert!(!p.may_send(Dir::Up));
+    }
+
+    #[test]
+    fn microphone_frames_are_rate_capped_on_the_phone() {
+        let (mut p, _) = live_pair();
+        let accepted = (0..200)
+            .filter(|i| matches!(p.on_msg(frame(7, Dir::Up, *i), 100)[0], Action::Accept(_)))
+            .count();
+        assert_eq!(accepted, MAX_FRAMES_PER_SEC as usize);
     }
 
     #[test]
