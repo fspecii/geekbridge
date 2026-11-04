@@ -58,9 +58,13 @@ set --
 DESK_SHOTS="$ROOT/dist/screenshots/desktop"; mkdir -p "$DESK_SHOTS"
 # Private XDG tree: nothing is read from or written to the real ~/.config, ~/.local or the user's runtime dir.
 PRIV="$RUN/priv"; mkdir -p "$PRIV"/{config,data,state,cache}
-XRT="/tmp/gb-callui-xdg-$UID"; mkdir -p "$XRT"; chmod 700 "$XRT"
+XRT="${TMPDIR:-/tmp}/gb-callui-xdg-$UID"; mkdir -p "$XRT"; chmod 700 "$XRT"
+# The service and the apps get a runtime dir WITHOUT the headless sway's wayland-N socket: the service adopts a
+# WAYLAND_DISPLAY it finds there (session_env.rs) and its incoming-call card would then open in sway, where this
+# script (Xvfb + xdotool) cannot see it. sway and mako keep $XRT.
+XRT_APPS="$RUN/xrt-apps"; mkdir -p "$XRT_APPS"; chmod 700 "$XRT_APPS"
 APP_ENV=(env -u LD_LIBRARY_PATH -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u SWAYSOCK -u NIRI_SOCKET
-  XDG_RUNTIME_DIR="$XRT" XDG_CONFIG_HOME="$PRIV/config" XDG_DATA_HOME="$PRIV/data" XDG_STATE_HOME="$PRIV/state"
+  XDG_RUNTIME_DIR="$XRT_APPS" XDG_CONFIG_HOME="$PRIV/config" XDG_DATA_HOME="$PRIV/data" XDG_STATE_HOME="$PRIV/state"
   XDG_CACHE_HOME="$PRIV/cache" XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=GeekBridgeE2E)
 SWAY_SOCKET_NAME="gb-callui-0"
 NOTIFY_BUS_LOG="$RUN/notify-bus.log"
@@ -194,7 +198,9 @@ stage_pair() {
   sleep 2; desk_dial >/dev/null 2>&1
   wait_for 25 is_connected || { rec callui_pair FAIL "link not connected"; return 1; }
   ctl consent "$PHONE_ID" telephony on >/dev/null; sleep 3
-  ctl status | jget '",".join(d["links"][0]["negotiated"])' | grep -q geekbridge.calls \
+  # Turning the consent on renegotiates the link; the calls capability shows up a moment later.
+  calls_negotiated() { ctl status | jget '",".join(d["links"][0]["negotiated"])' | grep -q geekbridge.calls; }
+  wait_for 30 calls_negotiated \
     || { rec callui_pair FAIL "calls not negotiated: $(ctl status | jget '",".join(d["links"][0]["negotiated"])')"; return 1; }
   rec callui_pair PASS "paired $PHONE_ID, connected, telephony consent on, 'Answer from computer' on, calls negotiated"
 }
@@ -322,6 +328,8 @@ stage_popup() {
 # ---------------------------------------------------------------- the incoming-call card (started by the service)
 OVL_W=360 OVL_H=96 OVL_MARGIN=16 OVL_SCREEN_W=1280
 OVL_ANSWER_X=${OVL_ANSWER_X:-294} OVL_ANSWER_Y=${OVL_ANSWER_Y:-28} OVL_REJECT_Y=${OVL_REJECT_Y:-64} OVL_CLOSE_X=${OVL_CLOSE_X:-219} OVL_CLOSE_Y=${OVL_CLOSE_Y:-25}
+# Colour is sampled at the left end of each pill, off the white label that sits on its centre.
+OVL_SAMPLE_X=${OVL_SAMPLE_X:-254}
 overlay_wid() { DISPLAY=$XDISP xdotool search --class dev.geekbridge.CallOverlay 2>/dev/null | head -1; }
 overlay_visible_wid() { DISPLAY=$XDISP xdotool search --onlyvisible --class dev.geekbridge.CallOverlay 2>/dev/null | head -1; }
 overlay_gone() { [[ -z "$(overlay_wid)" ]]; }
@@ -343,7 +351,7 @@ stage_overlay() {
   grep -q NOTIFICATION <<<"$type" && rec callui_overlay_type PASS "window type: notification" || rec callui_overlay_type FAIL "window type: ${type:-none}"
   app_shot call-overlay-ringing.png
   # The card shows the number/name and two coloured buttons (green Answer, red Reject), checked by colour.
-  local g r; g="$(px call-overlay-ringing.png "$OVL_ANSWER_X" "$OVL_ANSWER_Y")"; r="$(px call-overlay-ringing.png "$OVL_ANSWER_X" "$OVL_REJECT_Y")"
+  local g r; g="$(px call-overlay-ringing.png "$OVL_SAMPLE_X" "$OVL_ANSWER_Y")"; r="$(px call-overlay-ringing.png "$OVL_SAMPLE_X" "$OVL_REJECT_Y")"
   read -r gr gg gb <<<"$g"; read -r rr rg rb <<<"$r"
   if ((gg > gr + 40 && gg > gb + 20)) && ((rr > 170 && rg < 90)); then rec callui_overlay_buttons PASS "green Answer rgb=$g, red Reject rgb=$r"
   else rec callui_overlay_buttons FAIL "buttons not where expected: answer rgb=$g reject rgb=$r"; fi
