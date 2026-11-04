@@ -1,8 +1,8 @@
 # Morning test checklist (2026-11-05)
 
-Build: APK head `bb82cedc4`, versionCode 20207, sha256 `c2ca86b7c640faf24894284ce378fe1bb7fd35b92914738eca05e977a8b9bf07` (installed 10099 or 20199, so it updates in place, pairings kept; same signer as before). PC binaries in `target/release` are from the same head; the running service was not restarted. Needs: the phone, an iPhone (to call the phone), a USB Bluetooth dongle, the PC.
+Build: head `df23d137e` (built from a clean worktree). APK versionCode 20210, sha256 `46a6a9f3f89567fee1ccdd6a725019ab03940bb3780253c603f93b781914a750` (gradle tests and lint passed; installed 10099, 20199 or 20207, so it updates in place, pairings kept; same signer `4d711ab4...a3c3` as before). PC binaries in `target/release` are from the same head (service sha256 `dcfea887...5735`, ctl `0d6f8ce0...84e7`; all nine in `scripts/release-binaries.txt`); a sandbox `geekbridge-ctl doctor` shows 0 problems; the running service was not restarted. Commits after `df23d137e` (call audio backend review, fresh-user docs) are not in this build. Needs: the phone, an iPhone (to call the phone), a USB Bluetooth dongle, the PC.
 
-Every command below was dry-run in a sandbox on this PC (see [morning-dry-run.md](morning-dry-run.md)). Two things differ from older notes: the binaries in `target/release` still have two small bugs fixed after `bb82cedc4` (doctor says "FAIL Firewall" although the rule exists; the hotkey does not find a service with a private state dir), so rebuild first (step 2.1); and `adb` is not on this PC's PATH, use `.tools/android-sdk/platform-tools/adb`.
+Every command below was dry-run in a sandbox on this PC (see [morning-dry-run.md](morning-dry-run.md)). Two things differ from older notes: the binaries in `target/release` now include the doctor firewall and hotkey fixes (built from `df23d137e`), so a rebuild (step 2.1) is only needed for later commits; and `adb` is not on this PC's PATH, use `.tools/android-sdk/platform-tools/adb`.
 
 ## 1. Phone: install the APK
 1. Phone on the home Wi-Fi. Scan `dist/android/apk-qr.png` or open `http://192.168.1.150:8000/geekbridge-debug.apk` (file server, 12 h timer from 2026-11-04 08:33; if it does not answer: `cd dist/android/serve && setsid nohup timeout 43200 python3 -m http.server 8000 --bind 0.0.0.0 &`).
@@ -10,7 +10,7 @@ Every command below was dry-run in a sandbox on this PC (see [morning-dry-run.md
 
 ## 2. PC: new binaries, firewall, hotkey
 In a terminal inside Hyprland, in the repo. Do not `source scripts/android-env.sh` here.
-1. Rebuild (only if `git log -1` is newer than `bb82cedc4`, or doctor shows the false Firewall FAIL): `cargo build --release --locked -p bridge-apps -p bridge-service`, then `scripts/run-desktop.sh --restart` (pairings kept). Then, in every terminal you use: `eval "$(scripts/run-desktop.sh --env)"` (puts `geekbridge-ctl` on PATH, pointed at this session's service; without it `doctor` says "Service: not answering").
+1. Rebuild (only if you want commits newer than `df23d137e`): `cargo build --release --locked -p bridge-apps -p bridge-service`, then `scripts/run-desktop.sh --restart` (pairings kept). Then, in every terminal you use: `eval "$(scripts/run-desktop.sh --env)"` (puts `geekbridge-ctl` on PATH, pointed at this session's service; without it `doctor` says "Service: not answering").
 2. Firewall. On this PC ufw already has the rule `1716:1764` tcp and udp from 192.168.1.0/24, so this is a check: `scripts/realdevice.sh firewall` (prints PASS, or the two `sudo ufw allow ...` lines). Only if it says FAIL: `scripts/realdevice.sh firewall --apply` from a terminal (it needs one for the sudo password and refuses without it). `realdevice.sh check` needs the phone on USB, do not use it for this.
 3. Hotkey: `geekbridge-ctl hotkey install` (dry run, read the diff), then `geekbridge-ctl hotkey install --apply`, `geekbridge-ctl hotkey status`. The default key is Super+Shift+V (Ctrl+Shift+V is terminal paste); another key: `--key "Ctrl+Alt+P"`. The window rules (float, centre, pin, card top right) come from this step, so do it before section 4.
 4. `geekbridge-ctl doctor`: read it top to bottom; every red line is worth sending back. Expected on this PC with no dongle and no phone paired yet: no red line; yellow lines for "No phone is paired" and "Hear calls here" (no Bluetooth).
@@ -41,7 +41,7 @@ Right after any failure: `scripts/realdevice-report.sh --no-adb` (or `--serial S
 | If | Run |
 | --- | --- |
 | `doctor`: "Service: not answering ... no control token" | `eval "$(scripts/run-desktop.sh --env)"`, then `doctor` again; still red: `scripts/run-desktop.sh --restart` |
-| `doctor`: "FAIL Firewall" but `scripts/realdevice.sh firewall` says PASS | old binary bug (fixed after `bb82cedc4`): ignore, or rebuild (2.1) |
+| `doctor`: "FAIL Firewall" but `scripts/realdevice.sh firewall` says PASS | old binary bug (fixed in `df23d137e`): only an older binary shows it; rebuild (2.1) |
 | `realdevice.sh firewall` says FAIL, phone cannot connect | `scripts/realdevice.sh firewall --apply` in a terminal; it prints the `sudo ufw allow ... 1716:1764 ...` lines and the undo lines first |
 | `realdevice.sh check`: "adb not found" / "no usable phone" | plug the phone in (USB debugging), and put `.tools/android-sdk/platform-tools` on PATH or set `GEEKBRIDGE_ADB` |
 | `run-desktop.sh`: "older than ... binary" | `scripts/run-desktop.sh --restart` |
