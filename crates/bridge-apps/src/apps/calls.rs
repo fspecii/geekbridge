@@ -425,7 +425,9 @@ pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
         ipc::CallsStatus,
     };
     let report = LinkCallReport {
-        state: if ringing {
+        state: if kind == "ended" {
+            PhoneState::Idle
+        } else if ringing {
             PhoneState::Ringing
         } else {
             PhoneState::OffHook

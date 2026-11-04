@@ -1077,6 +1077,7 @@ impl CallHub {
         let view = self.view();
         let now = Instant::now();
         let flap = self.timings.flap_memory;
+        let live_now = view.live().is_some();
         let (fresh, ringing_now) = {
             let mut guard = self.inner();
             let inner = &mut *guard;
@@ -1168,7 +1169,7 @@ impl CallHub {
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
         {
-            o.update(&ringing_now, now);
+            o.update(&ringing_now, live_now, now);
             if o.card_running() {
                 self.poke_watchdog();
             }

@@ -748,9 +748,14 @@ async fn incoming_from_three_sources_is_one_call_one_banner_one_card_and_answere
         bridge_core::calls_view::AudioRoute::Phone
     );
 
-    // The card is not needed during the call; one still up after the linger is stopped.
-    eventually("the card stopped", || w.cards.running() == 0).await;
-    assert_eq!(w.cards.kills(), 1);
+    // The card stays up through the call (it is the in-call card now), well past the linger.
+    holds(
+        "the card stays during the call",
+        Duration::from_millis(1500),
+        || w.cards.running() == 1,
+    )
+    .await;
+    assert_eq!(w.cards.kills(), 0);
 
     // Hang up from the PC.
     let hang = c.view.live().unwrap().hangup.clone().unwrap();
@@ -758,7 +763,12 @@ async fn incoming_from_three_sources_is_one_call_one_banner_one_card_and_answere
     let c = until(&w.rig, "idle", idle).await;
     assert_eq!(phone.controls(), [LinkAction::Answer, LinkAction::Hangup]);
     assert_eq!(c.notice, None);
-    assert_eq!((w.banners.count(), w.cards.launches()), (1, 1));
+    // The fake card never closes itself: the supervisor stops it a linger after the call ended.
+    eventually("the card stopped", || w.cards.running() == 0).await;
+    assert_eq!(
+        (w.banners.count(), w.cards.launches(), w.cards.kills()),
+        (1, 1, 1)
+    );
 }
 
 #[tokio::test]

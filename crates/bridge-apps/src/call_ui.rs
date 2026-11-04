@@ -153,16 +153,19 @@ fn sheet_id() -> egui::Id {
     egui::Id::new("incoming-sheet")
 }
 
+/// Golden-image tests pin the call timer (scripts/golden-desktop.sh); never set in normal use.
+pub(crate) fn fixed_call_seconds() -> Option<u64> {
+    static FIXED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *FIXED.get_or_init(|| {
+        std::env::var("GEEKBRIDGE_FIXED_CALL_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    })
+}
+
 impl CallPanel {
     fn seconds(&mut self, key: &str) -> u64 {
-        // Golden-image tests pin the call timer (scripts/golden-desktop.sh); never set in normal use.
-        static FIXED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
-        let fixed = FIXED.get_or_init(|| {
-            std::env::var("GEEKBRIDGE_FIXED_CALL_SECONDS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-        });
-        if let Some(secs) = *fixed {
+        if let Some(secs) = fixed_call_seconds() {
             return secs;
         }
         self.started

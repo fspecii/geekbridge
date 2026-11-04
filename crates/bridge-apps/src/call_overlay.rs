@@ -15,7 +15,8 @@
 //! decides (docs/omarchy.md has the Hyprland rules).
 use crate::{
     call_feed::{CallFeed, FeedState},
-    call_ui::{Decision, request_for},
+    call_ui::{Decision, clock, request_for},
+    call_wifi_ui::WifiCard,
     cli::ThemeChoice,
     i18n::{tr, tr_args},
     nothing, theme,
@@ -23,7 +24,9 @@ use crate::{
 use bridge_core::{
     AppKind,
     call_overlay::{self as geometry, Monitor, Reveal},
-    calls_view::{CallRow, ControlPath},
+    call_wifi_view::CallWifiAction,
+    calls::CallPhase,
+    calls_view::{AudioRoute, CallRow, ControlPath},
     ipc::Request,
 };
 use eframe::egui::{self, Align, Color32, Layout, Margin, Sense, Stroke, ThemePreference, vec2};
@@ -35,6 +38,8 @@ const STARTUP_GRACE: Duration = Duration::from_secs(8);
 const GONE_GRACE: Duration = Duration::from_millis(1500);
 /// "Answered on phone" and its kin stay visible this long, then the card closes.
 const DONE_SHOW: Duration = Duration::from_millis(2500);
+/// "Call ended 02:13" stays this long (the service keeps the process alive a little longer).
+const ENDED_SHOW: Duration = Duration::from_secs(4);
 /// A refusal is shown this long; the buttons come back if the call still rings.
 const FAIL_SHOW: Duration = Duration::from_secs(6);
 /// An accepted decision that the phone never confirms stops looking pending after this.
@@ -62,6 +67,8 @@ struct Outcome {
     /// Closes the card when it has been shown long enough (a refusal does not).
     closes: bool,
     at: Instant,
+    /// How long a closing outcome is shown.
+    show: Duration,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +91,24 @@ pub enum Body {
         /// Buttons drawn but off (the test card).
         disabled: bool,
     },
+    /// The call is going on (answered here or on the phone): the same card, now an in-call card.
+    Live {
+        title: String,
+        /// "IN CALL 02:13", "ON HOLD 02:13" or "CALLING".
+        header: String,
+        /// Where the voice is: "Audio is on the phone".
+        route: String,
+        /// The audio is on the phone and nothing can move it here: say what to set up.
+        setup_hint: bool,
+        can_hangup: bool,
+        /// Mute is offered only while this computer carries the voice; `Some(muted)`.
+        mute: Option<bool>,
+        /// "Use computer audio" is offered.
+        computer_audio: bool,
+        wifi: Option<WifiCard>,
+        /// A refused hang-up or mute.
+        problem: Option<String>,
+    },
     /// The call is over or taken: one line, then the card closes.
     Done { text: String, ok: bool },
 }
@@ -97,6 +122,9 @@ pub struct Card {
     seen_ringing: bool,
     idle_since: Instant,
     reveal: Reveal,
+    /// When the card first saw this call going on (the timer's zero).
+    live_since: Option<Instant>,
+    live_secs: u64,
 }
 
 /// Title (name, else number, else "Unknown caller") and, when allowed and different, the number.
@@ -122,10 +150,43 @@ impl Card {
             seen_ringing: false,
             idle_since: now,
             reveal,
+            live_since: None,
+            live_secs: 0,
         }
     }
 
+    /// Screenshot aid: the card as it looks right after a call of 02:13 ended.
+    pub fn ended_fixture(reveal: Reveal, now: Instant) -> Self {
+        let mut c = Self::new(reveal, now);
+        c.outcome = Some(Outcome {
+            text: tr_args("overlay.ended.after", &[("time", &clock(133))]),
+            ok: true,
+            closes: true,
+            at: now,
+            show: ENDED_SHOW,
+        });
+        c
+    }
+
+    /// The request for a button on the in-call card (hang up, mute, computer audio), if the
+    /// service offers it.
+    pub fn live_request(&self, state: &FeedState, d: Decision) -> Option<Request> {
+        request_for(&state.status.as_ref()?.view, d)
+    }
+
     /// The card is hidden by the user (the call keeps ringing).
+    /// A call is ringing on the card (Enter answers only then).
+    pub fn is_ringing(&self, state: &FeedState) -> bool {
+        state
+            .status
+            .as_ref()
+            .is_some_and(|s| s.view.ringing().is_some())
+    }
+
+    fn reveal(&self) -> Reveal {
+        self.reveal
+    }
+
     pub fn hidden(&self) -> bool {
         self.dismissed
     }
@@ -187,6 +248,7 @@ impl Card {
                             ok: false,
                             closes: false,
                             at: now,
+                            show: DONE_SHOW,
                         });
                         self.pending = None;
                     } else if now.duration_since(p.since) > PENDING_MAX {
@@ -202,7 +264,45 @@ impl Card {
                 }
                 Verdict::Keep
             }
+            None if view.is_some_and(|v| v.live().is_some()) => {
+                let row = view.and_then(|v| v.live()).expect("checked");
+                let same = self.key.as_deref().is_some_and(|k| row.is(k))
+                    || self.parts.iter().any(|k| row.is(k));
+                // A closing outcome ("Call ended") belongs to the call before this one.
+                let over = self.outcome.as_ref().is_some_and(|o| o.closes);
+                if !same || over {
+                    self.dismissed = false;
+                    self.live_since = None;
+                }
+                self.outcome = None;
+                self.pending = None;
+                self.seen_ringing = true;
+                self.idle_since = now;
+                self.key = Some(row.key.clone());
+                self.parts = row.parts.clone();
+                let since = *self.live_since.get_or_insert(now);
+                self.live_secs = crate::call_ui::fixed_call_seconds()
+                    .unwrap_or_else(|| now.saturating_duration_since(since).as_secs());
+                Verdict::Keep
+            }
             None => {
+                if let Some(since) = self.live_since.take() {
+                    // The call was going on and is over: say how long it lasted.
+                    self.pending = None;
+                    self.outcome = Some(Outcome {
+                        text: tr_args(
+                            "overlay.ended.after",
+                            &[(
+                                "time",
+                                &clock(now.saturating_duration_since(since).as_secs()),
+                            )],
+                        ),
+                        ok: true,
+                        closes: true,
+                        at: now,
+                        show: ENDED_SHOW,
+                    });
+                }
                 if let Some(p) = self.pending.take() {
                     let live = view.is_some_and(|v| v.live().is_some());
                     let (text, ok) = match (p.choice, live) {
@@ -222,6 +322,7 @@ impl Card {
                         ok,
                         closes: true,
                         at: now,
+                        show: DONE_SHOW,
                     });
                 }
                 // A refusal that outlived its ring is stale.
@@ -229,7 +330,7 @@ impl Card {
                     self.outcome = None;
                 }
                 if let Some(o) = &self.outcome {
-                    return if now.duration_since(o.at) >= DONE_SHOW {
+                    return if now.duration_since(o.at) >= o.show {
                         Verdict::Close
                     } else {
                         Verdict::Keep
@@ -259,7 +360,10 @@ impl Card {
                 ok: o.ok,
             });
         }
-        let row = state.status.as_ref()?.view.ringing()?;
+        let status_ref = state.status.as_ref()?;
+        let Some(row) = status_ref.view.ringing() else {
+            return self.live_body(state);
+        };
         let (title, number) = caller_lines(row, self.reveal);
         let subtitle =
             number.unwrap_or_else(|| tr_args("overlay.on_phone", &[("phone", &row.phone)]));
@@ -291,6 +395,39 @@ impl Card {
     }
 }
 
+impl Card {
+    fn live_body(&self, state: &FeedState) -> Option<Body> {
+        let status = state.status.as_ref()?;
+        let view = &status.view;
+        let row = view.live()?;
+        let (title, _) = caller_lines(row, self.reveal);
+        let time = clock(self.live_secs);
+        let header = match row.phase {
+            CallPhase::Held => format!("{} {time}", tr("overlay.live.hold")),
+            CallPhase::Dialing | CallPhase::Alerting => tr("overlay.live.calling").to_owned(),
+            _ => format!("{} {time}", tr("overlay.live.title")),
+        };
+        let route = match view.audio.route {
+            AudioRoute::Computer { .. } => tr("overlay.audio.computer"),
+            AudioRoute::Connecting => tr("overlay.audio.moving"),
+            AudioRoute::Phone | AudioRoute::NoCall => tr("overlay.audio.phone"),
+        }
+        .to_owned();
+        let computer_audio = view.audio.connect.is_some();
+        Some(Body::Live {
+            title,
+            header,
+            route,
+            setup_hint: view.audio.route == AudioRoute::Phone && !computer_audio,
+            can_hangup: row.hangup.is_some(),
+            mute: view.mute.as_ref().map(|m| m.muted == Some(true)),
+            computer_audio,
+            wifi: crate::call_wifi_ui::card(status, Some(row)),
+            problem: state.problem.clone(),
+        })
+    }
+}
+
 // ---------------------------------------------------------------- drawing
 
 /// What the user did on the card this frame.
@@ -298,6 +435,16 @@ impl Card {
 pub struct Action {
     pub choice: Option<Choice>,
     pub dismiss: bool,
+    pub live: Option<LiveChoice>,
+}
+
+/// A button of the in-call card.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LiveChoice {
+    HangUp,
+    ToggleMute,
+    ComputerAudio,
+    Wifi(CallWifiAction),
 }
 
 const GREEN: Color32 = Color32::from_rgb(0x1B, 0x7F, 0x46); // white text on it is 5.1:1
@@ -474,6 +621,143 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                     &tr_args("overlay.announce", &[("caller", title)]),
                 );
             }
+            Body::Live {
+                title,
+                header,
+                route,
+                setup_hint,
+                can_hangup,
+                mute,
+                computer_audio,
+                wifi,
+                problem,
+            } => {
+                ui.horizontal(|ui| {
+                    let text_w = ui.available_width() - BUTTON_W - 12.0;
+                    ui.allocate_ui_with_layout(
+                        vec2(text_w, ui.available_height()),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            ui.horizontal(|ui| {
+                                nothing::dot_text(
+                                    ui,
+                                    pal,
+                                    header,
+                                    nothing::PITCH_LABEL,
+                                    pal.accent,
+                                    false,
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if close_button(ui, pal).clicked() {
+                                        action.dismiss = true;
+                                    }
+                                });
+                            });
+                            ui.add(egui::Label::new(theme::semibold(title, 15.0)).truncate());
+                            ui.add(egui::Label::new(theme::caption(pal, route)).truncate());
+                            let small = |t: &str| {
+                                egui::Button::new(egui::RichText::new(t).size(12.0)).small()
+                            };
+                            match (problem, wifi) {
+                                (Some(p), _) => {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(p).size(12.0).color(pal.err),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                                (None, Some(WifiCard::Running { .. })) => {
+                                    ui.horizontal(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(tr("overlay.wifi.listening"))
+                                                    .size(12.0)
+                                                    .color(pal.err),
+                                            )
+                                            .truncate(),
+                                        );
+                                        if ui.add(small(tr("overlay.wifi.stop"))).clicked() {
+                                            action.live =
+                                                Some(LiveChoice::Wifi(CallWifiAction::Stop));
+                                        }
+                                    });
+                                }
+                                (None, wifi) => {
+                                    ui.horizontal(|ui| {
+                                        if *computer_audio
+                                            && ui.add(small(tr("overlay.audio.use"))).clicked()
+                                        {
+                                            action.live = Some(LiveChoice::ComputerAudio);
+                                        }
+                                        if let Some(WifiCard::Offer { device_id, phone }) = wifi {
+                                            let r = ui.add(small(tr("overlay.wifi.listen")));
+                                            let name = tr_args(
+                                                "callwifi.listen.name",
+                                                &[("phone", phone)],
+                                            );
+                                            r.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    name.clone(),
+                                                )
+                                            });
+                                            if r.clicked() {
+                                                action.live = Some(LiveChoice::Wifi(
+                                                    CallWifiAction::Listen {
+                                                        device_id: device_id.clone(),
+                                                    },
+                                                ));
+                                            }
+                                        }
+                                        if *setup_hint && wifi.is_none() {
+                                            ui.add(
+                                                egui::Label::new(theme::caption(
+                                                    pal,
+                                                    tr("overlay.audio.setup"),
+                                                ))
+                                                .truncate(),
+                                            );
+                                        }
+                                    });
+                                }
+                            }
+                        },
+                    );
+                    ui.add_space(12.0 - ui.spacing().item_spacing.x.min(12.0));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        ui.add_space(3.0);
+                        if *can_hangup
+                            && card_button(
+                                false,
+                                ui,
+                                pal,
+                                tr("overlay.hangup"),
+                                &tr_args("overlay.hangup.name", &[("caller", title)]),
+                                pal.accent_fill,
+                            )
+                            .clicked()
+                        {
+                            action.live = Some(LiveChoice::HangUp);
+                        }
+                        if let Some(muted) = mute {
+                            let (label, name) = if *muted {
+                                (tr("overlay.unmute"), tr("overlay.unmute.name"))
+                            } else {
+                                (tr("overlay.mute"), tr("overlay.mute.name"))
+                            };
+                            if card_button(false, ui, pal, label, name, pal.control_hover).clicked()
+                            {
+                                action.live = Some(LiveChoice::ToggleMute);
+                            }
+                        }
+                    });
+                });
+                announce(ui, card_rect, &format!("{header}, {title}"));
+            }
             Body::Done { text, ok } => {
                 ui.allocate_ui_with_layout(
                     ui.available_size(),
@@ -549,9 +833,16 @@ impl eframe::App for OverlayApp {
         }
         let feed = self.feed.get_or_insert_with(|| {
             let wake = ctx.clone();
-            if std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() == Ok("ringing") {
+            let kind = std::env::var("GEEKBRIDGE_CALLS_FIXTURE").unwrap_or_default();
+            if matches!(
+                kind.as_str(),
+                "ringing" | "active" | "active-wifi" | "listening-wifi" | "ended"
+            ) {
                 self.fixture = true;
-                crate::apps::calls::fixture_feed("ringing", wake)
+                if kind == "ended" {
+                    self.card = Card::ended_fixture(self.card.reveal(), Instant::now());
+                }
+                crate::apps::calls::fixture_feed(&kind, wake)
             } else {
                 CallFeed::spawn(move || wake.request_repaint())
             }
@@ -578,8 +869,21 @@ impl eframe::App for OverlayApp {
             let pal = theme::current(ctx, AppKind::Calls);
             action = show(ctx, &pal, &body);
         }
-        if enter {
+        if enter && self.card.is_ringing(&state) {
             action.choice = action.choice.or(Some(Choice::Answer));
+        }
+        if let Some(live) = action.live.take() {
+            let request = match live {
+                LiveChoice::HangUp => self.card.live_request(&state, Decision::HangUp),
+                LiveChoice::ToggleMute => self.card.live_request(&state, Decision::ToggleMute),
+                LiveChoice::ComputerAudio => {
+                    self.card.live_request(&state, Decision::UseComputerAudio)
+                }
+                LiveChoice::Wifi(a) => Some(Request::CallWifi { action: a }),
+            };
+            if let Some(r) = request {
+                feed.send(r);
+            }
         }
         action.dismiss |= esc;
         if let Some(choice) = action.choice
@@ -870,17 +1174,126 @@ mod tests {
         };
         assert_eq!(status.unwrap().0, "Answering…");
         assert!(!can_answer && !can_reject);
-        // The phone picked up: no longer ringing, a live call.
+        // The phone picked up: no longer ringing, a live call. The card stays and turns into the
+        // in-call card (it used to say "Answered on phone" and close).
         let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
         assert_eq!(c.update(&live, at(t, 1200)), Verdict::Keep);
+        let Some(Body::Live {
+            title,
+            header,
+            can_hangup,
+            ..
+        }) = c.body(&live)
+        else {
+            panic!("an in-call card, got {:?}", c.body(&live))
+        };
+        assert_eq!(title, "Ada");
+        assert_eq!(header, "IN CALL 00:00");
+        assert!(can_hangup);
+        // Minutes later it is still there, with a running timer.
+        assert_eq!(c.update(&live, at(t, 1200 + 133_000)), Verdict::Keep);
+        let Some(Body::Live { header, .. }) = c.body(&live) else {
+            panic!()
+        };
+        assert_eq!(header, "IN CALL 02:13");
+    }
+
+    fn idle() -> FeedState {
+        FeedState {
+            status: Some(CallsStatus {
+                view: calls_view::CallsView::empty(),
+                notice: None,
+                sources: vec![],
+                audio_note: None,
+                wifi: None,
+            }),
+            problem: None,
+        }
+    }
+
+    #[test]
+    fn the_ended_call_lingers_with_its_length_then_closes() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let st = ringing();
+        c.update(&st, t);
+        c.choose(&st, Choice::Answer, at(t, 100)).unwrap();
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, at(t, 500));
+        c.update(&live, at(t, 500 + 133_000));
+        let idle = idle();
+        let end = at(t, 500 + 133_400);
+        assert_eq!(c.update(&idle, end), Verdict::Keep);
         assert_eq!(
-            c.body(&live),
+            c.body(&idle),
             Some(Body::Done {
-                text: "Answered on phone".into(),
+                text: "Call ended 02:13".into(),
                 ok: true
             })
         );
-        assert_eq!(c.update(&live, at(t, 1200 + 2600)), Verdict::Close);
+        assert_eq!(c.update(&idle, end + Duration::from_secs(3)), Verdict::Keep);
+        assert_eq!(
+            c.update(&idle, end + Duration::from_secs(5)),
+            Verdict::Close
+        );
+    }
+
+    #[test]
+    fn a_call_taken_on_the_phone_without_a_ring_is_an_in_call_card_too() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        assert_eq!(c.update(&live, t), Verdict::Keep);
+        assert!(matches!(c.body(&live), Some(Body::Live { .. })));
+        // And a new ring after "Call ended" gets a fresh card with buttons.
+        let idle = idle();
+        c.update(&idle, at(t, 5000));
+        let st = ringing();
+        c.update(&st, at(t, 6000));
+        assert!(matches!(
+            c.body(&st),
+            Some(Body::Ringing {
+                can_answer: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn in_call_buttons_follow_what_the_service_offers() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let Some(Body::Live {
+            route,
+            setup_hint,
+            mute,
+            computer_audio,
+            wifi,
+            ..
+        }) = c.body(&live)
+        else {
+            panic!()
+        };
+        // Answered through the link only: the voice is on the phone, no Bluetooth to move it,
+        // so no mute and no "use computer audio", and the card says what to set up.
+        assert_eq!(route, "Audio is on the phone");
+        assert!(setup_hint && mute.is_none() && !computer_audio && wifi.is_none());
+        assert!(matches!(
+            c.live_request(&live, Decision::HangUp),
+            Some(Request::CallAction {
+                action: bridge_core::ipc::CallAction::Hangup,
+                ..
+            })
+        ));
+        assert!(c.live_request(&live, Decision::ToggleMute).is_none());
+        // Without a hang-up path there is no button.
+        let no_end = state_of(PhoneState::OffHook, false, Some("Ada"), None);
+        let Some(Body::Live { can_hangup, .. }) = c.body(&no_end) else {
+            panic!()
+        };
+        assert!(!can_hangup);
     }
 
     #[test]
@@ -1070,6 +1483,23 @@ mod tests {
             });
         }
         assert_eq!(drawn, 3);
+    }
+
+    #[test]
+    fn the_in_call_card_draws_inside_its_window() {
+        let mut rig = Rig::new(AppKind::Calls, geometry::CARD_WIDTH, geometry::CARD_HEIGHT);
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let body = c.body(&live).unwrap();
+        let pal = theme::current(&rig.ctx, AppKind::Calls);
+        for _ in 0..3 {
+            let input = rig.input(vec![]);
+            let _ = rig.ctx.run(input, |ctx| {
+                assert_eq!(show(ctx, &pal, &body), Action::default());
+            });
+        }
     }
 
     #[test]
