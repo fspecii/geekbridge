@@ -196,12 +196,32 @@ impl crate::mirror::MirrorNotifier for BannerNotifier {
     }
 }
 
+/// Title and body of the banner for a new text: the sender, and the phone's name, or the text itself only
+/// when the user chose to show message text in notifications (`IncomingText::body` is `None` otherwise).
+fn text_banner(n: &crate::phone_data::IncomingText) -> (String, String) {
+    let body = match &n.body {
+        Some(t) => isolate(&t.replace('\n', " "), 160),
+        None => tr_args(
+            "banner.on_device",
+            &[("device", &isolate(&n.device_name, 48))],
+        ),
+    };
+    (
+        tr_args("banner.new_message", &[("sender", &isolate(&n.sender, 60))]),
+        body,
+    )
+}
+
 impl crate::phone_data::SmsNotifier for BannerNotifier {
     fn received(&self, device: &str, sender: &str) {
         show(
             &tr_args("banner.new_message", &[("sender", &isolate(sender, 60))]),
             &tr_args("banner.on_device", &[("device", &isolate(device, 48))]),
         );
+    }
+    fn incoming(&self, n: &crate::phone_data::IncomingText) {
+        let (title, body) = text_banner(n);
+        show(&title, &body);
     }
     fn event_soon(&self, device: &str, title: &str, minutes: u32) {
         let title = isolate(title, 70);
@@ -267,6 +287,22 @@ mod tests {
         // Without content the body names the phone, isolated, never the title.
         let hidden = crate::mirror::MirrorBanner { text: None, ..b };
         assert_eq!(mirror_body(&hidden), "On \u{2068}Pixel\u{2069}");
+    }
+
+    #[test]
+    fn a_text_banner_shows_the_message_only_when_allowed() {
+        let mut n = crate::phone_data::IncomingText {
+            device_name: "Pixel".into(),
+            sender: "Ann".into(),
+            number: "+1555".into(),
+            body: None,
+        };
+        let (title, body) = text_banner(&n);
+        assert!(title.contains("Ann"));
+        assert!(body.contains("Pixel") && !body.contains("pin"));
+        n.body = Some("my pin\nis 1234".into());
+        let (_, body) = text_banner(&n);
+        assert!(body.contains("my pin is 1234") && !body.contains("Pixel"));
     }
 
     #[test]

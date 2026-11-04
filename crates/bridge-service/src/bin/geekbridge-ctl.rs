@@ -58,6 +58,8 @@ Commands:
   messages [DEVICE_ID THREAD_ID]      SMS conversations from phones whose Sms consent is on, and one thread
   messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
   messages-send DEVICE_ID NUMBER TEXT [SUB_ID] send one SMS (SUB_ID: a SIM the phone listed); the send id is not a receipt
+  messages-resend DEVICE_ID SEND_ID   send a failed or unconfirmed text again as a NEW message (it may arrive twice)
+  messages-read DEVICE_ID THREAD_ID   mark a conversation read on this computer only (the phone keeps its own unread state)
   calling                             Bluetooth calling summary and the 'Hear calls on this computer' checklist (fix per step)
   call-audio [test | use [--output NAME] [--input NAME]]
                                       hear and talk through this computer: the checklist (Bluetooth adapter,
@@ -505,6 +507,25 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_millis())
             ),
+        },
+        "messages-resend" => Request::MessagesResend {
+            device_id: arg(1, "DEVICE_ID")?,
+            send_id: arg(2, "SEND_ID")?
+                .parse()
+                .map_err(|_| "SEND_ID must be a number")?,
+            submission_id: format!(
+                "ctlr{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_millis())
+            ),
+        },
+        "messages-read" => Request::MessagesMarkRead {
+            device_id: arg(1, "DEVICE_ID")?,
+            thread_id: arg(2, "THREAD_ID")?
+                .parse()
+                .map_err(|_| "THREAD_ID must be a number")?,
         },
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
     };

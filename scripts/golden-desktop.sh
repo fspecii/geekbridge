@@ -248,7 +248,13 @@ tasks_rest() { # theme
   echo "geekbridge-agenda|$t|calendar-day|-|GEEKBRIDGE_CALENDAR_VIEW=day"
   echo "geekbridge-agenda|$t|calendar-agenda|-|GEEKBRIDGE_CALENDAR_VIEW=agenda"
 }
-tasks_messages() { echo "geekbridge-messages|$1|messages|-|"; }   # opening Messages marks conversations read, so light runs before dark
+tasks_messages() { # theme
+  echo "geekbridge-messages|$1|messages|-|"
+  echo "geekbridge-messages|$1|messages-search|-|GEEKBRIDGE_MESSAGES_SEARCH=verification"
+  echo "geekbridge-messages|$1|messages-compose|-|GEEKBRIDGE_MESSAGES_COMPOSE=1 GEEKBRIDGE_MESSAGES_DRAFT=Running_late_see_you_at_10"
+  echo "geekbridge-messages|$1|messages-mms|-|GEEKBRIDGE_MESSAGE_TO=+1_555_010_0002"
+  echo "geekbridge-messages|$1|messages-emoji|-|GEEKBRIDGE_MESSAGE_TO=+44_20_7946_0003"
+}   # opening Messages marks conversations read, so light runs before dark
 run_tasks() { # reads tasks on stdin, spreads them over the workers, waits
   local -a list=(); local line i=0 w
   while IFS= read -r line; do

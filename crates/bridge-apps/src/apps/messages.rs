@@ -55,6 +55,8 @@ pub struct Messages {
     drafts: HashMap<(String, i64), String>,
     /// Put the cursor in the reply box (a conversation was just opened).
     focus_reply: bool,
+    /// Ctrl/Cmd+F was pressed: put the cursor in the search field.
+    focus_search: bool,
     /// A send was clicked; the draft is cleared only once the service accepted it.
     awaiting: bool,
     clicks: u64,
@@ -396,8 +398,13 @@ impl Messages {
                     .inner_margin(Margin::symmetric(8, 8)),
             )
             .show(ctx, |ui| {
+                let search_id = ui.id().with("search");
+                if std::mem::take(&mut self.focus_search) {
+                    ui.memory_mut(|m| m.request_focus(search_id));
+                }
                 crate::a11y::named(ui.add(
                     egui::TextEdit::singleline(&mut self.search)
+                        .id(search_id)
                         .hint_text(RichText::new("Search messages").color(pal.text3))
                         .desired_width(f32::INFINITY),
                 ), "Search messages");
@@ -635,7 +642,10 @@ impl Messages {
                 egui::TextEdit::multiline(&mut self.reply)
                     .id(reply_id)
                     .frame(false)
-                    .hint_text(egui::RichText::new("Reply").color(pal.text3))
+                    .hint_text(
+                        egui::RichText::new("Reply (Enter sends, Shift+Enter adds a line)")
+                            .color(pal.text3),
+                    )
                     .font(FontId::new(15.0, FontFamily::Proportional))
                     .desired_rows(2)
                     .desired_width(f32::INFINITY),
@@ -854,7 +864,10 @@ impl Messages {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.draft)
                             .frame(false)
-                            .hint_text(RichText::new("Write a message").color(pal.text3))
+                            .hint_text(
+                                RichText::new("Write a message (Ctrl+Enter sends)")
+                                    .color(pal.text3),
+                            )
                             .font(FontId::new(15.0, FontFamily::Proportional))
                             .desired_rows(rows)
                             .desired_width(f32::INFINITY),
@@ -1557,6 +1570,10 @@ impl AppView for Messages {
                 self.recipient = "+44 20 7946 0001".into();
                 self.open_compose();
             }
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            self.section = Section::Conversations;
+            self.focus_search = true;
         }
         // Keyboard: Ctrl/Cmd+N writes a new message; Escape leaves the compose page (the draft stays).
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {

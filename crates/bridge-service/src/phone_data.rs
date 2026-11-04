@@ -711,10 +711,18 @@ impl Dev {
     ) -> Vec<(String, String)> {
         let mut out: Vec<(String, String)> = Vec::new();
         for (sender, text) in candidates {
-            if out.len() >= NOTIFY_MAX_SENDERS || out.iter().any(|(s, _)| *s == sender) {
+            if out.len() >= NOTIFY_MAX_SENDERS
+                || out
+                    .iter()
+                    .any(|(s, _)| sender_key(s) == sender_key(&sender))
+            {
                 continue;
             }
-            let last = self.notified_at.get(&sender).copied().unwrap_or(0);
+            let last = self
+                .notified_at
+                .get(&sender_key(&sender))
+                .copied()
+                .unwrap_or(0);
             if now.saturating_sub(last) < NOTIFY_MIN_GAP_MS {
                 continue;
             }
@@ -726,7 +734,7 @@ impl Dev {
         }
         for (sender, _) in &out {
             if self.notified_at.len() < NOTIFY_TRACKED_SENDERS {
-                self.notified_at.insert(sender.clone(), now);
+                self.notified_at.insert(sender_key(sender), now);
             }
         }
         out
@@ -1850,6 +1858,13 @@ fn digits(s: &str) -> String {
 }
 
 /// Last seven digits: matches `+1 555 123 4567` with `5551234567` without a phone-number library.
+/// Who a text is from, for "one banner per sender": the number's last digits, so +49 151 2345678 and
+/// 0151 2345678 are one person; a sender with no real number (a shop's name) stays as written.
+fn sender_key(s: &str) -> String {
+    let d = suffix(s);
+    if d.len() >= 5 { d } else { s.to_owned() }
+}
+
 fn suffix(s: &str) -> String {
     let d = digits(s);
     d[d.len().saturating_sub(7)..].to_owned()
@@ -1993,16 +2008,17 @@ impl NotifySendSms {
         ];
         if !n.number.is_empty() {
             // Same sender, same slot: a new text replaces the earlier banner instead of stacking a pile.
-            let tag: String = n
-                .number
+            let tag = sender_key(&n.number)
                 .chars()
-                .filter(char::is_ascii_digit)
+                .filter(char::is_ascii_alphanumeric)
                 .take(20)
-                .collect();
+                .collect::<String>();
             args.push("--category=im.received".into());
-            args.push(format!(
-                "--hint=string:x-canonical-private-synchronous:geekbridge-sms-{tag}"
-            ));
+            if !tag.is_empty() {
+                args.push(format!(
+                    "--hint=string:x-canonical-private-synchronous:geekbridge-sms-{tag}"
+                ));
+            }
             args.push("--wait".into());
             args.push("--action=reply=Reply".into());
             args.push("--action=default=Reply".into());
@@ -3188,6 +3204,90 @@ mod tests {
     }
 
     #[test]
+    fn one_person_written_two_ways_is_one_banner_and_text_senders_stay_apart() {
+        struct N(Mutex<Vec<String>>);
+        impl SmsNotifier for N {
+            fn received(&self, _: &str, _: &str) {}
+            fn incoming(&self, n: &IncomingText) {
+                self.0.lock().unwrap().push(n.number.clone());
+            }
+        }
+        let n = Arc::new(N(Mutex::new(Vec::new())));
+        let h = PhoneData::new();
+        h.set_notifier(n.clone());
+        let mut rx = up(&h, (false, false, true));
+        drain(&mut rx);
+        let now = now_ms();
+        feed(&h, vec![msg(4, 1, 1, "old", now - 3_600_000)]);
+        let from = |thread: i64, id: i64, addr: &str| {
+            let mut m = msg(thread, id, 1, "hi", now);
+            m["addresses"] = json!([{"address": addr}]);
+            m
+        };
+        feed(
+            &h,
+            vec![
+                from(4, 2, "+49 151 2345678"),
+                from(4, 3, "0151 2345678"),
+                from(5, 4, "AMAZON"),
+                from(6, 5, "DHL"),
+            ],
+        );
+        assert_eq!(
+            n.0.lock().unwrap().as_slice(),
+            &[
+                "+49 151 2345678".to_string(),
+                "AMAZON".to_string(),
+                "DHL".to_string()
+            ],
+            "the same number in two notations is one sender; named senders are not merged"
+        );
+        let slot = |number: &str| {
+            NotifySendSms::text_args(&IncomingText {
+                device_name: "Pixel".into(),
+                sender: "Ann".into(),
+                number: number.into(),
+                body: None,
+            })
+            .into_iter()
+            .find(|a| a.contains("synchronous"))
+        };
+        assert_eq!(
+            slot("+49 151 2345678"),
+            slot("0151 2345678"),
+            "one banner slot per person"
+        );
+        assert_ne!(slot("+49 151 2345678"), slot("+49 151 2345679"));
+    }
+
+    #[test]
+    fn texts_the_phone_lists_again_after_a_reconnect_are_not_announced_twice() {
+        struct N(Mutex<Vec<String>>);
+        impl SmsNotifier for N {
+            fn received(&self, _: &str, _: &str) {}
+            fn incoming(&self, n: &IncomingText) {
+                self.0.lock().unwrap().push(n.number.clone());
+            }
+        }
+        let n = Arc::new(N(Mutex::new(Vec::new())));
+        let h = PhoneData::new();
+        h.set_notifier(n.clone());
+        let (mut rx, generation) = h.link_up(ID, "Pixel", caps_all(), (false, false, true));
+        drain(&mut rx);
+        let now = now_ms();
+        feed(&h, vec![msg(4, 1, 1, "old", now - 3_600_000)]);
+        let fresh = msg(4, 2, 1, "new", now);
+        feed(&h, vec![fresh.clone()]);
+        assert_eq!(n.0.lock().unwrap().len(), 1);
+        h.link_down(ID, generation);
+        let (mut rx2, _) = h.link_up(ID, "Pixel", caps_all(), (false, false, true));
+        drain(&mut rx2);
+        // The phone's whole list again, the same unread text in it.
+        feed(&h, vec![msg(4, 1, 1, "old", now - 3_600_000), fresh]);
+        assert_eq!(n.0.lock().unwrap().len(), 1, "same text, same banner");
+    }
+
+    #[test]
     fn banner_replaces_the_previous_one_from_the_same_sender() {
         let a = NotifySendSms::text_args(&IncomingText {
             device_name: "Pixel".into(),
@@ -3195,7 +3295,7 @@ mod tests {
             number: "+1 (555) 123-0000".into(),
             body: None,
         });
-        let hint = "--hint=string:x-canonical-private-synchronous:geekbridge-sms-15551230000";
+        let hint = "--hint=string:x-canonical-private-synchronous:geekbridge-sms-1230000";
         assert!(a.iter().any(|x| x == hint), "{a:?}");
         assert!(a.iter().any(|x| x == "--category=im.received"));
         // Options stay before the `--` separator, so sender text can never be read as one.

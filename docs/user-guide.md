@@ -205,7 +205,7 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 `test-connection`, `approve`, `deny`, `disconnect`, `unpair`, `rename`, `ping`, `events`); **permissions** (`consent DEVICE
 FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
 `battery`, `photos`, `calendar_edit`, `calendar_alerts`); **phone data** (`agenda`,
-`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `notifications`, `photos [refresh|save|copy]`); **calls**
+`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `messages-resend`, `messages-read`, `notifications`, `photos [refresh|save|copy]`); **calls**
 (`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial|setup|audio-devices`, `call-audio`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
 `autostart`, `tray`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work

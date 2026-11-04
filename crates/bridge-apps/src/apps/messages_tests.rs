@@ -462,6 +462,19 @@ fn ctrl_n_opens_a_new_message_with_the_cursor_in_to_and_escape_goes_back() {
 }
 
 #[test]
+fn ctrl_f_puts_the_cursor_in_the_search_field() {
+    let _clock = pin();
+    let mut m = messages_with(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.key_with(&mut m, Key::F, Modifiers::COMMAND);
+    rig.settle(&mut m, 2);
+    rig.type_text(&mut m, "verification");
+    assert_eq!(m.search, "verification");
+    assert!(m.reply.is_empty(), "not typed into the reply box");
+}
+
+#[test]
 fn numbers_group_across_country_code_and_trunk_prefix_but_short_codes_stay_exact() {
     assert!(same_number("+49 151 2345678", "0151 2345678"));
     assert!(same_number("+49 (151) 234-5678", "01512345678"));
