@@ -1605,6 +1605,101 @@ mod tests {
         r.hub.stop();
     }
 
+    fn mic_frames(r: &Rig) -> usize {
+        kinds(r).iter().filter(|k| **k == wire::FRAME).count()
+    }
+
+    /// A live session with the microphone really running (phone agreed).
+    fn speaking_rig() -> (Rig, u64) {
+        let r = rig();
+        phone(&r, true, true);
+        let s = go_live(&r);
+        r.hub.speak(true).unwrap();
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Speak {
+                session: s,
+                on: true,
+            },
+        );
+        wait("microphone frames", || mic_frames(&r) >= 2);
+        (r, s)
+    }
+
+    #[test]
+    fn a_phone_cannot_switch_the_microphone_on_by_itself() {
+        let r = rig();
+        phone(&r, true, true);
+        let s = go_live(&r);
+        // An unasked "speak on", and microphone-direction frames from the phone, do nothing.
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Speak {
+                session: s,
+                on: true,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(r.audio.mic_opened.load(Ordering::SeqCst), 0);
+        assert!(!r.hub.view(false).session.unwrap().speaking);
+        assert_eq!(mic_frames(&r), 0);
+        r.hub.stop();
+    }
+
+    #[test]
+    fn off_pressed_before_the_phone_answers_keeps_the_microphone_closed() {
+        let r = rig();
+        phone(&r, true, true);
+        let s = go_live(&r);
+        r.hub.speak(true).unwrap();
+        r.hub.speak(false).unwrap();
+        // The phone's late "on" answer to the first request arrives after the off press.
+        feed(
+            &r.hub,
+            "p1",
+            &Msg::Speak {
+                session: s,
+                on: true,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(r.audio.mic_opened.load(Ordering::SeqCst), 0);
+        assert!(!r.hub.view(false).session.unwrap().speaking);
+        r.hub.stop();
+    }
+
+    #[test]
+    fn every_ending_closes_the_microphone_at_once() {
+        for ending in ["link lost", "consent off", "phone stop", "user stop"] {
+            let (r, s) = speaking_rig();
+            match ending {
+                "link lost" => r.hub.link_down("p1"),
+                "consent off" => r.hub.set_allowed("p1", false),
+                "phone stop" => {
+                    feed(
+                        &r.hub,
+                        "p1",
+                        &Msg::Stop {
+                            session: s,
+                            reason: Some("call_ended".into()),
+                        },
+                    );
+                }
+                _ => r.hub.stop(),
+            }
+            assert!(
+                r.hub.view(false).session.is_none(),
+                "{ending}: session still shown"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+            let n = mic_frames(&r);
+            std::thread::sleep(Duration::from_millis(200));
+            assert_eq!(mic_frames(&r), n, "{ending}: frames after the ending");
+        }
+    }
+
     #[test]
     fn actions_return_the_view() {
         let r = rig();
