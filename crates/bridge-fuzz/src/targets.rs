@@ -1350,6 +1350,7 @@ fn doctor_ufw(input: &[u8]) {
             firewall: fw,
             systemd_unit: false,
             hear_calls: None,
+            callwifi: None,
         });
         let shown = doctor::render(&checks);
         bounded(&shown, input.len().min(200), "doctor render");
