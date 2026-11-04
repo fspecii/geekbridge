@@ -10,3 +10,10 @@ Run 41766609345 (b5633caee) failed three jobs.
   opus or camera code); growth is serde code for the new wire types (call-audio `Setup`, pairing, Calls window) and
   `call_cli`. Legitimate feature growth, so budgets are raised to service 6.2 MB and ctl 1.5 MB, documented in
   `docs/performance.md` and `scripts/perf-check.sh`.
+
+## Follow-up: idle RSS after 4c196e52b
+
+The head after the call-audio routing commit failed the performance job on idle RSS (9692 kB on CI against 8000 kB;
+reproduced locally, 9280 kB). Cause: an in-process libpulse pulled 16 more shared objects into the service (`ldd`
+5 -> 21). I first raised the RSS budgets, then the owner replaced libpulse with pactl/parec (788b7b551); local idle RSS is
+back to 7984 kB, so the RSS budgets are unchanged (6000 kB local, 8000 kB CI) and the raise was reverted.
