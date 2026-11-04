@@ -137,7 +137,7 @@
     <string name="pair_paired_and_trusted">Paired and trusted</string>
     <string name="pair_chip_paired">Paired</string>
     <string name="pair_intro_first">Open GeekBridge or KDE Connect on your computer, on the same Wi-Fi network as this phone, then look for it.</string>
-    <string name="pair_manage_hint">To unpair a computer, go to Home &gt; Diagnostics &amp; about &gt; Unpair.</string>
+    <string name="pair_manage_hint">To stop trusting a computer, tap Unlink next to it.</string>
     <string name="pair_intro_more">To add another computer, open GeekBridge on it, on the same Wi-Fi network, then look for it.</string>
     <string name="pair_look">Look for computers</string>
     <string name="pair_working">Working…</string>

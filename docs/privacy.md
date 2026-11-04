@@ -89,6 +89,7 @@ the packet kinds it has code for, and a stock KDE Connect peer is never offered 
 | Calendar (edit) | off | separate switch + `WRITE_CALENDAR` (asked only when the switch is turned on) + grant `calendar_edit` | consent `calendar_edit` (and `calendar`) |
 | Calendar alerts | off | none | consent `calendar_alerts` |
 | Call state, answer, decline, dial | off | call-control switch + `ANSWER_PHONE_CALLS`; caller number/name only if you also allow `READ_CALL_LOG`; dialing needs `CALL_PHONE` and "Allow placing calls from my computer" (optional on-phone confirmation, off by default) + grant `calls` | consent `telephony`; dialing also needs a confirmation sheet on the computer |
+| QR scan (pairing) | only on the Scan screen | `CAMERA`, asked on first use of **Scan QR code from my computer**; the camera runs only while that screen is open, the picture is decoded in memory by the native core and never stored, sent or logged; pairing also works without it (camera app, scanner app, paste) | none |
 | Battery | off | "Share battery level" switch + grant `battery` | consent `battery` |
 | Notifications | off | switch + Android Notification access + an app list that starts empty + grant `notifications` | consent `notifications` |
 | Photos | off | "Show recent photos on the computer" switch + `READ_MEDIA_IMAGES` or, on Android 14, only the photos you pick (`READ_MEDIA_VISUAL_USER_SELECTED`) + grant `photos` | consent `photos` |

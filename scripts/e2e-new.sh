@@ -67,7 +67,7 @@ stage_pairdone() {
   local p; p="$(ctl pair-qr 2>/dev/null)"; scan "$p"
   ui wait "Connect to a computer" 20 >/dev/null; ui tap Continue >/dev/null
   ui wait "Computer identity" 40 >/dev/null; ui tap Pair --exact >/dev/null
-  if ui wait "What to do next" 40; then PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
+  if ui wait "Paired ✓ with" 40; then PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     rec pairdone PASS "paired by QR link: $PHONE_ID"
   else rec pairdone FAIL "no next-steps card"; return 1; fi
   # The phone listens for the desktop's dial: finish the setup wizard quickly (Skip all) and go home.

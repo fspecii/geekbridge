@@ -29,6 +29,8 @@ class HomeActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
     private var lastSig = ""
     private var offers: OfferDialogs? = null
+    /** Name of the computer this phone was just paired with, until the user taps "Got it". */
+    private var justPaired: String? = null
     private val prompt by lazy { PairPromptDialog(this, kit.ui, controller) }
     private val observer: () -> Unit = { render() }
 
@@ -46,7 +48,19 @@ class HomeActivity : Activity() {
         kit = UiKit(this, Ui(this))
         screen = Screen(this, kit).also { it.install() }
         controller = LinkRuntime.controller()
-        if (savedInstanceState == null && !AppState.setupFinished) startActivity(SetupActivity.intent(this))
+        justPaired = savedInstanceState?.getString(KEY_JUST_PAIRED) ?: intent.getStringExtra(EXTRA_JUST_PAIRED)
+        if (savedInstanceState == null && !AppState.setupFinished && justPaired == null) startActivity(SetupActivity.intent(this))
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(EXTRA_JUST_PAIRED)?.let { justPaired = it; lastSig = ""; render() }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        justPaired?.let { outState.putString(KEY_JUST_PAIRED, it) }
     }
 
     override fun onStart() {
@@ -129,7 +143,7 @@ class HomeActivity : Activity() {
         )
         val glance = TransferGlanceModel.of(s?.transfers.orEmpty())
         val clipLine = clipboardLine(connected.isNotEmpty())
-        val sig = listOf(WhatsNewRuntime.pending() != null, clipLine.text, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, SmsReadinessAndroid.evaluate(this)).joinToString("|")
+        val sig = listOf(justPaired, WhatsNewRuntime.pending() != null, clipLine.text, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, SmsReadinessAndroid.evaluate(this)).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
         // The whole screen is rebuilt on a state change; put TalkBack back where the user was.
@@ -148,6 +162,9 @@ class HomeActivity : Activity() {
             startActivity(SetupActivity.intent(this@HomeActivity, review = true))
         }
         root.addView(kit.dotHeader(getString(R.string.app_name), gear), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(4) })
+
+        // Right after a pairing: say so, in the screen the user lands on.
+        justPaired?.let { pairedBanner(root, it) }
 
         // Shown once after an update, until dismissed
         WhatsNewRuntime.pending()?.let { whatsNewCard(root, it) }
@@ -290,6 +307,14 @@ class HomeActivity : Activity() {
     }
 
     /** "Updated to X.Y.Z": a few highlights, a link to the release page, and Dismiss (which remembers the version). */
+    private fun pairedBanner(root: LinearLayout, computer: String) {
+        val card = kit.panel(root, 16, kit.withAlpha(kit.ui.toneColor(Tone.Ok), 0x1A), kit.withAlpha(kit.ui.toneColor(Tone.Ok), 0x55))
+        (card.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12)
+        card.addView(kit.text(getString(R.string.qr_done_title, Bidi.isolate(computer)), 18f, Tone.Ok, bold = true).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE })
+        card.addView(kit.text(getString(R.string.home_paired_banner_body), 14f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+        kit.button(card, getString(R.string.home_paired_banner_ok), BtnStyle.Tonal) { justPaired = null; lastSig = ""; render() }
+    }
+
     private fun whatsNewCard(root: LinearLayout, notes: WhatsNew) {
         val card = kit.panel(root, 16)
         (card.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12)
@@ -443,8 +468,15 @@ class HomeActivity : Activity() {
 
     private var lastWord: LinkWord? = null
 
-    private companion object {
-        const val POLL_MS = 2000L
-        const val REQ_PICK = 71
+    companion object {
+        private const val POLL_MS = 2000L
+        private const val REQ_PICK = 71
+        private const val KEY_JUST_PAIRED = "just_paired"
+        const val EXTRA_JUST_PAIRED = "just_paired_name"
+
+        /** Open Home on top of whatever pairing screens are open, with the success banner for [computer]. */
+        fun pairedIntent(ctx: android.content.Context, computer: String): Intent =
+            Intent(ctx, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_JUST_PAIRED, computer)
     }
 }

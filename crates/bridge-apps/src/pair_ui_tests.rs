@@ -310,6 +310,119 @@ fn one_tap_pair_connects_first_then_pairs_when_the_link_reports_unpaired() {
     assert_eq!(asked(&log, |r| matches!(r, Request::Pair { .. })), 1);
 }
 
+fn with_listener(mut s: Status) -> Status {
+    s.inbound_listener = Some("0.0.0.0:1716".parse().unwrap());
+    s
+}
+
+#[test]
+fn first_run_shows_the_code_by_itself_and_never_after_a_stop() {
+    let cx = ctx();
+    let size = egui::vec2(700.0, 800.0);
+    let s = Arc::new(Mutex::new(with_listener(status(&[], vec![]))));
+    let (mut c, log) = scripted(s, 600_000);
+    wait(&mut c, "status", |c| c.state.status.is_some());
+    assert!(!c.pair.qr_open);
+    pump(&mut c, &cx, size, vec![]);
+    assert!(
+        c.pair.qr_open,
+        "no phone paired yet: the code is simply there"
+    );
+    wait(&mut c, "code", |c| c.state.pair_qr.is_some());
+    assert_eq!(c.link_status(), LinkStatus::Waiting);
+    // Stop: it stays stopped (only the Link a phone button brings it back).
+    c.stop_qr();
+    wait(&mut c, "cancel", |_| {
+        asked(&log, |r| matches!(r, Request::PairQrCancel)) >= 1
+    });
+    for _ in 0..3 {
+        pump(&mut c, &cx, size, vec![]);
+    }
+    assert!(!c.pair.qr_open);
+    assert_eq!(asked(&log, |r| matches!(r, Request::PairQr)), 1);
+}
+
+#[test]
+fn a_phone_that_already_paired_does_not_get_a_surprise_code() {
+    let cx = ctx();
+    let size = egui::vec2(700.0, 800.0);
+    let s = Arc::new(Mutex::new(with_listener(status(&["old"], vec![]))));
+    let (mut c, log) = scripted(s, 600_000);
+    wait(&mut c, "status", |c| c.state.status.is_some());
+    for _ in 0..3 {
+        pump(&mut c, &cx, size, vec![]);
+    }
+    assert!(!c.pair.qr_open);
+    assert_eq!(asked(&log, |r| matches!(r, Request::PairQr)), 0);
+}
+
+#[test]
+fn the_live_line_follows_waiting_scanned_and_back_when_a_scan_fails() {
+    let s = Arc::new(Mutex::new(status(&[], vec![])));
+    let (mut c, _log) = scripted(s, 600_000);
+    assert_eq!(c.link_status(), LinkStatus::Making);
+    c.state.pair_qr = Some(qr(600_000));
+    assert_eq!(c.link_status(), LinkStatus::Waiting);
+    let event = |kind| ipc::Event {
+        seq: 1,
+        at_unix_ms: 0,
+        device_id: None,
+        kind,
+    };
+    absorb_events(&mut c.state, &[event(ipc::EventKind::QrAccepted)]);
+    assert_eq!(c.link_status(), LinkStatus::Scanned);
+    absorb_events(
+        &mut c.state,
+        &[event(ipc::EventKind::QrRefused {
+            reason: "That QR code has expired.".into(),
+        })],
+    );
+    assert_eq!(c.link_status(), LinkStatus::Waiting);
+    assert!(c.state.problem.is_some(), "the refusal is explained");
+    absorb_events(&mut c.state, &[event(ipc::EventKind::QrAccepted)]);
+    absorb_events(&mut c.state, &[event(ipc::EventKind::Paired)]);
+    assert!(!c.state.qr_scanned && c.state.problem.is_none());
+}
+
+#[test]
+fn a_code_nobody_can_see_is_revoked_and_not_renewed() {
+    let cx = ctx();
+    let size = egui::vec2(700.0, 800.0);
+    let s = Arc::new(Mutex::new(with_listener(status(&[], vec![]))));
+    let (mut c, log) = scripted(s, 600_000);
+    wait(&mut c, "status", |c| c.state.status.is_some());
+    pump(&mut c, &cx, size, vec![]);
+    wait(&mut c, "code", |c| c.state.pair_qr.is_some());
+    // The user went to another view: only the dialogs run, the card is no longer drawn.
+    c.pair.card_seen = Some(Instant::now() - HIDDEN_GRACE - Duration::from_secs(1));
+    let _ = cx.run(egui::RawInput::default(), |ctx| {
+        c.dialogs(ctx, &theme::palette(AppKind::Calls, true))
+    });
+    assert!(!c.pair.qr_open);
+    wait(&mut c, "revoked", |_| {
+        asked(&log, |r| matches!(r, Request::PairQrCancel)) >= 1
+    });
+}
+
+#[test]
+fn a_scanned_code_is_not_replaced_while_the_phone_confirms() {
+    let cx = ctx();
+    let size = egui::vec2(700.0, 800.0);
+    let s = Arc::new(Mutex::new(status(&["old"], vec![])));
+    // Already inside the renew margin: it would be replaced at once if nobody had scanned it.
+    let (mut c, log) = scripted(s, 5_000);
+    wait(&mut c, "status", |c| c.state.status.is_some());
+    c.start_qr();
+    wait(&mut c, "code", |c| c.state.pair_qr.is_some());
+    c.state.qr_scanned = true;
+    let before = asked(&log, |r| matches!(r, Request::PairQr));
+    for _ in 0..4 {
+        pump(&mut c, &cx, size, vec![]);
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(asked(&log, |r| matches!(r, Request::PairQr)), before);
+}
+
 #[test]
 fn the_card_with_no_service_disables_pairing_buttons() {
     let cx = ctx();

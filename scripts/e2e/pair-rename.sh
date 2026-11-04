@@ -51,7 +51,7 @@ phone_shows_computer() { # prints the computer name Home shows ("To <name>" unde
 }
 # Diagnostics > Paired computers keeps the name from pairing time (the saved record is not refreshed on reconnect).
 phone_diag_computer() { goto_diag || return 1; local i l; for i in $(seq 1 14); do
-    l="$(ui dump | cut -f1 | grep -m1 '^Unpair ')"; [[ -n "$l" ]] && { sed -E 's/^Unpair //; s/…$//' <<<"$l"; return 0; }
+    l="$(ui dump | cut -f1 | grep -m1 '^Unlink ')"; [[ -n "$l" ]] && { sed -E 's/^Unlink //; s/…$//' <<<"$l"; return 0; }
     $ADB shell input swipe 540 1800 540 900 250; sleep 0.4; done; return 1; }
 has_bad_chars() { LC_ALL=C.UTF-8 python3 -c '
 import sys,unicodedata

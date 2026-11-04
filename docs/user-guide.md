@@ -66,12 +66,29 @@ commands to copy. GeekBridge never runs them for you. `geekbridge-ctl firewall` 
 `geekbridge-ctl autostart [status|enable|disable]` starts the service at login (XDG autostart, LaunchAgent or the per-user
 Run key).
 
-**With a QR code (quickest, no code to compare).**
+**With a QR code (quickest, no code to compare), like WhatsApp Web.**
 
-1. Open **GeekBridge** on the computer and choose **Pair with QR code**. The code lives two minutes and works once.
-2. On the phone: GeekBridge > setup wizard (or Home) > **Scan QR code**, then point the phone's camera app at the code
-   and tap the GeekBridge link it shows (or paste the link; the computer's QR window has **Copy link**).
-3. The phone shows "Pair with <computer>?". Tap **Pair**.
+1. On the computer, open GeekBridge and click **Link a phone** (the first time, with no phone paired, the code is
+   already on screen). The code is big, works once, lives two minutes and **renews by itself** before it expires: there
+   is no refresh button. Under it the computer says what is happening: **Waiting for phone…**, then **Phone scanned —
+   confirm on phone**, then **Paired ✓ with <phone>**. The code is only kept while that view is open; leave it and the
+   code is revoked.
+2. On the phone: GeekBridge > setup wizard step 1 (or Home > **Pair a computer**) > **Scan QR code from my computer**.
+   The phone's camera opens inside the app (the camera permission is asked only here, and only the first time); point
+   it at the code. The phone's own camera app works too: scan, then tap the GeekBridge link it shows. Or paste the
+   link (the computer's **Can't scan? Use the link** has **Copy link**).
+3. The phone asks **Connect to <computer name>?** Check the name and tap **Continue**, then **Pair**. Home opens with
+   **Paired ✓ with <computer>**.
+
+**No GeekBridge on the computer yet?** On the phone, step 1 has **Don't have GeekBridge on your computer yet?**. Tap
+**Send me the download link** and pick any app (email, a chat with yourself, notes): the text holds the public releases
+page (https://github.com/fspecii/geekbridge/releases/latest) and three install lines, nothing about you or this phone.
+**Email it to myself** opens a draft in your mail app instead. Or **Copy link**, or type the short address
+`github.com/fspecii/geekbridge/releases/latest` on the computer. GeekBridge sends nothing itself and needs no account.
+
+**Unlink.** Computer: **Link a phone** page > **Unlink…** next to the phone > **Unlink phone** (it stops being trusted;
+link it again with a new code). Phone: setup wizard step 1 > **Unlink** next to the computer (or Diagnostics &
+about > **Unlink**). Unlink on both sides to remove a pairing completely; a new QR code always pairs again.
 
 **By name (nearby list).** The phone appears on the computer as "Found, not paired" and the computer in the phone's
 setup step. Tap **Pair** on either side; both screens show an 8-character code. Confirm only if they match.
@@ -221,18 +238,24 @@ application firewall), your desktop session (Wayland/X11 variables; Linux), pair
 to a bug report).
 
 ### Cannot pair
-* **QR code "expired" or "already used".** The code lasts 2 minutes and works once. Press **Pair with QR code** again.
+* **QR code "expired" or "already used".** The code lasts 2 minutes, works once and the computer replaces it by itself: scan the one on the screen now. If the computer says nothing happened after you scanned, the phone did not reach it (next two items).
+* **The phone cannot scan.** Camera permission denied: the scan screen says so and **Open app settings** turns it on;
+  or use the phone's own camera app on the code, or paste the link (**Use another way**). The code must be fully in
+  view, not too close to the glare of the screen. A QR code that is not GeekBridge's is ignored with a hint.
+* **Scanned, but nothing happens / "The computer did not answer".** The phone cannot reach the computer: same Wi-Fi
+  (not a guest network), no VPN, and the firewall open for 1716-1764 (the first-run card prints the commands). Run
+  `geekbridge-ctl doctor` on the computer for the exact fix.
 * **"Different network".** Phone and computer must be on the same subnet. Turn the phone's mobile data off or its VPN
   off, and check that the computer is not on a VPN or a second Wi-Fi.
 * **Code mismatch or "wrong computer".** Cancel on both sides and start again; never confirm a code that differs.
 * Use **Test connection** on the computer and the phone: it names the likely cause (service not running, firewall or
   Wi-Fi isolation, another network). Nothing is paired until you confirm on the phone.
-* **"Security warning: certificate changed".** The computer or phone was reinstalled. Forget the pairing on both sides
-  (computer: unpair; phone: Forget) and pair again.
+* **"Security warning: certificate changed".** The computer or phone was reinstalled. Unlink on both sides
+  (computer: **Unlink…**; phone: **Unlink**) and link again with a new QR code.
 
 ### The phone does not show my computer / "Messages is off"
 * **No computer listed on the phone:** run `geekbridge-ctl doctor`. Usually the firewall drops UDP 1716 (the broadcast the
-  phone listens for) or the service is not running; **Pair with QR code** works even when broadcasts are blocked.
+  phone listens for) or the service is not running; **Link a phone** (QR) works even when broadcasts are blocked.
 * **Messages is off:** it is opt-in per phone. Click **Allow** in Messages, or `geekbridge-ctl consent DEVICE_ID sms on`
   (`doctor` prints the exact line). If it then says the phone does not offer Messages, do this on the phone: GeekBridge >
   Share with computer > switch **Messages** on > **Allow access** and accept the SMS permission (it covers read, send and
@@ -245,7 +268,7 @@ to a bug report).
 
 ### Phone not found
 * The computer announces itself every 15 s and listens on UDP 1716. Routers that filter broadcast traffic (guest Wi-Fi,
-  "AP/client isolation", some mesh systems) hide devices from each other; use **Pair with QR code** or
+  "AP/client isolation", some mesh systems) hide devices from each other; use **Link a phone** (QR) or
   **Connect by address** instead, which need no broadcast. There is no mDNS.
 * Another program may own UDP 1716 (KDE Connect or GSConnect running on the same computer). GeekBridge reports the
   conflict rather than taking over: quit the other app or use the QR code.

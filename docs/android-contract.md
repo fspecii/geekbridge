@@ -32,6 +32,8 @@ Stateless actions (the stateful transport actions are in `docs/android-transport
 - `validate_sms`: `recipient` and `text` strings plus optional numeric `subscription_id`; validate with `bridge-core::messages::OutgoingTextIntent`. This validates only; never sends.
 - `validate_clipboard`: `text` string; bounded UTF-8/non-empty/NUL checks matching shared clipboard defaults. This validates only; never reads or writes the clipboard.
 
+- `pairing_decode_qr` (listed under `transport_actions`, needs no running transport): `luma` (base64 of `width * height` brightness bytes, row after row), `width`, `height` (at most 960 x 720 pixels). Result `{text}` of the first QR code found, or the error `qr_not_found`; `invalid_field` for a wrong size or bad base64. The only action besides `transport_data_send` that may exceed the usual request cap (up to `MAX_DATA_REQUEST_BYTES`). It decodes in memory, stores nothing and never logs the text (a pairing link holds a one-time token).
+
 Never expose keys, cached phone content, or full untrusted input in errors or diagnostics. Unknown action/fields/version and malformed/oversized input must fail predictably. Parsing or validation success never implies paired/trusted/call-ready.
 
 ## Ownership

@@ -107,7 +107,7 @@ class PairPanel(
         val sig = listOf(
             phase, s?.discovered?.joinToString { "${it.deviceId}${it.ip}${it.paired}" },
             s?.connections?.joinToString { "${it.id}${it.phase}${it.trusted}" },
-            s?.paired?.joinToString { it.deviceId }, controller.notice?.text, pendingDevice, AppState.pairedNames,
+            s?.paired?.joinToString { "${it.deviceId}${it.name}" }, controller.notice?.text, pendingDevice, AppState.pairedNames,
             showNext, testing, netReport?.headline,
         ).joinToString("|")
         if (sig == lastSig) return
@@ -119,8 +119,13 @@ class PairPanel(
     private fun build(phase: LinkPhase, s: TransportSnapshot?) {
         val names = AppState.pairedNames
         if (names.isNotEmpty()) {
-            for (n in names) {
-                kit.row(container, R.drawable.ic_computer, n, activity.getString(R.string.pair_paired_and_trusted), kit.chip(activity.getString(R.string.pair_chip_paired), Tone.Ok), Tone.Ok)
+            val peers = s?.paired.orEmpty()
+            for ((i, n) in names.withIndex()) {
+                // Unlink is right on the row once the core has listed the computer; the chip stands in until then.
+                val peer = peers.getOrNull(i)?.takeIf { it.name == n } ?: peers.firstOrNull { it.name == n }
+                val trailing = if (peer != null) kit.pill(activity.getString(R.string.link_unpair), BtnStyle.Plain) { UnlinkDialog.show(activity, controller, peer) }
+                else kit.chip(activity.getString(R.string.pair_chip_paired), Tone.Ok)
+                kit.row(container, R.drawable.ic_computer, n, activity.getString(R.string.pair_paired_and_trusted), trailing, Tone.Ok)
             }
             container.addView(kit.text(activity.getString(R.string.pair_manage_hint), 13f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
         }
@@ -134,7 +139,11 @@ class PairPanel(
         }
         // No code needed: scan the QR code the computer shows.
         kit.button(container, activity.getString(R.string.pair_scan_qr), if (names.isEmpty()) BtnStyle.Primary else BtnStyle.Tonal) {
-            activity.startActivity(Intent(activity, QrPairActivity::class.java))
+            activity.startActivity(QrPairActivity.scanIntent(activity))
+        }
+        // No computer app yet: get the download page to the computer.
+        kit.button(container, activity.getString(R.string.pair_dont_have_computer_app), BtnStyle.Plain) {
+            activity.startActivity(Intent(activity, ComputerLinkActivity::class.java))
         }
         when (phase) {
             LinkPhase.Stopped -> {

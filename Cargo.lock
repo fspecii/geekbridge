@@ -599,10 +599,13 @@ dependencies = [
 name = "bridge-android"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bridge-chaos",
  "bridge-core",
  "bridge-kde",
  "jni",
+ "qrcode",
+ "rqrr",
  "serde",
  "serde_json",
  "sha2",

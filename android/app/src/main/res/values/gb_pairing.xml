@@ -1,19 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- First-time pairing: QR code / pairing link, the connection test and the "what to do next" card. -->
 <resources>
-    <string name="qr_title">Pair with QR code</string>
-    <string name="qr_intro">On your computer, open GeekBridge and choose “Pair with QR code”. Then scan the code it shows.</string>
-    <string name="qr_scan_app">Scan with a scanner app</string>
+    <string name="qr_title">Link to your computer</string>
+    <string name="qr_intro">On your computer, open GeekBridge and click “Link a phone”. Then scan the code it shows.</string>
+    <string name="qr_scan_in_app">Scan QR code from my computer</string>
+    <string name="qr_scan_app">Use a scanner app instead</string>
     <string name="qr_scan_app_missing">No QR scanner app is installed. Use the camera app or paste the link instead.</string>
     <string name="qr_camera">Open the camera app</string>
-    <string name="qr_camera_hint">Point your camera at the code and tap the GeekBridge link it shows. GeekBridge itself never uses the camera, so it needs no camera permission.</string>
+    <string name="qr_camera_hint">Or point your phone’s own camera app at the code and tap the GeekBridge link it shows. GeekBridge opens the camera only on the Scan screen, never in the background.</string>
     <string name="qr_paste_header">Or paste the pairing link</string>
     <string name="qr_link_hint">geekbridge://pair?…</string>
     <string name="qr_paste">Paste from clipboard</string>
     <string name="qr_reading">Reading the pairing link…</string>
     <string name="qr_continue">Continue</string>
     <string name="qr_confirm_title2">Connect to a computer?</string>
-    <string name="qr_confirm_body2">Another app or web page opened this pairing link. Nothing connects until you tap Continue, and you still approve the pairing after that. Only continue if you just chose “Pair with QR code” on your own computer.</string>
+    <string name="qr_confirm_body2">Another app or web page opened this pairing link. Nothing connects until you tap Continue, and you still approve the pairing after that. Only continue if you just clicked “Link a phone” on your own computer.</string>
+    <string name="qr_scan_confirm_title">Connect to %1$s?</string>
+    <string name="qr_scan_confirm_body">You scanned the code on a computer’s screen. Nothing connects until you tap Continue, and you still approve the pairing after that. The name below comes from the code; check it is your computer.</string>
     <string name="qr_confirm_name_label">Name given by the link</string>
     <string name="qr_confirm_unverified">unverified</string>
     <string name="qr_confirm_addr_label">This phone would connect to</string>
@@ -22,7 +25,7 @@
     <string name="qr_cancel">Cancel</string>
     <string name="qr_connecting">Connecting to %1$s…</string>
     <string name="qr_connecting_hint">Checking that this is the computer in the QR code. You will be asked to confirm.</string>
-    <string name="qr_done_title">Paired with %1$s</string>
+    <string name="qr_done_title">Paired ✓ with %1$s</string>
     <string name="qr_next_title">What to do next</string>
     <string name="qr_next_clipboard">Try the clipboard: on Home, scroll to Settings and turn on Clipboard sync. Copy some text on this phone, then on your computer open Clipboard and click Paste from phone (or press Ctrl+Shift+V in that window).</string>
     <string name="qr_next_file">Send a file: first, on your computer, open Share files and tick “Allow this phone to send me files”. Then pick one below, or use Share → Send to computer in any app.</string>
@@ -34,7 +37,7 @@
     <string name="qr_try_again">Try again</string>
     <string name="qr_close">Close</string>
     <string name="qr_no_picker">No file picker is available on this phone.</string>
-    <string name="pair_scan_qr">Scan QR code</string>
+    <string name="pair_scan_qr">Scan QR code from my computer</string>
     <string name="pair_test_connection">Test connection</string>
     <string name="qr_dlg_title">Pair with %1$s?</string>
     <string name="qr_dlg_body">This is the computer you scanned: its identity matches the QR code, so there is no code to compare. Pair only if you started this on your own computer.</string>

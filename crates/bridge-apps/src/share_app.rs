@@ -688,7 +688,7 @@ impl ShareApp {
             None => {
                 ui.add(egui::Label::new(theme::secondary(
                     pal,
-                    "No phone is paired yet. Open the GeekBridge window and choose Pair with QR code.",
+                    "No phone is paired yet. Open the GeekBridge window and choose Link a phone.",
                 )).wrap());
             }
             Some(t) => {
@@ -978,7 +978,7 @@ impl ShareApp {
         ui.label(theme::overline(pal, "Receiving"));
         theme::group(ui, pal, |ui| {
             if list.is_empty() {
-                ui.label(theme::caption(pal, "Pair a phone to receive from it."));
+                ui.label(theme::caption(pal, "Link a phone to receive from it."));
             }
             for t in list {
                 let cur = share.devices.iter().find(|d| d.device_id == t.device_id);

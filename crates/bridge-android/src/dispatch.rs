@@ -358,7 +358,9 @@ fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
         Some(_) => return Err(err("unsupported_version", "unsupported request version")),
     }
     let action = fields.take_string("action")?;
-    if action != "transport_data_send" && request.len() > MAX_REQUEST_BYTES {
+    if !matches!(action.as_str(), "transport_data_send" | "pairing_decode_qr")
+        && request.len() > MAX_REQUEST_BYTES
+    {
         return Err(request_too_large());
     }
     match action.as_str() {
@@ -371,8 +373,10 @@ fn dispatch(dispatcher: &Dispatcher, request: &str) -> Result<Value, ApiError> {
         a if transport::ACTIONS.contains(&a) => {
             // Clipboard text and HTML legitimately exceed the 16 KiB control-message limit; the
             // overall request limit and the clipboard size checks still apply.
-            if !matches!(a, "transport_clipboard_send" | "transport_data_send")
-                && request.len() > MAX_TRANSPORT_REQUEST_BYTES
+            if !matches!(
+                a,
+                "transport_clipboard_send" | "transport_data_send" | "pairing_decode_qr"
+            ) && request.len() > MAX_TRANSPORT_REQUEST_BYTES
             {
                 return Err(request_too_large());
             }

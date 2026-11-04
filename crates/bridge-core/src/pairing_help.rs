@@ -302,7 +302,7 @@ pub fn explain_failure(reason: &str) -> Explained {
     } else if has("timed out") || has("timeout") || has("connect_timeout") {
         (
             "The other device did not answer.",
-            "Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the firewall (TCP and UDP 1716-1764).",
+            "Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the firewall (TCP and UDP 1716-1764). Still stuck? Run geekbridge-ctl doctor on the computer.",
         )
     } else if has("unreachable") || has("no route") || has("address policy") || has("not permitted")
     {
@@ -327,6 +327,19 @@ pub fn explain_failure(reason: &str) -> Explained {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_silent_phone_points_at_the_firewall_and_the_doctor_check() {
+        let e = explain_failure("connect timed out");
+        assert!(e.advice.contains("firewall"));
+        assert!(e.advice.contains("geekbridge-ctl doctor"));
+    }
+
+    #[test]
+    fn an_expired_code_says_to_scan_the_new_one() {
+        let e = explain_failure("That QR code has expired.");
+        assert!(e.advice.contains("new QR code"));
+    }
 
     fn m(probe: Probe) -> Measured {
         Measured {

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Getting the computer app: the "send me the download link" page and the scan screen. -->
+<resources>
+    <string name="invite_title">GeekBridge for your computer</string>
+    <string name="invite_why">GeekBridge needs its free app on your computer too. Get the download page to the computer, install it, then come back here and scan the QR code it shows.</string>
+    <string name="invite_send_title">Get it to your computer</string>
+    <string name="invite_send_body">Pick any app you already use, such as email or a chat with yourself. GeekBridge sends nothing itself and needs no account.</string>
+    <string name="invite_send">Send me the download link</string>
+    <string name="invite_mail">Email it to myself</string>
+    <string name="invite_chooser">Send the download link with</string>
+    <string name="invite_no_app">No app on this phone can share text.</string>
+    <string name="invite_no_mail">No email app is set up on this phone.</string>
+    <string name="invite_type_title">Or type a short address</string>
+    <string name="invite_type_body">On the computer, open this address in a browser:</string>
+    <string name="invite_copy">Copy link</string>
+    <string name="invite_copied">Link copied</string>
+    <string name="invite_steps_title">What to do on the computer</string>
+    <string name="invite_subject">GeekBridge for your computer</string>
+    <string name="invite_intro">Download GeekBridge for this computer:</string>
+    <string name="invite_line1">Open the link above and download the file for your system (Linux, Windows or macOS).</string>
+    <string name="invite_line2">Install it and open GeekBridge.</string>
+    <string name="invite_line3">Click “Link a phone”, then scan the QR code with GeekBridge on your phone.</string>
+
+    <string name="scan_title">Scan QR code</string>
+    <string name="scan_hint">Point the camera at the QR code on your computer’s screen. It reads on its own; nothing is recorded or sent.</string>
+    <string name="scan_preview_cd">Camera view. Point it at the QR code on your computer.</string>
+    <string name="scan_found">QR code found</string>
+    <string name="scan_not_ours">That QR code is not a GeekBridge pairing code. On your computer click “Link a phone” and scan that one.</string>
+    <string name="scan_perm_title">Allow the camera to scan</string>
+    <string name="scan_perm_body">GeekBridge uses the camera only on this screen, to read the QR code your computer shows. Nothing is recorded, saved or sent. You can also open the link from your camera app or paste it instead.</string>
+    <string name="scan_perm_allow">Allow camera</string>
+    <string name="scan_blocked_title">The camera is turned off for GeekBridge</string>
+    <string name="scan_blocked_body">Turn on the Camera permission in the app’s settings to scan here. Or use your phone’s camera app on the QR code, or paste the link.</string>
+    <string name="scan_nocamera">The camera could not be started. Close other apps that use it, or use your phone’s camera app on the QR code, or paste the link.</string>
+    <string name="scan_other_way">Use another way</string>
+    <string name="pair_dont_have_computer_app">Don’t have GeekBridge on your computer yet?</string>
+    <string name="home_paired_banner_body">This phone and your computer are linked. Try sending a file or the clipboard below.</string>
+    <string name="home_paired_banner_ok">Got it</string>
+</resources>

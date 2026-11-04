@@ -34,8 +34,9 @@ use self::engine::{
 };
 use crate::dispatch::{ApiError, Fields, err};
 
-pub(crate) const ACTIONS: [&str; 33] = [
+pub(crate) const ACTIONS: [&str; 34] = [
     "pairing_parse_qr",
+    "pairing_decode_qr",
     "transport_start",
     "transport_status",
     "transport_wait",
@@ -516,6 +517,32 @@ fn parse_qr(text: &str) -> Result<Value, ApiError> {
     }))
 }
 
+/// Most pixels one camera frame may carry (960 x 720 and similar): bigger frames are the caller's to shrink.
+pub(crate) const MAX_QR_FRAME_PIXELS: u64 = 960 * 720;
+
+/// Find a QR code in one grey camera frame (`luma`: base64 of `width * height` brightness bytes, row
+/// after row). Pure: nothing is stored or dialled, and the decoded text is only returned, never logged.
+fn decode_qr(luma: &str, width: u64, height: u64) -> Result<Value, ApiError> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    if width < 32 || height < 32 || width.saturating_mul(height) > MAX_QR_FRAME_PIXELS {
+        return Err(invalid_field());
+    }
+    let bytes = STANDARD.decode(luma).map_err(|_| invalid_field())?;
+    let (w, h) = (width as usize, height as usize);
+    if bytes.len() != w * h {
+        return Err(invalid_field());
+    }
+    let mut image = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
+        bytes.get(y * w + x).copied().unwrap_or(0)
+    });
+    for grid in image.detect_grids() {
+        if let Ok((_, text)) = grid.decode() {
+            return Ok(json!({ "text": text }));
+        }
+    }
+    Err(err("qr_not_found", "no QR code in this picture"))
+}
+
 fn token(f: &mut Fields, key: &'static str) -> Result<Option<String>, ApiError> {
     match f.take_opt_string(key)? {
         Some(s) if s.chars().count() > MAX_TOKEN_CHARS => Err(invalid_field()),
@@ -680,6 +707,13 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let text = f.take_string("text")?;
             f.finish()?;
             parse_qr(&text)
+        }
+        "pairing_decode_qr" => {
+            let luma = f.take_string("luma")?;
+            let width = f.take_u64("width")?;
+            let height = f.take_u64("height")?;
+            f.finish()?;
+            decode_qr(&luma, width, height)
         }
         "transport_pair_decision" => {
             let request_id = f.take_u64("request_id")?;

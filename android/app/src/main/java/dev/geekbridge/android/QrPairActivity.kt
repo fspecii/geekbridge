@@ -3,7 +3,6 @@ package dev.geekbridge.android
 
 import android.app.Activity
 import android.content.ActivityNotFoundException
-import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.os.Build
@@ -16,7 +15,6 @@ import android.text.InputType
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.widget.Toast
 
 /**
  * Pair by QR code, without a camera permission. The computer shows a QR code that carries a
@@ -37,9 +35,9 @@ class QrPairActivity : Activity() {
         data object Entry : Mode
         /** A link was handed to the core and its answer has not arrived: no form yet, so no stray taps. */
         data object Reading : Mode
-        data class Confirm(val target: QrTarget) : Mode
+        /** [scanned]: the user scanned it just now with this app's own camera screen, so the page can say so. */
+        data class Confirm(val target: QrTarget, val scanned: Boolean = false) : Mode
         data class Connecting(val target: QrTarget) : Mode
-        data class Done(val name: String) : Mode
         data class Failed(val why: Explained, val host: String?, val port: Int) : Mode
     }
 
@@ -71,6 +69,8 @@ class QrPairActivity : Activity() {
         // one-time token) is never stored in saved state; only a flag that its confirmation was still waiting. If
         // the system recreates the activity at that moment (first launch from a cold start, a permission grant, a
         // theme change), the launch intent still carries the link and is read again, so the confirm page comes back.
+        // Opened from the setup wizard's "Scan QR code from my computer": go straight to the camera.
+        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_SCAN, false) && !intent.hasLink()) openScanner()
         if (QrReplay.shouldHandle(savedInstanceState?.let { true } ?: false, savedInstanceState?.getBoolean(KEY_WAITING, false) ?: false)) handleIntent(intent)
         render()
     }
@@ -109,7 +109,9 @@ class QrPairActivity : Activity() {
 
     // ------------------------------------------------------------------ input
 
-    private fun parse(text: String, confirm: Boolean) {
+    private fun Intent.hasLink() = QrProtocol.linkText(dataString) != null
+
+    private fun parse(text: String, confirm: Boolean, scanned: Boolean = false) {
         message = null
         val ticket = gate.start()
         controller.raw(QrProtocol.parseRequest(text)) { o ->
@@ -119,7 +121,7 @@ class QrPairActivity : Activity() {
             when (o) {
                 is CoreOutcome.Ok -> {
                     val t = QrProtocol.parseTarget(o.result)
-                    if (t == null) fail(getString(R.string.qr_err_unreadable)) else if (confirm) { mode = Mode.Confirm(t); render() } else begin(t)
+                    if (t == null) fail(getString(R.string.qr_err_unreadable)) else if (confirm) { mode = Mode.Confirm(t, scanned); render() } else begin(t)
                 }
                 is CoreOutcome.Rejected -> fail(QrProtocol.parseError(strings, o.code))
                 else -> fail(getString(R.string.qr_err_core_missing))
@@ -131,6 +133,12 @@ class QrPairActivity : Activity() {
         message = text
         mode = Mode.Entry
         render()
+    }
+
+    /** The in-app camera screen ([QrScanActivity]): the lightest way to scan, with no scanner app needed. */
+    @Suppress("DEPRECATION")
+    private fun openScanner() {
+        startActivityForResult(Intent(this, QrScanActivity::class.java), REQ_CAMERA)
     }
 
     @Suppress("DEPRECATION")
@@ -163,12 +171,11 @@ class QrPairActivity : Activity() {
                 val text = QrProtocol.linkText(data?.getStringExtra("SCAN_RESULT"))
                 if (text != null) parse(text, confirm = false) else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
             }
-            REQ_PICK -> if (resultCode == RESULT_OK && data != null) {
-                val clip = data.clipData
-                val send = Intent(this, ShareActivity::class.java).setAction(Intent.ACTION_SEND_MULTIPLE)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                if (clip != null) send.clipData = clip else data.data?.let { send.clipData = ClipData.newRawUri("files", it) }
-                startActivity(send)
+            REQ_CAMERA -> if (resultCode == RESULT_OK) {
+                // Scanned on purpose, but the page still names the computer and asks before anything connects.
+                val text = QrProtocol.linkText(data?.getStringExtra(QrScanActivity.EXTRA_LINK))
+                if (text != null) { linkPending = true; mode = Mode.Reading; render(); parse(text, confirm = true, scanned = true) }
+                else fail(QrProtocol.parseError(strings, "qr_not_geekbridge"))
             }
         }
     }
@@ -217,8 +224,10 @@ class QrPairActivity : Activity() {
             QrStep.Paired -> {
                 prompt.dismiss()
                 LinkService.sync(this)
-                mode = Mode.Done(m.target.name.ifEmpty { getString(R.string.home_computer) })
-                render()
+                // Land on Home, which shows the success. The name is the one the user just approved.
+                val name = QrConfirmText.safeName(m.target.name).ifEmpty { getString(R.string.home_computer) }
+                startActivity(HomeActivity.pairedIntent(this, name))
+                finish()
             }
             is QrStep.Failed -> {
                 val e = controller.events.lastOrNull { it.kind == "pairing_failed" || it.kind == "connect_failed" }
@@ -251,9 +260,8 @@ class QrPairActivity : Activity() {
         when (val m = mode) {
             Mode.Entry -> entry(root)
             Mode.Reading -> reading(root)
-            is Mode.Confirm -> confirm(root, m.target)
+            is Mode.Confirm -> confirm(root, m.target, m.scanned)
             is Mode.Connecting -> connecting(root, m.target)
-            is Mode.Done -> done(root, m.name)
             is Mode.Failed -> failedView(root, m)
         }
         screen.requestInsets()
@@ -267,7 +275,8 @@ class QrPairActivity : Activity() {
         val card = kit.panel(root)
         card.addView(kit.text(getString(R.string.qr_intro), 15f))
         message?.let { card.addView(kit.text(it, 14f, Tone.Warn).apply { setPadding(0, kit.dp(10), 0, 0) }) }
-        kit.button(card, getString(R.string.qr_scan_app), BtnStyle.Primary) { scanWithApp() }
+        kit.button(card, getString(R.string.qr_scan_in_app), BtnStyle.Primary) { openScanner() }
+        kit.button(card, getString(R.string.qr_scan_app), BtnStyle.Tonal) { scanWithApp() }
         kit.button(card, getString(R.string.qr_camera), BtnStyle.Tonal) { openCamera() }
         card.addView(kit.text(getString(R.string.qr_camera_hint), 12f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(10)) })
         kit.divider(card)
@@ -286,12 +295,17 @@ class QrPairActivity : Activity() {
         kit.button(root, getString(R.string.qr_close), BtnStyle.Plain) { finish() }
     }
 
-    private fun confirm(root: LinearLayout, t: QrTarget) {
+    private fun confirm(root: LinearLayout, t: QrTarget, scanned: Boolean) {
         val name = QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) }
         val card = kit.panel(root)
         // The name and address come from whoever made the link: say so, and show the part that cannot be faked.
-        card.addView(kit.text(getString(R.string.qr_confirm_title2), 20f, bold = true))
-        card.addView(kit.text(getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        if (scanned) {
+            card.addView(kit.text(getString(R.string.qr_scan_confirm_title, Bidi.isolate(name)), 20f, bold = true))
+            card.addView(kit.text(getString(R.string.qr_scan_confirm_body), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        } else {
+            card.addView(kit.text(getString(R.string.qr_confirm_title2), 20f, bold = true))
+            card.addView(kit.text(getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        }
         card.addView(kit.text(getString(R.string.qr_confirm_name_label), 12f, Tone.Muted))
         card.addView(kit.text(getString(R.string.qr_confirm_name_unverified, Bidi.isolate(name), getString(R.string.qr_confirm_unverified)), 16f, Tone.Warn, bold = true))
         card.addView(kit.text(getString(R.string.qr_confirm_addr_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
@@ -315,27 +329,6 @@ class QrPairActivity : Activity() {
         }
     }
 
-    private fun done(root: LinearLayout, name: String) {
-        val card = kit.panel(root)
-        card.addView(kit.text(getString(R.string.qr_done_title, name), 20f, Tone.Ok, bold = true))
-        NextSteps.card(this, kit, root, onHome = {
-            startActivity(Intent(this, HomeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP))
-            finish()
-        }, onFile = { pickFile() })
-        kit.button(root, getString(R.string.qr_next_done), BtnStyle.Primary) { finish() }
-    }
-
-    private fun pickFile() {
-        val pick = Intent(Intent.ACTION_OPEN_DOCUMENT)
-            .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*").putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-        try {
-            @Suppress("DEPRECATION")
-            startActivityForResult(pick, REQ_PICK)
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(this, R.string.qr_no_picker, Toast.LENGTH_SHORT).show()
-        }
-    }
-
     private fun failedView(root: LinearLayout, m: Mode.Failed) {
         val card = kit.panel(root)
         card.addView(kit.text(m.why.headline, 18f, Tone.Bad, bold = true))
@@ -351,10 +344,14 @@ class QrPairActivity : Activity() {
         kit.button(root, getString(R.string.qr_close), BtnStyle.Plain) { finish() }
     }
 
-    private companion object {
-        const val KEY_WAITING = "link_waiting"
-        const val REQ_SCAN = 81
-        const val REQ_PICK = 82
+    companion object {
+        private const val KEY_WAITING = "link_waiting"
+        private const val REQ_SCAN = 81
+        private const val REQ_CAMERA = 83
+        /** Set by the setup wizard: open the camera screen at once. */
+        const val EXTRA_SCAN = "scan"
+
+        fun scanIntent(ctx: android.content.Context): Intent = Intent(ctx, QrPairActivity::class.java).putExtra(EXTRA_SCAN, true)
     }
 }
 

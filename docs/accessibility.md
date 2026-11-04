@@ -75,7 +75,7 @@ application [disabled]
     label "Checking the background service"
     progress bar "0 of 12"
     button "Home" [focusable]
-    button "Pair a phone" [focusable]
+    button "Link a phone" [focusable]
     button "Settings" [focusable]
     label "OPEN"
     button "Calls" [focusable]

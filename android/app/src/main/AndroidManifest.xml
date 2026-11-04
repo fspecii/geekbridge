@@ -29,6 +29,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Setup wizard: "Allow unrestricted battery" (ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS). -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Only the in-app QR scan screen opens the camera, and only while it is open; nothing is recorded or sent. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <!-- Only requested when the user switches on "Let the computer edit my calendar" (off by default), so a paired
@@ -49,6 +51,8 @@
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-feature android:name="android.hardware.telephony.messaging" android:required="false" />
     <!-- Optional, each behind its own setup step and off until the user turns call control on:
@@ -98,8 +102,14 @@
         <!-- Setup wizard and permission master; opened from Home. -->
         <activity android:name=".SetupActivity" android:exported="false" android:label="@string/setup_label" />
 
+        <!-- The in-app QR scanner (Camera2, decoded by the native core). Opened only by QrPairActivity for a result. -->
+        <activity android:name=".QrScanActivity" android:exported="false" android:label="@string/scan_title" />
+
+        <!-- "Send me the download link" for people who have the phone app but not the computer app yet. -->
+        <activity android:name=".ComputerLinkActivity" android:exported="false" android:label="@string/invite_title" />
+
         <!-- Pair by QR code. The computer's QR code carries a geekbridge://pair link: the phone's camera app or Google
-             Lens opens it here, so GeekBridge needs no camera permission. The screen asks before it connects. -->
+             Lens opens it here, or the in-app Scan screen reads it. The screen asks before it connects. -->
         <activity
             android:name=".QrPairActivity"
             android:label="@string/qr_title"

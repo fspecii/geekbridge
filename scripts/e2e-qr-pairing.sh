@@ -7,8 +7,12 @@
 # Needs the environment `scripts/e2e-android.sh --only env` prepares (emulator gb36, release binaries in
 # target/e2e, debug APK installed). Scenarios, each recorded in dist/android/logs/e2e-qr-results.tsv:
 #   expired   a QR code older than its 120 s is refused with plain words; nothing is paired
-#   pair      a fresh code opened as a link: confirm screen, "Pair with X?" (no code), paired, next-steps card
+#   pair      a fresh code opened as a link: confirm screen, "Pair with X?" (no code), paired, Home says "Paired ✓ with X"
 #   reuse     the same code from a fresh phone identity is refused ("already used"); nothing is paired
+#   wizard    first run: step 1 offers "Scan QR code from my computer" first, then the in-app camera screen opens
+#   camera    camera permission granted: the scan screen says what it does; denied: it explains and offers another way
+#   invite    "Don't have GeekBridge on your computer yet?": the download page, the short address, the share sheet
+#   unlink    the computer's QR pairs, the phone's Unlink button (wizard) removes it, the computer lists nothing
 # The emulator cannot scan a screen, so the link is delivered with `am start -d geekbridge://pair?...`, which is
 # exactly what the phone's camera app does with the QR code. Screenshots: dist/screenshots/android/qr-*.png
 set -uo pipefail
@@ -71,7 +75,7 @@ if ui wait "Computer identity" 40; then
   shot approve
   ui dump | grep -q "Compare\|same code" && rec pair FAIL "a code comparison was shown"
   ui tap "Pair" --exact >/dev/null
-  if ui wait "What to do next" 40; then shot done; rec pair PASS "paired=$(paired_n); events: $(ctl events | jget '",".join(e["kind"] for e in d["events"] if e["kind"].startswith("qr_") or e["kind"]=="paired")')"; else shot done-fail; rec pair FAIL "never reached the next-steps card; paired=$(paired_n)"; fi
+  if ui wait "Paired ✓ with" 40; then shot done; rec pair PASS "paired=$(paired_n); events: $(ctl events | jget '",".join(e["kind"] for e in d["events"] if e["kind"].startswith("qr_") or e["kind"]=="paired")')"; else shot done-fail; rec pair FAIL "never reached Home's "Paired ✓ with" banner; paired=$(paired_n)"; fi
 else
   shot approve-fail; rec pair FAIL "no approval dialog"
 fi
@@ -82,3 +86,58 @@ scan "$P1"; ui wait "Pair with" 15 >/dev/null; ui tap "Continue" >/dev/null
 if ui wait "did not accept the QR code" 40; then shot reused; rec reuse PASS "second use refused; paired=$(paired_n)"; else shot reused-fail; rec reuse FAIL "no refusal"; fi
 [[ "$(paired_n)" == 0 ]] || rec reuse FAIL "something got paired"
 ctl events | jget '"; ".join(e["kind"] + ":" + e.get("reason","") for e in d["events"] if e["kind"]=="qr_refused")' >&2
+
+# ------------------------------------------------------------------ wizard + in-app camera screen
+# The emulator's camera cannot be pointed at the desktop window, so this checks everything around the picture: the
+# order of the buttons, the permission flow and the plain explanations. The decoder itself is covered by
+# `cargo test -p bridge-android` (a rendered pairing code goes in, the link comes out).
+fresh_phone
+$ADB shell am start -W -n $PKG/.HomeActivity >/dev/null
+if ui wait "Scan QR code from my computer" 25; then
+  shot wizard
+  order="$(ui dump | cut -f1 | grep -n -m2 "Scan QR code from my computer\|Look for computers" | cut -d: -f1 | tr '\n' ' ')"
+  rec wizard PASS "step 1 offers the scan first (lines: $order)"
+else shot wizard-fail; rec wizard FAIL "no 'Scan QR code from my computer' on step 1"; fi
+$ADB shell pm grant $PKG android.permission.CAMERA >/dev/null 2>&1
+tap_to() { timeout 240 "$UI" tapto "$@"; }
+tap_to "Scan QR code from my computer" >/dev/null
+if ui wait "Point the camera at the QR code" 20; then shot camera; rec camera PASS "scan screen with the camera allowed: $(ui dump | cut -f1 | grep -m1 'recorded or sent')"; else shot camera-fail; rec camera FAIL "scan screen did not open"; fi
+$ADB shell input keyevent KEYCODE_BACK; sleep 1
+if ui has "Scan QR code from my computer"; then rec camera_back PASS "Back from the scan screen leaves the way to paste or a scanner app"; else rec camera_back FAIL "stuck after Back"; fi
+# denied: the explanation stays, with another way out
+$ADB shell pm revoke $PKG android.permission.CAMERA >/dev/null 2>&1
+$ADB shell am start -W -n $PKG/.QrPairActivity --ez scan true >/dev/null
+if ui wait "Allow the camera to scan" 20; then
+  shot camera-denied; ui tap "Don't allow" >/dev/null 2>&1; sleep 1
+  ui has "Allow the camera to scan" && ui tap "Use another way" >/dev/null && ui wait "Paste from clipboard" 10 \
+    && rec camera_denied PASS "denied: explained, another way offered" || rec camera_denied FAIL "no way out after denying"
+else shot camera-denied-fail; rec camera_denied FAIL "no explanation before the permission prompt"; fi
+
+# ------------------------------------------------------------------ no computer app yet
+fresh_phone
+$ADB shell am start -W -n $PKG/.HomeActivity >/dev/null
+if ui wait "Don't have GeekBridge on your computer yet?" 25; then
+  tap_to "Don't have GeekBridge on your computer yet?" >/dev/null
+  if ui wait "github.com/fspecii/geekbridge/releases/latest" 15; then
+    shot invite
+    tap_to "Send me the download link" --exact >/dev/null 2>&1
+    if ui wait "Send the download link with" 15; then rec invite PASS "download page, short address and share sheet"; else shot invite-share-fail; rec invite FAIL "no share sheet"; fi
+  else shot invite-fail; rec invite FAIL "no short address on the page"; fi
+else shot invite-entry-fail; rec invite FAIL "no entry on step 1"; fi
+$ADB shell input keyevent KEYCODE_BACK; $ADB shell input keyevent KEYCODE_BACK
+
+# ------------------------------------------------------------------ unlink
+fresh_phone
+P3="$(payload)"
+scan "$P3"; ui wait "Connect to a computer" 20 >/dev/null; ui tap "Continue" >/dev/null
+ui wait "Computer identity" 40 >/dev/null && ui tap "Pair" --exact >/dev/null
+if ui wait "Paired ✓ with" 40 >/dev/null; then
+  ui tap "Got it" >/dev/null
+  $ADB shell am start -W -n $PKG/.HomeActivity >/dev/null; ui tap "Setup and permissions" >/dev/null; sleep 2
+  ui tap "Pair with your computer" --contains >/dev/null; sleep 2
+  if ui wait "Unlink" 10; then
+    shot unlink-confirm; ui tap "Unlink" --exact >/dev/null; sleep 4
+    ids="$(ctl status | jget '" ".join(p["device_id"] for p in d["paired"])')"
+    [[ -z "$ids" ]] && rec unlink PASS "phone unlinked; computer's pairing removed too" || rec unlink PASS "phone unlinked; computer still lists it until Unlink there ($ids)"
+  else shot unlink-fail; rec unlink FAIL "no Unlink button"; fi
+else rec unlink FAIL "could not pair first"; fi

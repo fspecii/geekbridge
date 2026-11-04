@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! First-time pairing on the computer: the "Pair a phone" card, the QR window, one-tap Pair, the
+//! First-time pairing on the computer: the "Link a phone" card with its live QR code, one-tap Pair, the
 //! plain-language problem line, "Test connection" and the "what to do next" card.
 //!
 //! A child module of `connection` so it can use `Connections`' private state; it owns no protocol
 //! logic. Every decision still goes to the service as an explicit request.
 
 use super::*;
+use crate::i18n::{tr, tr_args};
 use crate::theme::ButtonKind;
 use bridge_core::pairing_help::ConnectionTest;
 use qrcode::{Color as QrColor, EcLevel, QrCode};
@@ -47,6 +48,25 @@ pub(super) struct PairUi {
     auto_pair: BTreeSet<String>,
     known_paired: Option<BTreeSet<String>>,
     next_steps: Option<String>,
+    /// The Pair view was drawn this recently; the code is only kept alive while someone can see it.
+    card_seen: Option<Instant>,
+    /// The code was shown automatically once (first run); after that only the button opens it.
+    auto_opened: bool,
+    /// When the phone's scan was first noticed (the "confirm on phone" state ends after a while).
+    scanned_since: Option<Instant>,
+}
+
+/// How long a code stays alive after the Pair view was last drawn (a hidden view must not keep issuing tokens).
+const HIDDEN_GRACE: Duration = Duration::from_secs(4);
+/// How long "Phone scanned" is believed with no result.
+const SCAN_STATE_MAX: Duration = Duration::from_secs(90);
+
+/// The live line under the code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkStatus {
+    Making,
+    Waiting,
+    Scanned,
 }
 
 /// Dark/light modules of `text` as a QR code (`width` modules per side), or `None` if too long.
@@ -135,19 +155,62 @@ impl Connections {
                 mode: ipc::PairMode::Request,
             });
         }
+        if self.state.qr_scanned {
+            let since = *self.pair.scanned_since.get_or_insert_with(Instant::now);
+            if since.elapsed() > SCAN_STATE_MAX {
+                self.state.qr_scanned = false;
+                self.pair.scanned_since = None;
+            }
+        } else {
+            self.pair.scanned_since = None;
+        }
         if self.pair.qr_open {
+            let seen = *self.pair.card_seen.get_or_insert_with(Instant::now);
+            if seen.elapsed() > HIDDEN_GRACE {
+                // Someone left the Pair view: stop issuing tokens and revoke the one on screen.
+                self.pair.qr_open = false;
+                self.pair.card_seen = None;
+                self.submit(Request::PairQrCancel);
+                return;
+            }
+            if let Some(q) = &self.state.pair_qr {
+                self.pair.qr_shown_at.get_or_insert_with(Instant::now);
+                if self.pair.qr_cache.as_ref().map(|c| c.0.as_str()) != Some(q.payload.as_str()) {
+                    self.pair.qr_cache =
+                        qr_modules(&q.payload).map(|(m, w)| (q.payload.clone(), m, w));
+                }
+            }
             let renew = match (&self.state.pair_qr, self.pair.qr_shown_at) {
                 (Some(q), Some(at)) => {
                     at.elapsed() + RENEW_BEFORE >= Duration::from_millis(q.expires_in_ms)
                 }
                 _ => false,
             };
-            if renew && !self.state.busy {
+            if renew && !self.state.busy && !self.state.qr_scanned {
                 self.pair.qr_shown_at = None;
                 self.submit(Request::PairQr);
             }
             ctx.request_repaint_after(Duration::from_secs(1));
         }
+    }
+
+    /// What the live line under the code says.
+    pub fn link_status(&self) -> LinkStatus {
+        if self.state.pair_qr.is_none() {
+            LinkStatus::Making
+        } else if self.state.qr_scanned {
+            LinkStatus::Scanned
+        } else {
+            LinkStatus::Waiting
+        }
+    }
+
+    fn start_qr(&mut self) {
+        self.pair.qr_open = true;
+        self.pair.qr_shown_at = None;
+        self.pair.card_seen = Some(Instant::now());
+        self.state.qr_scanned = false;
+        self.submit(Request::PairQr);
     }
 
     /// One tap: dial the phone, then ask it to pair; the code appears on both screens.
@@ -169,7 +232,10 @@ impl Connections {
         let mut action = None;
         if let Some(name) = self.pair.next_steps.clone() {
             theme::group(ui, pal, |ui| {
-                ui.label(theme::semibold(format!("✔ Paired with {name}"), 15.0));
+                ui.label(theme::semibold(
+                    tr_args("pair.paired", &[("name", &name)]),
+                    16.0,
+                ));
                 ui.label(theme::caption(pal, "What to do next"));
                 ui.add(
                     egui::Label::new(
@@ -201,27 +267,30 @@ impl Connections {
             });
             ui.add_space(8.0);
         }
+        self.pair.card_seen = Some(Instant::now());
+        // First run (no phone paired yet): the code is simply there, like a web login.
+        if !self.pair.auto_opened
+            && !self.pair.qr_open
+            && !self.state.busy
+            && self
+                .state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.paired.is_empty() && s.inbound_listener.is_some())
+        {
+            self.pair.auto_opened = true;
+            self.start_qr();
+        }
+        self.link_hero(ui, pal);
+        ui.add_space(8.0);
         ui.add(
             egui::Label::new(theme::caption(
                 pal,
-                "Open GeekBridge on your phone. It appears below by name: tap Pair and confirm the same code on both screens. Or scan a QR code, which needs no code at all.",
+                "Or open GeekBridge on your phone: it appears below by name. Tap Pair and confirm the same code on both screens.",
             ))
             .wrap(),
         );
         ui.horizontal_wrapped(|ui| {
-            if theme::pill_button(
-                ui,
-                pal,
-                "Pair with QR code",
-                ButtonKind::Primary,
-                !self.state.busy && self.state.status.is_some(),
-            )
-            .clicked()
-            {
-                self.pair.qr_open = true;
-                self.pair.qr_shown_at = None;
-                self.submit(Request::PairQr);
-            }
             if theme::pill_button(
                 ui,
                 pal,
@@ -254,94 +323,115 @@ impl Connections {
         action
     }
 
-    /// The QR window.
-    pub(super) fn qr_window(&mut self, ctx: &egui::Context, pal: &Palette) {
+    /// Escape stops showing the code (the same as the Stop button).
+    pub(super) fn qr_window(&mut self, ctx: &egui::Context, _pal: &Palette) {
+        if self.pair.qr_open && theme::escape_pressed(ctx) {
+            self.stop_qr();
+        }
+    }
+
+    fn stop_qr(&mut self) {
+        self.pair.qr_open = false;
+        self.state.qr_scanned = false;
+        self.submit(Request::PairQrCancel);
+    }
+
+    /// "Link a phone": the code, big, with a live line under it. No refresh button: it renews itself.
+    fn link_hero(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.add(egui::Label::new(theme::semibold(tr("pair.link.title"), 20.0)).wrap());
         if !self.pair.qr_open {
+            ui.add(egui::Label::new(theme::caption(pal, tr("pair.link.how"))).wrap());
+            if theme::pill_button(
+                ui,
+                pal,
+                tr("pair.link.start"),
+                ButtonKind::Primary,
+                !self.state.busy && self.state.status.is_some(),
+            )
+            .clicked()
+            {
+                self.start_qr();
+            }
             return;
         }
-        let mut close = theme::escape_pressed(ctx);
-        if let Some(q) = self.state.pair_qr.clone() {
-            self.pair.qr_shown_at.get_or_insert_with(Instant::now);
-            if self.pair.qr_cache.as_ref().map(|c| c.0.as_str()) != Some(q.payload.as_str()) {
-                self.pair.qr_cache = qr_modules(&q.payload).map(|(m, w)| (q.payload.clone(), m, w));
-            }
-        }
-        egui::Window::new("Pair with QR code")
-            .id(egui::Id::new("pair-qr"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .show(ctx, |ui| {
-                ui.set_max_width(320.0);
+        ui.add(egui::Label::new(theme::caption(pal, tr("pair.link.how"))).wrap());
+        ui.add_space(6.0);
+        let status = self.link_status();
+        match (&self.state.pair_qr, &self.pair.qr_cache) {
+            (Some(q), Some((_, modules, width))) => {
+                let side = ui.available_width().clamp(160.0, 300.0);
+                ui.vertical_centered(|ui| {
+                    let r = draw_qr(ui, modules, *width, side);
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            tr("pair.link.qr_name"),
+                        )
+                    });
+                });
+                ui.add_space(6.0);
+                self.status_line(ui, pal, status);
                 ui.add(
-                    egui::Label::new(theme::semibold(
-                        "On your phone: open GeekBridge, tap \"Scan QR code\" and point the camera here.",
-                        14.0,
+                    egui::Label::new(theme::caption(
+                        pal,
+                        tr_args(
+                            "pair.link.renews",
+                            &[("name", &display_text(&q.computer_name))],
+                        ),
                     ))
                     .wrap(),
                 );
-                ui.add_space(6.0);
-                match (&self.state.pair_qr, &self.pair.qr_cache) {
-                    (Some(q), Some((_, modules, width))) => {
-                        ui.vertical_centered(|ui| draw_qr(ui, modules, *width, 260.0));
-                        let left = Duration::from_millis(q.expires_in_ms)
-                            .saturating_sub(
-                                self.pair.qr_shown_at.map(|t| t.elapsed()).unwrap_or_default(),
-                            )
-                            .as_secs();
+                egui::CollapsingHeader::new(tr("pair.link.cant_scan")).show(ui, |ui| {
+                    let mut text = q.payload.clone();
+                    crate::a11y::named(
                         ui.add(
-                            egui::Label::new(theme::caption(
-                                pal,
-                                format!(
-                                    "{} · one use, refreshes in {left} s. No code to compare: your phone checks this computer's identity from the picture and still asks before it pairs.",
-                                    display_text(&q.computer_name)
-                                ),
-                            ))
-                            .wrap(),
-                        );
-                        egui::CollapsingHeader::new("Can't scan? Use the link").show(ui, |ui| {
-                            let mut text = q.payload.clone();
-                            crate::a11y::named(ui.add(
-                                egui::TextEdit::multiline(&mut text)
-                                    .desired_rows(3)
-                                    .desired_width(300.0)
-                                    .font(egui::TextStyle::Monospace),
-                            ), "Pairing link");
-                            if ui.button("Copy link").clicked() {
-                                ui.ctx().copy_text(q.payload.clone());
-                            }
-                            ui.add(
-                                egui::Label::new(theme::caption(
-                                    pal,
-                                    "Send this link to your phone yourself (not over an untrusted chat) and paste it into \"Scan QR code → Enter link\".",
-                                ))
-                                .wrap(),
-                            );
-                        });
-                    }
-                    _ => {
-                        if let Some(error) = self.state.notice.as_ref().filter(|_| !self.state.busy) {
-                            ui.add(egui::Label::new(theme::secondary(pal, error)).wrap());
-                        } else {
-                            ui.label(theme::caption(pal, "Making a one-time code…"));
-                        }
-                    }
-                }
-                if let Some(problem) = &self.state.problem {
-                    ui.add(
-                        egui::Label::new(RichText::new(&problem.headline).color(pal.accent)).wrap(),
+                            egui::TextEdit::multiline(&mut text)
+                                .desired_rows(3)
+                                .desired_width(300.0)
+                                .font(egui::TextStyle::Monospace),
+                        ),
+                        tr("pair.link.link_name"),
                     );
-                    ui.add(egui::Label::new(theme::caption(pal, &problem.advice)).wrap());
+                    if ui.button(tr("pair.link.copy")).clicked() {
+                        ui.ctx().copy_text(q.payload.clone());
+                    }
+                    ui.add(egui::Label::new(theme::caption(pal, tr("pair.link.link_hint"))).wrap());
+                });
+            }
+            _ => {
+                if let Some(error) = self.state.notice.as_ref().filter(|_| !self.state.busy) {
+                    ui.add(egui::Label::new(theme::secondary(pal, error)).wrap());
+                } else {
+                    self.status_line(ui, pal, status);
                 }
-                ui.add_space(6.0);
-                if ui.button("Cancel").clicked() {
-                    close = true;
-                }
-            });
-        if close {
-            self.pair.qr_open = false;
-            self.submit(Request::PairQrCancel);
+            }
         }
+        if let Some(problem) = &self.state.problem {
+            ui.add(egui::Label::new(RichText::new(&problem.headline).color(pal.accent)).wrap());
+            ui.add(egui::Label::new(theme::caption(pal, &problem.advice)).wrap());
+        }
+        ui.add_space(6.0);
+        if theme::pill_button(ui, pal, tr("pair.link.stop"), ButtonKind::Plain, true).clicked() {
+            self.stop_qr();
+        }
+    }
+
+    fn status_line(&self, ui: &mut egui::Ui, pal: &Palette, status: LinkStatus) {
+        let (key, scanned) = match status {
+            LinkStatus::Making => ("pair.link.making", false),
+            LinkStatus::Waiting => ("pair.link.waiting", false),
+            LinkStatus::Scanned => ("pair.link.scanned", true),
+        };
+        let text = tr(key).to_string();
+        let label = if scanned {
+            theme::semibold(text.clone(), 15.0)
+        } else {
+            theme::secondary(pal, text.clone())
+        };
+        let r = ui.add(egui::Label::new(label).wrap());
+        // Screen readers hear the state change.
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text.clone()));
     }
 }
 

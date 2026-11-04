@@ -9,6 +9,6 @@ calendar_model.rs 12
 call_ui.rs 22
 clipboard_link.rs 41
 connection.rs 64
-pair_ui.rs 19
+pair_ui.rs 8
 share_app.rs 72
 state.rs 35

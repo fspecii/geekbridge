@@ -12,13 +12,22 @@ help), `crates/bridge-apps/src/pair_ui.rs` (desktop UI), `android/.../QrPairActi
    by name; the phone's setup step lists nearby computers by name. One tap on **Pair** dials, asks to pair and shows a
    big code on both screens. Confirm the same code on both (the computer asks for the phone's code to be typed, the
    phone has a **Pair** button).
-2. **QR code (no code comparison).** On the computer choose **Pair with QR code**. On the phone choose
-   **Scan QR code**, then either point the phone's **camera app** at the code and tap the GeekBridge link it shows, use
-   a scanner app, or paste the link (the computer's QR window has **Copy link**). The phone shows "Pair with X?" and
-   waits for **Pair**. No camera permission is requested: GeekBridge never opens the camera itself.
+2. **QR code (no code comparison), like WhatsApp Web.** On the computer, **Link a phone** shows a big code that
+   renews itself before it expires (a 2 minute, single-use token; the first time, with nothing paired, it is already on
+   screen) with a live line: *Waiting for phone…*, *Phone scanned — confirm on phone* (the service saw `qr_accepted`),
+   *Paired ✓ with X*. The code is revoked when the view is left or **Stop showing the code** is pressed. On the phone,
+   **Scan QR code from my computer** opens the in-app camera screen (`QrScanActivity`). Alternatively point the
+   phone's **camera app** at the code and tap the GeekBridge link, use a scanner app, or paste the link. After a scan
+   the phone asks **Connect to X?** (the name is the one in the code, marked unverified, next to the fingerprint),
+   then **Pair with X?**, then lands on Home with **Paired ✓ with X**.
 3. **Something wrong?** Both sides say what happened in plain words (different network, guest Wi-Fi, VPN, firewall,
    expired QR code, wrong computer) and have a **Test connection** button that checks it step by step.
-4. **Done.** A "what to do next" card offers the clipboard and sending a file.
+4. **Done.** Both sides say **Paired ✓**; the computer shows a "what to do next" card (clipboard, sending a file).
+5. **No computer app yet.** The phone offers **Don't have GeekBridge on your computer yet?**: a share sheet / mail draft
+   with the public releases page and three install lines, a copyable short address. Nothing about the phone or any
+   pairing secret is in that text (`ComputerInvite.kt`, unit-tested).
+6. **Unlink.** **Unlink…** on the computer (confirmation names the phone) and **Unlink** on the phone's pair step or
+   Diagnostics. A new QR code always pairs again.
 
 ## Discovery
 
@@ -70,8 +79,21 @@ Flow (phone scans):
 
 A QR code from a hostile source can at worst make the phone dial the attacker's own device and show "Pair with
 <attacker's name>?" with the attacker's certificate fingerprint; a link arriving from outside the app is therefore
-shown on a confirmation screen first ("Only continue if you just chose Pair with QR code on your own computer"). A
+shown on a confirmation screen first ("Only continue if you just clicked Link a phone on your own computer"); a code scanned with this app's own camera screen gets the shorter "Connect to X?" page. A
 photographed or screenshotted QR code is useless after 120 seconds or after one use.
+
+## The in-app scanner (decision)
+
+Options weighed: the Google code scanner (`com.google.android.gms.codescanner`) and ML Kit need Play services or a
+bundled model (+2 to 10 MB, closed components, not on F-Droid); CameraX adds ~1.5 MB and a Google dependency chain; a
+pure-Kotlin decoder would duplicate what the Rust core can already do. Chosen: **Camera2 (platform API, no library) for
+the picture and the native core for the decoding**. The frame's brightness plane (at most 960 x 720) goes to the new
+core action `pairing_decode_qr` (base64 `luma`, `width`, `height`), which runs `rqrr`, a small pure-Rust decoder the
+desktop tests already use; the answer is `{text}` or the error `qr_not_found`. APK cost is the decoder (tens of KB), no
+new Kotlin dependency, works offline. The only new permission is `CAMERA`, asked on the scan screen on first use; the
+screen explains it first, offers the system camera app / scanner app / paste when it is denied, and the manifest marks
+the camera `required="false"`. The picture is decoded in memory and never stored or sent; the decoded link (it holds
+the one-time token) is never logged and is returned only to `QrPairActivity` (not exported scanner).
 
 ## Error and diagnostic help
 

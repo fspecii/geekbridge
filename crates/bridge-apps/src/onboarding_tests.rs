@@ -57,7 +57,7 @@ fn the_default_guide_has_three_steps_the_link_name_update_and_autostart() {
         "Step 3",
         "Open releases page",
         "Copy link",
-        "Pair a phone",
+        "Link a phone",
         "Rename",
         "QR code for the GeekBridge releases page",
     ] {
@@ -65,7 +65,7 @@ fn the_default_guide_has_three_steps_the_link_name_update_and_autostart() {
     }
     for text in [
         "Install the GeekBridge app on your phone",
-        "Pair the phone with this computer",
+        "Link the phone to this computer",
         "Choose optional features",
         "Desk",
         "GeekBridge v1.2.3 is up to date.",

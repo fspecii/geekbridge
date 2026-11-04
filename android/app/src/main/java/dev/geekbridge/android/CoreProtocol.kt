@@ -119,6 +119,9 @@ class CoreClient(
     /** Any `transport_*` request (see [TransportProtocol]); their status snapshots may be larger than other replies. */
     fun transportAction(request: String): CoreOutcome = call(request, Limits.MAX_TRANSPORT_RESPONSE_CHARS)
 
+    /** `pairing_decode_qr`: one camera picture, far over the usual request cap but bounded by the core (docs/android-contract.md). */
+    fun decodeQr(request: String): CoreOutcome = call(request, maxRequestChars = Limits.MAX_DATA_REQUEST_CHARS)
+
     /** `transport_clipboard_*` requests; replies may carry several clipboard items. */
     fun clipboardAction(request: String): CoreOutcome = call(request, Limits.MAX_CLIPBOARD_RESPONSE_CHARS)
 

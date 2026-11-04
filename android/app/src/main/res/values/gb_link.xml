@@ -278,10 +278,10 @@
     <string name="link_wait_for_request">Wait for their request</string>
     <string name="link_disconnect">Disconnect</string>
     <string name="link_auto_accept">Auto-accept files from this computer</string>
-    <string name="link_unpair_button">Unpair %1$s…</string>
-    <string name="link_unpair_title">Unpair %1$s?</string>
-    <string name="link_unpair_message">This removes its stored certificate from this phone. It will have to be paired again, with a new approval, before it is trusted.</string>
-    <string name="link_unpair">Unpair</string>
+    <string name="link_unpair_button">Unlink %1$s…</string>
+    <string name="link_unpair_title">Unlink %1$s?</string>
+    <string name="link_unpair_message">This phone stops trusting this computer: its stored certificate is removed. To use it again, scan a new QR code from the computer. Also click Unlink next to this phone in GeekBridge on the computer.</string>
+    <string name="link_unpair">Unlink</string>
     <string name="link_cancel">Cancel</string>
     <string name="link_prompt_outgoing">You asked %1$s to pair. Compare this code with the one it shows:</string>
     <string name="link_prompt_incoming">%1$s asks to pair. Compare this code with the one it shows:</string>

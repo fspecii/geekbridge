@@ -22,6 +22,16 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   `geekbridge-ctl hotkey install`, `geekbridge-ctl call-overlay-test`, a `doctor` line, `GEEKBRIDGE_CALL_OVERLAY=off|name`.
   See docs/omarchy.md.
 
+- Linking a phone is now like WhatsApp Web (docs/reports/pairing-ux-2.md). Computer: **Link a phone** shows a big QR code
+  that renews itself before its 2 minutes are up, with a live line (Waiting for phone… / Phone scanned — confirm on
+  phone / Paired ✓ with X); with nothing paired yet it is already on screen, and it is revoked when the view is left.
+  Phone: **Scan QR code from my computer** opens an in-app camera screen (Camera2; the picture is decoded in memory by
+  the native core, new action `pairing_decode_qr`, no scanner library, no Play services; new `CAMERA` permission asked on
+  first use, optional), then **Connect to X?**, **Pair**, and Home says **Paired ✓ with X**.
+- **Don't have GeekBridge on your computer yet?** on the phone: share sheet or mail draft with the public releases page
+  and three install lines (no secrets), a copyable short address.
+- **Unlink** replaces Forget/Unpair wording on both sides; the phone's pair step has an Unlink button per computer.
+
 ### Changed
 - The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile
   data"): the core binds its outgoing connections and the announcement socket to the Wi-Fi IPv4 address, with a fallback

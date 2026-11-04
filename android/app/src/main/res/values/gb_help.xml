@@ -12,13 +12,13 @@
     <string name="help_declined_local_h">Pairing was declined on this phone.</string>
     <string name="help_declined_local_a">Start again and tap Pair when you are ready.</string>
     <string name="help_qr_rejected_h">The computer did not accept the QR code.</string>
-    <string name="help_qr_rejected_a">It may have expired or been used already. Show a new QR code on the computer and scan it again.</string>
+    <string name="help_qr_rejected_a">It may have expired or been used already. The code on the computer renews by itself: scan the one on the screen now.</string>
     <string name="help_declined_peer_h">The computer declined the pairing.</string>
     <string name="help_declined_peer_a">Start again and confirm on both devices.</string>
     <string name="help_pair_timeout_h">Pairing timed out before it was confirmed.</string>
     <string name="help_pair_timeout_a">Start again and confirm on both devices within half a minute.</string>
     <string name="help_no_answer_h">The computer did not answer.</string>
-    <string name="help_no_answer_a">Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the computer\'s firewall (TCP and UDP 1716-1764).</string>
+    <string name="help_no_answer_a">Same Wi-Fi? Guest Wi-Fi and VPNs block this. Allow GeekBridge through the computer\'s firewall (TCP and UDP 1716-1764). Still stuck? Run geekbridge-ctl doctor on the computer.</string>
     <string name="help_other_network_h">The computer is on a different network.</string>
     <string name="help_other_network_a">Put both devices on the same Wi-Fi and switch off VPNs.</string>
     <string name="help_closed_h">The connection closed before pairing finished.</string>

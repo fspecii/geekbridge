@@ -2389,6 +2389,83 @@ fn qr_text_is_parsed_by_the_core() {
     );
 }
 
+/// A grey camera frame (base64 of the brightness bytes) holding `text` as a QR code, `px` pixels per module.
+fn qr_frame(text: &str, px: usize, pad: usize) -> (String, usize, usize) {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let code =
+        qrcode::QrCode::with_error_correction_level(text.as_bytes(), qrcode::EcLevel::M).unwrap();
+    let n = code.width();
+    let (w, h) = ((n + 8) * px + pad, (n + 8) * px + pad / 2);
+    let mut img = vec![200u8; w * h];
+    for (i, c) in code.to_colors().into_iter().enumerate() {
+        if c == qrcode::Color::Dark {
+            let (mx, my) = ((i % n + 4) * px + pad / 2, (i / n + 4) * px);
+            for y in my..my + px {
+                for x in mx..mx + px {
+                    img[y * w + x] = 20;
+                }
+            }
+        }
+    }
+    (STANDARD.encode(&img), w, h)
+}
+
+#[test]
+fn a_camera_picture_of_a_pairing_code_is_decoded_by_the_core() {
+    let phone = Phone::start();
+    let text = format!(
+        "geekbridge://pair?v=1&id={}&fp={}&t={QR_TOKEN}&a=192.168.1.20%3A1716&n=Work%20laptop",
+        "a".repeat(32),
+        "cd".repeat(32)
+    );
+    let (luma, w, h) = qr_frame(&text, 5, 40);
+    let v = phone.act(
+        "pairing_decode_qr",
+        json!({"luma": luma, "width": w, "height": h}),
+    );
+    assert_eq!(ok(&v)["text"], text);
+    // The decoded text is the input of pairing_parse_qr, and a frame of the same size is accepted
+    // even though it is far over the 64 KiB limit of other requests.
+    assert!(luma.len() > 64 * 1024);
+    ok(&phone.act("pairing_parse_qr", json!({"text": text})));
+}
+
+#[test]
+fn a_picture_without_a_code_or_with_a_wrong_shape_is_refused_plainly() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let phone = Phone::start();
+    let blank = STANDARD.encode(vec![128u8; 200 * 100]);
+    assert_eq!(
+        code(&phone.act(
+            "pairing_decode_qr",
+            json!({"luma": blank, "width": 200, "height": 100})
+        )),
+        "qr_not_found"
+    );
+    // The size must match the bytes, stay small enough to bound the work, and the data must be base64.
+    for (luma, w, h) in [
+        (blank.clone(), 200u64, 99u64),
+        (blank.clone(), 4000, 4000),
+        (blank.clone(), 8, 8),
+        ("not base64!".to_string(), 200, 100),
+    ] {
+        assert_eq!(
+            code(&phone.act(
+                "pairing_decode_qr",
+                json!({"luma": luma, "width": w, "height": h})
+            )),
+            "invalid_field"
+        );
+    }
+    assert_eq!(
+        code(&phone.act(
+            "pairing_decode_qr",
+            json!({"luma": blank, "width": 200, "height": 100, "x": 1})
+        )),
+        "unknown_field"
+    );
+}
+
 // ------------------------------------------------------------------------------- announce pause (test-gaps-4)
 
 #[test]

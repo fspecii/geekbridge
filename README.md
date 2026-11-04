@@ -82,8 +82,8 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    `sudo apt install ./geekbridge_*.deb`, or extract the installer tarball and run `./install.sh` (per user; the service
    starts at login). Windows and macOS: no prebuilt binaries yet (build from source, below). Check downloads against
    `SHA256SUMS`.
-2. **Pair via QR.** Same Wi-Fi. On the computer open **GeekBridge** > **Pair with QR code**. On the phone, in the setup
-   wizard choose **Scan QR code**, point the camera at it, tap the link and confirm **Pair**. Or pair by name and compare
+2. **Pair via QR.** Same Wi-Fi. On the computer open **GeekBridge** > **Link a phone** (a QR code that renews itself). On the phone, in the setup
+   wizard choose **Scan QR code from my computer**, point the camera at it and confirm **Connect** and **Pair**. Or pair by name and compare
    the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**).
 3. **Clipboard hotkey.** Switch clipboard sync on for the phone (both sides). Copy on the computer and it reaches the
    phone. To pull the phone's clipboard press **Ctrl+Shift+V** or bind

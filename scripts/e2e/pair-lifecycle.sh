@@ -76,12 +76,12 @@ finish_setup() { # mark the setup wizard finished so Home/Diagnostics open direc
   $ADB shell am force-stop $PKG; sleep 1
   $ADB shell "run-as $PKG sh -c 'f=shared_prefs/geekbridge_state.xml; [ -f \$f ] || { mkdir -p shared_prefs; printf \"<?xml version=\\\"1.0\\\" encoding=\\\"utf-8\\\" standalone=\\\"yes\\\" ?>\\n<map>\\n</map>\\n\" > \$f; }; grep -q setup_finished \$f || sed -i \"s#</map>#    <boolean name=\\\"setup_finished\\\" value=\\\"true\\\" />\\n</map>#\" \$f'"
 }
-phone_unpair() { # Diagnostics > Unpair <computer> > confirm; works with the PC unreachable
+phone_unpair() { # Diagnostics > Unlink <computer> > confirm; works with the PC unreachable
   goto_diag || return 1
-  ui scrolltap "Unpair " >/dev/null || return 1; sleep 1
-  ui tap Unpair >/dev/null; sleep 3; ui has "Unpaired on this phone"
+  ui scrolltap "Unlink " >/dev/null || return 1; sleep 1
+  ui tap Unlink >/dev/null; sleep 3; ui has "Unpaired on this phone"
 }
-phone_knows_computer() { goto_diag && { ui scrollto "Unpair" >/dev/null 2>&1; ui dump | cut -f1 | grep -q '^Unpair '; }; }
+phone_knows_computer() { goto_diag && { ui scrollto "Unlink" >/dev/null 2>&1; ui dump | cut -f1 | grep -q '^Unlink '; }; }
 phone_paired_with_computer() { # Diagnostics lists the computer as paired
   goto_diag || return 1
   ui dump | cut -f1 | grep -qx "none" && return 1
@@ -90,7 +90,7 @@ phone_paired_with_computer() { # Diagnostics lists the computer as paired
 pc_paired() { [[ -n "$(paired_ids)" ]]; }
 
 # First pairing through a QR link (the setup every scenario starts from).
-qr_pair() { # -> 0 when the phone reached "What to do next" and the PC lists the phone; prints seconds on stdout
+qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the phone; prints seconds on stdout
   local t0 p; t0=$(date +%s); p="$(ctl pair-qr 2>/dev/null | head -1)"
   [[ "$p" == geekbridge://pair?* ]] || return 1
   scan "$p"
@@ -101,13 +101,13 @@ qr_pair() { # -> 0 when the phone reached "What to do next" and the PC lists the
   local i seen=0 dump
   for ((i = 0; i < 40; i++)); do
     dump="$(ui dump | cut -f1)"
-    grep -q "^What to do next" <<<"$dump" && break
+    grep -q "^Paired ✓ with" <<<"$dump" && break
     if grep -q "^Computer identity" <<<"$dump"; then
       ((seen)) || pshot "$TAG-qr-approve"; seen=1; ui tap Pair --exact >/dev/null
     fi
     sleep 1
   done
-  grep -q "^What to do next" <<<"$dump" || { pshot "$TAG-qr-no-done"; return 3; }
+  grep -q "^Paired ✓ with" <<<"$dump" || { pshot "$TAG-qr-no-done"; return 3; }
   pshot "$TAG-qr-done"
   wait_for 10 pc_paired || return 5
   echo $(( $(date +%s) - t0 ))

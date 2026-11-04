@@ -352,14 +352,7 @@ class LinkSection(
         }
     }
 
-    private fun confirmUnpair(p: PairedPeer) {
-        AlertDialog.Builder(activity)
-            .setTitle(activity.getString(R.string.link_unpair_title, Bidi.isolate(p.name.ifEmpty { activity.getString(R.string.link_this_computer) })))
-            .setMessage(activity.getString(R.string.link_unpair_message))
-            .setPositiveButton(R.string.link_unpair) { _, _ -> controller.unpair(p.deviceId) }
-            .setNegativeButton(R.string.link_cancel, null)
-            .show()
-    }
+    private fun confirmUnpair(p: PairedPeer) = UnlinkDialog.show(activity, controller, p)
 
     // ------------------------------------------------------------------ pairing dialog
 

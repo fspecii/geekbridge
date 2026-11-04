@@ -29,6 +29,8 @@ pub struct ControlState {
     pub busy: bool,
     /// The QR code the service issued, while the QR window is open.
     pub pair_qr: Option<ipc::PairQr>,
+    /// A phone presented the code and the service accepted it: the phone is asking its owner to confirm.
+    pub qr_scanned: bool,
     /// Latest "Test connection" answer.
     pub test: Option<bridge_core::pairing_help::ConnectionTest>,
     /// The last pairing/connect failure in plain words.
@@ -249,6 +251,7 @@ fn apply_result(state: &mut ControlState, command: &Request, result: Result<Resp
         }
         (Request::PairQrCancel, Ok(_)) => {
             state.pair_qr = None;
+            state.qr_scanned = false;
             state.notice = None;
         }
         (Request::TestConnection { .. }, Ok(Response::ConnectionTest(t))) => {
@@ -269,9 +272,17 @@ fn absorb_events(state: &mut ControlState, events: &[ipc::Event]) {
             ipc::EventKind::PairFailed { reason }
             | ipc::EventKind::QrRefused { reason }
             | ipc::EventKind::ConnectFailed { reason } => {
+                state.qr_scanned = false;
                 state.problem = Some(Problem::from_reason(reason));
             }
-            ipc::EventKind::Paired => state.problem = None,
+            ipc::EventKind::QrAccepted => {
+                state.qr_scanned = true;
+                state.problem = None;
+            }
+            ipc::EventKind::Paired => {
+                state.qr_scanned = false;
+                state.problem = None;
+            }
             _ => {}
         }
     }
@@ -284,7 +295,7 @@ fn request_notice(request: &Request) -> &'static str {
         Request::Approve { .. } => "Approval sent. Waiting for pairing to finish.",
         Request::Deny { .. } => "Pairing declined.",
         Request::Disconnect { .. } => "Disconnect requested.",
-        Request::Unpair { .. } => "Forget-phone request accepted.",
+        Request::Unpair { .. } => "Phone unlinked.",
         Request::SetDeviceName { .. } => "Name saved. Phones show it from their next connection.",
         Request::Ping { .. } => "Connection check sent.",
         _ => "Request accepted.",
@@ -491,7 +502,7 @@ impl Connections {
                     }
                 }
                 if ui
-                    .add_enabled(enabled, egui::Button::new("Forget…"))
+                    .add_enabled(enabled, egui::Button::new("Unlink…"))
                     .clicked()
                 {
                     self.forget = Some((phone.device_id.clone(), display_text(&phone.name)));
@@ -623,21 +634,21 @@ impl Connections {
             if theme::escape_pressed(ctx) {
                 self.forget = None;
             }
-            egui::Window::new("Forget phone?")
+            egui::Window::new("Unlink phone?")
                 .id(egui::Id::new("forget-phone"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(format!(
-                        "You'll need to pair with {name} again to reconnect."
+                        "{name} will no longer be trusted by this computer. To use it again, link it with a new QR code."
                     ));
                     ui.horizontal(|ui| {
                         if ui.button("Cancel").clicked() {
                             self.forget = None;
                         }
                         if ui
-                            .add_enabled(!self.state.busy, egui::Button::new("Forget phone"))
+                            .add_enabled(!self.state.busy, egui::Button::new("Unlink phone"))
                             .clicked()
                         {
                             self.submit(Request::Unpair { device_id: id });

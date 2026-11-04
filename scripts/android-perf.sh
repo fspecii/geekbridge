@@ -376,8 +376,8 @@ stage_nopair_phone() {
   A shell am start -f 0x04000000 -n "$PKG/.HomeActivity" >/dev/null; sleep 3
   rec nopair.service_before "$(svc_count)" "LinkService records while paired (1 expected)"
   timeout 90 "$UI" scrolltap "Diagnostics & about" && sleep 3
-  timeout 90 "$UI" scrolltap "Unpair" --contains >/dev/null 2>&1; sleep 2
-  timeout 60 "$UI" tap Unpair; sleep 8
+  timeout 90 "$UI" scrolltap "Unlink" --contains >/dev/null 2>&1; sleep 2
+  timeout 60 "$UI" tap Unlink; sleep 8
   rec nopair.service_after_unpair_app_open "$(svc_count)" "after the phone's Unpair, Diagnostics still open"
   close_app; sleep 8
   rec nopair.service_after_unpair_closed "$(svc_count)" "after the phone's Unpair, app closed (0 expected)"
