@@ -76,6 +76,11 @@ echo "-- 3. arm the hidden switch"
 a shell am broadcast -n "$PKG/.DebugControlReceiver" -a dev.geekbridge.debug.SET --es what call_audio_experiment --ez on true >/dev/null
 a shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1 || true   # a foreground app is not silenced by the capture policy
 
+echo "-- 3b. control: the same probe with NO call (an emulator returned loud synthetic audio with no call, so compare)"
+a shell am broadcast -n "$PKG/.DebugControlReceiver" -a dev.geekbridge.debug.SET --es what call_audio_probe --ez on true >/dev/null
+sleep 8
+a logcat -d -s GB 2>/dev/null | grep -i "call audio probe" | tail -1
+
 echo "-- 4. the call"
 pause "Place or answer a CELLULAR call now (iPhone -> this phone), get a far-end voice talking, then"
 SC_PID=""

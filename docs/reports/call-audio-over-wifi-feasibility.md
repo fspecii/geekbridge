@@ -1,6 +1,8 @@
 # Call audio over Wi-Fi (no PC Bluetooth): feasibility spike
 
-Date: 2026-11-04. Time-boxed desk spike plus a debug-only prototype. **No real cellular call was captured, so nothing here is a measured result on a phone.** The prototype has been unit-tested for its result classification and built; it has not been run against a real call.
+**Status (2026-11-04):** experimental only. Bluetooth stays the primary call-audio path; any Wi-Fi/privileged path would be an opt-in debug-grade experiment, off by default and absent from release builds (`scripts/check-release-isolation.sh` passes with the probe in the tree). Emulator measurements are in the "Emulator results" section below; the downlink-capture and uplink-injection questions on a real phone are still unmeasured.
+
+Date: 2026-11-04. Time-boxed desk spike plus a debug-only prototype. **No real cellular call was captured, so nothing here is a measured result on a phone.** The prototype has been unit-tested for its result classification and built; it has been run only against emulated calls (see "Emulator results"), never a real call.
 
 Tags: **[DOC]** stated by a primary page I fetched (linked). **[SECONDARY]** project READMEs / forums, claims by others. **[RECALL]** from my memory of AOSP, not re-checked this session. **[GUESS]** inference, to be proven or killed on the phone.
 
@@ -87,8 +89,30 @@ Even in the best case (shell helper started over Wireless debugging, downlink re
 - `android/app/src/debug/.../CallAudioProbe.kt`: hidden switch `call_audio_experiment` (default off, stored in debug prefs, set through `DebugControlReceiver` with `--es what call_audio_experiment --ez on true`; `--es what call_audio_probe` runs one probe). It opens an `AudioRecord` on `VOICE_DOWNLINK` for 5 s, keeps only RMS/peak, sends nothing. Result codes shown in the debug state dump (`geekbridge-ctl phone-state`) under "Calls": `DISABLED`, `NO_RECORD_AUDIO`, `SECURITY_EXCEPTION`, `ILLEGAL_STATE`, `SILENCED_BY_POLICY` (client silenced by the foreground rule), `SILENT` (RMS 0), `AUDIO_PRESENT`.
 - `RECORD_AUDIO` is declared in the **debug** manifest only; the release manifest is unchanged.
 - `scripts/realdevice-call-audio-probe.sh`: walks the owner through Wireless debugging, tries `pm grant ... CAPTURE_AUDIO_OUTPUT` and prints the failure, arms the switch, waits for the call, runs the probe, reads the result with `phone-state`, and, if `scrcpy` is installed, also tries the shell-uid `voice-call-downlink` route into `~/.cache/geekbridge-call-audio-probe/`.
-- Tested: `CallAudioProbeTest` (classification of silence / audio / policy silencing / no samples), `gradlew :app:testDebugUnitTest :app:lintDebug` both exit 0 (the first lint run caught an API 29 call, now guarded). Not tested: any real or emulated call. The Android emulator's modem can simulate call state with `adb emu gsm call`, but its voice path carries no audio, so a result there says nothing about a phone.
+- Tested: `CallAudioProbeTest` (classification of silence / audio / policy silencing / no samples), `gradlew :app:testDebugUnitTest :app:lintDebug` both exit 0 (the first lint run caught an API 29 call, now guarded). Real call: not tested. Emulator calls: see the next section; they say nothing about a Samsung phone.
 - Expected on the real phone: the app-uid probe reports `SECURITY_EXCEPTION` or `ILLEGAL_STATE` ([GUESS], strongly). If it ever says `AUDIO_PRESENT` the whole analysis above needs rewriting.
+
+## Emulator results (measured 2026-11-04)
+
+**The emulator's voice HAL is not Samsung's (or any phone's) modem. These rows show how Android's permission and policy layers behave and which results are false positives; they do not show that a real call can be captured.** Setup: fresh AVDs from the repo's SDK, own adb server (port 16101), console ports 5610/5612, headless, `-no-audio`; call state from `adb emu gsm call 5551234` + `gsm accept 5551234` (Telecom/telephony registry showed `mCallState=2`, offhook). App: this branch's debug APK, `RECORD_AUDIO` granted, `call_audio_experiment` ON, app in the foreground. Shell-uid route: scrcpy v5.0.1 prebuilt (SHA-256 checked against the release's SHA256SUMS), `--no-video --no-playback --audio-source=...`, 20 s, levels via `ffmpeg volumedetect`.
+
+| Image | Probe in app uid, no call | Probe in app uid, call active | `pm grant ... CAPTURE_AUDIO_OUTPUT` | scrcpy shell-uid `voice-call-downlink` / `voice-call-uplink` / `voice-call`, call active | `adb root` |
+|---|---|---|---|---|---|
+| API 36 `google_apis` (userdebug, dev-keys) | `ILLEGAL_STATE` | `ILLEGAL_STATE` (`AudioFlinger could not create record track, status: -1`; `AudioRecord` init error -20) | `SecurityException: Permission android.permission.CAPTURE_AUDIO_OUTPUT is managed by role` | server started, file written; mean -9.0 / -8.9 / -9.0 dB, max 0.0 dB (loud) | not run (userdebug) |
+| API 36 `google_apis_playstore` (user, release-keys) | `ILLEGAL_STATE` | `ILLEGAL_STATE` (same two log lines) | same `SecurityException ... managed by role` | same: file written; mean -9.0 / -8.9 / -9.0 dB, max 0.0 dB | `adbd cannot run as root in production builds` |
+
+Not run: `NO_RECORD_AUDIO` (only with the grant withheld), `SECURITY_EXCEPTION` (Android reported the refusal as a failed `AudioRecord` init, not a thrown exception, on this image), `SILENCED_BY_POLICY`, `SILENT`, `AUDIO_PRESENT` from the app uid. Not run: API 34, a root-uid probe, the `app_process` helper, any uplink injection (AudioPolicy/AudioMix, `REMOTE_SUBMIX`; scrcpy PRs #6439/#7004, issue #3880 were not read or tried).
+
+What these rows do establish:
+
+1. **A normal app cannot read `VOICE_DOWNLINK`**, call or no call, on both a userdebug and a production-signed API 36 image: the framework refuses to create the record track. The probe reports this as `ILLEGAL_STATE`. [measured, emulator]
+2. **`pm grant` of `CAPTURE_AUDIO_OUTPUT` fails** and Android's own words are "is managed by role", i.e. it is a role-held permission on API 36, not something `adb` can hand to an app uid. [measured; supersedes the earlier "signature permission" recall]
+3. **The shell uid is accepted by audioserver for the voice-call sources**: scrcpy's server captured on both images without error, on the production image too (no root needed). [measured]
+4. **That shell-uid capture is not evidence of call audio.** A control run with *no call* gave the same loud signal (`voice-call-downlink`, no call: mean -8.9 dB, max 0.0 dB), while the plain `mic` source gave about -77 dB. So the emulator HAL feeds a synthetic signal into the voice-call sources whether or not a call exists. Do not treat "non-zero audio" as success without a no-call control and listening to the recording. [measured]
+
+Consequence for the probe: `AUDIO_PRESENT` means only "non-zero samples". On a real phone, always run the same probe once with no call and compare before believing it (the script's no-call step should be added to the owner's procedure).
+
+Cleanup: emulators stopped, the three scratch AVDs deleted, the unused API 34 playstore image uninstalled. The API 36 playstore system image stays in the shared SDK for the next run. Raw logs and recordings are in `/home/ambsd/.cache/gb-wifi-out/` (not committed).
 
 ## 7. Open questions, cheapest first
 
