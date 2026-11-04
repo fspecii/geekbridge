@@ -428,7 +428,15 @@ impl Connections {
         ui.label(theme::overline(pal, "Phone linking"));
         if let Some(error) = &self.state.error {
             ui.add(egui::Label::new(theme::secondary(pal, error)).wrap());
-            if ui.button("Check phone linking").clicked() {
+            if theme::pill_button(
+                ui,
+                pal,
+                "Check phone linking",
+                theme::ButtonKind::Plain,
+                true,
+            )
+            .clicked()
+            {
                 self.refresh();
             }
             return;
