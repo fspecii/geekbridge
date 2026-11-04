@@ -508,9 +508,7 @@ impl Contacts {
 }
 
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
+    u64::try_from(crate::localtime::unix_now_ms()).unwrap_or(0)
 }
 
 fn badge(ui: &mut egui::Ui, pal: &Palette) {

@@ -391,11 +391,42 @@ pub fn split_unix(unix_seconds: i64, offset_seconds: i32) -> (Date, u32) {
     )
 }
 
+thread_local! {
+    static FIXED_UNIX_MS: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pins this thread's clock to `unix_ms` until the guard drops (tests and golden screens use
+/// this so nothing depends on the real date).
+pub struct FixedClock(Option<i64>);
+
+impl FixedClock {
+    pub fn set(unix_ms: i64) -> FixedClock {
+        FixedClock(FIXED_UNIX_MS.with(|c| c.replace(Some(unix_ms))))
+    }
+
+    /// Pins to local midnight-free noon UTC of `date`.
+    pub fn at_noon_utc(date: Date) -> FixedClock {
+        Self::set(date.to_days() * 86_400_000 + 43_200_000)
+    }
+}
+
+impl Drop for FixedClock {
+    fn drop(&mut self) {
+        FIXED_UNIX_MS.with(|c| c.set(self.0));
+    }
+}
+
+/// Milliseconds since the Unix epoch, honouring [`FixedClock`].
+pub fn unix_now_ms() -> i64 {
+    FIXED_UNIX_MS.with(std::cell::Cell::get).unwrap_or_else(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as i64)
+    })
+}
+
 pub fn now() -> Now {
-    let unix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let unix = unix_now_ms().div_euclid(1000);
     let offset = utc_offset_seconds(unix);
     let (date, seconds_into_day) = split_unix(unix, offset.unwrap_or(0));
     Now {

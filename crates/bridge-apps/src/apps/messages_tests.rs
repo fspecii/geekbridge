@@ -56,11 +56,13 @@ fn msg(uid: i64, outgoing: bool, body: &str, date_ms: u64) -> MessageItem {
     }
 }
 
+/// Every test runs on the same pinned day (Wednesday 4 Nov 2026, noon UTC).
+fn pin() -> crate::localtime::FixedClock {
+    crate::localtime::FixedClock::set(1_793_793_600_000)
+}
+
 fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    u64::try_from(crate::localtime::unix_now_ms()).unwrap_or(0)
 }
 
 fn convo(id: i64, title: &str, body: &str, unread: u32) -> ConversationItem {
@@ -168,6 +170,7 @@ fn ready(m: &mut Messages, rig: &mut Rig) {
 
 #[test]
 fn every_section_draws_for_every_sms_state_and_window_size() {
+    let _clock = pin();
     for sms in [
         DataState::ConsentOff,
         DataState::Offline,
@@ -201,6 +204,7 @@ fn every_section_draws_for_every_sms_state_and_window_size() {
 
 #[test]
 fn the_conversation_pane_opens_a_thread_searches_and_loads_older_messages() {
+    let _clock = pin();
     let mut m = messages_with(fixture(DataState::Ready, true));
     let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
     ready(&mut m, &mut rig);
@@ -233,6 +237,7 @@ fn the_conversation_pane_opens_a_thread_searches_and_loads_older_messages() {
 
 #[test]
 fn a_number_handed_over_by_contacts_opens_its_thread_or_a_new_message() {
+    let _clock = pin();
     for (number, expect_compose) in [("+1 555 000 0003", false), ("+49 30 1234", true)] {
         let mut m = messages_with(fixture(DataState::Ready, true));
         m.open_number = Some(number.into());
@@ -250,6 +255,7 @@ fn a_number_handed_over_by_contacts_opens_its_thread_or_a_new_message() {
 
 #[test]
 fn compose_keeps_the_draft_until_the_service_accepts_and_survives_odd_text() {
+    let _clock = pin();
     let mut m = messages_with(fixture(DataState::Ready, true));
     m.open_compose();
     assert!(matches!(m.focus, Some(Focus::Recipient)));
@@ -281,6 +287,7 @@ fn compose_keeps_the_draft_until_the_service_accepts_and_survives_odd_text() {
 
 #[test]
 fn a_failing_service_shows_a_problem_and_keeps_the_ui_usable() {
+    let _clock = pin();
     for model in [
         crate::state::DiscoveryModel::Checking,
         crate::state::DiscoveryModel::ServiceUnavailable {
@@ -317,6 +324,7 @@ fn a_failing_service_shows_a_problem_and_keeps_the_ui_usable() {
 
 #[test]
 fn many_devices_and_empty_views_render() {
+    let _clock = pin();
     let mut view = MessagesView::default();
     view.devices = (0..30).map(|_| device(DataState::Ready, true)).collect();
     let mut m = messages_with(view);

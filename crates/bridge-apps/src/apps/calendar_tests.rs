@@ -53,11 +53,13 @@ fn ev(id: &str, title: &str, start_ms: i64, end_ms: i64) -> EventItem {
     }
 }
 
+/// Every test runs on the same pinned day (Wednesday 4 Nov 2026, noon UTC).
+fn pin() -> crate::localtime::FixedClock {
+    crate::localtime::FixedClock::set(1_793_793_600_000)
+}
+
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
+    crate::localtime::unix_now_ms()
 }
 
 const H: i64 = 3_600_000;
@@ -162,6 +164,7 @@ fn ready(cal: &mut Calendar, rig: &mut Rig) {
 
 #[test]
 fn every_mode_draws_the_fixture_at_wide_and_narrow_sizes() {
+    let _clock = pin();
     for (w, h) in [(1100.0, 760.0), (480.0, 600.0), (260.0, 320.0)] {
         for mode in [Mode::Month, Mode::Week, Mode::Day, Mode::List] {
             let mut cal = calendar_with(fixture_view(DataState::Ready));
@@ -174,38 +177,114 @@ fn every_mode_draws_the_fixture_at_wide_and_narrow_sizes() {
     }
 }
 
-#[test]
-fn stepping_and_jumping_move_the_shown_day_in_every_mode() {
-    let mut cal = Calendar::default();
-    let now = localtime::now();
-    for (mode, min_gap, max_gap) in [
-        (Mode::Day, 1, 1),
-        (Mode::Week, 7, 7),
-        (Mode::Month, 28, 31),
-        (Mode::List, 1, 31),
-    ] {
-        cal.mode = mode;
-        cal.picked = None;
-        let before = cal.shown(&now);
-        cal.step(1, &now);
-        let after = cal.shown(&now);
-        assert!(after != before, "{mode:?}: next moved");
-        assert!(
-            (i64::from(off(after)) - i64::from(off(before))).abs() <= 60,
-            "dst jump at most an hour"
-        );
-        let gap = (after.to_days() - before.to_days()).abs();
-        assert!((min_gap..=max_gap).contains(&gap), "{mode:?}: {gap}");
-        cal.step(-2, &now);
-        assert!(cal.shown(&now) != after);
-        cal.select_day(now.date, &now);
-        assert_eq!(cal.shown(&now), now.date);
-        assert!(!cal.title(&now).is_empty());
+fn now_on(year: i32, month: u32, day: u32) -> Now {
+    Now {
+        date: Date { year, month, day },
+        seconds_into_day: 12 * 3600,
+        local_zone_known: true,
     }
 }
 
 #[test]
+fn stepping_and_jumping_move_the_shown_day_in_every_mode() {
+    let _clock = pin();
+    // Month starts and ends, a Sunday the 1st (Nov 2026), leap day, year ends, short and long months.
+    let todays = [
+        (2026, 11, 1),
+        (2026, 11, 4),
+        (2026, 11, 30),
+        (2026, 2, 1),
+        (2026, 2, 28),
+        (2028, 2, 29),
+        (2027, 1, 31),
+        (2026, 12, 31),
+        (2027, 1, 1),
+        (2026, 3, 29),
+        (2026, 10, 25),
+    ];
+    for (y, m, d) in todays {
+        let now = now_on(y, m, d);
+        let mut cal = Calendar::default();
+        for (mode, min_gap, max_gap) in [
+            (Mode::Day, 1, 1),
+            (Mode::Week, 7, 7),
+            // A month step lands on the 1st of the next month, wherever in the month it starts.
+            (Mode::Month, 1, 31),
+            (Mode::List, 28, 28),
+        ] {
+            cal.mode = mode;
+            cal.picked = None;
+            let before = cal.shown(&now);
+            cal.step(1, &now);
+            let after = cal.shown(&now);
+            assert!(after != before, "{y}-{m}-{d} {mode:?}: next moved");
+            let gap = (after.to_days() - before.to_days()).abs();
+            assert!(
+                (min_gap..=max_gap).contains(&gap),
+                "{y}-{m}-{d} {mode:?}: {gap}"
+            );
+            if mode == Mode::Month {
+                assert_eq!(after.day, 1);
+                assert_eq!(
+                    after.year * 12 + after.month as i32,
+                    before.year * 12 + before.month as i32 + 1
+                );
+            }
+            cal.step(-2, &now);
+            assert!(cal.shown(&now) != after);
+            cal.select_day(now.date, &now);
+            assert_eq!(cal.shown(&now), now.date);
+            assert!(!cal.title(&now).is_empty());
+        }
+    }
+}
+
+#[test]
+fn month_rows_cover_four_five_and_six_week_months() {
+    use crate::calendar_model::{days_in_month, month_grid, month_start};
+    // Feb 2027 starts on a Monday: exactly 4 weeks. Nov 2026 (Sunday the 1st) needs 6.
+    for (y, m, weeks) in [
+        (2027, 2, 4),
+        (2026, 4, 5),
+        (2026, 11, 6),
+        (2026, 3, 6),
+        (2028, 2, 5),
+    ] {
+        let first = month_start(Date {
+            year: y,
+            month: m,
+            day: 15,
+        });
+        let last = Date {
+            day: days_in_month(y, m),
+            ..first
+        };
+        let grid = month_grid(first);
+        let used = grid
+            .iter()
+            .filter(|row| row.iter().any(|d| d.month == m && d.year == y))
+            .count();
+        assert_eq!(used, weeks, "{y}-{m}");
+        assert!(grid.iter().flatten().any(|d| *d == first), "{y}-{m} first");
+        assert!(grid.iter().flatten().any(|d| *d == last), "{y}-{m} last");
+        assert_eq!(grid[0][0].weekday() as i64, 0, "Monday first");
+    }
+}
+
+#[test]
+fn leap_years_and_month_lengths() {
+    use crate::calendar_model::days_in_month;
+    assert_eq!(days_in_month(2028, 2), 29);
+    assert_eq!(days_in_month(2026, 2), 28);
+    assert_eq!(days_in_month(2100, 2), 28);
+    assert_eq!(days_in_month(2000, 2), 29);
+    assert_eq!(days_in_month(2026, 11), 30);
+    assert_eq!(days_in_month(2026, 12), 31);
+}
+
+#[test]
 fn clicking_an_event_opens_the_details_and_escape_style_state_is_clean() {
+    let _clock = pin();
     let mut cal = calendar_with(fixture_view(DataState::Ready));
     cal.mode = Mode::List;
     let mut rig = Rig::new(AppKind::Agenda, 1100.0, 760.0);
@@ -231,6 +310,7 @@ fn clicking_an_event_opens_the_details_and_escape_style_state_is_clean() {
 
 #[test]
 fn the_editor_opens_for_new_and_existing_events_and_survives_bad_input() {
+    let _clock = pin();
     let view = fixture_view(DataState::Ready);
     let mut cal = calendar_with(view.clone());
     let mut rig = Rig::new(AppKind::Agenda, 1000.0, 760.0);
@@ -280,6 +360,7 @@ fn the_editor_opens_for_new_and_existing_events_and_survives_bad_input() {
 
 #[test]
 fn missing_service_unpaired_and_error_states_render_their_explanations() {
+    let _clock = pin();
     for model in [
         DiscoveryModel::Checking,
         DiscoveryModel::ServiceUnavailable {
@@ -344,6 +425,7 @@ fn missing_service_unpaired_and_error_states_render_their_explanations() {
 
 #[test]
 fn a_thousand_events_in_one_day_still_render() {
+    let _clock = pin();
     let n = now_ms();
     let mut v = fixture_view(DataState::Ready);
     v.events = (0..1000)
@@ -366,6 +448,7 @@ fn a_thousand_events_in_one_day_still_render() {
 
 #[test]
 fn keyboard_and_clicks_on_the_empty_window_do_not_panic() {
+    let _clock = pin();
     let mut cal = calendar_with(fixture_view(DataState::Ready));
     let mut rig = Rig::new(AppKind::Agenda, 1000.0, 700.0);
     ready(&mut cal, &mut rig);

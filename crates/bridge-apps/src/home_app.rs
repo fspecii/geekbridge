@@ -136,9 +136,7 @@ impl GuideEnv {
 }
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64)
+    localtime::unix_now_ms()
 }
 
 /// One short line each for the home tiles: what is true right now, in plain words.

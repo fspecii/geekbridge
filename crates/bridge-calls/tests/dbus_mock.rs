@@ -659,8 +659,16 @@ fn signals_wake_the_watcher_and_quiet_times_out() {
     let bus = bus_or_skip!();
     let mock = MockService::start(&bus);
     let b = backend(&bus);
-    // Drain anything from startup.
-    let _ = b.wait_for_change(Duration::from_millis(200));
+    // Drain startup signals until the bus has been quiet for a moment (event-driven, so a slow
+    // machine only makes this loop longer, never the assertion below wrong).
+    let mut quiet = false;
+    for _ in 0..50 {
+        if !b.wait_for_change(Duration::from_millis(200)).unwrap() {
+            quiet = true;
+            break;
+        }
+    }
+    assert!(quiet, "bus never went quiet after startup");
     assert!(
         !b.wait_for_change(Duration::from_millis(150)).unwrap(),
         "quiet bus must time out"
@@ -674,8 +682,12 @@ fn signals_wake_the_watcher_and_quiet_times_out() {
         b.wait_for_change(Duration::from_secs(3)).unwrap(),
         "burst wakes once"
     );
-    // Service death is signalled via NameOwnerChanged.
-    let _ = b.wait_for_change(Duration::from_millis(200));
+    // Service death is signalled via NameOwnerChanged. Drain the burst first.
+    for _ in 0..50 {
+        if !b.wait_for_change(Duration::from_millis(200)).unwrap() {
+            break;
+        }
+    }
     drop(mock);
     assert!(b.wait_for_change(Duration::from_secs(3)).unwrap());
     assert_eq!(b.snapshot().unwrap().service, ServiceStatus::Absent);
