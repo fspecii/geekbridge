@@ -4,7 +4,7 @@ apps/calendar.rs 101
 apps/calls.rs 13
 apps/clipboard.rs 26
 apps/contacts.rs 28
-apps/messages.rs 80
+apps/messages.rs 79
 calendar_model.rs 12
 call_ui.rs 22
 clipboard_link.rs 41

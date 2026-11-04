@@ -135,6 +135,15 @@ fn take_send_key(ui: &egui::Ui) -> bool {
 }
 
 /// Only Ctrl/Cmd+Enter (the compose body: Enter there is a new line).
+/// The compose box hint: the send chord is Cmd+Enter on a Mac (egui's `COMMAND`), Ctrl+Enter elsewhere.
+fn compose_hint() -> &'static str {
+    crate::i18n::tr(if cfg!(target_os = "macos") {
+        "messages.compose_hint.cmd"
+    } else {
+        "messages.compose_hint.ctrl"
+    })
+}
+
 fn take_ctrl_enter(ui: &egui::Ui) -> bool {
     ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter))
 }
@@ -1099,10 +1108,7 @@ impl Messages {
                     ui.add(
                         egui::TextEdit::multiline(&mut self.draft)
                             .frame(false)
-                            .hint_text(
-                                RichText::new("Write a message (Ctrl+Enter sends)")
-                                    .color(pal.text3),
-                            )
+                            .hint_text(RichText::new(compose_hint()).color(pal.text3))
                             .font(FontId::new(15.0, FontFamily::Proportional))
                             .desired_rows(rows)
                             .desired_width(f32::INFINITY),
@@ -1929,6 +1935,21 @@ impl AppView for Messages {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_compose_hint_names_the_chord_the_platform_uses() {
+        let hint = super::compose_hint();
+        assert_eq!(
+            hint.contains("Cmd+Enter"),
+            cfg!(target_os = "macos"),
+            "{hint}"
+        );
+        assert_eq!(
+            hint.contains("Ctrl+Enter"),
+            !cfg!(target_os = "macos"),
+            "{hint}"
+        );
+    }
+
     use super::*;
     use bridge_core::{AppKind, Snapshot};
 

@@ -27,7 +27,29 @@ pub fn lines(about: &About) -> Vec<String> {
 /// What a button opens: the installed file, else the page on GitHub. Only these fixed
 /// targets are ever passed to the system opener.
 fn open(target: &DocTarget) {
-    open_in_desktop(&target.open_arg());
+    let (program, args) = open_command(std::env::consts::OS, target);
+    match program {
+        "" => open_in_desktop(&target.open_arg()),
+        _ => {
+            if let Ok(mut child) = std::process::Command::new(program).args(args).spawn() {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+        }
+    }
+}
+
+/// The program that shows an installed document as text, or `""` for the system default. `LICENSE` has
+/// no extension and `THIRD_PARTY_NOTICES.md` usually no association, so Windows (`explorer`) would ask
+/// "How do you want to open this file?" and a Mac may find no application: Notepad and `open -t`
+/// (the default text editor) always work. Web pages and Linux use the system opener.
+fn open_command(os: &str, target: &DocTarget) -> (&'static str, Vec<String>) {
+    match (os, target) {
+        ("windows", DocTarget::File(p)) => ("notepad", vec![p.display().to_string()]),
+        ("macos", DocTarget::File(p)) => ("open", vec!["-t".into(), p.display().to_string()]),
+        _ => ("", Vec::new()),
+    }
 }
 
 pub fn show(ui: &mut egui::Ui, pal: &Palette, about: &About) {
@@ -65,6 +87,25 @@ pub fn show(ui: &mut egui::Ui, pal: &Palette, about: &About) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_documents_open_as_text_on_windows_and_macos_only() {
+        let file = DocTarget::File("C:\\GeekBridge\\LICENSE".into());
+        assert_eq!(
+            open_command("windows", &file),
+            ("notepad", vec!["C:\\GeekBridge\\LICENSE".to_owned()])
+        );
+        assert_eq!(open_command("macos", &file).1[0], "-t");
+        assert_eq!(open_command("linux", &file).0, "");
+        let url = DocTarget::Url(about::LICENSE_URL);
+        for os in ["windows", "macos", "linux"] {
+            assert_eq!(
+                open_command(os, &url).0,
+                "",
+                "web pages use the system opener"
+            );
+        }
+    }
 
     #[test]
     fn every_fact_is_in_english_text() {

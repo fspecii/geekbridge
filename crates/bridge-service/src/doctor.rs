@@ -557,6 +557,16 @@ pub fn run(i: &Inputs) -> Vec<Check> {
     out
 }
 
+/// The fix line when this computer cannot play Wi-Fi call audio: PipeWire's tools on Linux, nothing
+/// to install elsewhere (the feature is Linux-only by design).
+fn callwifi_unsupported_fix(linux: bool) -> &'static str {
+    if linux {
+        "Install PipeWire's tools (pw-cat), or use Bluetooth for call audio: geekbridge-ctl calling"
+    } else {
+        "Use the phone link for calls here; the audio part: geekbridge-ctl calling"
+    }
+}
+
 /// Lines for the experimental Wi-Fi call audio. Nothing at all unless a connected phone's app offers it
 /// (it is off by default and hidden otherwise); never a failure, Bluetooth stays the supported path.
 pub fn callwifi_checks(v: &bridge_core::call_wifi_view::CallWifiView) -> Vec<Check> {
@@ -573,7 +583,7 @@ pub fn callwifi_checks(v: &bridge_core::call_wifi_view::CallWifiView) -> Vec<Che
                 "A phone offers it, but this computer cannot play it: {}.",
                 v.problem.as_deref().unwrap_or("unsupported system")
             ),
-            Some("Install PipeWire's tools (pw-cat), or use Bluetooth for call audio: geekbridge-ctl calling"),
+            Some(callwifi_unsupported_fix(cfg!(target_os = "linux"))),
         ));
         return out;
     }
@@ -720,9 +730,11 @@ pub fn render(checks: &[Check]) -> String {
 /// A next step for a failed control-port call, appended to the plain error by the ctl.
 pub fn hint_for_error(message: &str) -> Option<&'static str> {
     if message.contains("cannot reach GeekBridge service control port") {
-        Some(
-            "Is geekbridge-service running? Start it (systemctl --user start geekbridge-service, or scripts/run-desktop.sh), then run `geekbridge-ctl doctor`. A service started with another --state-dir or --control-port needs the same flags here.",
-        )
+        Some(if cfg!(target_os = "linux") {
+            "Is geekbridge-service running? Start it (systemctl --user start geekbridge-service, or scripts/run-desktop.sh), then run `geekbridge-ctl doctor`. A service started with another --state-dir or --control-port needs the same flags here."
+        } else {
+            "Is geekbridge-service running? Start it (run geekbridge-service; `geekbridge-ctl autostart enable` starts it at every login), then run `geekbridge-ctl doctor`. A service started with another --state-dir or --control-port needs the same flags here."
+        })
     } else if message.contains("rejected the control token")
         || message.contains("no control token yet")
     {
@@ -1810,10 +1822,27 @@ mod tests {
         assert!(
             hint_for_error("cannot reach GeekBridge service control port 127.0.0.1:1")
                 .unwrap()
-                .contains("systemctl")
+                .contains("geekbridge-service")
+        );
+        assert_eq!(
+            hint_for_error("cannot reach GeekBridge service control port 127.0.0.1:1")
+                .unwrap()
+                .contains("systemctl"),
+            cfg!(target_os = "linux"),
+            "systemctl is named on Linux only"
         );
         assert_eq!(hint_for_error(""), None);
         assert_eq!(hint_for_error("timeout"), None);
+    }
+
+    #[test]
+    fn unsupported_wifi_call_audio_names_pipewire_only_on_linux() {
+        assert!(callwifi_unsupported_fix(true).contains("pw-cat"));
+        let other = callwifi_unsupported_fix(false);
+        assert!(
+            !other.contains("pw-cat") && !other.contains("PipeWire"),
+            "{other}"
+        );
     }
 
     #[test]

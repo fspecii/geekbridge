@@ -198,7 +198,12 @@ impl DiscoveryModel {
             Self::Checking => "Checking this computer for the GeekBridge helper.".into(),
             Self::ServiceUnavailable { .. } => format!(
                 "The GeekBridge helper (geekbridge-service) isn't running, so no phone can be found. \
-                 Start it (systemctl --user start geekbridge-service), or open this app with --api-port if it uses a port other than {api_port}. {}",
+                 Start it ({}), or open this app with --api-port if it uses a port other than {api_port}. {}",
+                crate::i18n::tr(if cfg!(target_os = "linux") {
+                    "state.start_service.linux"
+                } else {
+                    "state.start_service.other"
+                }),
                 crate::i18n::tr("doctor.hint")
             ),
             Self::Ready {

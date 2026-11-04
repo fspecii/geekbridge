@@ -235,3 +235,16 @@ fn every_copyable_text_is_plain_and_the_link_is_the_releases_page() {
     let (modules, w) = crate::connection::qr_modules(RELEASES_URL).unwrap();
     assert!(w > 20 && modules.len() == w * w);
 }
+
+#[test]
+fn only_windows_is_told_to_use_an_administrator_shell_not_sudo() {
+    let en = |k: &str| bridge_i18n::tr(k).to_owned();
+    let win = en(never_runs_key(Tool::WindowsDefender));
+    assert!(
+        win.contains("administrator") && !win.contains("sudo"),
+        "{win}"
+    );
+    for t in [Tool::Ufw, Tool::Firewalld, Tool::MacAppFirewall] {
+        assert!(en(never_runs_key(t)).contains("sudo"));
+    }
+}

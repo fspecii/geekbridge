@@ -365,6 +365,14 @@ fn copy_button(
     }
 }
 
+/// Windows has no sudo: its lines are run in an administrator PowerShell.
+fn never_runs_key(tool: Tool) -> &'static str {
+    match tool {
+        Tool::WindowsDefender => "onboarding.fw.never_runs_admin",
+        _ => "onboarding.fw.never_runs",
+    }
+}
+
 fn firewall_note(ui: &mut egui::Ui, pal: &Palette, f: &Facts, act: &mut Option<Action>) {
     let Some(tool) = tool_of(f.firewall) else {
         return;
@@ -392,7 +400,7 @@ fn firewall_note(ui: &mut egui::Ui, pal: &Palette, f: &Facts, act: &mut Option<A
         }),
     );
     code_box(ui, pal, &firewall::commands(tool));
-    small(ui, pal, tr("onboarding.fw.never_runs"));
+    small(ui, pal, tr(never_runs_key(tool)));
     copy_button(ui, pal, CopyKind::Firewall, f.copied, act);
 }
 
