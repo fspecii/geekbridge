@@ -261,6 +261,7 @@ impl Peer {
     }
 
     /// A computer that answers shares (declares `geekbridge.share.result`).
+    #[cfg(unix)]
     fn answering(c: char) -> Peer {
         let id = DeviceId::parse(&c.to_string().repeat(32)).unwrap();
         let creds = DeviceCredentials::generate_with_id(&id).unwrap();
