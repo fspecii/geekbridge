@@ -794,7 +794,7 @@ fn clipboard_command(
                     "note:     KDE Connect is also running here; if both sync the clipboard to the same phone, text can echo. Turn one off."
                 );
             }
-            println!("hotkey:   {} ({})", s.hotkey, s.hotkey_binding);
+            println!("hotkey:   {} {}", s.hotkey, hotkey_binding_text(&s.hotkey_binding));
             println!("images:   up to {} MiB", s.max_image_bytes / (1024 * 1024));
             if let Some(p) = &s.last_pull {
                 println!("last pull: {}", describe_pull(p));
@@ -896,7 +896,7 @@ fn clipboard_command(
             match args.get(1).and_then(|a| a.to_str()) {
                 None => {
                     let s = clipboard_status(port, &token)?;
-                    println!("{} ({})", s.hotkey, s.hotkey_binding);
+                    println!("{} {}", s.hotkey, hotkey_binding_text(&s.hotkey_binding));
                 }
                 Some(combo) => {
                     clipboard_call(
@@ -1090,11 +1090,25 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
     render(&bar)
 }
 
+/// What a first-time user sees when nothing has run yet (the phrase "no control token yet" is matched by `doctor`).
+const NO_SERVICE_YET: &str = "no control token yet: the background service is not running; run `geekbridge-ctl doctor`";
+
+/// Plain words for the hotkey binding state; the raw word `unsupported` meant "this desktop cannot grab keys".
+fn hotkey_binding_text(binding: &str) -> String {
+    const BIND: &str = "bind `geekbridge-ctl clipboard paste-from-phone --notify` to a key";
+    match binding {
+        "bound" => "(works anywhere)".into(),
+        "not_bound" => format!("(not registered by this desktop: {BIND})"),
+        "unsupported" => format!("(works in the GeekBridge window only; for anywhere, {BIND})"),
+        other => format!("({other})"),
+    }
+}
+
 fn load_token(state_dir: &std::path::Path) -> Result<Token, String> {
     let path = ipc::token_path(state_dir);
     let bytes = bridge_kde::fsutil::read_private_file(&path)
         .map_err(|e| format!("cannot read the control token safely: {e}"))?
-        .ok_or("no control token yet; start geekbridge-service with the same --state-dir first")?;
+        .ok_or(NO_SERVICE_YET)?;
     Token::parse(&bytes).map_err(|e| e.to_string())
 }
 
@@ -2026,6 +2040,16 @@ mod clipboard_words_tests {
             kind: None,
             at_unix_ms: 0,
         }
+    }
+
+    #[test]
+    fn the_hotkey_state_is_explained_not_printed_raw() {
+        assert!(hotkey_binding_text("unsupported").contains("GeekBridge window"));
+        assert!(!hotkey_binding_text("unsupported").contains("unsupported"));
+        assert!(hotkey_binding_text("not_bound").contains("paste-from-phone"));
+        assert!(hotkey_binding_text("bound").contains("anywhere"));
+        assert!(!NO_SERVICE_YET.contains("state-dir"));
+        assert!(NO_SERVICE_YET.contains("doctor"));
     }
 
     #[test]

@@ -109,6 +109,7 @@ check arch-optdepends-explained $([[ -z $miss ]]; echo $?) "missing:${miss:- non
 # ---- 3. installer tarball contents
 t="$S/tgz"; mkdir -p "$t"; tar -xzf "$TGZ" -C "$t"; T="$t/geekbridge-$VER"
 check tarball-has-installer $([[ -x "$T/install.sh" && -f "$T/LICENSE" && -f "$T/README.md" ]]; echo $?)
+check tarball-readme-links-absolute $(! grep -q -E '(\]\((docs|assets)/|(src|href)="(docs|assets)/)' "$T/README.md"; echo $?)   # no relative doc or image links next to the binaries
 check tarball-no-absolute-or-dotdot-paths $([[ -z "$(tar -tzf "$TGZ" | grep -E '^/|\.\./')" ]]; echo $?)
 
 # ---- 4. fresh per-user install

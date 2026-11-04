@@ -182,7 +182,7 @@ pub fn evaluate(f: &Facts) -> Vec<Step> {
                 "no Bluetooth controller (/sys/class/bluetooth is empty{}). Answering from here still works; the voice stays on the phone.",
                 if f.btusb_loaded { "; the btusb driver is loaded but found no device" } else { "" }
             ),
-            Some("plug in a USB Bluetooth adapter (Bluetooth 4.0+ dual-mode Classic+LE; HFP needs Classic, not LE-only), straight into a USB port, then: dmesg | grep -i -E 'bluetooth|btusb|firmware' | tail; if it says firmware is missing: sudo pacman -S --needed linux-firmware and replug".into()),
+            Some("plug in a USB Bluetooth adapter (Bluetooth 4.0+ dual-mode Classic+LE; HFP needs Classic, not LE-only), straight into a USB port, then: dmesg | grep -i -E 'bluetooth|btusb|firmware' | tail; if it says firmware is missing, install your distribution's linux-firmware package (Arch: sudo pacman -S --needed linux-firmware; Debian/Ubuntu: sudo apt install linux-firmware; Fedora: sudo dnf install linux-firmware) and replug".into()),
         )
     });
 

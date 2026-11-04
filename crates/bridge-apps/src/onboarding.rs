@@ -112,6 +112,11 @@ pub fn service_command() -> &'static str {
     }
 }
 
+/// Where there is no systemd user session (minimal installs, the tarball): the launcher that starts the service directly.
+pub fn no_systemd_command() -> Option<&'static str> {
+    cfg!(target_os = "linux").then_some("geekbridge-service-launch") // i18n-ok: a command
+}
+
 /// Reads whether the service starts at login: a systemd user unit enabled for `default.target`, or an
 /// XDG autostart entry, in any of `config_dirs` (user config first, then system dirs).
 pub fn autostart_in(config_dirs: &[PathBuf], xdg_dirs: &[PathBuf]) -> Autostart {
@@ -263,6 +268,10 @@ pub fn card(ui: &mut egui::Ui, pal: &Palette, f: &Facts) -> Option<Action> {
             small(ui, pal, tr("onboarding.service_off_why"));
             code_box(ui, pal, service_command());
             copy_button(ui, pal, CopyKind::Service, f.copied, &mut act);
+            if let Some(alt) = no_systemd_command() {
+                small(ui, pal, tr("onboarding.service_no_systemd"));
+                code_box(ui, pal, alt);
+            }
             ui.add_space(S1);
         }
         // 1. install

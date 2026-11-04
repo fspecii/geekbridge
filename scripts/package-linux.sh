@@ -55,7 +55,18 @@ mkdir -p "$out"
 # ---- installer tarball
 t="$work/geekbridge-$version"; mkdir -p "$t"
 cp -a "$pay/." "$t/"; install -m 0755 "$pk/install.sh" "$t/install.sh"
-for doc in README.md LICENSE THIRD_PARTY_NOTICES.md; do cp "$ROOT/$doc" "$t/"; done   # GPL-3.0-or-later: the licence text travels with the binaries
+# The repository README links to docs/ and images by relative path, which would be dead next to the binaries:
+# ship it with absolute GitHub links instead (scripts/e2e/install-sandbox.sh checks that none are left).
+gb_absolute_readme() {
+  local repo="https://github.com/fspecii/geekbridge" raw="https://raw.githubusercontent.com/fspecii/geekbridge/main"
+  sed -E \
+    -e "s#(src|href)=\"(assets|docs)/#\1=\"$raw/\2/#g" \
+    -e "s#\]\((assets|docs)/([^)]*\.(png|svg|jpg|gif))\)#]($raw/\1/\2)#g" \
+    -e "s#\]\(([A-Za-z0-9_][A-Za-z0-9_./-]*)(\#[^)]*)?\)#]($repo/blob/main/\1\2)#g" \
+    "$1"
+}
+gb_absolute_readme "$ROOT/README.md" > "$t/README.md"
+cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$t/"   # GPL-3.0-or-later: the licence text travels with the binaries
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then   # reproducible: sorted entries, fixed mtime, no gzip header time (docs/reproducible-builds.md)
   gb_repro_tar_gz "$out/geekbridge-$version-linux-x86_64-installer.tar.gz" "$work" "geekbridge-$version"
 else
@@ -76,7 +87,7 @@ rm -f "$root/usr/share/icons/hicolor/scalable/apps/geekbridge.svg" "$root"/usr/s
 sed "s|@BINDIR@|/usr/bin|" "$pk/geekbridge-service.service" > "$root/usr/lib/systemd/user/geekbridge-service.service"
 chmod 0644 "$root/usr/lib/systemd/user/geekbridge-service.service"
 install -m 0644 "$pk/geekbridge-service.desktop" "$root/etc/xdg/autostart/"
-[[ -f "$ROOT/README.md" ]] && install -m 0644 "$ROOT/README.md" "$root/usr/share/doc/geekbridge/README.md"
+install -m 0644 "$t/README.md" "$root/usr/share/doc/geekbridge/README.md"
 install -m 0644 "$pk/copyright" "$root/usr/share/doc/geekbridge/copyright"
 install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"   # the About section opens these
 

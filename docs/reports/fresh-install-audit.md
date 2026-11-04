@@ -47,24 +47,19 @@ Fixed in this change:
 | 5 | `docs/user-guide.md` | Said no Bluetooth "is reported as information, not an error", but `doctor` prints it as a warning (and counts it). Also said Wi-Fi call audio is impossible with no mention of the experimental debug-build option. | Both reworded to match the program. |
 | 6 | `geekbridge-ctl firewall` (and the doctor fix it is pointed to) | The ufw lines allow `192.168.0.0/16` only. On a 10.x.x.x or 172.16-31.x.x network (very common) the phone is still blocked, and `doctor` then reports "ufw allows 1716-1764" because it accepts any source, so the stranger gets a green check and a dead pairing. | The printed help now says which range to use for 10.x / 172.16-31.x (`ip -4 addr`) and that a rule for the wrong range keeps the phone out (test added). The doctor check itself is unchanged, see open item A. |
 
-## Open (bigger, not fixed here)
+## Open items A-F: fixed afterwards
 
-A. **`doctor` cannot tell whether the ufw rule covers the phone's network.** `ufw_allows` ignores the source range, so a rule for
-   192.168.0.0/16 on a 10.x network passes. A real fix reads the computer's own LAN address and the rule source and warns on a
-   mismatch (needs ufw rule parsing of `-s` CIDRs). The wording fix in defect 6 reduces the chance of it, nothing more.
-B. **No-systemd installs and the Home card.** When the service is not running, Home shows only the `systemctl --user enable --now`
-   command. It should show `geekbridge-service-launch` where `systemctl --user show-environment` fails. Code change in
-   `bridge-apps` onboarding (needs a golden-image refresh).
-C. **Tarball ships the repository README.** Its relative links (`docs/...`, `assets/...`, `docs/img/...`) do not resolve next to
-   the binaries, so every doc link and all screenshots are broken for someone who reads it from the extracted tarball. Either ship
-   a short `README` pointing to the GitHub page, or rewrite links to absolute URLs in `scripts/package-linux.sh`.
-D. **`geekbridge-ctl status` with no service** still says "start geekbridge-service with the same --state-dir first". A stranger
-   has no state dir; "the background service is not running: run `geekbridge-ctl doctor`" would read better. The hint line below
-   it does point at `doctor`, so it is cosmetic.
-E. **`geekbridge-ctl clipboard status`** prints `hotkey: Ctrl+Shift+V (unsupported)` in a session with no Wayland/X display with
-   no explanation of "unsupported".
-F. **"Hear calls here" fix text for no adapter** names `sudo pacman -S linux-firmware` only; Debian/Ubuntu/Fedora users get an
-   Arch command. Distro-aware text would need the package manager detected.
+A. **ufw source range.** `doctor` now reads this computer's LAN IPv4 address and ignores ufw rules whose `-s` range does not contain
+   it; a 192.168.0.0/16 rule on a 10.x network is a Fail that names the address and points at `geekbridge-ctl firewall`
+   (`ufw_allows_from`, tests in `bridge-core` and `doctor`). Unknown address: every source counts, as before.
+B. **No-systemd Home card.** With the service down, Home also shows "No systemd user session here? ..." and `geekbridge-service-launch`
+   (Linux). The golden image of that state needs a refresh the next time goldens are regenerated.
+C. **Tarball README.** `scripts/package-linux.sh` rewrites the README's relative doc and image links to absolute GitHub URLs for the
+   tarball and the .deb; `install-sandbox.sh` checks none are left (`tarball-readme-links-absolute`).
+D. **`status` with no service** now says "no control token yet: the background service is not running; run `geekbridge-ctl doctor`".
+E/F. **Hotkey and firmware.** `clipboard status` explains the binding state in words ("works in the GeekBridge window only; for
+   anywhere, bind ... to a key"); the no-adapter firmware hint lists Arch, Debian/Ubuntu and Fedora commands.
+
 G. Known earlier and unchanged: no stable GitHub release yet (`releases/latest` is a 404), the security contact placeholder, no
    desktop licence screen (fresh-user-review.md).
 

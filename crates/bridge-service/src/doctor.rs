@@ -49,7 +49,7 @@ pub struct SessionEnv {
     pub desktop: String,
 }
 
-pub use bridge_core::firewall::{Firewall, firewall_blocks, ufw_allows};
+pub use bridge_core::firewall::{Firewall, firewall_blocks, ufw_allows, ufw_allows_from};
 use bridge_core::firewall::{Tool, Verdict};
 
 pub struct Inputs {
@@ -151,7 +151,23 @@ fn firewall_check(fw: &Firewall) -> Check {
     match fw.ufw_enabled {
         Some(true) => match &fw.ufw_rules {
             Some(rules) => {
-                let (tcp, udp) = (ufw_allows(rules, "tcp"), ufw_allows(rules, "udp"));
+                let (tcp, udp) = (
+                    ufw_allows_from(rules, "tcp", &fw.lan_v4),
+                    ufw_allows_from(rules, "udp", &fw.lan_v4),
+                );
+                if !(tcp && udp) && ufw_allows(rules, "tcp") && ufw_allows(rules, "udp") {
+                    let own = fw.lan_v4.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                    return check(
+                        Level::Fail,
+                        title,
+                        format!(
+                            "ufw allows 1716-1764 only from another network than this computer's ({own}), so the phone is blocked."
+                        ),
+                        Some(
+                            "geekbridge-ctl firewall   (it says which range to use: 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16)",
+                        ),
+                    );
+                }
                 if tcp && udp {
                     check(
                         Level::Ok,
@@ -1148,6 +1164,24 @@ mod tests {
         c.verdict = "no_phone".into();
         c.bluetooth_controllers = Some(1);
         assert!(!calls_check(&c).detail.contains("talking needs Bluetooth"));
+    }
+
+    #[test]
+    fn a_ufw_rule_for_another_network_is_not_green() {
+        let rule = |p: &str| format!("-A ufw-user-input -p {p} -m multiport --dports 1716:1764 -s 192.168.0.0/16 -j ACCEPT\n");
+        let rules = format!("{}{}", rule("tcp"), rule("udp"));
+        let mut fw = Firewall {
+            ufw_enabled: Some(true),
+            ufw_rules: Some(rules),
+            lan_v4: vec!["10.0.0.8".parse().unwrap()],
+            ..Default::default()
+        };
+        let c = firewall_check(&fw);
+        assert_eq!(c.level, Level::Fail);
+        assert!(c.detail.contains("10.0.0.8") && c.fix.as_deref().is_some_and(|f| f.contains("10.0.0.0/8")));
+        assert!(firewall_blocks(&fw));
+        fw.lan_v4 = vec!["192.168.1.9".parse().unwrap()];
+        assert_eq!(firewall_check(&fw).level, Level::Ok);
     }
 
     // ---- test-gaps-4: every branch of the firewall, session, phone and capability rules

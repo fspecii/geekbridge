@@ -15,6 +15,10 @@ pub struct Firewall {
     /// Contents of `/etc/ufw/user.rules`; `None` when it cannot be read (it is root-only on many systems).
     pub ufw_rules: Option<String>,
     pub firewalld_active: bool,
+    /// This computer's own IPv4 LAN address(es), as far as they can be read. ufw rules with a source range
+    /// (`-s 192.168.0.0/16`) only help the phone when the range contains the network it is on; empty means
+    /// unknown and every source counts.
+    pub lan_v4: Vec<std::net::Ipv4Addr>,
     /// Windows Defender Firewall: inbound rules read with `netsh` (no elevation needed to read).
     pub windows: Option<WindowsFw>,
     /// macOS application firewall, read with `socketfilterfw`.
@@ -236,6 +240,25 @@ pub fn default_service_exe() -> std::path::PathBuf {
 
 /// Do these `ufw` rules (the `user.rules` text) accept `proto` on the whole GeekBridge range?
 pub fn ufw_allows(rules: &str, proto: &str) -> bool {
+    ufw_allows_from(rules, proto, &[])
+}
+
+/// Does `addr` fall in `src`, a ufw `-s` value (`10.0.0.0/8` or a single address)? Unparsable means no.
+fn source_covers(src: &str, addr: std::net::Ipv4Addr) -> bool {
+    let (net, bits) = src.split_once('/').unwrap_or((src, "32"));
+    let (Ok(net), Ok(bits)) = (net.parse::<std::net::Ipv4Addr>(), bits.parse::<u32>()) else {
+        return false;
+    };
+    if bits > 32 {
+        return false;
+    }
+    let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+    u32::from(net) & mask == u32::from(addr) & mask
+}
+
+/// Like [`ufw_allows`], but a rule restricted to a source range (`-s`) only counts when the range contains
+/// one of `lan` (this computer's own addresses, a stand-in for the phone's network). Empty `lan` accepts any source.
+pub fn ufw_allows_from(rules: &str, proto: &str, lan: &[std::net::Ipv4Addr]) -> bool {
     rules.lines().any(|line| {
         let line = line.trim();
         if !line.starts_with("-A ufw-user-input") || !line.ends_with("-j ACCEPT") {
@@ -250,6 +273,12 @@ pub fn ufw_allows(rules: &str, proto: &str) -> bool {
                 .copied()
         };
         if word_after("-p") != Some(proto) {
+            return false;
+        }
+        if let Some(src) = word_after("-s")
+            && !lan.is_empty()
+            && !lan.iter().any(|a| source_covers(src, *a))
+        {
             return false;
         }
         // A single range is `--dport 1716:1764`; ufw writes a range given as `port 1716:1764` (and any
@@ -303,6 +332,17 @@ pub fn read() -> Firewall {
     read_linux()
 }
 
+/// The IPv4 address the routing table would use towards a private LAN (a UDP "connect" sends nothing).
+#[cfg(not(any(windows, target_os = "macos")))]
+fn own_lan_v4() -> Option<std::net::Ipv4Addr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("192.0.2.1:9").ok()?;
+    match sock.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(a) if !a.is_unspecified() && !a.is_loopback() => Some(a),
+        _ => None,
+    }
+}
+
 #[cfg(not(any(windows, target_os = "macos")))]
 fn read_linux() -> Firewall {
     let read_or_none = |p: &str| std::fs::read_to_string(p).ok();
@@ -313,6 +353,7 @@ fn read_linux() -> Firewall {
         }),
         ufw_rules: read_or_none("/etc/ufw/user.rules"),
         firewalld_active: std::path::Path::new("/run/firewalld").exists(),
+        lan_v4: own_lan_v4().into_iter().collect(),
         ..Default::default()
     }
 }
@@ -326,7 +367,9 @@ pub fn firewall_blocks(fw: &Firewall) -> bool {
         && fw
             .ufw_rules
             .as_ref()
-            .is_some_and(|r| !(ufw_allows(r, "tcp") && ufw_allows(r, "udp")))
+            .is_some_and(|r| {
+                !(ufw_allows_from(r, "tcp", &fw.lan_v4) && ufw_allows_from(r, "udp", &fw.lan_v4))
+            })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -461,6 +504,37 @@ mod tests {
             "tcp"
         ));
     }
+
+    #[test]
+    fn a_source_range_must_contain_this_computers_lan_address() {
+        let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
+        let rule = |src: &str, proto: &str| {
+            format!("-A ufw-user-input -p {proto} -m multiport --dports 1716:1764 -s {src} -j ACCEPT\n")
+        };
+        let r = rule("192.168.0.0/16", "tcp");
+        assert!(ufw_allows_from(&r, "tcp", &[ip("192.168.1.20")]));
+        assert!(!ufw_allows_from(&r, "tcp", &[ip("10.0.0.7")]));
+        assert!(!ufw_allows_from(&r, "tcp", &[ip("172.20.1.5")]));
+        assert!(ufw_allows_from(&r, "tcp", &[]), "unknown address: any source counts");
+        assert!(ufw_allows_from(&rule("10.0.0.0/8", "tcp"), "tcp", &[ip("10.4.5.6")]));
+        assert!(ufw_allows_from(&rule("172.16.0.0/12", "tcp"), "tcp", &[ip("172.31.9.9")]));
+        assert!(ufw_allows_from(&rule("10.0.0.7", "tcp"), "tcp", &[ip("10.0.0.7")]));
+        assert!(!ufw_allows_from(&rule("10.0.0.7", "tcp"), "tcp", &[ip("10.0.0.8")]));
+        assert!(ufw_allows_from(&rule("0.0.0.0/0", "tcp"), "tcp", &[ip("10.0.0.8")]));
+        assert!(!ufw_allows_from(&rule("junk", "tcp"), "tcp", &[ip("10.0.0.8")]));
+        // A rule without -s (any source) always counts.
+        assert!(ufw_allows_from(BOTH_ANY, "udp", &[ip("10.0.0.8")]));
+        let fw = Firewall {
+            ufw_enabled: Some(true),
+            ufw_rules: Some(format!("{}{}", rule("192.168.0.0/16", "tcp"), rule("192.168.0.0/16", "udp"))),
+            lan_v4: vec![ip("10.0.0.8")],
+            ..Default::default()
+        };
+        assert!(firewall_blocks(&fw));
+        assert!(!firewall_blocks(&Firewall { lan_v4: vec![ip("192.168.4.4")], ..fw }));
+    }
+
+    const BOTH_ANY: &str = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT\n-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT\n";
 
     fn ufw(rules: Option<&str>) -> Firewall {
         Firewall {
