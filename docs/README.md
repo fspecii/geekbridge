@@ -5,8 +5,9 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 
 ## Using GeekBridge
 
+- [FAQ](FAQ.md): the questions people ask first
 - [User guide](user-guide.md): install, pair, daily use, symptom-keyed troubleshooting
-- [Real-device quickstart](real-device-quickstart.md): install the Android app on a phone and pair it
+- [Real-device quickstart](real-device-quickstart.md): for testers with a source checkout: drive a USB-connected phone with `scripts/realdevice.sh`
 - [Omarchy / Hyprland setup](omarchy.md): hotkeys, window rules, notifications; also GNOME, KDE and sway
 - [Pairing](pairing.md): QR and code pairing, discovery, what is trusted
 - [Sharing](sharing.md), [clipboard sync](clipboard-sync.md), [call control](call-control.md), [phone data: contacts, calendar, SMS](phone-data-link.md): feature behaviour and consents

@@ -25,7 +25,7 @@ again).
 
 **Uninstall.** Linux: `./install.sh --uninstall` removes the program but keeps your pairings, identity and settings in
 `~/.local/share/geekbridge` (`$XDG_DATA_HOME/geekbridge/service`); add `--purge-data` to delete that folder (and the updater's notes in `~/.local/state/geekbridge`) too (`./install.sh --uninstall --purge-data`). The
-package route is `sudo apt remove geekbridge`. Also forget the computer on the phone (Diagnostics & about > Unpair).
+package route is `sudo apt remove geekbridge`. Windows: Settings > Apps. macOS: drag GeekBridge out of Applications. Android: uninstall the app. Also unlink on the other side (the computer's **Link a phone** page > **Unlink…**; the phone's setup step 1 > **Unlink**), or the other side keeps listing the pairing.
 
 ### The tray icon
 
@@ -55,8 +55,11 @@ open **GeekBridge** from Applications.
 
 ## Pair a phone
 
-Requirements: Android 8 or newer, phone and computer on the same network, the background service running, and the
-computer's firewall open for TCP and UDP **1716-1764** from your LAN (see Troubleshooting).
+Requirements: Android 8 or newer, phone and computer on the same network (not a guest network), the background service running, and the
+computer's firewall open for TCP and UDP **1716-1764** from your LAN (see Troubleshooting). Two names, one job: the computer says
+**Link a phone**, the phone says **Pair a computer**; the result is a pairing, and **Unlink** removes it on either side.
+Optional Linux programs: `wl-clipboard` or `xclip` (clipboard), `libnotify` / `notify-send` (call buttons in notifications),
+`bluez`, `pipewire`, `pipewire-pulse` and `wireplumber` (call audio only).
 
 While no phone is paired, the GeekBridge Home window shows a **Get started** card: a QR code and link for the Android
 app, the pairing steps (it names phones already announcing themselves), which optional features exist and stay off,
@@ -201,9 +204,9 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 `geekbridge-ctl --help` is the authoritative list. Groups: **link** (`status`, `connect`, `pair`, `pair-qr`,
 `test-connection`, `approve`, `deny`, `disconnect`, `unpair`, `rename`, `ping`, `events`); **permissions** (`consent DEVICE
 FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
-`battery`, `photos`, plus `calendar_edit` and `calendar_alerts`, which the command accepts although `--help` does not list them); **phone data** (`agenda`,
+`battery`, `photos`, `calendar_edit`, `calendar_alerts`); **phone data** (`agenda`,
 `agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `notifications`, `photos [refresh|save|copy]`); **calls**
-(`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial`); **clipboard and sharing** (`clipboard ...`,
+(`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial|setup|audio-devices`, `call-audio`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
 `autostart`, `tray`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
 with a debug build of the phone app. `report` shows exactly what a prefilled bug report carries (the redacted `diagnose`
@@ -214,7 +217,7 @@ output) and sends nothing itself.
 A banner appears when a newer release exists: **Download** (checked against the published SHA-256), **Show file**,
 then install it yourself. Nothing installs automatically. Checks run shortly after the service starts and then daily;
 **Check for updates** forces one. The Android app only accepts an update signed with the same key as the installed one, so
-a debug build never updates to a release. Turn checks off under *Settings*, or
+a debug build never updates to a release (debug builds follow the *dev* channel, releases the *stable* one: `geekbridge-ctl update channel`). Turn checks off under *Settings*, or
 `geekbridge-ctl update disable`. Details: [updates.md](updates.md).
 
 ## Privacy
@@ -231,11 +234,11 @@ the optional update check to `api.github.com` (turn it off with `geekbridge-ctl 
 
 ## Troubleshooting
 
-Start with `geekbridge-ctl doctor` (run it as the same user as the service, in your desktop session): it checks the service, the firewall (ufw/firewalld ports 1716-1764 on Linux, Windows Defender Firewall, the macOS
+Questions people ask first are in the [FAQ](FAQ.md). Start with `geekbridge-ctl doctor` (run it as the same user as the service, in your desktop session): it checks the service, the firewall (ufw/firewalld ports 1716-1764 on Linux, Windows Defender Firewall, the macOS
 application firewall), your desktop session (Wayland/X11 variables; Linux), paired phones, clipboard, calls and Messages, and prints the fix for each problem
 (it exits 1 if a check failed). Then the quick checks: `geekbridge-ctl status` (is the service up, which phones are paired and linked),
 `geekbridge-ctl diagnose` and, on the phone, **Diagnostics & about > Copy report** (both are redacted and safe to attach
-to a bug report).
+to a bug report). `geekbridge-ctl report` builds a prefilled bug report and shows what it carries before you send anything.
 
 ### Cannot pair
 * **QR code "expired" or "already used".** The code lasts 2 minutes, works once and the computer replaces it by itself: scan the one on the screen now. If the computer says nothing happened after you scanned, the phone did not reach it (next two items).

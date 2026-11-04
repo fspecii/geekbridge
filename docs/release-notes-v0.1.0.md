@@ -37,7 +37,7 @@ test peers.
   the computer on purpose, the phone stays away for a few minutes instead of redialing at once.
 - **Updater.** The apps check GitHub for a newer release, download it, verify its SHA-256 against `SHA256SUMS`, and
   then wait for you. Nothing installs by itself. Only final releases are offered, never prereleases.
-- **Pairing.** Scan a QR code (no camera permission needed on Android), or pick the phone from the nearby list and
+- **Pairing.** Scan a QR code (Android asks for the camera only on the scan screen, or use the phone's own camera app), or pick the phone from the nearby list and
   compare a code on both screens. Both sides pin each other's certificate.
 - **Design and access.** One look on Android and desktop (black or warm off-white, a single red accent, dot-matrix
   type), light and dark themes, keyboard navigation.

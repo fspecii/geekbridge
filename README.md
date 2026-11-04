@@ -71,50 +71,60 @@ individually confirmed there.**
 | **Linux** (X11 and Wayland; Hyprland / Omarchy hotkey, window rules, notifications, waybar) | Built, packaged (`.deb`, installer tarball) and run on Arch/Omarchy; the main supported target |
 | **Windows** | Built and tested in CI only, installer script written; **never run on a real Windows PC**, unsigned, no prebuilt binary yet |
 | **macOS** | Built and tested in CI only, `.dmg` script written; **never run on a Mac**, unsigned, no prebuilt binary yet |
-| **Android** | Android 8+ (min SDK 26), arm64-v8a and x86_64; debug and release-signed builds; tested on an emulator, not yet on a physical phone |
+| **Android** | Android 8+ (min SDK 26), arm64-v8a and x86_64; debug and release-signed builds; tested on an emulator and, for pairing and the link only, one physical phone |
 
 **Release builds: Linux and Android only. Windows and macOS: build from source** (releases are built on a Linux
 machine, which cannot produce signed or tested Windows/macOS binaries; see [docs/release-local.md](docs/release-local.md)).
 
 ## Quick start
 
-1. **Install.** Android: `geekbridge-android.apk` from the latest GitHub release (allow "Install unknown apps"). Linux:
+1. **Install.** Android 8 or newer: `geekbridge-android.apk` (or the phone-only `geekbridge-android-arm64.apk`) from the latest
+   GitHub release; allow "Install unknown apps" for your browser or file manager. Linux:
    `sudo apt install ./geekbridge_*.deb`, or extract the installer tarball and run `./install.sh` (per user; the service
    starts at login). Windows and macOS: no prebuilt binaries yet (build from source, below). Check downloads against
    `SHA256SUMS`.
-2. **Pair via QR.** Same Wi-Fi. On the computer open **GeekBridge** > **Link a phone** (a QR code that renews itself). On the phone, in the setup
-   wizard choose **Scan QR code from my computer**, point the camera at it and confirm **Connect** and **Pair**. Or pair by name and compare
-   the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**).
+2. **Pair via QR.** Same Wi-Fi, and open the firewall first (see Requirements). On the computer open **GeekBridge** > **Link a phone** (a QR
+   code that renews itself). On the phone, in the setup wizard choose **Scan QR code from my computer**, point the camera at it, tap
+   **Continue**, then **Pair**. ("Link a phone" on the computer and "Pair a computer" on the phone are the same job.) Or pair by name and
+   compare the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**). Nothing
+   shows up? Run `geekbridge-ctl doctor` and see the [FAQ](docs/FAQ.md).
 3. **Clipboard hotkey.** Switch clipboard sync on for the phone (both sides). Copy on the computer and it reaches the
-   phone. To pull the phone's clipboard press **Ctrl+Shift+V** or bind
-   `geekbridge-ctl clipboard paste-from-phone --notify` (on Hyprland: `geekbridge-ctl hotkey install --apply`).
+   phone. To pull the phone's clipboard press **Ctrl+Shift+V** in the Clipboard window, or bind
+   `geekbridge-ctl clipboard paste-from-phone --notify` to a key (on Hyprland `geekbridge-ctl hotkey install --apply` binds
+   **Super+Shift+V**, because a global Ctrl+Shift+V would break terminal paste).
 4. **Send files.** On the phone: any app > Share > **Send to computer**. On the computer: drop files on the GeekBridge
    window, use **Geekbridge Share**, or `geekbridge-ctl send-file DEVICE FILE`. Receiving is off until you allow it.
 5. **Calls.** On the phone switch on **Answer from computer**; allow Calls for the phone on the computer. An incoming
    call shows a popup with Answer / Decline / Hang up in `geekbridge-calls`. To place a call from the computer, type a
    number there (or `geekbridge-ctl call dial +15550100`) and confirm; this needs *Allow placing calls from my
-   computer* on the phone. Without a Bluetooth controller in the PC, control still works but the voice stays on the
-   phone ([call audio options](docs/call-audio-options.md)).
+   computer* on the phone. Hearing and speaking on the computer needs Bluetooth (a controller in the PC, the phone paired as its
+   hands-free device; macOS: not available). Without it, control still works but the voice stays on the phone. There is no
+   call audio over Wi-Fi ([call audio options](docs/call-audio-options.md)).
 6. **Contacts and calendar.** Switch **Share contacts** / **Share calendar** on the phone, then open **Contacts** or
-   **Calendar** on the computer. Editing the calendar is a separate opt-in.
+   **Calendar** on the computer. Editing the calendar is a separate opt-in. **Messages** and phone notifications on an APK you
+   installed yourself (Android 13+): if the switch is greyed out or nothing happens, open Settings > Apps > GeekBridge, tap the
+   three dots and choose **Allow restricted settings**, then try again.
 7. **Updates.** A banner "Update available" appears in every app and on Android; downloads are checksum-verified and never
    installed automatically.
 8. **Start at login.** The installers do it; otherwise `geekbridge-ctl autostart enable` (XDG autostart, LaunchAgent or the
    per-user Run key).
-9. **Something wrong?** Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
+9. **Something wrong?** Read the [FAQ](docs/FAQ.md). Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
    fix for each problem and exits 1 if a check failed). A paired phone without a link gets a plain reason and a
-   suggested fix in Home, the tray, `geekbridge-ctl status` and waybar.
+   suggested fix in Home, the tray, `geekbridge-ctl status` and waybar. Still stuck: `geekbridge-ctl report` prepares a redacted
+   bug report (it sends nothing itself); see [SUPPORT.md](SUPPORT.md).
 
 **Android build types.** The GitHub release APK is signed with the release key. A debug APK (what `scripts/build-android.sh`
 makes) is signed with a local debug key: it works for testing, but it can never update to a release build or the other way
-round; uninstall one before installing the other.
+round; uninstall one before installing the other (this removes the pairing). Debug builds follow the **dev** update channel,
+release builds the **stable** one ([updates](docs/updates.md#dev-channel)); if you do not know which you have, you have the release.
 
-**Uninstall (Linux).** `./install.sh --uninstall` removes the program and keeps your pairings and settings;
+**Uninstall.** Phone: uninstall the app (and unlink the computer first if you want it gone there too). Linux: `sudo apt remove geekbridge`, or `./install.sh --uninstall` removes the program and keeps your pairings and settings;
 `./install.sh --uninstall --purge-data` also deletes them (`~/.local/share/geekbridge`, plus the updater's notes in `~/.local/state/geekbridge`).
 
 ## Requirements
 
 - **Android 8.0 or newer** (API 26).
+- **A computer running Linux** (the tested target; Windows and macOS are build-from-source and untested on real machines) **and an Android phone**. iPhone is not supported.
 - **Same local network** for phone and computer (no guest-Wi-Fi client isolation, no full-tunnel VPN).
 - **Firewall: allow TCP and UDP 1716-1764** from your LAN to the computer (`geekbridge-ctl firewall` prints the commands for ufw, firewalld, Windows Defender Firewall or the macOS application firewall;
   `geekbridge-ctl doctor` checks them and the Home window's first-run card shows them, the desktop session, your phones and Messages, and says what to fix). The first free port in that range is used; file
@@ -122,16 +132,19 @@ round; uninstall one before installing the other.
 - **Bluetooth:** answering, declining and hanging up from the computer work over the GeekBridge link and need **no**
   Bluetooth. Hearing and speaking on the computer needs the computer to be the phone's Bluetooth hands-free device, so a
   **Bluetooth controller on the PC** (many desktops have none; a USB adapter works) and an HFP-capable audio stack.
-- Linux clipboard: `wl-clipboard` (Wayland, needs the data-control protocol: Hyprland, Sway, KDE; not stock GNOME) or
-  `xclip` (X11). Rust 1.88+ and eframe's graphics libraries to build from source.
+- **Linux packages.** The `.deb` pulls in the graphics libraries it needs. Optional, by feature: `wl-clipboard` (Wayland, needs
+  the data-control protocol: Hyprland, Sway, KDE; not stock GNOME) or `xclip` (X11) for the clipboard; `libnotify` (`notify-send`)
+  for call buttons in notifications; `xdg-utils` and `zenity` or `kdialog` for opening files and the file picker; for call audio
+  `bluez`, `pipewire`, `pipewire-pulse` and `wireplumber` (on Arch/Omarchy these are already there). Rust 1.88+ and eframe's
+  graphics libraries to build from source.
 
 ## Documentation
 
 Full index: [docs/README.md](docs/README.md).
 
-- [User guide](docs/user-guide.md), with symptom-keyed troubleshooting
+- [FAQ](docs/FAQ.md) and the [user guide](docs/user-guide.md), with symptom-keyed troubleshooting
 - [Omarchy / Hyprland setup](docs/omarchy.md) (also GNOME, KDE, sway)
-- [Real-device quickstart](docs/real-device-quickstart.md) and [full test plan](docs/real-device-test-plan.md)
+- For testers with the source checked out: [real-device quickstart](docs/real-device-quickstart.md) and [full test plan](docs/real-device-test-plan.md)
 - [Pairing](docs/pairing.md), [sharing](docs/sharing.md), [clipboard](docs/clipboard-sync.md),
   [call control](docs/call-control.md), [phone data (contacts, calendar, SMS)](docs/phone-data-link.md),
   [updates](docs/updates.md), [Android power and battery](docs/android-power.md)
@@ -139,6 +152,7 @@ Full index: [docs/README.md](docs/README.md).
   [second security review](docs/reports/security-review-2.md)
 - [CHANGELOG](CHANGELOG.md), [release checklist](docs/release-checklist.md), [architecture](docs/architecture.md),
   [builds](docs/builds.md), [e2e findings](docs/reports/e2e-findings.md), [performance](docs/performance.md)
+- [KDE Connect interoperability notes](docs/kdeconnect-interop.md). GeekBridge is an independent implementation of the KDE Connect protocol: it contains no KDE Connect code and is not affiliated with or endorsed by the KDE project.
 
 ## Build from source
 
@@ -202,13 +216,6 @@ nothing from the phone is stored on the computer (battery level and mirrored not
 the optional update check to GitHub; there are no accounts and no GeekBridge servers. Report vulnerabilities privately as
 described in [SECURITY.md](SECURITY.md). The full data-flow inventory, with what is stored where and how to erase it, is in
 [docs/privacy.md](docs/privacy.md).
-
-## Documentation
-
-[Architecture and roadmap](docs/architecture.md), the [user guide](docs/user-guide.md), the
-[KDE Connect interoperability notes](docs/kdeconnect-interop.md) and the [release checklist](docs/release-checklist.md).
-GeekBridge is an independent implementation of the KDE Connect protocol: it contains no KDE Connect code and is not
-affiliated with or endorsed by the KDE project.
 
 ## Contributing
 

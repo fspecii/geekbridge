@@ -1,5 +1,8 @@
 # Real-device quickstart (10-15 minutes)
 
+> **For testers and developers.** This page drives a phone over USB (`adb`) from a source checkout with `scripts/realdevice.sh`, and
+> some examples name the author's machine. To just use GeekBridge, read the [user guide](user-guide.md) and the [FAQ](FAQ.md).
+
 What has and has not been done on hardware: one real phone (Samsung Galaxy Z Fold5, SM-F946B) has been paired, and pairing
 and link stability were exercised on it. Everything else in this checklist (calls, Messages, battery sharing, dialing,
 calendar, contacts, clipboard on a real phone) is still to be confirmed by you. Windows and macOS have only run in CI.
@@ -74,8 +77,8 @@ The same steps as the table above, with the detail:
 ### Unpair, re-pair, rename (verified on the emulator, see [first-run-audit.md](reports/first-run-audit.md))
 
 - **Unlink on the PC:** Link a phone > **Unlink…** > **Unlink phone**. The phone still shows the computer as paired; scanning a fresh QR re-pairs at once.
-- **Unpair on the phone:** Home > **Diagnostics & about** > **Unpair**. The PC keeps showing "Paired, offline" until you forget it there too. If you re-pair with only one side cleared, the **first** attempt times out ("Pairing timed out before it was confirmed") and clears the stale record; show a new QR and scan again, the second attempt pairs. To avoid the detour, forget on both sides first.
-- **Rename:** there is no rename screen yet. The computer's name is set when the service starts (`scripts/run-desktop.sh --name NAME`); the phone shows its model name.
+- **Unlink on the phone:** setup step 1 > **Unlink** next to the computer (or Home > **Diagnostics & about** > **Unlink**). The PC keeps showing "Paired, offline" until you forget it there too. If you re-pair with only one side cleared, the **first** attempt times out ("Pairing timed out before it was confirmed") and clears the stale record; show a new QR and scan again, the second attempt pairs. To avoid the detour, forget on both sides first.
+- **Rename:** the computer's name: Home's first-run card or Settings, or `geekbridge-ctl rename NAME` (`scripts/run-desktop.sh --name NAME` at start); phones show the new name from their next connection. The phone shows its model name.
 - **After a PC restart** the phone should reconnect on its own through discovery (UDP 1716 broadcast, firewall: step 0.2). The emulator cannot receive broadcasts, so this was **not** verified there: check it on the real phone (step 11). Meanwhile the phone's Home shows "Waiting for ...: Open GeekBridge on your computer, on the same Wi-Fi network" until then.
 
 ## 2. Wrap up (1 min)
