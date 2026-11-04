@@ -22,7 +22,7 @@ path = "src/bin/geekbridge-pair.rs"
 bridge-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring", "pem"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

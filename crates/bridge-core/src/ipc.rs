@@ -1581,6 +1581,16 @@ pub fn probe_protected(port: u16) -> Result<Hello, IpcError> {
 /// Send one authenticated request and verify the answer. A `Response::Error` is returned as
 /// `Err(IpcError::Service)` so callers can use `?`.
 pub fn call(port: u16, token: &Token, request: &Request) -> Result<Response, IpcError> {
+    call_with_body(port, token, request).map(|(response, _)| response)
+}
+
+/// [`call`], also returning the authenticated reply body exactly as the service wrote it (compact JSON),
+/// for callers that print it with [`pretty_json`] instead of serializing the parsed reply again.
+pub fn call_with_body(
+    port: u16,
+    token: &Token,
+    request: &Request,
+) -> Result<(Response, Vec<u8>), IpcError> {
     let mut conn = open(port)?;
     let nonce = match read_hello(&mut conn)? {
         Hello::Ready { nonce } => nonce,
@@ -1614,8 +1624,65 @@ pub fn call(port: u16, token: &Token, request: &Request) -> Result<Response, Ipc
     }
     match Response::from_json(body).map_err(|e| IpcError::Protocol(e.to_string()))? {
         Response::Error(e) => Err(IpcError::Service(e)),
-        other => Ok(other),
+        other => Ok((other, body.to_vec())),
     }
+}
+
+/// Re-indent compact JSON the way `serde_json::to_string_pretty` prints it (two spaces, `"key": value`,
+/// `{}` and `[]` for empty containers), keeping key order and string escapes byte for byte. Input must be
+/// valid JSON (an authenticated service reply that already parsed); it avoids instantiating a second,
+/// serializing copy of every reply type in the CLI.
+pub fn pretty_json(compact: &[u8]) -> String {
+    fn line(out: &mut Vec<u8>, depth: usize) {
+        out.push(b'\n');
+        out.resize(out.len() + depth * 2, b' ');
+    }
+    let mut out = Vec::with_capacity(compact.len() * 2);
+    let (mut depth, mut in_str, mut esc) = (0usize, false, false);
+    let mut i = 0;
+    while i < compact.len() {
+        let c = compact[i];
+        i += 1;
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => {
+                in_str = true;
+                out.push(c);
+            }
+            b'{' | b'[' => {
+                out.push(c);
+                if compact.get(i).is_some_and(|n| matches!(n, b'}' | b']')) {
+                    out.push(compact[i]);
+                    i += 1;
+                } else {
+                    depth += 1;
+                    line(&mut out, depth);
+                }
+            }
+            b'}' | b']' => {
+                depth = depth.saturating_sub(1);
+                line(&mut out, depth);
+                out.push(c);
+            }
+            b',' => {
+                out.push(c);
+                line(&mut out, depth);
+            }
+            b':' => out.extend_from_slice(b": "),
+            _ => out.push(c),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Split `<64 hex mac> <payload>` into its parts.
@@ -1751,6 +1818,27 @@ mod tests {
         let json = serde_json::to_value(&e).unwrap();
         assert_eq!(json["kind"], "link_lost");
         assert_eq!(serde_json::from_value::<Event>(json).unwrap(), e);
+    }
+
+    #[test]
+    fn pretty_json_matches_serde_json_pretty() {
+        let v = serde_json::json!({
+            "kind": "status", "empty_o": {}, "empty_a": [], "n": [1, -2.5, null, true],
+            "s": "q\"uote \\ {brace} [x], a:b \n \u{e9}", "nested": {"a": [{"b": []}, {}], "c": {"d": {"e": "f"}}},
+            "list": [[], [[]], [{"k": "v"}]]
+        });
+        let compact = serde_json::to_vec(&v).unwrap();
+        assert_eq!(
+            pretty_json(&compact),
+            serde_json::to_string_pretty(&v).unwrap()
+        );
+        for s in [r#"{}"#, r#"[]"#, r#""x""#, "12", r#"{"a":"\\"}"#] {
+            let v: serde_json::Value = serde_json::from_str(s).unwrap();
+            assert_eq!(
+                pretty_json(s.as_bytes()),
+                serde_json::to_string_pretty(&v).unwrap()
+            );
+        }
     }
 
     #[test]

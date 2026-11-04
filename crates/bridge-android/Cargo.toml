@@ -15,7 +15,7 @@ bridge-core.workspace = true
 bridge-kde = { path = "../bridge-kde" }
 serde.workspace = true
 serde_json.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 # Decodes the camera picture of a pairing QR code; no image-file support is compiled in.
 rqrr = { version = "0.11", default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "macros", "fs", "io-util"] }

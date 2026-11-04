@@ -462,7 +462,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
     };
     let token = load_token(&state_dir)?;
-    let response = ipc::call(port, &token, &request).map_err(|e| match e {
+    let (response, body) = ipc::call_with_body(port, &token, &request).map_err(|e| match e {
         IpcError::Unauthorized => {
             "the service rejected the token in this state directory (is --state-dir the service's?)"
                 .into()
@@ -472,9 +472,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     match response {
         Response::Ack => println!("ok"),
         Response::Status(status) => {
-            let json = serde_json::to_string_pretty(&Response::Status(status.clone()))
-                .map_err(|e| e.to_string())?;
-            println!("{json}");
+            println!("{}", ipc::pretty_json(&body));
             // On stderr so the JSON above stays machine-readable.
             if let Some(note) = status.port_note() {
                 eprintln!("{note}");
@@ -491,10 +489,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 }
             }
         }
-        other => println!(
-            "{}",
-            serde_json::to_string_pretty(&other).map_err(|e| e.to_string())?
-        ),
+        _ => println!("{}", ipc::pretty_json(&body)),
     }
     Ok(())
 }
