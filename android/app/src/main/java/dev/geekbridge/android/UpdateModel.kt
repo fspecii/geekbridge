@@ -100,6 +100,24 @@ class AppVersion private constructor(
     }
 }
 
+/** Which releases the updater follows. Debug builds default to [Dev], release builds to [Stable]. */
+enum class UpdateChannel(val id: String) {
+    Stable("stable"),
+    Dev("dev"),
+    ;
+
+    companion object {
+        fun parse(id: String?): UpdateChannel? = entries.firstOrNull { it.id == id }
+        fun default(debugBuild: Boolean) = if (debugBuild) Dev else Stable
+    }
+}
+
+/** `dev-manifest.json` of the rolling `dev` prerelease (docs/updates.md#dev-channel). */
+data class DevManifest(val commit: String, val versionCode: Int, val builtAt: String, val notes: String) {
+    /** `dev-<12 hex>`: what the user sees as the version of this build. */
+    fun label() = "dev-" + commit.take(12)
+}
+
 /** A newer release this build can install, with everything needed to verify it. */
 data class UpdateOffer(
     val version: String,
@@ -110,6 +128,8 @@ data class UpdateOffer(
     val apkUrl: String,
     val apkSize: Long,
     val sha256: String?,
+    /** From the dev channel (the APK is debug-signed). */
+    val dev: Boolean = false,
 )
 
 /** A user-visible update message as a string resource id plus arguments; resolved where a [Strings] exists. */
@@ -132,6 +152,15 @@ object UpdateModel {
     const val MAX_NOTES_CHARS = 2000
     const val MAX_APK_BYTES = 200L * 1024 * 1024
     const val CHECK_INTERVAL_MS = 12L * 60 * 60 * 1000
+
+    /** Git tag of the rolling dev prerelease and its assets. */
+    const val DEV_TAG = "dev"
+    const val DEV_MANIFEST = "dev-manifest.json"
+    const val DEV_APK = "geekbridge-debug.apk"
+    const val MAX_MANIFEST_BYTES = 16 * 1024
+
+    /** Debug/dev versionCode = this + commit count (android/app/build.gradle.kts, scripts/version-code.sh --dev). */
+    const val DEV_CODE_BASE = 20_000
 
     /** Automatic check on app open: at most once per 12 hours (clock moving backwards also counts as due). */
     fun autoCheckDue(lastCheckMs: Long, nowMs: Long): Boolean =
@@ -214,6 +243,7 @@ object UpdateModel {
         val unpublished: Boolean = false,
         /** GitHub's own `digest` (`sha256:<hex>`, lowercase hex here) per asset name, where present and well formed. */
         val digests: Map<String, String> = emptyMap(),
+        val draft: Boolean = false,
     )
 
     class ReleaseFormatException(val text: UpdateText) : IllegalArgumentException("malformed release")
@@ -238,7 +268,7 @@ object UpdateModel {
             if (a.optString("digest", "").startsWith("sha256:") && isHex64(digest)) digests[name] = digest.lowercase(Locale.ROOT)
         }
         val unpublished = o.optBoolean("draft", false) || o.optBoolean("prerelease", false)
-        return Release(tag, o.optString("html_url", ""), o.optString("body", ""), assets, unpublished, digests)
+        return Release(tag, o.optString("html_url", ""), o.optString("body", ""), assets, unpublished, digests, o.optBoolean("draft", false))
     }
 
     /**
@@ -260,6 +290,18 @@ object UpdateModel {
         if (remote <= local || code == null || code <= currentCode) return UpdateCheckResult.UpToDate(remote.toString())
         val apk = pickApk(release.assets.map { it.first to it.third })
             ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_no_package, remote.toString()))
+        return offerFor(release, apk, remote.toString(), cleanNotes(release.body), sums, allowLoopback, dev = false)
+    }
+
+    private fun offerFor(
+        release: Release,
+        apk: Pair<String, Long>,
+        version: String,
+        notes: String,
+        sums: (String) -> String?,
+        allowLoopback: Boolean,
+        dev: Boolean,
+    ): UpdateCheckResult {
         val url = release.assets.first { it.first == apk.first }.second
         if (!urlAllowed(url, allowLoopback)) return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_addr_not_trusted))
         val page = if (urlAllowed(release.htmlUrl, allowLoopback)) release.htmlUrl else ""
@@ -270,7 +312,49 @@ object UpdateModel {
             return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_digest_disagree))
         }
         return UpdateCheckResult.Available(
-            UpdateOffer(remote.toString(), release.tag, cleanNotes(release.body), page, apk.first, url, apk.second, published),
+            UpdateOffer(version, release.tag, notes, page, apk.first, url, apk.second, published, dev),
         )
+    }
+
+    /** Parses `dev-manifest.json`; throws [ReleaseFormatException] for anything malformed. */
+    fun parseDevManifest(json: String): DevManifest {
+        val bad = ReleaseFormatException(UpdateText(R.string.upd_err_dev_manifest))
+        val o = try {
+            JSONObject(json)
+        } catch (_: JSONException) {
+            throw bad
+        }
+        val commit = o.optString("commit", "").trim().lowercase(Locale.ROOT)
+        if (commit.length !in 7..40 || !commit.all { it in '0'..'9' || it in 'a'..'f' }) throw bad
+        val code = o.optLong("versionCode", 0)
+        if (code <= DEV_CODE_BASE || code > 2_000_000_000L) throw bad
+        val builtAt = o.optString("builtAt", "").filter { !Character.isISOControl(it) }.take(40)
+        return DevManifest(commit, code.toInt(), builtAt, o.optString("notes", ""))
+    }
+
+    /**
+     * The dev channel: the rolling `dev` prerelease is newer when its manifest's versionCode is higher than the
+     * installed one (debug builds are DEV_CODE_BASE + commit count, so this is "built from a later commit").
+     * Only `geekbridge-debug.apk` is ever offered, and only with a published SHA-256 (checked again on download).
+     */
+    fun evaluateDev(
+        release: Release,
+        manifestJson: String,
+        currentCode: Int,
+        sums: (String) -> String?,
+        allowLoopback: Boolean = false,
+    ): UpdateCheckResult {
+        if (release.draft || release.tag != DEV_TAG) return UpdateCheckResult.UpToDate(null)
+        val manifest = try {
+            parseDevManifest(manifestJson)
+        } catch (e: ReleaseFormatException) {
+            return UpdateCheckResult.Failed(e.text)
+        }
+        if (manifest.versionCode <= currentCode) return UpdateCheckResult.UpToDate(manifest.label())
+        val apk = release.assets.firstOrNull { it.first == DEV_APK && it.third in 1..MAX_APK_BYTES }
+            ?.let { it.first to it.third }
+            ?: return UpdateCheckResult.Failed(UpdateText(R.string.upd_err_no_package, manifest.label()))
+        val notes = cleanNotes((if (manifest.builtAt.isEmpty()) "" else "Built ${manifest.builtAt}\n") + manifest.notes)
+        return offerFor(release, apk, manifest.label(), notes, sums, allowLoopback, dev = true)
     }
 }

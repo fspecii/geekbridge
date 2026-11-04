@@ -167,6 +167,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # debug builds are versionCode 20000 + commit count (docs/updates.md#dev-channel)
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
@@ -213,7 +215,8 @@ jobs:
         run: |
           set -euo pipefail
           scripts/version-code.sh --self-test
-          want="$(scripts/version-code.sh --code)"
+          # Debug builds carry the dev-channel code: 20000 + number of commits (docs/updates.md#dev-channel).
+          want="$(scripts/version-code.sh --dev)"
           apk="$(ls android/app/build/outputs/apk/debug/*.apk | head -n1)"
           got="$("$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging "$apk" | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p")"
           [[ "$got" == "$want" ]] || { echo "::error::APK versionCode $got differs from scripts/version-code.sh ($want)"; exit 1; }

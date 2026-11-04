@@ -75,7 +75,7 @@ Commands:
   clipboard window SECONDS            how recently a phone item must have been copied (5-600)
   clipboard hotkey [COMBO]            show or set the paste-from-phone hotkey (default Ctrl+Shift+V)
   clipboard image-limit MIB           largest image accepted or sent (1-32)
-  update [status|check|download|skip VERSION|enable|disable]
+  update [status|check|download|skip VERSION|channel stable|dev|enable|disable]
                                       look for a newer GitHub release, download and SHA-256-verify
                                       it (never installs anything); default: status
   whats-new                           what changed in this version (the same text as the card Home shows
@@ -1458,7 +1458,11 @@ fn update_call(port: u16, token: &Token, request: &Request) -> Result<UpdateStat
 }
 
 fn describe_update(s: &UpdateStatus) {
-    println!("running:  v{}", s.current_version);
+    match &s.current_commit {
+        Some(commit) => println!("running:  v{} ({commit})", s.current_version),
+        None => println!("running:  v{}", s.current_version),
+    }
+    println!("channel:  {}", s.channel.as_str());
     println!(
         "checking: automatic {} (startup, then about daily)",
         if s.enabled { "on" } else { "off" }
@@ -1466,7 +1470,12 @@ fn describe_update(s: &UpdateStatus) {
     match (&s.latest, s.newer) {
         (Some(latest), true) => {
             println!(
-                "latest:   v{} - newer{}",
+                "latest:   {}{} - newer{}",
+                if s.channel == ipc::UpdateChannel::Dev {
+                    ""
+                } else {
+                    "v"
+                },
                 latest.version,
                 if s.skipped { " (skipped)" } else { "" }
             );
@@ -1481,7 +1490,15 @@ fn describe_update(s: &UpdateStatus) {
                 _ => println!("installer: none published for this system"),
             }
         }
-        (Some(latest), false) => println!("latest:   v{} - you are up to date", latest.version),
+        (Some(latest), false) => println!(
+            "latest:   {}{} - you are up to date",
+            if s.channel == ipc::UpdateChannel::Dev {
+                ""
+            } else {
+                "v"
+            },
+            latest.version
+        ),
         (None, _) if s.state == UpdateState::NoPublicRelease => {
             println!("latest:   {}", ipc::UPDATE_NO_PUBLIC_RELEASE);
         }
@@ -1510,6 +1527,13 @@ fn update_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> 
         "skip" => (
             Request::UpdateSkip {
                 version: text(args.get(1), "VERSION")?,
+            },
+            None,
+        ),
+        "channel" => (
+            Request::UpdateSetChannel {
+                channel: ipc::UpdateChannel::parse(&text(args.get(1), "stable|dev")?)
+                    .ok_or("expected stable or dev")?,
             },
             None,
         ),

@@ -8,7 +8,7 @@ use crate::{
     i18n::{tr, tr_args},
     theme::{self, ButtonKind, Palette},
 };
-use bridge_core::ipc::{self, Request, Response, Token, UpdateState, UpdateStatus};
+use bridge_core::ipc::{self, Request, Response, Token, UpdateChannel, UpdateState, UpdateStatus};
 use eframe::egui::{self, Frame, Margin, Stroke};
 use std::{
     sync::{
@@ -29,6 +29,7 @@ enum Command {
     Download,
     Skip(String),
     SetEnabled(bool),
+    SetChannel(UpdateChannel),
 }
 
 type Published = Option<Result<UpdateStatus, String>>;
@@ -89,6 +90,9 @@ impl Updates {
                         Ok(Command::Skip(version)) => call(&Request::UpdateSkip { version }),
                         Ok(Command::SetEnabled(enabled)) => {
                             call(&Request::UpdateSetEnabled { enabled })
+                        }
+                        Ok(Command::SetChannel(channel)) => {
+                            call(&Request::UpdateSetChannel { channel })
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => call(&Request::UpdateStatus),
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -161,8 +165,13 @@ impl Updates {
                         ui.set_width(ui.available_width());
                         ui.horizontal_wrapped(|ui| {
                             theme::dot(ui, pal.accent_fill, false);
+                            let key = if status.channel == UpdateChannel::Dev {
+                                "update.available_dev"
+                            } else {
+                                "update.available"
+                            };
                             ui.label(theme::semibold(
-                                tr_args("update.available", &[("version", &version)]),
+                                tr_args(key, &[("version", &version)]),
                                 13.0,
                             ));
                             ui.label(theme::caption(pal, banner_detail(&status)));
@@ -292,6 +301,23 @@ impl Updates {
                 self.send(Command::SetEnabled(automatic));
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(theme::caption(pal, tr("update.channel")));
+            let mut channel = status.channel;
+            for (value, key) in [
+                (UpdateChannel::Stable, "update.channel_stable"),
+                (UpdateChannel::Dev, "update.channel_dev"),
+            ] {
+                ui.selectable_value(&mut channel, value, tr(key));
+            }
+            if channel != status.channel {
+                self.dismissed = None;
+                self.send(Command::SetChannel(channel));
+            }
+        });
+        if status.channel == UpdateChannel::Dev {
+            ui.add(egui::Label::new(theme::caption(pal, tr("update.channel_dev_note"))).wrap());
+        }
         ui.label(theme::caption(pal, tr("update.privacy")));
     }
 }
@@ -336,9 +362,22 @@ fn banner_detail(status: &UpdateStatus) -> String {
 }
 
 fn summary_line(status: &UpdateStatus) -> String {
+    let running = match &status.current_commit {
+        Some(commit) => format!("v{} ({commit})", status.current_version),
+        None => format!("v{}", status.current_version),
+    };
     let line = match (&status.latest, status.newer) {
         _ if status.state == UpdateState::NoPublicRelease => {
             ipc::UPDATE_NO_PUBLIC_RELEASE.to_owned()
+        }
+        (Some(latest), true) if status.channel == UpdateChannel::Dev => tr_args(
+            "update.summary_available_dev",
+            &[("latest", &latest.version), ("version", &running)],
+        ),
+        (Some(_), false) | (None, _)
+            if status.channel == UpdateChannel::Dev && status.last_checked_unix.is_some() =>
+        {
+            tr_args("update.summary_current_dev", &[("version", &running)])
         }
         (Some(latest), true) => tr_args(
             "update.summary_available",
@@ -417,6 +456,8 @@ mod tests {
     fn status(newer: bool, skipped: bool) -> UpdateStatus {
         UpdateStatus {
             enabled: true,
+            channel: UpdateChannel::Stable,
+            current_commit: None,
             current_version: "0.1.0".into(),
             state: if newer {
                 UpdateState::Available

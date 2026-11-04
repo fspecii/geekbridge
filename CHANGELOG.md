@@ -11,6 +11,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   to stock KDE Connect, kept out of the plaintext identity): accepted, declined (or lapsed), receiving off, too large, busy,
   and for text and links saved (a link is kept, never opened). The Share screen says so in plain words and stops waiting at
   once on a refusal; an older computer keeps today's hint. See docs/reports/share-result-packet.md.
+- Dev update channel (docs/updates.md#dev-channel, docs/reports/dev-channel.md): a rolling `dev` GitHub prerelease with the
+  newest main build (debug-signed APK, Linux archive, `SHA256SUMS`, `dev-manifest.json`), published by
+  `scripts/release-dev.sh` (dry run unless `--publish`) or the opt-in `dev-release.yml`. The Android app (debug builds
+  default to Dev; **Update channel: Stable / Dev** in the App updates card) and `bridge-update`
+  (`geekbridge-ctl update channel dev`, `GEEKBRIDGE_UPDATE_CHANNEL`, Details panel) can follow it. Debug APKs now have
+  `versionCode = 20000 + commit count`, so each main build is accepted as an update of the previous one.
 
 ### Changed
 - The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile

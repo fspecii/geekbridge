@@ -43,6 +43,27 @@ val gitCommit: String = try {
     "unknown"
 }
 
+// Debug (dev-channel) builds: versionCode = DEV_CODE_BASE + number of commits (git rev-list --count HEAD), so every
+// new main build is a strictly higher code and Android accepts it as an update of the previous debug build, and the
+// "Dev" update channel can compare codes (docs/updates.md#dev-channel). Release codes above stay on the formula.
+// Same base as scripts/version-code.sh --dev and DEV_CODE_BASE in bridge-update. Without git (a source archive) the
+// count is 0, i.e. code 20000, which no real dev build has: such a build is simply "older" than every published dev build.
+// -Pgb.commitCount=N overrides (scripts/release-dev.sh builds from a copy without .git).
+val devCodeBase = 20_000
+val commitCount: Int = (findProperty("gb.commitCount") as String?)?.trim()?.toIntOrNull() ?: try {
+    providers.exec {
+        commandLine("git", "rev-list", "--count", "HEAD")
+        workingDir = rootProject.projectDir
+        isIgnoreExitValue = true
+    }.standardOutput.asText.get().trim().toIntOrNull() ?: 0
+} catch (_: Exception) {
+    0
+}
+// -Pgb.formulaVersionCode=1 keeps the version-derived code in debug builds too (scripts/e2e/update-install.sh builds two
+// scratch "releases" 0.1.0 and 0.2.0 with the debug key and needs 10099 -> 20099).
+val devVersionCode: Int =
+    if (findProperty("gb.formulaVersionCode") == "1") workspaceVersionCode else devCodeBase + commitCount
+
 val packagedAbis: List<String> =
     (findProperty("gb.abis") as String?)?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
         ?: listOf("arm64-v8a", "x86_64")
@@ -100,6 +121,12 @@ android {
     lint {
         abortOnError = true
         warningsAsErrors = false
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) { variant ->
+        variant.outputs.forEach { it.versionCode.set(devVersionCode) }
     }
 }
 

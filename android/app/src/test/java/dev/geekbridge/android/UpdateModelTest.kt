@@ -52,7 +52,16 @@ class UpdateModelTest {
         val section = cargo.substringAfter("[workspace.package]")
         val version = Regex("""(?m)^version\s*=\s*"([^"]+)"""").find(section)!!.groupValues[1]
         assertEquals(version, BuildConfig.VERSION_NAME)
-        assertEquals(v(version).toVersionCode(), BuildConfig.VERSION_CODE)
+        if (BuildConfig.DEBUG) {
+            // Debug builds are dev builds: DEV_CODE_BASE + commit count (a build without git has count 0).
+            // (-Pgb.formulaVersionCode=1 keeps the formula code, used for debug-signed prerelease APKs and e2e rehearsals.)
+            assertTrue(
+                "debug code ${BuildConfig.VERSION_CODE}",
+                BuildConfig.VERSION_CODE >= UpdateModel.DEV_CODE_BASE || BuildConfig.VERSION_CODE == v(version).toVersionCode(),
+            )
+        } else {
+            assertEquals(v(version).toVersionCode(), BuildConfig.VERSION_CODE)
+        }
     }
 
     @Test

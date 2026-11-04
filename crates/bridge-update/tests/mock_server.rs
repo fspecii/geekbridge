@@ -1262,3 +1262,251 @@ fn drafts_and_flagged_prereleases_in_a_realistic_payload_are_never_offered() {
         assert_eq!(st.state, UpdateState::UpToDate);
     }
 }
+
+// ---------------------------------------------------------------- dev channel
+
+const DEV_TAG: &str = "/repos/fspecii/geekbridge/releases/tags/dev";
+const DEV_COMMIT: &str = "89abcdef0123456789abcdef0123456789abcdef";
+
+impl Rig {
+    /// A realistic rolling `dev` prerelease: prerelease flag, all desktop archives, the debug APK,
+    /// SHA256SUMS and dev-manifest.json.
+    fn publish_dev(&self, payload: &[u8], code: u64, sums: bool) {
+        let base = self.mock.url();
+        let mut assets = vec![
+            serde_json::json!({"name": ASSET, "size": payload.len(),
+                "browser_download_url": format!("{base}/dl/{ASSET}")}),
+            serde_json::json!({"name": "geekbridge-windows-x86_64.zip", "size": 10,
+                "browser_download_url": format!("{base}/dl/win.zip")}),
+            serde_json::json!({"name": "geekbridge-debug.apk", "size": 10,
+                "browser_download_url": format!("{base}/dl/debug.apk")}),
+            serde_json::json!({"name": "dev-manifest.json", "size": 150,
+                "browser_download_url": format!("{base}/dl/dev-manifest.json")}),
+        ];
+        if sums {
+            assets.push(serde_json::json!({"name": "SHA256SUMS", "size": 100,
+                "browser_download_url": format!("{base}/dl/SHA256SUMS")}));
+        }
+        self.mock.set(
+            DEV_TAG,
+            json_ok(
+                serde_json::to_vec(&serde_json::json!({
+                    "tag_name": "dev", "prerelease": true, "draft": false,
+                    "html_url": format!("{base}/release/dev"),
+                    "body": "Rolling dev build",
+                    "assets": assets,
+                }))
+                .unwrap(),
+            ),
+        );
+        self.mock.set(
+            "/dl/dev-manifest.json",
+            Reply::Ok {
+                headers: vec![],
+                body: serde_json::to_vec(&serde_json::json!({
+                    "commit": DEV_COMMIT, "versionCode": code,
+                    "builtAt": "2026-11-04T10:00:00Z", "notes": "Fixes the call popup"
+                }))
+                .unwrap(),
+            },
+        );
+        self.mock.set(
+            &format!("/dl/{ASSET}"),
+            Reply::Ok {
+                headers: vec![],
+                body: payload.to_vec(),
+            },
+        );
+        if sums {
+            self.mock.set(
+                "/dl/SHA256SUMS",
+                Reply::Ok {
+                    headers: vec![],
+                    body: good_sums(payload).into_bytes(),
+                },
+            );
+        }
+    }
+
+    fn dev_updater(&self, commit: Option<&str>, count: Option<u32>) -> Arc<Updater> {
+        let mut cfg = self.config("0.1.0");
+        cfg.channel = Some(UpdateChannel::Dev);
+        cfg.build_commit = commit.map(str::to_owned);
+        cfg.build_count = count;
+        Updater::new(cfg).unwrap()
+    }
+}
+
+use bridge_core::ipc::UpdateChannel;
+
+#[test]
+fn dev_channel_offers_a_newer_dev_build_and_verifies_the_download() {
+    let rig = Rig::new();
+    let payload = vec![9_u8; 50_000];
+    rig.publish_dev(&payload, 20200, true);
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    up.check(true).unwrap();
+    let st = up.status();
+    assert_eq!(st.channel, UpdateChannel::Dev);
+    assert_eq!(st.state, UpdateState::Available);
+    assert!(st.newer && st.downloadable);
+    let latest = st.latest.unwrap();
+    assert_eq!(latest.version, "dev-89abcdef0123");
+    assert_eq!(latest.tag, "dev");
+    assert!(latest.notes.contains("Fixes the call popup"));
+    assert!(latest.notes.contains("2026-11-04T10:00:00Z"));
+    assert_eq!(latest.sha256, Some(sha_hex(&payload)));
+    // The stable endpoint is never asked on the dev channel.
+    assert_eq!(rig.mock.hits(LATEST), 0);
+    let path = up.download().unwrap();
+    assert_eq!(std::fs::read(path).unwrap(), payload);
+    assert_eq!(up.status().state, UpdateState::Downloaded);
+}
+
+#[test]
+fn dev_channel_is_up_to_date_on_the_same_commit_or_a_newer_build() {
+    let rig = Rig::new();
+    let payload = vec![1_u8; 64];
+    rig.publish_dev(&payload, 20200, true);
+    // Same commit (abbreviated), whatever the count says.
+    let up = rig.dev_updater(Some("89abcdef0123"), Some(10));
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::UpToDate);
+    assert!(!up.status().downloadable);
+    // A local build that is already ahead of the published one.
+    let up = rig.dev_updater(Some("bbbbbbbbbbbb"), Some(300));
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::UpToDate);
+    // A build that cannot tell (no embedded count) is offered the dev build.
+    let up = rig.dev_updater(None, None);
+    up.check(true).unwrap();
+    assert_eq!(up.status().state, UpdateState::Available);
+}
+
+#[test]
+fn dev_channel_uses_etag_and_does_not_refetch_the_manifest_on_304() {
+    let rig = Rig::new();
+    let payload = vec![2_u8; 64];
+    rig.publish_dev(&payload, 20200, true);
+    rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150))
+        .check(true)
+        .unwrap();
+    assert!(rig.mock.header(DEV_TAG, "if-none-match").is_none());
+    assert_eq!(rig.mock.hits("/dl/dev-manifest.json"), 1);
+    rig.mock.set(
+        DEV_TAG,
+        Reply::Status {
+            code: 304,
+            headers: vec![],
+        },
+    );
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    assert_eq!(up.status().state, UpdateState::Available); // from the persisted cache, offline
+    up.check(true).unwrap();
+    assert_eq!(
+        rig.mock.header(DEV_TAG, "if-none-match").as_deref(),
+        Some("\"abc\"")
+    );
+    assert_eq!(rig.mock.hits("/dl/dev-manifest.json"), 1);
+    assert_eq!(up.status().state, UpdateState::Available);
+}
+
+#[test]
+fn dev_channel_without_checksum_offers_no_download() {
+    let rig = Rig::new();
+    rig.publish_dev(&[5_u8; 64], 20200, false);
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    up.check(true).unwrap();
+    let st = up.status();
+    assert!(st.newer && !st.downloadable);
+    assert!(matches!(up.download(), Err(Error::NothingToDownload(_))));
+}
+
+#[test]
+fn dev_channel_tampered_download_is_deleted() {
+    let rig = Rig::new();
+    let payload = vec![4_u8; 64];
+    rig.publish_dev(&payload, 20200, true);
+    rig.mock.set(
+        &format!("/dl/{ASSET}"),
+        Reply::Ok {
+            headers: vec![],
+            body: vec![0_u8; 64],
+        },
+    );
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    up.check(true).unwrap();
+    assert_eq!(up.download(), Err(Error::HashMismatch));
+    assert_eq!(rig.download_root_entries(), 0);
+}
+
+#[test]
+fn dev_channel_without_a_dev_release_is_not_an_error() {
+    let rig = Rig::new();
+    rig.mock.set(LIST, list_ok(&[]));
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    up.check(true).unwrap();
+    let st = up.status();
+    assert!(st.error.is_none());
+    assert_eq!(st.state, UpdateState::UpToDate);
+    assert!(st.latest.is_none());
+}
+
+#[test]
+fn dev_channel_malformed_manifest_is_an_error_and_offers_nothing() {
+    let rig = Rig::new();
+    rig.publish_dev(&[1_u8; 8], 20200, true);
+    rig.mock.set(
+        "/dl/dev-manifest.json",
+        Reply::Ok {
+            headers: vec![],
+            body: b"{\"commit\":\"nope\"}".to_vec(),
+        },
+    );
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    assert!(matches!(up.check(true), Err(Error::Malformed(_))));
+    assert!(!up.status().newer);
+}
+
+#[test]
+fn switching_channel_drops_the_other_channels_offer_and_persists() {
+    let rig = Rig::new();
+    let payload = vec![6_u8; 64];
+    rig.publish("v0.2.0", &payload, Some(good_sums(&payload)));
+    rig.publish_dev(&payload, 20200, true);
+    let mut cfg = rig.config("0.1.0");
+    cfg.build_commit = Some("aaaaaaaaaaaa".into());
+    cfg.build_count = Some(150);
+    let up = Updater::new(cfg.clone()).unwrap();
+    up.check(true).unwrap();
+    let st = up.status();
+    assert_eq!(st.channel, UpdateChannel::Stable);
+    assert_eq!(st.latest.unwrap().version, "0.2.0");
+    up.set_channel(UpdateChannel::Dev);
+    let st = up.status();
+    assert_eq!(st.channel, UpdateChannel::Dev);
+    assert!(st.latest.is_none() && !st.newer);
+    up.check(true).unwrap();
+    assert_eq!(up.status().latest.unwrap().version, "dev-89abcdef0123");
+    // The choice survives a restart; the environment override wins over it.
+    assert_eq!(
+        Updater::new(cfg.clone()).unwrap().status().channel,
+        UpdateChannel::Dev
+    );
+    cfg.channel = Some(UpdateChannel::Stable);
+    assert_eq!(
+        Updater::new(cfg).unwrap().status().channel,
+        UpdateChannel::Stable
+    );
+}
+
+#[test]
+fn skipping_a_dev_build_hides_only_that_build() {
+    let rig = Rig::new();
+    rig.publish_dev(&[8_u8; 64], 20200, true);
+    let up = rig.dev_updater(Some("aaaaaaaaaaaa"), Some(150));
+    up.check(true).unwrap();
+    up.skip("dev-89abcdef0123").unwrap();
+    assert!(up.status().skipped);
+    assert!(up.skip("dev-xyz").is_err());
+}

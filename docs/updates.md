@@ -11,6 +11,7 @@ Both the desktop apps and the Android app can tell you when a newer GeekBridge r
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases?per_page=30` | only when `releases/latest` answered 404/403: tells "no stable release yet" from "private repository" |
 | `GET <SHA256SUMS asset URL>` (`github.com` / `*.githubusercontent.com`, https only) | published digests, fetched only when a newer release has an installer for this system |
 | `GET <installer asset URL>` | only after you click Download (desktop) or "Download and verify" (Android) |
+| `GET https://api.github.com/repos/fspecii/geekbridge/releases/tags/dev`, then `dev-manifest.json` | **instead of** `releases/latest`, only on the dev channel ([below](#dev-channel)) |
 
 Each request carries a `User-Agent` of `geekbridge-updater/<version>` (Android:
 `geekbridge-android-updater/<version>`), `Accept`, and, after the first answer, `If-None-Match` with GitHub's
@@ -64,11 +65,65 @@ download host, which never receives it, and a redirect to any host outside the a
 Android has **no token support**: a secret shipped inside an APK, or kept in app storage, can be extracted by
 whoever holds the app, so the Android updater only works with a public repository.
 
+## Dev channel
+
+Besides stable releases there is a **dev channel** for people who install development builds to debug or to try
+new features: a rolling GitHub **prerelease with the fixed tag `dev`** that always carries the newest `main` build.
+It is never "latest", never a version tag, and the stable channel never sees it (`releases/latest` skips
+prereleases).
+
+| Asset | What |
+| --- | --- |
+| `geekbridge-debug.apk` | the Android debug build, signed with the **developer's debug key** (below) |
+| `geekbridge-linux-x86_64.tar.gz` | the Linux executables (same layout and name as a stable release, so the same selector and the same by-hand install apply); Windows and macOS archives when the CI artifacts were added |
+| `SHA256SUMS` | digests of every asset above and of the manifest |
+| `dev-manifest.json` | `{"commit": "<40 hex>", "versionCode": 20161, "builtAt": "2026-11-04T10:00:00Z", "notes": "..."}` |
+
+**Which build is newer.** Dev builds have the version code `20000 + git rev-list --count HEAD`
+(`scripts/version-code.sh --dev`; Android: `android/app/build.gradle.kts`, debug builds only). Main only grows, so the code
+is monotonic. Android offers the dev build when the manifest's `versionCode` is higher than the installed one. The
+desktop binaries embed their commit and commit count at build time (`crates/bridge-update/build.rs`; overridable with
+`GEEKBRIDGE_BUILD_COMMIT` / `GEEKBRIDGE_BUILD_COUNT`) and offer the dev build when the commit differs **and** the
+manifest's code is higher; a binary that does not know its count (a stable release, a source archive) is offered the
+dev build whenever the commit differs. `geekbridge-ctl update status` shows the running commit.
+
+**Choosing the channel.**
+
+* Android: *App updates* card, **Update channel: Stable / Dev**. Debug builds default to **Dev**; release builds default
+  to **Stable** and ask for confirmation before switching (the warning says Android will refuse a dev APK over a release
+  build). The choice is the `channel` key of the `updates` preference; each channel has its own ETag cache.
+* Desktop: `geekbridge-ctl update channel stable|dev`, the **Update channel** selector in the Details panel, or
+  `GEEKBRIDGE_UPDATE_CHANNEL=stable|dev` in the service's environment (wins over the saved choice). Default `stable`.
+  Switching drops the other channel's offer and any downloaded file. The banner reads "Dev build available: dev-<12 hex>",
+  **Skip this version** skips that build only, and the download and by-hand install work as for a stable archive.
+
+**Requests.** The same host as the stable check: `GET https://api.github.com/repos/<repo>/releases/tags/dev` (conditional,
+ETag), then `dev-manifest.json` (at most 16 KiB; not re-fetched while the ETag is unchanged), then `SHA256SUMS` and the
+installer only when a newer dev build exists. Rate limits, redirects, size caps and the offline behaviour are exactly
+those of the stable check. A repository with no `dev` release is reported as up to date, not as an error.
+
+**Signature, and why `versionCode` 20000+ is safe.** Android installs an update only over the same signing key and a
+higher `versionCode`. The dev APK is debug-signed, with the key in `.tools/android-user/debug.keystore` on the owner's
+machine, so phones that already run a debug build from there update in place; the key is never committed or uploaded
+(only the signed APK is). The app compares the downloaded APK's signer with its own *before* offering Install and
+explains a mismatch (another computer's debug key, or a release build) instead of letting the installer fail.
+Stable APKs are signed with the release key, so a switch between the channels on one phone is always an uninstall
+and a reinstall, whatever the version codes say; that is why dev codes may sit above the stable ones (stable 0.1.0 is
+10099, 0.2.0 is 20099, dev is 20000 + commits). A debug-signed *stable* build (rehearsals only) below the dev code
+cannot be installed over a dev build; `scripts/e2e/update-install.sh` builds its two rehearsal APKs with
+`-Pgb.formulaVersionCode=1` for that reason. Debug builds from before the dev channel have code 10099, which is lower
+than any dev code, so the first dev build installs over them.
+
+**Publishing** (owner only): `scripts/release-dev.sh` builds locally and is a **dry run unless `--publish`**; the
+GitHub Actions workflow `dev-release.yml` builds the desktop binaries on every push to main (artifacts only) and can
+build and publish the APK too once the owner stores the debug keystore as the secret `DEV_KEYSTORE_B64`. See
+[reports/dev-channel.md](reports/dev-channel.md) for the exact commands and the decisions.
+
 ## Version comparison
 
 The release tag (`vX.Y.Z`) is parsed as semver and compared with the running build's version
 (`env!("CARGO_PKG_VERSION")` on the desktop, `BuildConfig.VERSION_NAME` on Android). Prereleases and drafts are
-never offered. On Android the version code derived from the tag must also exceed the installed one.
+never offered on the stable channel. On Android the version code derived from the tag must also exceed the installed one.
 Single version source: see [builds.md](builds.md#releases-and-versioning).
 
 ## Desktop
@@ -138,7 +193,8 @@ exactly these names.
   pipeline signs with the release keystore ([builds.md](builds.md#first-release-android-signing-key)); stable tags fail
   without it. The Android app compares the downloaded APK's signer certificate (SHA-256, via `PackageManager`
   `GET_SIGNING_CERTIFICATES`) with its own **before** showing Install; on a mismatch the file is deleted and the app
-  explains it (a debug build never updates to a release build: uninstall once, then install the release APK).
+  explains it (a debug build never updates to a release build: uninstall once, then install the release APK). On the
+  Dev channel the dev APK (`geekbridge-debug.apk`) is checked the same way, with its own explanation.
 
 ## Tested / not tested
 

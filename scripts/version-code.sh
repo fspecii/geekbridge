@@ -7,8 +7,12 @@
 #   versionCode = (major*10000 + minor*100 + patch) * 100 + slot
 #   slot: 99 final; alpha.N 0..24, beta.N 25..49, rc.N 50..74 (N capped at 24); so rc < final.
 #
+# Debug (dev-channel) builds do not use this formula: versionCode = 20000 + number of commits
+# (`git rev-list --count HEAD`), so every new main build is a higher code (docs/updates.md#dev-channel).
+#
 # Usage: scripts/version-code.sh [VERSION]      prints "NAME CODE"
 #        scripts/version-code.sh --code [VERSION]   prints the code only
+#        scripts/version-code.sh --dev [COUNT]      the debug/dev code; COUNT defaults to `git rev-list --count HEAD`
 #        scripts/version-code.sh --self-test
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -34,6 +38,14 @@ code_for() {
   echo $(( (major * 10000 + minor * 100 + patch) * 100 + slot ))
 }
 
+DEV_CODE_BASE=20000   # keep in step with android/app/build.gradle.kts and bridge-update's DEV_CODE_BASE
+
+dev_code() {
+  local n="${1:-$(git rev-list --count HEAD 2>/dev/null || echo 0)}"
+  [[ "$n" =~ ^[0-9]+$ ]] || { echo "not a commit count: $n" >&2; return 1; }
+  echo $(( DEV_CODE_BASE + 10#$n ))
+}
+
 cargo_version() {
   awk '/^\[workspace.package\]/{s=1;next} /^\[/{s=0} s && /^version[[:space:]]*=/{gsub(/[" ]/,"",$0); sub(/^version=/,"",$0); print; exit}' Cargo.toml
 }
@@ -54,12 +66,15 @@ self_test() {
   for v in 215.0.0 1.100.0 1.0.100 abc 1.0; do
     code_for "$v" >/dev/null 2>&1 && { echo "FAIL $v should be rejected"; fail=1; }
   done
+  [[ "$(dev_code 161)" == 20161 && "$(dev_code 0)" == 20000 ]] || { echo "FAIL dev_code"; fail=1; }
+  dev_code x >/dev/null 2>&1 && { echo "FAIL dev_code accepts text"; fail=1; }
   [[ $fail == 0 ]] && echo "version-code self-test OK"
   return $fail
 }
 
 case "${1:-}" in
   --self-test) self_test ;;
+  --dev) dev_code "${2:-}" ;;
   --code) code_for "${2:-$(cargo_version)}" ;;
   *) v="${1:-$(cargo_version)}"; echo "$v $(code_for "$v")" ;;
 esac

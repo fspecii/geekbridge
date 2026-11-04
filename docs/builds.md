@@ -174,6 +174,13 @@ and `scripts/version-code.sh` implement one formula; tests in `UpdateModelTest.v
 | 0.2.0 | 20099 |
 | 1.0.0 | 1000099 |
 
+**Debug builds are different** (the dev update channel, [updates.md](updates.md#dev-channel)): `versionCode = 20000 + git rev-list --count HEAD`
+(`scripts/version-code.sh --dev`), set for the `debug` variant only in `build.gradle.kts`, so each new main build is a
+strictly higher code and the Dev channel can compare them. Release codes stay on the formula above. Without git (a source
+archive) the count is 0; `-Pgb.commitCount=N` sets it, `-Pgb.formulaVersionCode=1` gives debug builds the formula code
+(used by `scripts/e2e/update-install.sh`). CI's debug-APK check compares with `version-code.sh --dev` and therefore needs
+the full history (`fetch-depth: 0`).
+
 Limits (the build fails beyond them): major <= 214, minor <= 99, patch <= 99. A release candidate therefore always
 sorts below its final, and every release in semver order has a larger code. Never reuse a version after a tag was
 pushed. (Before the first public release the formula was `major*1_000_000 + ...`; no APK with those codes was ever

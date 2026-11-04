@@ -137,7 +137,7 @@ android() {
       rsync -a --delete --exclude build --exclude .gradle --exclude .kotlin android/ "$W/v$v/android/"
       # The bundled "What's new" text is generated for the repository's version; label this scratch build's copy.
       sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"$v\"/" "$W/v$v/android/app/src/main/assets/whats_new.json"
-      (cd "$W/v$v/android" && gradle --no-daemon -q assembleDebug -Pgb.abis=x86_64 >"$W/build-$v.log" 2>&1) || { rec android FAIL "build v$v failed"; return 1; }
+      (cd "$W/v$v/android" && gradle --no-daemon -q assembleDebug -Pgb.abis=x86_64 -Pgb.formulaVersionCode=1 >"$W/build-$v.log" 2>&1) || { rec android FAIL "build v$v failed"; return 1; }
       cp "$W/v$v/android/app/build/outputs/apk/debug/"*.apk "$W/gb-$v.apk"
     done
   fi

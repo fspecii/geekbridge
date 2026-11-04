@@ -30,7 +30,7 @@
     <string name="upd_err_no_package">Version %1$s is out, but no Android package is published.</string>
     <string name="upd_err_addr_not_trusted">The download address is not trusted.</string>
     <string name="upd_title">App updates</string>
-    <string name="upd_intro">GeekBridge %1$s (build %2$d). Checking only asks GitHub for the latest public release of this project; nothing about you or this phone is sent. Android always asks you to confirm an install, and an update only installs over the same signing key.</string>
+    <string name="upd_intro">GeekBridge %1$s (build %2$d). Checking only asks GitHub for the latest release (stable or, on the Dev channel, the rolling dev build) of this project; nothing about you or this phone is sent. Android always asks you to confirm an install, and an update only installs over the same signing key.</string>
     <string name="upd_not_checked">Not checked yet.</string>
     <string name="upd_auto">Check when the app opens (at most every 12 hours)</string>
     <string name="upd_check">Check for updates</string>
@@ -51,4 +51,16 @@
     <string name="upd_installer_open">Android\'s installer is open. Confirm there to finish the update.</string>
     <string name="upd_no_installer">No package installer was found on this phone.</string>
     <string name="upd_no_browser">No browser was found to open the release page.</string>
+    <string name="upd_err_dev_manifest">The dev release has no usable dev-manifest.json.</string>
+    <string name="upd_channel_line">Update channel: %1$s</string>
+    <string name="upd_channel_stable">Stable</string>
+    <string name="upd_channel_dev">Dev</string>
+    <string name="upd_channel_warn_title">Follow dev builds?</string>
+    <string name="upd_channel_warn">Dev builds are the newest, least tested builds of the main branch. They are signed with a developer (debug) key, so Android will refuse to install one over this release build: you would have to uninstall GeekBridge first, which erases its data and pairings. Only continue if you know why you want this.</string>
+    <string name="upd_channel_warn_ok">Use dev builds</string>
+    <string name="upd_channel_warn_cancel">Stay on stable</string>
+    <string name="upd_available_dev">Dev build %1$s is available (you have %2$s, build %3$d).</string>
+    <string name="upd_up_to_date_dev">GeekBridge %1$s (build %2$d) is the newest dev build.</string>
+    <string name="upd_dev_signer_debug">The dev build is signed with a different debug key than this app (builds made on another computer have their own key). Uninstall GeekBridge once and install the dev APK; app data is lost. Updates then work in place.</string>
+    <string name="upd_dev_signer_release">This is a release build; dev builds are signed with a developer key, which Android won\'t accept over it. Uninstall GeekBridge once to switch (app data is lost), or switch the update channel back to Stable.</string>
 </resources>

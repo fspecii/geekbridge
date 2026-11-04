@@ -21,10 +21,12 @@ class UpdateChecker(
     private val baseUrl: String = "https://api.github.com",
     private val repo: String = DEFAULT_REPO,
     private val allowLoopback: Boolean = false,
+    private val channel: UpdateChannel = UpdateChannel.Stable,
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 15_000,
 ) {
-    class Cache(val etag: String, val body: String)
+    /** The previous 200 answer and its ETag. [extra] is the dev channel's `dev-manifest.json` text. */
+    class Cache(val etag: String, val body: String, val extra: String? = null)
 
     /** Raised for every failure; [text] is safe to show and resolved to the user's language at the UI edge. */
     class UpdateException(val text: UpdateText) : Exception("update error ${text.id}") {
@@ -35,7 +37,10 @@ class UpdateChecker(
      * Fetches the latest release. [cache] is the previous 200 body with its ETag; on 304 it is reused.
      * [onFresh] receives a new (etag, body) pair to persist.
      */
-    fun check(cache: Cache?, onFresh: (Cache) -> Unit = {}): UpdateCheckResult = try {
+    fun check(cache: Cache?, onFresh: (Cache) -> Unit = {}): UpdateCheckResult =
+        if (channel == UpdateChannel.Dev) checkDev(cache, onFresh) else checkStable(cache, onFresh)
+
+    private fun checkStable(cache: Cache?, onFresh: (Cache) -> Unit): UpdateCheckResult = try {
         val url = "${baseUrl.trimEnd('/')}/repos/$repo/releases/latest"
         val response = get(url, "application/vnd.github+json", MAX_API_BYTES, cache?.etag)
         val body = when (response.status) {
@@ -66,6 +71,52 @@ class UpdateChecker(
         UpdateCheckResult.Failed(e.text)
     } catch (e: IOException) {
         UpdateCheckResult.Failed(UpdateText(R.string.upd_err_unreachable, Bounds.clip(e.javaClass.simpleName, 40)))
+    }
+
+    /**
+     * The dev channel: `GET /repos/<repo>/releases/tags/dev` (conditional), then the small `dev-manifest.json`
+     * asset (kept in [Cache.extra], so a 304 costs one request in total).
+     */
+    private fun checkDev(cache: Cache?, onFresh: (Cache) -> Unit): UpdateCheckResult {
+        return try {
+        val response = get("${baseUrl.trimEnd('/')}/repos/$repo/releases/tags/${UpdateModel.DEV_TAG}", "application/vnd.github+json", MAX_API_BYTES, cache?.etag)
+        val body = when (response.status) {
+            200 -> String(response.body, Charsets.UTF_8)
+            304 -> cache?.body ?: throw UpdateException(R.string.upd_err_not_modified)
+            403, 429 -> if (response.rateLimited || response.status == 429) {
+                throw UpdateException(R.string.upd_err_rate_limit)
+            } else {
+                return probeReleaseList()
+            }
+            404 -> return probeReleaseList()
+            else -> throw UpdateException(R.string.upd_err_http, response.status)
+        }
+        val release = try {
+            UpdateModel.parseRelease(body)
+        } catch (e: UpdateModel.ReleaseFormatException) {
+            throw UpdateException(e.text)
+        } catch (e: IllegalArgumentException) {
+            throw UpdateException(R.string.upd_err_release_unclear)
+        }
+        if (release.draft || release.tag != UpdateModel.DEV_TAG) return UpdateCheckResult.UpToDate(null)
+        var manifest = if (response.status == 304) cache?.extra else null
+        if (manifest == null) {
+            val asset = release.assets.firstOrNull { it.first == UpdateModel.DEV_MANIFEST && it.third <= UpdateModel.MAX_MANIFEST_BYTES }
+                ?: throw UpdateException(R.string.upd_err_dev_manifest)
+            if (!UpdateModel.urlAllowed(asset.second, allowLoopback)) throw UpdateException(R.string.upd_err_addr_not_trusted)
+            val r = get(asset.second, "application/octet-stream", UpdateModel.MAX_MANIFEST_BYTES, null)
+            if (r.status != 200) throw UpdateException(R.string.upd_err_http, r.status)
+            manifest = String(r.body, Charsets.UTF_8)
+        }
+        val result = UpdateModel.evaluateDev(release, manifest, currentCode, { name -> fetchSums(release, name) }, allowLoopback)
+        // Only a manifest that parsed is worth keeping behind the ETag.
+        if (response.status == 200 && result !is UpdateCheckResult.Failed) response.etag?.let { onFresh(Cache(it, body, manifest)) }
+        result
+    } catch (e: UpdateException) {
+        UpdateCheckResult.Failed(e.text)
+    } catch (e: IOException) {
+        UpdateCheckResult.Failed(UpdateText(R.string.upd_err_unreachable, Bounds.clip(e.javaClass.simpleName, 40)))
+    }
     }
 
     /**
@@ -222,16 +273,24 @@ class UpdateChecker(
          * server, set with `adb shell run-as`) replaces api.github.com so the update flow can be tested offline.
          * Release builds ignore it, and [allowLoopback] still refuses any non-loopback http URL.
          */
+        fun channelOf(context: android.content.Context): UpdateChannel {
+            val prefs = context.getSharedPreferences("updates", android.content.Context.MODE_PRIVATE)
+            return UpdateChannel.parse(prefs.getString(KEY_CHANNEL, null)) ?: UpdateChannel.default(BuildConfig.DEBUG)
+        }
+
+        const val KEY_CHANNEL = "channel"
+
         fun forBuild(context: android.content.Context): UpdateChecker {
             val prefs = context.getSharedPreferences("updates", android.content.Context.MODE_PRIVATE)
+            val channel = channelOf(context)
             val base = if (BuildConfig.DEBUG) prefs.getString("debug_base_url", null) else null
             // Debug builds only, like debug_base_url: `debug_repo` = owner/name of a (public) releases repo.
             val repo = (if (BuildConfig.DEBUG) prefs.getString("debug_repo", null) else null)
                 ?.takeIf { UpdateModel.validRepo(it) } ?: DEFAULT_REPO
             return if (base != null && base.startsWith("http://127.0.0.1")) {
-                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, baseUrl = base, repo = repo, allowLoopback = true)
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, baseUrl = base, repo = repo, allowLoopback = true, channel = channel)
             } else {
-                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, repo = repo)
+                UpdateChecker(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE, repo = repo, channel = channel)
             }
         }
     }

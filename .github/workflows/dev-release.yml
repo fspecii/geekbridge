@@ -1,0 +1,230 @@
+name: Dev build (rolling)
+
+# The rolling `dev` prerelease: the newest main build for people who test new features and report bugs
+# (docs/updates.md#dev-channel). Never a release, never "latest", never a version tag.
+#
+# What runs without any secret, on every push to main:
+#   * desktop binaries for Linux, Windows and macOS, packaged exactly like release.yml, uploaded as WORKFLOW ARTIFACTS.
+#
+# What needs the owner's decision:
+#   * The Android APK must be signed with the SAME debug key as the owner's existing debug builds, or phones cannot
+#     update in place. That key is not in the repository and CI does not have it. To let CI build and publish the APK,
+#     upload the keystore once as the repository secret DEV_KEYSTORE_B64 (base64 of debug.keystore; store and key
+#     password `android`, alias `androiddebugkey`, unless DEV_KEYSTORE_PASSWORD / DEV_KEY_ALIAS say otherwise). Anyone
+#     who can run workflows on this repository can then sign APKs with that key: use a key that exists only for dev
+#     builds, not one that guards anything valuable. Without the secret the android job is skipped.
+#   * Publishing the rolling prerelease from CI is off by default. It happens only when the repository variable
+#     DEV_AUTOPUBLISH is `true`, or when the workflow is started by hand with publish=true, AND the APK was built
+#     (a dev release without an APK would advertise a versionCode phones cannot install).
+#
+# Otherwise: scripts/release-dev.sh on the owner's machine (dry run by default).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Update the rolling dev prerelease (needs the DEV_KEYSTORE_B64 secret)"
+        type: boolean
+        default: false
+
+# A newer push replaces a running older build: the rolling release only ever needs the newest.
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop / ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64-unknown-linux-gnu, archive: tar.gz }
+          - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
+          - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, archive: zip }
+          - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, archive: zip }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0 # the commit count is part of the dev version
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch head; the SHA pins the action, `toolchain` picks the compiler)
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev libxrandr-dev libxi-dev libpulse-dev
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} -p bridge-apps -p bridge-service
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="stage/geekbridge-${{ matrix.name }}"
+          mkdir -p "$out" dist
+          ext=""; [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
+          while IFS= read -r bin; do
+            cp "target/${{ matrix.target }}/release/${bin}${ext}" "$out/"
+          done < <(grep -v -e '^#' -e '^[[:space:]]*$' scripts/release-binaries.txt | tr -d '\r')
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "$out/"
+          name="geekbridge-${{ matrix.name }}.${{ matrix.archive }}"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            if [[ "${{ runner.os }}" == "Windows" ]]; then
+              pwsh -Command "Compress-Archive -Path 'stage/geekbridge-${{ matrix.name }}' -DestinationPath 'dist/$name'"
+            else
+              (cd stage && zip -r -q "../dist/$name" "geekbridge-${{ matrix.name }}")
+            fi
+          else
+            SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)" bash -c 'source scripts/lib/repro.sh; gb_repro_tar_gz "$1" "$2" "$3"' _ \
+              "dist/$name" stage "geekbridge-${{ matrix.name }}"
+          fi
+          ls -l dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dev-desktop-${{ matrix.name }}
+          path: dist/*
+          retention-days: 14
+
+  android:
+    name: Android debug APK (needs the DEV_KEYSTORE_B64 secret)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      built: ${{ steps.sign.outputs.built }}
+    env:
+      # The `secrets` context is not available in `if:`; a job-level env var is how a step asks "is it set?".
+      HAS_DEV_KEY: ${{ secrets.DEV_KEYSTORE_B64 != '' }}
+    steps:
+      - name: Skip without the dev keystore secret
+        if: env.HAS_DEV_KEY != 'true'
+        run: |
+          echo "::notice::DEV_KEYSTORE_B64 is not set, so there is no dev APK from CI. Build and publish it with scripts/release-dev.sh (docs/updates.md#dev-channel)."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: env.HAS_DEV_KEY == 'true'
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        if: env.HAS_DEV_KEY == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        if: env.HAS_DEV_KEY == 'true'
+        with:
+          packages: ''
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch head; the SHA pins the action, `toolchain` picks the compiler)
+        if: env.HAS_DEV_KEY == 'true'
+        with:
+          toolchain: stable
+          targets: aarch64-linux-android,x86_64-linux-android
+      - name: Install SDK packages and NDK
+        if: env.HAS_DEV_KEY == 'true'
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;30.0.16248370"
+      - name: Build native libraries
+        if: env.HAS_DEV_KEY == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk="$ANDROID_HOME/ndk/30.0.16248370"
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$bin/aarch64-linux-android26-clang"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android26-clang"
+          export CC_aarch64_linux_android="$bin/aarch64-linux-android26-clang"
+          export CC_x86_64_linux_android="$bin/x86_64-linux-android26-clang"
+          export AR_aarch64_linux_android="$bin/llvm-ar" AR_x86_64_linux_android="$bin/llvm-ar"
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
+          cargo build --release --locked -p bridge-android --target aarch64-linux-android --target x86_64-linux-android
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
+          cp target/aarch64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
+          cp target/x86_64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
+          "$bin/llvm-strip" android/app/src/main/jniLibs/*/libgeekbridge_android.so
+      - name: Build and sign the debug APK with the dev keystore
+        id: sign
+        if: env.HAS_DEV_KEY == 'true'
+        shell: bash
+        env:
+          DEV_KEYSTORE_B64: ${{ secrets.DEV_KEYSTORE_B64 }}
+          DEV_KEYSTORE_PASSWORD: ${{ secrets.DEV_KEYSTORE_PASSWORD }}
+          DEV_KEY_ALIAS: ${{ secrets.DEV_KEY_ALIAS }}
+          # Optional repository variable: lowercase hex SHA-256 of the dev certificate (the signer line of
+          # `apksigner verify --print-certs`). When set, a build signed by any other key fails.
+          DEV_SIGNER_SHA256: ${{ vars.DEV_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          bt="$ANDROID_HOME/build-tools/36.0.0"
+          ks="$RUNNER_TEMP/dev.keystore"
+          ( umask 077; echo "$DEV_KEYSTORE_B64" | base64 -d > "$ks" )
+          trap 'rm -f "$ks"' EXIT
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+          (cd android && ./gradlew --no-daemon :app:assembleDebug)
+          mkdir -p dist
+          unsigned="$(ls android/app/build/outputs/apk/debug/*.apk | head -n1)"
+          # The runner has its own throw-away debug key; the APK is re-signed with the dev key (v1+v2+v3), as release.yml does.
+          "$bt/zipalign" -f -P 16 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+          export KSPASS="${DEV_KEYSTORE_PASSWORD:-android}"
+          "$bt/apksigner" sign --ks "$ks" --ks-pass env:KSPASS --ks-key-alias "${DEV_KEY_ALIAS:-androiddebugkey}" \
+            --key-pass env:KSPASS --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true \
+            --out dist/geekbridge-debug.apk "$RUNNER_TEMP/aligned.apk"
+          verify="$("$bt/apksigner" verify --verbose --print-certs dist/geekbridge-debug.apk)"
+          signer="$(echo "$verify" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -n1 | tr 'A-F' 'a-f')"
+          [[ "$signer" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::could not read the signer certificate"; exit 1; }
+          want="$(echo "${DEV_SIGNER_SHA256:-}" | tr -d ': ' | tr 'A-F' 'a-f')"
+          if [[ -n "$want" && "$signer" != "$want" ]]; then
+            echo "::error::signer $signer does not match the repository variable DEV_SIGNER_SHA256 ($want): wrong keystore, phones could not update in place"
+            exit 1
+          fi
+          [[ -n "$want" ]] || echo "::warning::DEV_SIGNER_SHA256 is not set, so the dev signing key is not pinned. Set it to $signer."
+          want_code="$(scripts/version-code.sh --dev)"
+          got_code="$("$bt/aapt2" dump badging dist/geekbridge-debug.apk | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p")"
+          [[ "$got_code" == "$want_code" ]] || { echo "::error::APK versionCode $got_code differs from 20000 + commit count ($want_code)"; exit 1; }
+          echo "Signed with the dev key $signer, versionCode $got_code."
+          echo "built=true" >> "$GITHUB_OUTPUT"
+      - name: Remove the keystore
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/dev.keystore" "$RUNNER_TEMP/aligned.apk"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.sign.outputs.built == 'true'
+        with:
+          name: dev-android
+          path: dist/geekbridge-debug.apk
+          retention-days: 14
+
+  publish:
+    name: Update the rolling dev prerelease
+    needs: [desktop, android]
+    # Off unless the owner opts in (see the header). `vars` and `inputs` are allowed here; `secrets` is not.
+    if: >-
+      needs.desktop.result == 'success' && needs.android.outputs.built == 'true' &&
+      (vars.DEV_AUTOPUBLISH == 'true' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish (prerelease, never latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GB_DEV_SIGNER_SHA256: ${{ vars.DEV_SIGNER_SHA256 }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          scripts/release-dev.sh --publish --yes --assets-from artifacts --extra-assets artifacts

@@ -178,7 +178,13 @@ object WhatsNewRuntime {
         val stored = s.read()
         // "Used before": setup was finished (same preferences file as AppState.setupFinished).
         val used = app.getSharedPreferences("geekbridge_state", Context.MODE_PRIVATE).getBoolean("setup_finished", false)
-        when (WhatsNewModel.decide(stored.lastSeen, BuildConfig.VERSION_CODE, used, stored.damaged)) {
+        var decision = WhatsNewModel.decide(stored.lastSeen, BuildConfig.VERSION_CODE, used, stored.damaged)
+        // A dev-channel update (debug build, dev code to a higher dev code) has the same versionName and the same
+        // notes: showing the card on every update would be noise.
+        if (decision == WhatsNewDecision.Show && BuildConfig.DEBUG && (stored.lastSeen ?: 0) >= UpdateModel.DEV_CODE_BASE) {
+            decision = WhatsNewDecision.Record
+        }
+        when (decision) {
             WhatsNewDecision.Show -> pending = WhatsNewModel.parse(app.strings, readAsset(app), BuildConfig.VERSION_NAME)
             WhatsNewDecision.Record -> s.write(BuildConfig.VERSION_CODE)
             WhatsNewDecision.Same -> {}

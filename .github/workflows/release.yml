@@ -192,7 +192,7 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cd android
           ../scripts/version-code.sh --self-test
-          ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+          ./gradlew --no-daemon -Pgb.formulaVersionCode=1 :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
       - name: Sign APK (release keystore if the secrets exist, else debug-signed prerelease)
         id: sign
         shell: bash

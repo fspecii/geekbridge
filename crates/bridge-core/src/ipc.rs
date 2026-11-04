@@ -464,6 +464,11 @@ pub enum Request {
     UpdateSetEnabled {
         enabled: bool,
     },
+    /// Choose the update channel (`stable` releases or the rolling `dev` build). Persisted; the
+    /// cached offer of the other channel is dropped.
+    UpdateSetChannel {
+        channel: UpdateChannel,
+    },
     /// Clipboard bridge state: backend, per-device opt-in and counters. Never carries clipboard text.
     ClipboardStatus,
     /// Ask a connected phone for its latest eligible clipboard item and place it on this computer's
@@ -763,6 +768,34 @@ pub enum UpdateState {
     Downloaded,
 }
 
+/// Which releases the update check follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    /// Published, non-prerelease GitHub releases (`vX.Y.Z`).
+    #[default]
+    Stable,
+    /// The rolling `dev` prerelease that always carries the newest main build (docs/updates.md).
+    Dev,
+}
+
+impl UpdateChannel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpdateChannel::Stable => "stable",
+            UpdateChannel::Dev => "dev",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<UpdateChannel> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "stable" => Some(UpdateChannel::Stable),
+            "dev" => Some(UpdateChannel::Dev),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateRelease {
     pub version: String,
@@ -781,6 +814,12 @@ pub struct UpdateStatus {
     /// Automatic checks (startup, then about daily). Manual checks always work.
     pub enabled: bool,
     pub current_version: String,
+    /// The channel being followed.
+    #[serde(default)]
+    pub channel: UpdateChannel,
+    /// Source commit of the running build (12 hex digits), when it was built from a git checkout.
+    #[serde(default)]
+    pub current_commit: Option<String>,
     pub state: UpdateState,
     pub latest: Option<UpdateRelease>,
     /// `latest` is newer than the running build.

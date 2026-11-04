@@ -12,10 +12,12 @@
 //! * Nothing is executed, installed or replaced here. The caller shows the verified file's
 //!   location and the user installs it.
 
+mod dev;
 mod http;
 mod release;
 mod version;
 
+pub use dev::{DEV_CODE_BASE, DEV_TAG, DevManifest, MANIFEST_ASSET};
 pub use release::{Asset, Platform, Release, select_asset, select_asset_with};
 pub use version::Version;
 
@@ -26,7 +28,7 @@ pub mod fuzzing {
     pub use crate::release::{clean_notes, find_checksum, safe_file_name, url_allowed};
 }
 
-use bridge_core::ipc::{UpdateRelease, UpdateState, UpdateStatus};
+use bridge_core::ipc::{UpdateChannel, UpdateRelease, UpdateState, UpdateStatus};
 use release::{MAX_ASSET_BYTES, clean_notes, find_checksum, find_sums_asset, safe_file_name};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -157,6 +159,13 @@ pub struct Config {
     /// Also offer experimental archives (`-gnu-`, `experimental`) when a release has no regular
     /// one for this system. Off unless `GEEKBRIDGE_UPDATE_EXPERIMENTAL=1`.
     pub experimental: bool,
+    /// Operator override of the channel (`GEEKBRIDGE_UPDATE_CHANNEL`). `None`: the persisted choice
+    /// made in the app's settings (default `stable`).
+    pub channel: Option<UpdateChannel>,
+    /// Source commit (12 hex digits) and commit count of the running build, embedded by `build.rs`;
+    /// `None` for a build without a git checkout. The `dev` channel compares against them.
+    pub build_commit: Option<String>,
+    pub build_count: Option<u32>,
 }
 
 impl Config {
@@ -179,6 +188,9 @@ impl Config {
             tick: Duration::from_secs(30),
             manual_cooldown: Duration::from_secs(30),
             experimental: false,
+            channel: None,
+            build_commit: option_env!("GEEKBRIDGE_BUILD_COMMIT").map(str::to_owned),
+            build_count: option_env!("GEEKBRIDGE_BUILD_COUNT").and_then(|c| c.parse().ok()),
         }
     }
 
@@ -193,6 +205,17 @@ impl Config {
                 cfg.repo = repo.to_owned();
             } else if !repo.is_empty() {
                 eprintln!("GeekBridge: ignoring GEEKBRIDGE_UPDATE_REPO (expected owner/name)");
+            }
+        }
+        if let Ok(text) = std::env::var("GEEKBRIDGE_UPDATE_CHANNEL") {
+            match UpdateChannel::parse(&text) {
+                Some(channel) => cfg.channel = Some(channel),
+                None if !text.trim().is_empty() => {
+                    eprintln!(
+                        "GeekBridge: ignoring GEEKBRIDGE_UPDATE_CHANNEL (expected stable or dev)"
+                    );
+                }
+                None => {}
             }
         }
         cfg.experimental = std::env::var("GEEKBRIDGE_UPDATE_EXPERIMENTAL")
@@ -214,12 +237,20 @@ struct Cached {
     release_url: String,
     asset: Option<Asset>,
     sha256: Option<String>,
+    /// From the `dev` channel (`version` is then `dev-<commit>`).
+    #[serde(default)]
+    dev: bool,
+    /// Dev channel only: decided at fetch time against the running build's commit and count.
+    #[serde(default)]
+    dev_newer: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Persisted {
     #[serde(default = "yes")]
     enabled: bool,
+    #[serde(default)]
+    channel: UpdateChannel,
     #[serde(default)]
     skipped_version: Option<String>,
     #[serde(default)]
@@ -246,6 +277,7 @@ impl Default for Persisted {
     fn default() -> Self {
         Persisted {
             enabled: true,
+            channel: UpdateChannel::Stable,
             skipped_version: None,
             etag: None,
             checked_for: None,
@@ -381,10 +413,8 @@ impl Updater {
 
     pub fn status(&self) -> UpdateStatus {
         let rt = self.lock();
-        let cached = rt.persisted.release.as_ref();
-        let newer = cached
-            .and_then(|c| Version::parse(&c.version))
-            .is_some_and(|v| v > self.current);
+        let cached = self.offer(&rt);
+        let newer = cached.is_some_and(|c| self.is_newer(c));
         let downloaded = rt
             .downloaded
             .as_ref()
@@ -407,6 +437,8 @@ impl Updater {
         UpdateStatus {
             enabled: rt.persisted.enabled,
             current_version: self.cfg.current_version.clone(),
+            channel: self.channel_of(&rt),
+            current_commit: self.cfg.build_commit.clone(),
             state,
             latest: cached.map(|c| UpdateRelease {
                 version: c.version.clone(),
@@ -430,6 +462,62 @@ impl Updater {
         }
     }
 
+    fn channel_of(&self, rt: &Runtime) -> UpdateChannel {
+        self.cfg.channel.unwrap_or(rt.persisted.channel)
+    }
+
+    /// The cached offer, if it belongs to the channel being followed.
+    fn offer<'a>(&self, rt: &'a Runtime) -> Option<&'a Cached> {
+        let dev = self.channel_of(rt) == UpdateChannel::Dev;
+        rt.persisted.release.as_ref().filter(|c| c.dev == dev)
+    }
+
+    fn is_newer(&self, c: &Cached) -> bool {
+        if c.dev {
+            c.dev_newer
+        } else {
+            Version::parse(&c.version).is_some_and(|v| v > self.current)
+        }
+    }
+
+    /// What the cached answer (and its ETag) was prepared for: the running build and the channel.
+    fn check_key(&self, rt: &Runtime) -> String {
+        match self.channel_of(rt) {
+            UpdateChannel::Stable => self.cfg.current_version.clone(),
+            UpdateChannel::Dev => format!(
+                "dev:{}:{}:{}",
+                self.cfg.current_version,
+                self.cfg.build_commit.as_deref().unwrap_or("-"),
+                self.cfg
+                    .build_count
+                    .map_or_else(|| "-".to_owned(), |n| n.to_string())
+            ),
+        }
+    }
+
+    /// Follow `channel` from now on (persisted). The other channel's offer, ETag and skip choice
+    /// are dropped, so the next check starts clean. Ignored when `GEEKBRIDGE_UPDATE_CHANNEL`
+    /// pins the channel.
+    pub fn set_channel(&self, channel: UpdateChannel) {
+        let mut rt = self.lock();
+        if rt.persisted.channel == channel {
+            return;
+        }
+        rt.persisted.channel = channel;
+        rt.persisted.release = None;
+        rt.persisted.etag = None;
+        rt.persisted.checked_for = None;
+        rt.persisted.skipped_version = None;
+        rt.persisted.last_checked_unix = None;
+        rt.persisted.no_public_release = false;
+        rt.error = None;
+        rt.progress = (0, 0);
+        if let Some(old) = rt.downloaded.take() {
+            let _ = std::fs::remove_dir_all(old.dir);
+        }
+        self.persist(&rt);
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         let mut rt = self.lock();
         rt.persisted.enabled = enabled;
@@ -438,10 +526,15 @@ impl Updater {
 
     /// Hide the offer for `version`; a later release is offered again.
     pub fn skip(&self, version: &str) -> Result<(), Error> {
-        let v = Version::parse(version)
-            .ok_or_else(|| Error::Malformed("not a version number".into()))?;
+        let skipped = if dev::valid_label(version) {
+            version.to_ascii_lowercase()
+        } else {
+            Version::parse(version)
+                .ok_or_else(|| Error::Malformed("not a version number".into()))?
+                .to_string()
+        };
         let mut rt = self.lock();
-        rt.persisted.skipped_version = Some(v.to_string());
+        rt.persisted.skipped_version = Some(skipped);
         self.persist(&rt);
         Ok(())
     }
@@ -517,7 +610,7 @@ impl Updater {
             .persisted
             .release
             .as_ref()
-            .filter(|_| rt.persisted.checked_for.as_deref() == Some(&self.cfg.current_version))
+            .filter(|_| rt.persisted.checked_for.as_deref() == Some(self.check_key(&rt).as_str()))
             .and_then(|_| rt.persisted.etag.clone());
         Ok(Some(etag))
     }
@@ -525,7 +618,14 @@ impl Updater {
     fn finish_check(&self, etag: Option<&str>) -> Result<(), Error> {
         // Declared before the lock below so the flag is cleared after it is released, also on panic.
         let _reset = FlagGuard::new(self, |rt| &mut rt.checking);
-        let result = self.fetch_latest(etag);
+        let (channel, key) = {
+            let rt = self.lock();
+            (self.channel_of(&rt), self.check_key(&rt))
+        };
+        let result = match channel {
+            UpdateChannel::Stable => self.fetch_latest(etag),
+            UpdateChannel::Dev => self.fetch_dev(etag),
+        };
         let mut rt = self.lock();
         rt.checking = false;
         let now = now_unix();
@@ -550,7 +650,7 @@ impl Updater {
                 rt.persisted.last_checked_unix = Some(now);
                 rt.persisted.no_public_release = false;
                 rt.persisted.etag = etag;
-                rt.persisted.checked_for = Some(self.cfg.current_version.clone());
+                rt.persisted.checked_for = Some(key);
                 rt.persisted.release = Some(cached);
             }
             Err(e) => {
@@ -619,8 +719,31 @@ impl Updater {
         if version.is_prerelease() {
             return Ok(Fetch::NoRelease);
         }
-        let policy = &self.client.policy;
-        let release_url = if release::url_allowed(policy, &release.html_url) {
+        let mut cached = Cached {
+            version: version.to_string(),
+            tag: release.tag_name.clone(),
+            notes: clean_notes(release.body.as_deref().unwrap_or("")),
+            release_url: self.release_page(&release),
+            asset: None,
+            sha256: None,
+            dev: false,
+            dev_newer: false,
+        };
+        if version > self.current {
+            self.attach_installer(&mut cached, &release)?;
+        }
+        // Without the checksum the offer is unusable. Do not pin it behind an ETag: a later
+        // check must re-fetch (the checksum file may have been briefly unavailable).
+        let etag = if cached.asset.is_some() && cached.sha256.is_none() {
+            None
+        } else {
+            fetched.etag
+        };
+        Ok(Fetch::Fresh { etag, cached })
+    }
+
+    fn release_page(&self, release: &Release) -> String {
+        let url = if release::url_allowed(&self.client.policy, &release.html_url) {
             release.html_url.clone()
         } else {
             format!(
@@ -628,51 +751,107 @@ impl Updater {
                 self.cfg.repo, release.tag_name
             )
         };
-        let mut cached = Cached {
-            version: version.to_string(),
-            tag: release.tag_name.clone(),
-            notes: clean_notes(release.body.as_deref().unwrap_or("")),
-            release_url: if release_url.len() <= 512 {
-                release_url
-            } else {
-                String::new()
-            },
-            asset: None,
-            sha256: None,
-        };
-        if version > self.current {
-            cached.asset =
-                select_asset_with(&release.assets, &self.cfg.platform, self.cfg.experimental)
-                    .filter(|a| release::url_allowed(policy, &a.browser_download_url))
-                    .cloned();
-            if let (Some(asset), Some(sums)) = (&cached.asset, find_sums_asset(&release.assets))
-                && release::url_allowed(policy, &sums.browser_download_url)
+        if url.len() <= 512 { url } else { String::new() }
+    }
+
+    /// Pick this system's archive and look up its published SHA-256.
+    fn attach_installer(&self, cached: &mut Cached, release: &Release) -> Result<(), Error> {
+        let policy = &self.client.policy;
+        cached.asset =
+            select_asset_with(&release.assets, &self.cfg.platform, self.cfg.experimental)
+                .filter(|a| release::url_allowed(policy, &a.browser_download_url))
+                .cloned();
+        if let (Some(asset), Some(sums)) = (&cached.asset, find_sums_asset(&release.assets))
+            && release::url_allowed(policy, &sums.browser_download_url)
+        {
+            let (f, text) = self.get_bytes(
+                self.fetch_url(sums),
+                "application/octet-stream",
+                MAX_SUMS_BYTES,
+                None,
+            )?;
+            if f.status == 200 {
+                cached.sha256 = std::str::from_utf8(&text)
+                    .ok()
+                    .and_then(|t| find_checksum(t, &asset.name));
+            }
+            // GitHub computes its own `digest` for every upload. Two sources that disagree
+            // mean one of them was tampered with or is stale: offer nothing.
+            if let (Some(sums), Some(api)) = (&cached.sha256, asset.api_digest())
+                && *sums != api
             {
-                let (f, text) = self.get_bytes(
-                    self.fetch_url(sums),
-                    "application/octet-stream",
-                    MAX_SUMS_BYTES,
-                    None,
-                )?;
-                if f.status == 200 {
-                    cached.sha256 = std::str::from_utf8(&text)
-                        .ok()
-                        .and_then(|t| find_checksum(t, &asset.name));
-                }
-                // GitHub computes its own `digest` for every upload. Two sources that disagree
-                // mean one of them was tampered with or is stale: offer nothing.
-                if let (Some(sums), Some(api)) = (&cached.sha256, asset.api_digest())
-                    && *sums != api
-                {
-                    return Err(Error::Malformed(
-                        "GitHub's digest for the installer and SHA256SUMS disagree; not offered"
-                            .into(),
-                    ));
-                }
+                return Err(Error::Malformed(
+                    "GitHub's digest for the installer and SHA256SUMS disagree; not offered".into(),
+                ));
             }
         }
-        // Without the checksum the offer is unusable. Do not pin it behind an ETag: a later
-        // check must re-fetch (the checksum file may have been briefly unavailable).
+        Ok(())
+    }
+
+    /// The `dev` channel: the rolling prerelease tagged `dev`, described by `dev-manifest.json`.
+    /// One conditional request for the release, one small one for the manifest (and the checksum
+    /// file only when a newer dev build has an archive for this system).
+    fn fetch_dev(&self, etag: Option<&str>) -> Result<Fetch, Error> {
+        let url = format!(
+            "{}/repos/{}/releases/tags/{}",
+            self.cfg.base_url.trim_end_matches('/'),
+            self.cfg.repo,
+            DEV_TAG
+        );
+        let (fetched, body) =
+            self.get_bytes(&url, "application/vnd.github+json", MAX_API_BYTES, etag)?;
+        match fetched.status {
+            200 => {}
+            304 if etag.is_some() => return Ok(Fetch::NotModified),
+            _ if fetched.rate_limited => {
+                return Err(Error::RateLimited {
+                    retry_after_secs: fetched.retry_after.unwrap_or(3600),
+                });
+            }
+            // No `dev` release yet, or a private repository: told apart by the release list.
+            403 | 404 => return self.probe_release_list(),
+            status => return Err(Error::Http(status)),
+        }
+        let release = Release::parse(&body)?;
+        if release.draft || release.tag_name != DEV_TAG {
+            return Ok(Fetch::NoRelease);
+        }
+        let policy = &self.client.policy;
+        let manifest_asset = release
+            .asset(MANIFEST_ASSET)
+            .filter(|a| {
+                a.size <= dev::MAX_MANIFEST_BYTES
+                    && release::url_allowed(policy, &a.browser_download_url)
+            })
+            .ok_or_else(|| Error::Malformed("the dev release has no dev-manifest.json".into()))?;
+        let (f, text) = self.get_bytes(
+            self.fetch_url(manifest_asset),
+            "application/octet-stream",
+            dev::MAX_MANIFEST_BYTES,
+            None,
+        )?;
+        if f.status != 200 {
+            return Err(Error::Http(f.status));
+        }
+        let manifest = DevManifest::parse(&text)?;
+        let newer = manifest.newer_than(self.cfg.build_commit.as_deref(), self.cfg.build_count);
+        let mut notes = clean_notes(&manifest.notes);
+        if !manifest.built_at.is_empty() {
+            notes = format!("Built {}\n{notes}", manifest.built_at);
+        }
+        let mut cached = Cached {
+            version: manifest.label(),
+            tag: release.tag_name.clone(),
+            notes,
+            release_url: self.release_page(&release),
+            asset: None,
+            sha256: None,
+            dev: true,
+            dev_newer: newer,
+        };
+        if newer {
+            self.attach_installer(&mut cached, &release)?;
+        }
         let etag = if cached.asset.is_some() && cached.sha256.is_none() {
             None
         } else {
@@ -731,11 +910,10 @@ impl Updater {
         if rt.downloading {
             return Err(Error::Busy);
         }
-        let cached = rt
-            .persisted
-            .release
-            .clone()
-            .filter(|c| Version::parse(&c.version).is_some_and(|v| v > self.current))
+        let cached = self
+            .offer(&rt)
+            .filter(|c| self.is_newer(c))
+            .cloned()
             .ok_or(Error::NothingToDownload("no newer release is known"))?;
         let asset = cached.asset.clone().ok_or(Error::NothingToDownload(
             "the release has no installer for this system",
@@ -848,7 +1026,7 @@ impl Updater {
         let (file, expected) = {
             let rt = self.lock();
             // Same rule as `status()`: an installer for a release that is no longer the cached one is stale.
-            let cached = rt.persisted.release.as_ref();
+            let cached = self.offer(&rt);
             let d = rt
                 .downloaded
                 .as_ref()
@@ -1116,6 +1294,8 @@ mod tests {
             release_url: String::new(),
             asset: None,
             sha256: None,
+            dev: false,
+            dev_newer: false,
         };
         {
             let mut rt = up.lock();
@@ -1174,6 +1354,8 @@ mod tests {
             release_url: String::new(),
             asset: None,
             sha256: None,
+            dev: false,
+            dev_newer: false,
         };
         {
             let mut rt = up.lock();

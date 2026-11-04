@@ -29,8 +29,11 @@ class UpdateSection(
     private val activity: Activity,
     private val ui: Ui,
     root: LinearLayout,
-    private val checker: UpdateChecker = UpdateChecker.forBuild(activity),
+    checkerOverride: UpdateChecker? = null,
 ) {
+    private var checker: UpdateChecker = checkerOverride ?: UpdateChecker.forBuild(activity)
+    private val fixedChecker = checkerOverride != null
+    private var channel = UpdateChecker.channelOf(activity)
     private val main = Handler(Looper.getMainLooper())
     private val prefs = activity.getSharedPreferences("updates", Context.MODE_PRIVATE)
     private val worker: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-update").apply { isDaemon = true } }
@@ -38,6 +41,8 @@ class UpdateSection(
     private val card = ui.card(root, activity.getString(R.string.upd_title))
     private val status: TextView
     private val notes: TextView
+    private val channelLine: TextView
+    private val channelButtons: List<Button>
     private val autoCheck: CompoundButton
     private val checkButton: Button
     private val downloadButton: Button
@@ -57,6 +62,12 @@ class UpdateSection(
         )
         status = ui.statusLine(card, activity.getString(R.string.upd_not_checked), Tone.Muted)
         notes = ui.body(card, "", Tone.Muted).apply { visibility = android.view.View.GONE }
+        channelLine = ui.body(card, "", Tone.Muted)
+        channelButtons = ui.buttonRow(
+            card,
+            activity.getString(R.string.upd_channel_stable) to { chooseChannel(UpdateChannel.Stable) },
+            activity.getString(R.string.upd_channel_dev) to { chooseChannel(UpdateChannel.Dev) },
+        )
         autoCheck = ui.check(card, activity.getString(R.string.upd_auto), checked = prefs.getBoolean(KEY_AUTO, true))
         autoCheck.setOnCheckedChangeListener { _, on -> prefs.edit().putBoolean(KEY_AUTO, on).apply() }
         checkButton = ui.button(card, activity.getString(R.string.upd_check)) { startCheck(manual = true) }
@@ -83,7 +94,39 @@ class UpdateSection(
         worker.shutdownNow()
     }
 
+    private fun channelName(c: UpdateChannel) =
+        activity.getString(if (c == UpdateChannel.Dev) R.string.upd_channel_dev else R.string.upd_channel_stable)
+
+    private fun chooseChannel(target: UpdateChannel) {
+        if (busy || target == channel) return
+        if (target == UpdateChannel.Dev && !BuildConfig.DEBUG) {
+            // A release build is signed with the release key; dev builds are debug-signed. Say so before switching.
+            android.app.AlertDialog.Builder(activity)
+                .setTitle(R.string.upd_channel_warn_title)
+                .setMessage(R.string.upd_channel_warn)
+                .setPositiveButton(R.string.upd_channel_warn_ok) { _, _ -> applyChannel(target) }
+                .setNegativeButton(R.string.upd_channel_warn_cancel, null)
+                .show()
+        } else {
+            applyChannel(target)
+        }
+    }
+
+    private fun applyChannel(target: UpdateChannel) {
+        channel = target
+        prefs.edit().putString(UpdateChecker.KEY_CHANNEL, target.id).putLong(KEY_LAST_CHECK, 0).apply()
+        if (!fixedChecker) checker = UpdateChecker.forBuild(activity)
+        UpdateFileProvider.dir(activity).listFiles()?.forEach { it.delete() }
+        offer = null
+        verified = false
+        say(activity.getString(R.string.upd_not_checked), Tone.Muted)
+        render()
+        startCheck(manual = true)
+    }
+
     private fun render() {
+        channelLine.text = activity.getString(R.string.upd_channel_line, channelName(channel))
+        channelButtons.forEachIndexed { i, b -> b.isEnabled = !busy && (i == 1) != (channel == UpdateChannel.Dev) }
         val o = offer
         val canDownload = o != null && o.sha256 != null && !verified
         downloadButton.visibility = if (canDownload) android.view.View.VISIBLE else android.view.View.GONE
@@ -110,10 +153,15 @@ class UpdateSection(
         verified = false
         say(activity.getString(if (manual) R.string.upd_checking_github else R.string.upd_checking), Tone.Muted)
         render()
-        val cache = prefs.getString(KEY_ETAG, null)?.let { etag -> prefs.getString(KEY_BODY, null)?.let { UpdateChecker.Cache(etag, it) } }
+        val sfx = if (channel == UpdateChannel.Dev) "_dev" else ""
+        val cache = prefs.getString(KEY_ETAG + sfx, null)?.let { etag ->
+            prefs.getString(KEY_BODY + sfx, null)?.let { UpdateChecker.Cache(etag, it, prefs.getString(KEY_EXTRA + sfx, null)) }
+        }
+        val checking = checker
         worker.execute {
-            val result = checker.check(cache) { fresh ->
-                prefs.edit().putString(KEY_ETAG, fresh.etag).putString(KEY_BODY, fresh.body.takeIf { it.length <= 128 * 1024 }).apply()
+            val result = checking.check(cache) { fresh ->
+                prefs.edit().putString(KEY_ETAG + sfx, fresh.etag).putString(KEY_BODY + sfx, fresh.body.takeIf { it.length <= 128 * 1024 })
+                    .putString(KEY_EXTRA + sfx, fresh.extra?.takeIf { it.length <= 16 * 1024 }).apply()
             }
             if (result !is UpdateCheckResult.Failed) prefs.edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
             main.post { onCheckDone(result) }
@@ -128,13 +176,22 @@ class UpdateSection(
                 val o = result.offer
                 if (o.sha256 == null) {
                     say(activity.getString(R.string.upd_available_no_sha, o.version), Tone.Warn)
+                } else if (o.dev) {
+                    say(activity.getString(R.string.upd_available_dev, o.version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE), Tone.Ok)
                 } else {
                     say(activity.getString(R.string.upd_available, o.version, BuildConfig.VERSION_NAME), Tone.Ok)
                 }
             }
             is UpdateCheckResult.UpToDate -> {
                 offer = null
-                say(activity.getString(R.string.upd_up_to_date, BuildConfig.VERSION_NAME), Tone.Ok)
+                say(
+                    if (channel == UpdateChannel.Dev) {
+                        activity.getString(R.string.upd_up_to_date_dev, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+                    } else {
+                        activity.getString(R.string.upd_up_to_date, BuildConfig.VERSION_NAME)
+                    },
+                    Tone.Ok,
+                )
             }
             is UpdateCheckResult.NoPublicRelease -> {
                 offer = null
@@ -182,7 +239,12 @@ class UpdateSection(
     private fun signerProblem(dir: File?): String? {
         val file = dir?.let { File(it, UpdateChecker.UPDATE_FILE_NAME) } ?: return null
         val verdict = SignerCheck.check(SignerCheck.AndroidSource(activity.packageManager, activity.packageName), file.path)
-        val text = SignerCheck.message(activity.strings, verdict, BuildConfig.DEBUG) ?: return null
+        val text = if (verdict is SignerCheck.Verdict.Mismatch && channel == UpdateChannel.Dev) {
+            // The dev APK is signed with the developer's debug key: say what that means for this installation.
+            activity.getString(if (BuildConfig.DEBUG) R.string.upd_dev_signer_debug else R.string.upd_dev_signer_release)
+        } else {
+            SignerCheck.message(activity.strings, verdict, BuildConfig.DEBUG)
+        } ?: return null
         file.delete()
         return text
     }
@@ -253,6 +315,7 @@ class UpdateSection(
         private const val KEY_LAST_CHECK = "last_check_ms"
         private const val KEY_ETAG = "etag"
         private const val KEY_BODY = "body"
+        private const val KEY_EXTRA = "extra"
 
         fun sha256Of(file: File): String {
             val md = MessageDigest.getInstance("SHA-256")

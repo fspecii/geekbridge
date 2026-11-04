@@ -312,6 +312,7 @@ true in `UpdateSection.kt`).
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases/latest` | desktop: about 15 s after the service starts, then about daily; Android: when Diagnostics & about opens, at most once per 12 h; or when you press Check |
 | `GET <SHA256SUMS asset>` on `github.com` / `*.githubusercontent.com` | only when a newer release has an installer for this system |
 | `GET <installer or APK asset>` | only after you press Download |
+| `GET https://api.github.com/repos/fspecii/geekbridge/releases/tags/dev`, then the small `dev-manifest.json` asset | **instead of** `releases/latest`, only if you chose the **dev channel** (default on Android *debug* builds, otherwise off); same host, same headers, same schedule |
 
 Headers sent ([code] `crates/bridge-update/src/http.rs` and `lib.rs` `get_bytes`; `UpdateChecker.kt`):
 `Host`, `User-Agent: geekbridge-updater/<version>` (Android: `geekbridge-android-updater/<version>`),

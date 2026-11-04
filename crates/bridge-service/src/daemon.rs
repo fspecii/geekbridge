@@ -1046,6 +1046,10 @@ impl Daemon {
                 self.options.updates.set_enabled(enabled);
                 Ok(self.update_response())
             }
+            Request::UpdateSetChannel { channel } => {
+                self.options.updates.set_channel(channel);
+                Ok(self.update_response())
+            }
         };
         result.unwrap_or_else(Response::Error)
     }
