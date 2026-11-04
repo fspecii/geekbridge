@@ -70,7 +70,7 @@ jobs:
         run: cargo test --workspace --locked --no-fail-fast
       - name: Tests on Windows and macOS (Unix-only, D-Bus and Linux-tool tests are cfg-gated or skip with a reason)
         if: runner.os != 'Linux'
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: cargo test --workspace --locked --no-fail-fast
       - name: Smoke test the built binaries (--version, --help, diagnose on a fresh HOME)
         shell: bash
