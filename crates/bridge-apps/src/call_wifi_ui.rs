@@ -235,6 +235,7 @@ mod tests {
             reject: None,
             hangup: None,
             missing_control: None,
+            parts: Vec::new(),
         }
     }
 

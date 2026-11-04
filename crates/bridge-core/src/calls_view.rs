@@ -63,6 +63,12 @@ pub struct CallRow {
     pub hangup: Option<ActionTarget>,
     /// Why a control this state would normally have is missing. Plain words.
     pub missing_control: Option<String>,
+    /// The `source|call` key of every source that sees this call, `key` included. The primary
+    /// source (and so `key`) changes when a second source starts or stops seeing the same call
+    /// (the link reports a ring before Bluetooth does); this list is what stays the same, so a
+    /// banner, the card and the hub recognise the call as the one they already know.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<String>,
 }
 impl std::fmt::Debug for CallRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -78,6 +84,10 @@ impl std::fmt::Debug for CallRow {
 impl CallRow {
     pub fn ringing(&self) -> bool {
         self.phase.is_ringing()
+    }
+    /// Whether `key` names this call: the row's key or the key of any source that sees it.
+    pub fn is(&self, key: &str) -> bool {
+        self.key == key || self.parts.iter().any(|p| p == key)
     }
     /// The caller as text for a window title or notification: name, else number, else "Unknown".
     pub fn caller_label(&self) -> String {
@@ -186,13 +196,16 @@ pub fn build(sources: &[SourceSnapshot]) -> CallsView {
                     call: id.clone(),
                 };
                 // A non-HFP observation of the same phone joins the HFP row in the same class
-                // (ringing or live) instead of showing the call twice.
+                // (ringing or live) instead of showing the call twice. With several phones only
+                // the same phone's row ([`same_phone`]); a call on phone B never merges into phone
+                // A's row, where Answer would go to A.
                 let slot = (!hfp)
                     .then(|| {
                         rows.iter_mut().find(|r| {
                             r.iter().all(|p| p.source.is_hfp())
                                 && r[0].source.state.calls[&r[0].call].phase.is_ringing()
                                     == info.phase.is_ringing()
+                                && same_phone(r[0].source, s, info.phase.is_ringing(), sources)
                         })
                     })
                     .flatten();
@@ -219,6 +232,46 @@ pub fn build(sources: &[SourceSnapshot]) -> CallsView {
         sources_up,
         dial,
     }
+}
+
+/// Whether the HFP source `h` and the link source `l` are the same phone. Same name (the Bluetooth
+/// host names the phone it set up after its GeekBridge name) is proof, and a name that matches
+/// another link phone rules `l` out. Otherwise the merge is done only when it cannot be wrong:
+/// exactly one HFP source and one other source have a call in that class (ringing or live), which
+/// is the one-phone case.
+fn same_phone(
+    h: &SourceSnapshot,
+    l: &SourceSnapshot,
+    ringing: bool,
+    sources: &[SourceSnapshot],
+) -> bool {
+    let named = |a: &SourceSnapshot, b: &SourceSnapshot| {
+        a.label.trim().eq_ignore_ascii_case(b.label.trim())
+    };
+    if named(h, l) {
+        return true;
+    }
+    if sources.iter().any(|o| !o.is_hfp() && named(h, o)) {
+        // The Bluetooth phone is known by name, and it is another phone.
+        return false;
+    }
+    let in_class = |s: &&SourceSnapshot| {
+        s.state
+            .calls
+            .values()
+            .any(|c| c.phase.is_ringing() == ringing)
+    };
+    let hfps = sources
+        .iter()
+        .filter(|s| s.is_hfp())
+        .filter(in_class)
+        .count();
+    let others = sources
+        .iter()
+        .filter(|s| !s.is_hfp())
+        .filter(in_class)
+        .count();
+    hfps == 1 && others == 1
 }
 
 /// The first source (HFP first: it brings the audio here) whose own pre-flight accepts a dial.
@@ -310,6 +363,10 @@ fn row_for(parts: &[Part], sources: &[SourceSnapshot]) -> CallRow {
         reject,
         hangup,
         missing_control,
+        parts: parts
+            .iter()
+            .map(|p| format!("{}|{}", p.source.key, p.call.as_str()))
+            .collect(),
     }
 }
 
@@ -524,6 +581,39 @@ mod tests {
         assert_eq!(row.answer.as_ref().unwrap().path, ControlPath::Hfp);
         assert_eq!(row.name.as_ref().unwrap().expose(), "Ada");
         assert_eq!(row.number.as_ref().unwrap().expose(), "+15550100");
+    }
+
+    #[test]
+    fn every_source_of_a_merged_row_is_listed_and_the_key_is_one_of_them() {
+        let v = build(&[link(PhoneState::Ringing, true, None), hfp(true, false)]);
+        let row = &v.rows[0];
+        assert_eq!(row.parts, ["hfp:ag1|c1", "link:dev|link-current"]);
+        assert!(row.is("link:dev|link-current") && row.is(&row.key) && !row.is("x"));
+        let alone = build(&[link(PhoneState::Ringing, true, None)]);
+        assert_eq!(alone.rows[0].parts, [alone.rows[0].key.clone()]);
+    }
+
+    #[test]
+    fn another_phones_link_call_never_joins_a_named_bluetooth_row() {
+        let mut a = hfp(true, false);
+        a.label = "Phone A".into();
+        let mut a_link = link(PhoneState::Idle, true, None);
+        a_link.key = "link:a".into();
+        a_link.label = "Phone A".into();
+        let mut b_link = link(PhoneState::Ringing, true, None);
+        b_link.key = "link:b".into();
+        b_link.label = "Phone B".into();
+        // A rings over Bluetooth only, B over its link: two calls, two rows.
+        let v = build(&[a.clone(), a_link.clone(), b_link.clone()]);
+        assert_eq!(v.rows.len(), 2, "{v:?}");
+        // A's own link joins A's row by name even with B ringing too.
+        let mut a_ring = link(PhoneState::Ringing, true, None);
+        a_ring.key = "link:a".into();
+        a_ring.label = "phone a".into();
+        let v = build(&[a, a_ring, b_link]);
+        assert_eq!(v.rows.len(), 2);
+        let merged = v.rows.iter().find(|r| r.parts.len() == 2).unwrap();
+        assert!(merged.is("link:a|link-current"));
     }
 
     #[test]

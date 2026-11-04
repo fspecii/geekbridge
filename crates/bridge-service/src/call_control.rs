@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
 use bridge_core::calls::Support;
 use bridge_core::calls::{CallCommand, CallState, Sensitive};
-use bridge_core::calls_link::{self as link, LinkAction, LinkCallReport};
+use bridge_core::calls_link::{self as link, LinkAction, LinkCallReport, LinkFailure};
 use bridge_core::calls_view::{self as view, ActionTarget, CallsView, ControlPath, SourceSnapshot};
 use bridge_core::ipc::{CallAction, CallsStatus, ErrorBody, ErrorCode};
 use tokio::sync::mpsc;
@@ -35,6 +35,48 @@ const PENDING_TTL: Duration = Duration::from_secs(20);
 const MAX_PENDING: usize = 4;
 const HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const HOST_POLL: Duration = Duration::from_millis(250);
+
+/// The hub's clocks. [`Timings::default`] is what the service uses; tests shorten them.
+#[derive(Clone, Copy, Debug)]
+pub struct Timings {
+    /// How often the watchdog runs (stale link calls, the card process, link-flap memory).
+    pub tick: Duration,
+    /// A phone that reported a ring and said nothing since is asked for its state after this
+    /// long. Android sends changes only, so silence is normal; the ask is cheap and the answer
+    /// either confirms the ring or ends it.
+    pub ring_quiet: Duration,
+    /// The same for a call that is going on (calls are long; this only catches a phone that stopped
+    /// answering on a link that still looks up).
+    pub live_quiet: Duration,
+    /// How long an ask may stay unanswered.
+    pub probe_grace: Duration,
+    /// Unanswered asks after which the phone's call is cleared here (it cannot be confirmed, and a
+    /// ghost call would keep the card and "in a call" up forever).
+    pub probes: u32,
+    /// A ring that disappears because the link dropped and comes back after the reconnect within
+    /// this long is the same ring: no second banner, the same card.
+    pub flap_memory: Duration,
+    /// How long the card process may outlive the last ring ([`crate::call_overlay::LINGER`]).
+    pub overlay_linger: Duration,
+}
+
+impl Default for Timings {
+    fn default() -> Self {
+        Self {
+            tick: Duration::from_millis(250),
+            ring_quiet: Duration::from_secs(20),
+            live_quiet: Duration::from_secs(120),
+            probe_grace: Duration::from_secs(5),
+            probes: 2,
+            flap_memory: Duration::from_secs(60),
+            overlay_linger: crate::call_overlay::LINGER,
+        }
+    }
+}
+
+/// Shown when the watchdog cleared a call the phone stopped confirming.
+pub const STALE_CALL_NOTICE: &str =
+    "The phone stopped confirming the call, so it is no longer shown here. Check the phone.";
 
 fn err(code: ErrorCode, message: &str) -> ErrorBody {
     ErrorBody {
@@ -153,8 +195,8 @@ impl CallNotifier for NotifySendCalls {
         reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
         let args = Self::args(caller, can_answer, can_decline);
-        // The top-right card with Answer / Reject; the banner below stays as the fallback.
-        crate::call_overlay::ring();
+        // The top-right card with Answer / Reject is started by the hub (call_overlay::Supervisor);
+        // this banner stays as the additional signal and the fallback.
         std::thread::spawn(move || {
             let out = std::process::Command::new("notify-send")
                 .args(&args)
@@ -193,6 +235,20 @@ struct LinkPhone {
     state: CallState,
     tx: mpsc::Sender<LinkRequest>,
     pending: Vec<(String, LinkAction, Instant)>,
+    /// When the last state packet arrived (or the link came up).
+    last_state: Instant,
+    /// An unanswered "report" ask: when, and how many in a row.
+    probe: Option<(Instant, u32)>,
+}
+
+/// The rings of a link that dropped, kept for [`Timings::flap_memory`].
+struct Suspended {
+    device: String,
+    /// Part key -> ring number.
+    rings: BTreeMap<String, u64>,
+    /// Which of those rings had been announced.
+    announced: BTreeSet<u64>,
+    at: Instant,
 }
 
 #[derive(Default)]
@@ -201,9 +257,21 @@ struct Inner {
     links: BTreeMap<String, LinkPhone>,
     notice: Option<String>,
     next_request: u64,
-    announced: BTreeSet<String>,
-    /// When a ringing call was first seen without a name or number (see [`UNNAMED_GRACE`]).
-    unnamed_since: BTreeMap<String, Instant>,
+    /// Ring numbers: every source part (`source|call`) of every row that rings now, to the number
+    /// of that ring. A ring keeps its number while sources join or leave its row, so a call is
+    /// announced once however its sources arrive, and a banner click can tell its ring from a
+    /// later one on the same phone (the link always calls its call `link-current`).
+    rings: BTreeMap<String, u64>,
+    next_ring: u64,
+    /// Rings already announced.
+    announced: BTreeSet<u64>,
+    /// When a ring was first seen without a name or number (see [`UNNAMED_GRACE`]).
+    unnamed_since: BTreeMap<u64, Instant>,
+    suspended: Vec<Suspended>,
+    /// `notice` is the phone's "no such call" for an answer or decline that raced the phone (the
+    /// user picked up by hand, the caller gave up); the next report that shows the call moved on
+    /// explains it, so it is cleared then.
+    race_notice: bool,
 }
 
 /// The phone often reports "ringing" a moment before the caller's number follows. A notification
@@ -215,15 +283,58 @@ pub struct CallHub {
     inner: Mutex<Inner>,
     host: Mutex<Option<HostHandle>>,
     notifier: Mutex<Option<Arc<dyn CallNotifier>>>,
+    overlay: Mutex<Option<crate::call_overlay::Supervisor>>,
+    /// Held for a whole [`Self::announce_new_calls`]: the host thread, packets, the watchdog and the
+    /// grace re-check all call it, and a view built before another caller's update must not undo
+    /// that update (a ring forgotten for a moment comes back as a new ring with a second banner).
+    announcing: Mutex<()>,
+    timings: Timings,
 }
 
 impl CallHub {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self {
+        Self::with_timings(Timings::default())
+    }
+
+    /// A hub with its own clocks, and its watchdog thread (ends with the hub).
+    pub fn with_timings(timings: Timings) -> Arc<Self> {
+        let hub = Arc::new(Self {
             inner: Mutex::new(Inner::default()),
             host: Mutex::new(None),
             notifier: Mutex::new(None),
-        })
+            overlay: Mutex::new(None),
+            announcing: Mutex::new(()),
+            timings,
+        });
+        let weak = Arc::downgrade(&hub);
+        let _ = std::thread::Builder::new()
+            .name("geekbridge-calls-watchdog".into())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(timings.tick);
+                    match weak.upgrade() {
+                        Some(hub) => hub.tick(),
+                        None => return,
+                    }
+                }
+            });
+        hub
+    }
+
+    /// Start the incoming-call card through `launcher` whenever a call rings.
+    pub fn set_overlay(&self, launcher: Arc<dyn crate::call_overlay::Launcher>) {
+        *self.overlay.lock().unwrap_or_else(|e| e.into_inner()) = Some(
+            crate::call_overlay::Supervisor::with_linger(launcher, self.timings.overlay_linger),
+        );
+    }
+
+    /// Whether the incoming-call card process is up.
+    pub fn overlay_running(&self) -> bool {
+        self.overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+            .is_some_and(|o| o.card_running())
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -328,14 +439,47 @@ impl CallHub {
                 state: CallState::default(),
                 tx,
                 pending: Vec::new(),
+                last_state: Instant::now(),
+                probe: None,
             },
         );
         (rx, generation)
     }
 
     pub fn link_down(self: &Arc<Self>, device_id: &str) {
-        self.inner().links.remove(device_id);
+        {
+            let mut inner = self.inner();
+            Self::suspend(&mut inner, device_id);
+            inner.links.remove(device_id);
+        }
         self.announce_new_calls();
+    }
+
+    /// Remember the rings `device_id`'s link was showing: if the link comes back and the phone
+    /// still rings, that is the same ring (see [`Timings::flap_memory`]).
+    fn suspend(inner: &mut Inner, device_id: &str) {
+        let prefix = format!("{LINK_PREFIX}{device_id}|");
+        let rings: BTreeMap<String, u64> = inner
+            .rings
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, v)| (k.clone(), *v))
+            .collect();
+        if rings.is_empty() {
+            return;
+        }
+        let announced = rings
+            .values()
+            .filter(|r| inner.announced.contains(r))
+            .copied()
+            .collect();
+        inner.suspended.retain(|s| s.device != device_id);
+        inner.suspended.push(Suspended {
+            device: device_id.to_owned(),
+            rings,
+            announced,
+            at: Instant::now(),
+        });
     }
 
     /// Remove `device_id` only if it is still the link `generation` created. A session displaced by
@@ -350,6 +494,7 @@ impl CallHub {
             {
                 return;
             }
+            Self::suspend(&mut inner, device_id);
             inner.links.remove(device_id);
         }
         self.announce_new_calls();
@@ -389,7 +534,13 @@ impl CallHub {
     ) -> bool {
         let ok = {
             let mut guard = self.inner();
-            let Inner { links, notice, .. } = &mut *guard;
+            let Inner {
+                links,
+                notice,
+                suspended,
+                race_notice,
+                ..
+            } = &mut *guard;
             let Some(phone) = links.get_mut(device_id) else {
                 return true;
             };
@@ -400,6 +551,20 @@ impl CallHub {
                 link::STATE => match LinkCallReport::parse(body) {
                     Ok(report) => {
                         report.apply(&mut phone.state);
+                        phone.last_state = Instant::now();
+                        phone.probe = None;
+                        if report.state != link::PhoneState::Ringing {
+                            // The phone's word on the ring that a dropped link left open.
+                            suspended.retain(|s| s.device != device_id);
+                        }
+                        if notice.as_deref() == Some(STALE_CALL_NOTICE) {
+                            // The phone confirms its calls again.
+                            *notice = None;
+                        }
+                        if std::mem::take(race_notice) && report.state != link::PhoneState::Ringing
+                        {
+                            *notice = None;
+                        }
                         phone.report = Some(report);
                         if phone.state.calls.is_empty() {
                             // A fresh call starts without the previous call's refusal.
@@ -411,12 +576,37 @@ impl CallHub {
                 },
                 link::RESULT => match link::parse_result(body) {
                     Ok((id, outcome)) => {
-                        let known = phone.pending.iter().any(|(p, _, _)| *p == id);
+                        let action = phone
+                            .pending
+                            .iter()
+                            .find(|(p, _, _)| *p == id)
+                            .map(|(_, a, _)| *a);
                         phone.pending.retain(|(p, _, _)| *p != id);
-                        if let (true, Err(reason)) = (known, outcome) {
-                            *notice = Some(reason.message().to_owned());
+                        if let (Some(action), Err(reason)) = (action, outcome) {
+                            // "No such call" for what already happened (the phone was answered by
+                            // hand a moment before the click, a decline raced the caller hanging
+                            // up, a second click) is not a failure worth a notice.
+                            let done = reason == LinkFailure::NoSuchCall
+                                && match action {
+                                    LinkAction::Answer => {
+                                        phone.state.calls.values().any(|c| !c.phase.is_ringing())
+                                    }
+                                    LinkAction::Reject | LinkAction::Hangup => {
+                                        phone.state.calls.is_empty()
+                                            || phone
+                                                .report
+                                                .as_ref()
+                                                .is_some_and(|r| r.state == link::PhoneState::Idle)
+                                    }
+                                    _ => false,
+                                };
+                            if !done {
+                                *notice = Some(reason.message().to_owned());
+                                *race_notice = reason == LinkFailure::NoSuchCall
+                                    && matches!(action, LinkAction::Answer | LinkAction::Reject);
+                            }
                         }
-                        known
+                        action.is_some()
                     }
                     Err(_) => false,
                 },
@@ -428,6 +618,29 @@ impl CallHub {
     }
 
     // -------------------------------------------------------------- view
+
+    /// Every source's current snapshot (what the view is built from), without the status lines.
+    fn snapshots(&self) -> Vec<SourceSnapshot> {
+        let mut snaps = Vec::new();
+        {
+            let inner = self.inner();
+            for (id, p) in &inner.links {
+                if let (true, Some(report)) = (p.enabled, &p.report) {
+                    snaps.push(SourceSnapshot {
+                        key: format!("{LINK_PREFIX}{id}"),
+                        label: p.name.clone(),
+                        caps: report.capabilities(),
+                        state: p.state.clone(),
+                    });
+                }
+            }
+        }
+        if let Some(host) = self.host.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let g = host.shared.lock().unwrap_or_else(|e| e.into_inner());
+            snaps.extend(g.snapshots.iter().cloned());
+        }
+        snaps
+    }
 
     fn sources(&self) -> (Vec<SourceSnapshot>, Vec<String>) {
         let mut snaps = Vec::new();
@@ -505,7 +718,7 @@ impl CallHub {
     }
 
     pub fn view(&self) -> CallsView {
-        view::build(&self.sources().0)
+        view::build(&self.snapshots())
     }
 
     pub fn status(&self) -> CallsStatus {
@@ -694,6 +907,11 @@ impl CallHub {
         phone
             .pending
             .retain(|(_, _, at)| at.elapsed() < PENDING_TTL);
+        if wire != LinkAction::Dial && phone.pending.iter().any(|(_, a, _)| *a == wire) {
+            // A second Answer (double click, the banner after the card) while the first is on its
+            // way: the phone is already doing it, so nothing more is sent.
+            return Ok(());
+        }
         if phone.pending.len() >= MAX_PENDING {
             return Err(err(ErrorCode::Busy, "the phone has not answered yet"));
         }
@@ -736,52 +954,179 @@ impl CallHub {
 
     // -------------------------------------------------------------- ringing
 
-    /// Show a desktop notification once per newly ringing call and forget calls that are gone.
+    /// The watchdog: runs every [`Timings::tick`]. Asks a quiet phone that is ringing or in a call
+    /// for its state and clears the call when it never answers, forgets old link flaps, and lets the
+    /// card supervisor reap or stop the card process.
+    pub fn tick(self: &Arc<Self>) {
+        let t = self.timings;
+        let now = Instant::now();
+        let busy = {
+            let mut guard = self.inner();
+            let inner = &mut *guard;
+            let mut cleared = Vec::new();
+            for (device, p) in inner.links.iter_mut() {
+                let Some(report) = p.report.as_ref().filter(|_| p.enabled) else {
+                    continue;
+                };
+                if report.state == link::PhoneState::Idle {
+                    p.probe = None;
+                    continue;
+                }
+                let quiet = if report.state == link::PhoneState::Ringing {
+                    t.ring_quiet
+                } else {
+                    t.live_quiet
+                };
+                let ask = match p.probe {
+                    None => now.saturating_duration_since(p.last_state) >= quiet,
+                    Some((at, n)) if now.saturating_duration_since(at) >= t.probe_grace => {
+                        if n >= t.probes {
+                            // Never confirmed: end it here (the reducer records it as ended).
+                            let idle = LinkCallReport {
+                                state: link::PhoneState::Idle,
+                                number: None,
+                                name: None,
+                                ..report.clone()
+                            };
+                            idle.apply(&mut p.state);
+                            p.report = Some(idle);
+                            p.probe = None;
+                            cleared.push(device.clone());
+                            continue;
+                        }
+                        true
+                    }
+                    Some(_) => false,
+                };
+                if ask {
+                    inner.next_request += 1;
+                    let _ = p.tx.try_send(LinkRequest {
+                        request_id: format!("s{}", inner.next_request),
+                        action: LinkAction::Report,
+                        number: None,
+                    });
+                    p.probe = Some((now, p.probe.map_or(1, |(_, n)| n + 1)));
+                }
+            }
+            for device in &cleared {
+                // A late answer that the phone still rings is the same ring, not a new banner.
+                Self::suspend(inner, device);
+            }
+            if !cleared.is_empty() {
+                inner.notice = Some(STALE_CALL_NOTICE.to_owned());
+            }
+            !cleared.is_empty()
+                || !inner.rings.is_empty()
+                || !inner.suspended.is_empty()
+                || !inner.unnamed_since.is_empty()
+        };
+        let card = self.overlay_running();
+        if busy || card {
+            self.announce_new_calls();
+        }
+    }
+
+    /// Number the rings in `view`, announce the new ones (banner once per ring, after
+    /// [`UNNAMED_GRACE`] when there is no caller yet), keep the card supervisor in step and forget
+    /// rings that are over.
     fn announce_new_calls(self: &Arc<Self>) {
+        let _one_at_a_time = self.announcing.lock().unwrap_or_else(|e| e.into_inner());
         let view = self.view();
-        let fresh: Vec<_> = {
-            let mut inner = self.inner();
-            let ringing: BTreeSet<String> = view
-                .rows
-                .iter()
-                .filter(|r| r.ringing())
-                .map(|r| r.key.clone())
-                .collect();
+        let now = Instant::now();
+        let flap = self.timings.flap_memory;
+        let (fresh, ringing_now) = {
+            let mut guard = self.inner();
+            let inner = &mut *guard;
+            inner
+                .suspended
+                .retain(|s| now.saturating_duration_since(s.at) < flap);
+            let mut rings = BTreeMap::new();
+            let mut ringing_now = BTreeSet::new();
+            let mut rows = Vec::new();
+            for r in view.rows.iter().filter(|r| r.ringing()) {
+                let parts: Vec<String> = if r.parts.is_empty() {
+                    vec![r.key.clone()]
+                } else {
+                    r.parts.clone()
+                };
+                let known = parts.iter().find_map(|p| inner.rings.get(p).copied());
+                let resumed = known.is_none().then(|| {
+                    inner.suspended.iter().find_map(|s| {
+                        parts.iter().find_map(|p| {
+                            s.rings
+                                .get(p)
+                                .map(|n| (*n, s.announced.contains(n), s.device.clone()))
+                        })
+                    })
+                });
+                let id = match (known, resumed.flatten()) {
+                    (Some(id), _) => id,
+                    (None, Some((id, was_announced, device))) => {
+                        // The same ring after a reconnect: it keeps its number and its banner.
+                        inner.suspended.retain(|s| s.device != device);
+                        if was_announced {
+                            inner.announced.insert(id);
+                        }
+                        id
+                    }
+                    (None, None) => {
+                        inner.next_ring += 1;
+                        // A new call starts without the previous call's refusal.
+                        inner.notice = None;
+                        inner.next_ring
+                    }
+                };
+                for p in parts {
+                    rings.insert(p, id);
+                }
+                if ringing_now.insert(id) {
+                    rows.push((id, r));
+                }
+            }
+            inner.rings = rings;
             let before = inner.announced.len();
-            inner.announced.retain(|k| ringing.contains(k));
+            inner.announced.retain(|n| ringing_now.contains(n));
             if inner.announced.len() != before {
                 crate::tray::poke(); // a call stopped ringing
             }
-            inner.unnamed_since.retain(|k, _| ringing.contains(k));
+            inner.unnamed_since.retain(|n, _| ringing_now.contains(n));
             let mut recheck = false;
             let mut fresh = Vec::new();
-            for r in view.rows.iter().filter(|r| r.ringing()) {
-                if inner.announced.contains(&r.key) {
+            for (id, r) in rows {
+                if inner.announced.contains(&id) {
                     continue;
                 }
                 if r.name.is_none() && r.number.is_none() {
-                    let since = *inner
-                        .unnamed_since
-                        .entry(r.key.clone())
-                        .or_insert_with(Instant::now);
-                    if since.elapsed() < UNNAMED_GRACE {
+                    let since = *inner.unnamed_since.entry(id).or_insert(now);
+                    if now.saturating_duration_since(since) < UNNAMED_GRACE {
                         recheck = true;
                         continue;
                     }
                 }
-                inner.announced.insert(r.key.clone());
+                inner.announced.insert(id);
                 crate::tray::poke(); // a call started ringing
-                fresh.push(r.clone());
+                fresh.push((id, r.clone()));
             }
             if recheck {
-                let hub = self.clone();
+                let hub = Arc::downgrade(self);
                 std::thread::spawn(move || {
                     std::thread::sleep(UNNAMED_GRACE + Duration::from_millis(100));
-                    hub.announce_new_calls();
+                    if let Some(hub) = hub.upgrade() {
+                        hub.announce_new_calls();
+                    }
                 });
             }
-            fresh
+            (fresh, ringing_now)
         };
+        // The card does not wait for the caller's name: it shows it when it comes.
+        if let Some(o) = self
+            .overlay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_mut()
+        {
+            o.update(&ringing_now, now);
+        }
         let Some(notifier) = self
             .notifier
             .lock()
@@ -790,7 +1135,7 @@ impl CallHub {
         else {
             return;
         };
-        for row in fresh {
+        for (ring, row) in fresh {
             let hub = self.clone();
             let answer = row.answer.clone();
             let reject = row.reject.clone();
@@ -800,14 +1145,25 @@ impl CallHub {
                 can_answer,
                 can_decline,
                 Box::new(move |choice| {
-                    let _ = match (choice, answer, reject) {
-                        (RingChoice::Answer, Some(t), _) => hub.act(&t, CallAction::Answer),
-                        (RingChoice::Decline, _, Some(t)) => hub.act(&t, CallAction::Reject),
-                        _ => Ok(()),
+                    let target = match (choice, answer, reject) {
+                        (RingChoice::Answer, Some(t), _) => (t, CallAction::Answer),
+                        (RingChoice::Decline, _, Some(t)) => (t, CallAction::Reject),
+                        _ => return,
                     };
+                    // A banner outlives its ring (it waits up to 30 s). A click on it must not
+                    // answer a later ring on the same phone, which has the same call id.
+                    if !hub.still_ringing(ring) {
+                        return;
+                    }
+                    let _ = hub.act(&target.0, target.1);
                 }),
             );
         }
+    }
+
+    /// Whether ring number `ring` is still ringing.
+    fn still_ringing(&self, ring: u64) -> bool {
+        self.inner().rings.values().any(|n| *n == ring)
     }
 }
 
@@ -909,9 +1265,16 @@ pub mod linux {
                     ),
                 }
                 self.devices.insert(key.clone(), device.clone());
+                // Named after its GeekBridge name when it is the set-up phone, so its calls
+                // merge with that phone's link and never with another phone's.
+                let label = self
+                    .audio
+                    .as_ref()
+                    .and_then(|a| a.phone_name(device))
+                    .unwrap_or_else(|| "Bluetooth phone".into());
                 out.push(SourceSnapshot {
                     key,
-                    label: "Bluetooth phone".into(),
+                    label,
                     caps,
                     state,
                 });

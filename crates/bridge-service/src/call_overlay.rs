@@ -1,14 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Starts the incoming-call card (`geekbridge-calls --overlay`) when a call rings.
+//! Starts the incoming-call card (`geekbridge-calls --overlay`) when a call rings, and makes sure
+//! it goes away.
 //!
 //! The card is a separate small process: it polls the service like the Calls window does, shows
 //! Answer / Reject in the top-right corner of the screen and exits when the call is over, so the
-//! service holds no window code. One card at a time; a second ring while the first card is still
-//! up reuses it (the card follows whichever call rings).
+//! service holds no window code. [`Supervisor`] (driven by the call hub on every change and every
+//! tick) keeps the process side honest:
+//!
+//! * one card at a time; a second ring while a card is up reuses it (the card follows whichever
+//!   call rings);
+//! * a ring that finds no card (or the previous card closing just as it came) gets one, once: a
+//!   card that dies while the same ring goes on is not restarted in a loop;
+//! * an exited card is reaped at once (no `<defunct>` process until the next ring);
+//! * a card still running [`LINGER`] after the last ring ended is killed (a hung window, a
+//!   compositor that never delivered the close).
 use bridge_core::call_overlay::Mode;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// What the child needs to find this service again: the service may run on other ports than the
 /// defaults (tests, a second instance).
@@ -17,14 +27,6 @@ pub struct Launch {
     pub state_dir: PathBuf,
     pub api_port: u16,
     pub control_port: u16,
-}
-
-static LAUNCH: OnceLock<Launch> = OnceLock::new();
-static CHILD: Mutex<Option<Child>> = Mutex::new(None);
-
-/// Remember how this service was started. Called once at start-up; without it no card is started.
-pub fn configure(launch: Launch) {
-    let _ = LAUNCH.set(launch);
 }
 
 pub const SETTINGS_FILE: &str = "call-overlay";
@@ -236,26 +238,129 @@ fn spawn(launch: &Launch, args: Vec<String>, env: Vec<(String, String)>) -> Resu
     cmd.spawn().map_err(|e| Cannot::SpawnFailed(e.to_string()))
 }
 
-/// Show the card for a ringing call, unless it is switched off or already up. Best effort: when
-/// it cannot start, the reason is logged once and kept in `call-overlay-status` (`doctor` shows
-/// it); the notification and the Calls window still work.
-pub fn ring() {
-    let Some(launch) = LAUNCH.get() else { return };
-    let mut slot = CHILD.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(child) = slot.as_mut() {
-        match child.try_wait() {
-            Ok(None) => return, // still up
-            _ => *slot = None,
+/// Starts card processes. The real one is [`ProcessLauncher`]; tests count launches and kills.
+pub trait Launcher: Send + Sync {
+    fn launch(&self) -> Result<Box<dyn Card>, Cannot>;
+}
+
+/// A started card process.
+pub trait Card: Send {
+    /// Still running. Reaps the process once it exited.
+    fn running(&mut self) -> bool;
+    /// Stop it and reap it.
+    fn kill(&mut self);
+}
+
+/// How long a card may outlive the last ring: the card itself closes 1.5 s after the ring ends, or
+/// 2.5 s after showing an outcome ("Answered on phone"); this leaves room for both.
+pub const LINGER: Duration = Duration::from_secs(6);
+
+/// One card for the rings the hub reports. Not thread-safe by itself; the hub holds it in a mutex.
+pub struct Supervisor {
+    launcher: std::sync::Arc<dyn Launcher>,
+    card: Option<Box<dyn Card>>,
+    /// Rings (hub ring numbers) a card was started for, while they ring.
+    launched_for: BTreeSet<u64>,
+    /// When a ring was last seen.
+    last_ring: Option<Instant>,
+    linger: Duration,
+}
+
+impl Supervisor {
+    pub fn new(launcher: std::sync::Arc<dyn Launcher>) -> Self {
+        Self::with_linger(launcher, LINGER)
+    }
+
+    pub fn with_linger(launcher: std::sync::Arc<dyn Launcher>, linger: Duration) -> Self {
+        Self {
+            launcher,
+            card: None,
+            launched_for: BTreeSet::new(),
+            last_ring: None,
+            linger,
         }
     }
-    let result =
-        preflight(&launch.state_dir).and_then(|(mode, env)| spawn(launch, args(launch, mode), env));
-    match result {
-        Ok(child) => {
-            record(&launch.state_dir, &Ok(()));
-            *slot = Some(child);
+
+    /// `ringing`: the numbers of the rings going on right now (empty when nothing rings).
+    pub fn update(&mut self, ringing: &BTreeSet<u64>, now: Instant) {
+        let running = self.card.as_mut().is_some_and(|c| c.running());
+        if !running {
+            self.card = None; // an exited card was reaped by running()
         }
-        Err(c) => record(&launch.state_dir, &Err(c)),
+        self.launched_for.retain(|r| ringing.contains(r));
+        if !ringing.is_empty() {
+            self.last_ring = Some(now);
+            let uncovered = ringing.iter().any(|r| !self.launched_for.contains(r));
+            if !running && uncovered {
+                // Every ring now going on counts as covered, whether or not the card could start:
+                // a missing display is not retried four times a second, and a card that dies during
+                // its ring is not restarted in a loop.
+                self.launched_for.extend(ringing.iter().copied());
+                if let Ok(card) = self.launcher.launch() {
+                    self.card = Some(card);
+                }
+            }
+            return;
+        }
+        if running
+            && self
+                .last_ring
+                .is_none_or(|t| now.saturating_duration_since(t) >= self.linger)
+            && let Some(mut card) = self.card.take()
+        {
+            card.kill();
+        }
+    }
+
+    /// Whether a card process is up (diagnostics and tests).
+    pub fn card_running(&mut self) -> bool {
+        self.card.as_mut().is_some_and(|c| c.running())
+    }
+}
+
+impl Drop for Supervisor {
+    fn drop(&mut self) {
+        if let Some(mut card) = self.card.take() {
+            card.kill();
+        }
+    }
+}
+
+/// The real card: `geekbridge-calls --overlay` next to this program, with the display found by
+/// [`preflight`]. Each failure is logged once and kept in `call-overlay-status` (`doctor` shows
+/// it); the banner and the Calls window still work.
+pub struct ProcessLauncher {
+    launch: Launch,
+}
+
+impl ProcessLauncher {
+    pub fn new(launch: Launch) -> Self {
+        Self { launch }
+    }
+}
+
+struct ProcessCard(Child);
+
+impl Card for ProcessCard {
+    fn running(&mut self) -> bool {
+        matches!(self.0.try_wait(), Ok(None))
+    }
+    fn kill(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Launcher for ProcessLauncher {
+    fn launch(&self) -> Result<Box<dyn Card>, Cannot> {
+        let launch = &self.launch;
+        let result = preflight(&launch.state_dir)
+            .and_then(|(mode, env)| spawn(launch, args(launch, mode), env));
+        record(
+            &launch.state_dir,
+            &result.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
+        result.map(|child| Box::new(ProcessCard(child)) as Box<dyn Card>)
     }
 }
 
@@ -431,9 +536,106 @@ mod tests {
         );
     }
 
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct Fake {
+        launches: AtomicUsize,
+        kills: Arc<AtomicUsize>,
+        fail: AtomicBool,
+        /// The card of the last launch is "running" while this is true.
+        alive: Arc<AtomicBool>,
+    }
+    struct FakeCard {
+        alive: Arc<AtomicBool>,
+        kills: Arc<AtomicUsize>,
+    }
+    impl Card for FakeCard {
+        fn running(&mut self) -> bool {
+            self.alive.load(Ordering::SeqCst)
+        }
+        fn kill(&mut self) {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            self.alive.store(false, Ordering::SeqCst);
+        }
+    }
+    impl Launcher for Fake {
+        fn launch(&self) -> Result<Box<dyn Card>, Cannot> {
+            self.launches.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err(Cannot::NoDisplay);
+            }
+            self.alive.store(true, Ordering::SeqCst);
+            Ok(Box::new(FakeCard {
+                alive: self.alive.clone(),
+                kills: self.kills.clone(),
+            }))
+        }
+    }
+    fn rings(r: &[u64]) -> BTreeSet<u64> {
+        r.iter().copied().collect()
+    }
+
     #[test]
-    fn ring_without_configuration_does_nothing() {
-        // No LAUNCH in this test binary unless another test set it; either way this must not panic.
-        ring();
+    fn one_card_per_ring_and_a_hung_card_is_killed_after_the_linger() {
+        let fake = Arc::new(Fake::default());
+        let mut s = Supervisor::with_linger(fake.clone(), Duration::from_secs(6));
+        let t = Instant::now();
+        for i in 0..10 {
+            s.update(&rings(&[1]), t + Duration::from_millis(250 * i));
+        }
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        // The ring ended; the card is allowed its own close first.
+        s.update(&rings(&[]), t + Duration::from_secs(4));
+        assert_eq!(fake.kills.load(Ordering::SeqCst), 0);
+        s.update(&rings(&[]), t + Duration::from_secs(9));
+        assert_eq!(fake.kills.load(Ordering::SeqCst), 1);
+        assert!(!s.card_running());
+    }
+
+    #[test]
+    fn a_card_closing_just_as_a_new_ring_comes_is_replaced_but_a_crashing_one_is_not_looped() {
+        let fake = Arc::new(Fake::default());
+        let mut s = Supervisor::new(fake.clone());
+        let t = Instant::now();
+        s.update(&rings(&[1]), t);
+        // Ring 2 arrives while card 1 is still up (closing): no second card yet.
+        s.update(&rings(&[2]), t + Duration::from_millis(100));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        // Card 1 exits a moment later: ring 2 gets its own card.
+        fake.alive.store(false, Ordering::SeqCst);
+        s.update(&rings(&[2]), t + Duration::from_millis(300));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+        // That card crashes while ring 2 goes on: not restarted.
+        fake.alive.store(false, Ordering::SeqCst);
+        for i in 0..8 {
+            s.update(&rings(&[2]), t + Duration::from_millis(400 + 250 * i));
+        }
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_launch_that_cannot_start_is_tried_once_per_ring() {
+        let fake = Arc::new(Fake::default());
+        fake.fail.store(true, Ordering::SeqCst);
+        let mut s = Supervisor::new(fake.clone());
+        let t = Instant::now();
+        for i in 0..20 {
+            s.update(&rings(&[7]), t + Duration::from_millis(250 * i));
+        }
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        s.update(&rings(&[]), t + Duration::from_secs(6));
+        s.update(&rings(&[8]), t + Duration::from_secs(7));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn dropping_the_supervisor_kills_its_card() {
+        let fake = Arc::new(Fake::default());
+        let mut s = Supervisor::new(fake.clone());
+        s.update(&rings(&[1]), Instant::now());
+        drop(s);
+        assert_eq!(fake.kills.load(Ordering::SeqCst), 1);
     }
 }

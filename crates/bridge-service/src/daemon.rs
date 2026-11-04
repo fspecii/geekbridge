@@ -101,6 +101,10 @@ pub struct DaemonOptions {
     pub callwifi_audio: Mutex<Option<Arc<dyn crate::callwifi::Audio>>>,
     /// Desktop notification with Answer/Decline for a ringing call. `None` shows none.
     pub call_notifier: Option<Arc<dyn CallNotifier>>,
+    /// Starts the incoming-call card (`geekbridge-calls --overlay`). `None` (tests) shows none.
+    pub call_overlay: Option<Arc<dyn crate::call_overlay::Launcher>>,
+    /// The call hub's watchdog clocks (tests shorten them).
+    pub call_timings: crate::call_control::Timings,
     /// Desktop notification for a newly arrived text (sender only). `None` shows none.
     pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
     /// Show message text in new-message notifications. Default off ("hide message content").
@@ -137,6 +141,8 @@ impl DaemonOptions {
             call_host: Mutex::new(None),
             callwifi_audio: Mutex::new(None),
             call_notifier: None,
+            call_overlay: None,
+            call_timings: crate::call_control::Timings::default(),
             sms_notifier: None,
             sms_show_content: false,
             mirror_notifier: None,
@@ -338,9 +344,12 @@ impl Daemon {
             let _ = endpoint.set_device_name(saved.trim());
         }
         let endpoint = dev_wire_tap(endpoint, options.dev_loopback);
-        let calls = CallHub::new();
+        let calls = CallHub::with_timings(options.call_timings);
         if let Some(n) = options.call_notifier.take() {
             calls.set_notifier(n);
+        }
+        if let Some(l) = options.call_overlay.take() {
+            calls.set_overlay(l);
         }
         if let Some(host) = options
             .call_host

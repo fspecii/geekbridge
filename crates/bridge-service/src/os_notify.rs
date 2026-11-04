@@ -124,7 +124,7 @@ impl CallNotifier for BannerNotifier {
         _can_decline: bool,
         _reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
-        crate::call_overlay::ring();
+        // The incoming-call card is started by the call hub itself (call_overlay::Supervisor).
         show(
             tr("banner.incoming_call"),
             &tr_args("banner.call_body", &[("caller", &isolate(caller, 80))]),

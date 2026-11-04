@@ -516,6 +516,18 @@ mod host {
                 .status(BtAddress::from_sensitive(&device.address)?)
         }
 
+        /// The GeekBridge name of `device` when it is the phone set up for call audio (so the
+        /// call view can tell its Bluetooth calls from another phone's link calls).
+        pub fn phone_name(&self, device: &DeviceRef) -> Option<String> {
+            let r = setup::load_remembered(&self.state_dir)?;
+            device
+                .address
+                .expose()
+                .eq_ignore_ascii_case(r.address.trim())
+                .then(|| r.geekbridge_name.unwrap_or(r.name))
+                .filter(|n| !n.trim().is_empty())
+        }
+
         /// The call's audio is on this computer.
         pub fn routed(&self, device: &DeviceRef) -> bool {
             matches!(

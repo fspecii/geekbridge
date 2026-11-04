@@ -90,6 +90,7 @@ pub enum Body {
 
 pub struct Card {
     key: Option<String>,
+    parts: Vec<String>,
     dismissed: bool,
     pending: Option<Pending>,
     outcome: Option<Outcome>,
@@ -114,6 +115,7 @@ impl Card {
     pub fn new(reveal: Reveal, now: Instant) -> Self {
         Self {
             key: None,
+            parts: Vec::new(),
             dismissed: false,
             pending: None,
             outcome: None,
@@ -159,13 +161,21 @@ impl Card {
             Some(row) => {
                 self.seen_ringing = true;
                 self.idle_since = now;
-                if self.key.as_deref() != Some(row.key.as_str()) {
+                // The row's key changes when a second source (Bluetooth after the link) starts
+                // seeing the same call; its parts say whether it is still the call on the card.
+                let same = self.key.as_deref().is_some_and(|k| row.is(k))
+                    || self.parts.iter().any(|k| row.is(k));
+                // An outcome that closes the card means its ring was over: whatever rings now (the
+                // next ring on the same phone has the same key) is a new call.
+                let over = self.outcome.as_ref().is_some_and(|o| o.closes);
+                if !same || over {
                     // Another call rings: a fresh card.
-                    self.key = Some(row.key.clone());
                     self.dismissed = false;
                     self.pending = None;
                     self.outcome = None;
                 }
+                self.key = Some(row.key.clone());
+                self.parts = row.parts.clone();
                 if let Some(p) = self.pending {
                     if let Some(problem) = &state.problem {
                         let key = match p.choice {
@@ -943,6 +953,70 @@ mod tests {
         assert_eq!(c.body(&idle), None);
     }
 
+    /// The same ring once Bluetooth also sees it: the row's primary source and key change.
+    fn ringing_with_hfp_joined() -> FeedState {
+        let mut st = ringing();
+        let view = &mut st.status.as_mut().unwrap().view;
+        let row = &mut view.rows[0];
+        let link_key = row.key.clone();
+        row.key = "hfp:/org/bluez/hci0/dev_X|call1".into();
+        row.parts = vec![row.key.clone(), link_key];
+        st
+    }
+
+    #[test]
+    fn a_pending_answer_survives_bluetooth_joining_the_same_ring() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let st = ringing();
+        c.update(&st, t);
+        c.choose(&st, Choice::Answer, at(t, 100)).unwrap();
+        let joined = ringing_with_hfp_joined();
+        c.update(&joined, at(t, 300));
+        let Some(Body::Ringing { status, .. }) = c.body(&joined) else {
+            panic!()
+        };
+        assert_eq!(
+            status.unwrap().0,
+            "Answering…",
+            "same call, not a fresh card"
+        );
+        assert!(c.choose(&joined, Choice::Answer, at(t, 400)).is_none());
+    }
+
+    #[test]
+    fn the_next_ring_with_the_same_key_after_a_decline_gets_its_buttons() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let st = ringing();
+        c.update(&st, t);
+        c.choose(&st, Choice::Reject, t).unwrap();
+        let idle = FeedState {
+            status: Some(CallsStatus {
+                view: calls_view::CallsView::empty(),
+                notice: None,
+                sources: vec![],
+                audio_note: None,
+                wifi: None,
+            }),
+            problem: None,
+        };
+        c.update(&idle, at(t, 300));
+        assert!(matches!(c.body(&idle), Some(Body::Done { .. })));
+        // The caller rings again at once: the link calls it `link-current` again.
+        assert_eq!(c.update(&st, at(t, 800)), Verdict::Keep);
+        let Some(Body::Ringing {
+            can_answer,
+            can_reject,
+            status,
+            ..
+        }) = c.body(&st)
+        else {
+            panic!("the new ring is shown, not the old outcome")
+        };
+        assert!(can_answer && can_reject && status.is_none());
+    }
+
     #[test]
     fn dismiss_hides_the_card_but_the_next_call_shows_it_again() {
         let t = Instant::now();
@@ -960,6 +1034,7 @@ mod tests {
         let mut other = ringing();
         if let Some(s) = other.status.as_mut() {
             s.view.rows[0].key = "other".into();
+            s.view.rows[0].parts = vec!["other".into()];
         }
         c.update(&other, at(t, 6000));
         assert!(!c.hidden());

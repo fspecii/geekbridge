@@ -508,12 +508,14 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     } else {
         Arc::new(calling::DisabledCallingProbe)
     };
-    call_overlay::configure(call_overlay::Launch {
-        state_dir: config.state_dir.clone(),
-        api_port: config.api_port,
-        control_port: config.control_port,
-    });
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
+    options.call_overlay = Some(Arc::new(call_overlay::ProcessLauncher::new(
+        call_overlay::Launch {
+            state_dir: config.state_dir.clone(),
+            api_port: config.api_port,
+            control_port: config.control_port,
+        },
+    )));
     options.dev_loopback = config.dev_loopback;
     options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));
     call_audio::warm_up();
