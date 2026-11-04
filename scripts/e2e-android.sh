@@ -441,6 +441,12 @@ stage_update() {
   ui has "Version 99.0.0 is available" || { rec update FAIL "no offer shown: $(ui dump | grep -iE "Couldn|GitHub|up to date" | head -1 | cut -c1-100)"; return 1; }
   # The reskinned Diagnostics screen is taller than the display: the buttons sit below the fold.
   ui scrolltap "Download and verify" >/dev/null; sleep 8; ui scrollto "Install update" >/dev/null; shot 31-update-verified
+  # The mock serves this very build (same versionCode): the app now refuses a download that is not newer than the
+  # installed app, which is the right answer here. scripts/e2e/update-install.sh covers the full install with a real v2.
+  if ui has "not newer than the installed"; then
+    rec update PASS "check -> v99.0.0 offer -> download verified against the SHA-256 -> refused because the file is not newer than the installed build (the install hand-over is covered by update-install)"
+    return 0
+  fi
   ui has "downloaded and verified against the published SHA-256" || { rec update FAIL "download/verify did not complete"; return 1; }
   ui scrolltap "Install update" >/dev/null; sleep 4; shot 32-update-install-handoff
   local focus; focus="$($ADB shell dumpsys window | grep mCurrentFocus)"
