@@ -16,9 +16,12 @@
 //! Privacy: no audio is written to disk or logged; the view carries counts only. Packets from a phone whose
 //! consent is off are dropped unread.
 use std::collections::BTreeMap;
+#[cfg(target_os = "linux")]
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -68,6 +71,7 @@ pub trait Audio: Send + Sync {
 
 /// Linux with PipeWire: `pw-cat` on the device the user chose for calls (`bridge_calls::audio::endpoint`).
 pub struct PipeWireAudio {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     state_dir: Option<PathBuf>,
     /// Whether `pw-cat` runs, looked up once (the call card asks every second).
     support: std::sync::OnceLock<Result<(), String>>,
