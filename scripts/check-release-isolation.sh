@@ -27,7 +27,7 @@ done
 
 unzip -q -o "$apk" 'classes*.dex' -d "$work"
 for dex in "$work"/classes*.dex; do
-  if strings -n 4 "$dex" | grep -qE 'DebugDiagnostics|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|dev/geekbridge/android/callaudio/|geekbridge-debug|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.'; then
+  if strings -n 4 "$dex" | grep -qE 'DebugDiagnostics|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|dev/geekbridge/android/callaudio/|geekbridge-debug-|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.'; then
     bad "$(basename "$dex") contains debug-only code or packet names"
   fi
 done
