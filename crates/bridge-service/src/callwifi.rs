@@ -836,6 +836,10 @@ impl CallWifi {
             }
             let Ok(opus) = enc.encode(&pcm) else { continue };
             let g = self.lock();
+            // Off is set under this same lock, so a frame read before the press never goes out after it.
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             let now = self.now_ms();
             let Some(sess) = g
                 .live
@@ -1051,6 +1055,8 @@ mod tests {
                     opus,
                 }),
             );
+            // Paced like the phone's 20 ms frames: the jitter buffer holds at most a few, so a burst is shed.
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -1326,10 +1332,12 @@ mod tests {
         drop(g);
         // Off: the microphone thread stops and no more frames follow.
         r.hub.speak(false).unwrap();
+        let frames = || kinds(&r).iter().filter(|k| **k == wire::FRAME).count();
+        // Off takes effect under the hub lock: at most nothing more is sent. Allow a slow runner to settle.
         std::thread::sleep(Duration::from_millis(100));
-        let n = kinds(&r).iter().filter(|k| **k == wire::FRAME).count();
-        std::thread::sleep(Duration::from_millis(150));
-        assert_eq!(kinds(&r).iter().filter(|k| **k == wire::FRAME).count(), n);
+        let n = frames();
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(frames(), n);
         assert!(!r.hub.view(false).session.unwrap().speaking);
         r.hub.stop();
     }
