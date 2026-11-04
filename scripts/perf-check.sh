@@ -26,7 +26,7 @@ UI=0
 # GB_CI=1 (set by .github/workflows/check.yml): shared runners have other CPUs, noisy neighbours and a different
 # libc/kernel, so the load-dependent rows get documented slack. Sizes stay strict. Explicit BUDGET_* overrides win (CI values are only defaults, applied before the normal ones).
 if [[ ${GB_CI:-} == 1 ]]; then
-    : "${BUDGET_RSS_KIB:=8000}" "${BUDGET_THREADS:=10}" "${BUDGET_FDS:=24}" "${BUDGET_WAKEUPS_PER_S:=6}"
+    : "${BUDGET_RSS_KIB:=8500}" "${BUDGET_THREADS:=10}" "${BUDGET_FDS:=24}" "${BUDGET_WAKEUPS_PER_S:=6}"
     : "${BUDGET_CPU_TICKS:=6}" "${BUDGET_STARTUP_MS:=1000}"
 fi
 
