@@ -525,6 +525,15 @@ pub fn run(i: &Inputs) -> Vec<Check> {
 pub fn hear_calls_check(h: &bridge_core::ipc::HearCalls) -> Check {
     const TITLE: &str = "Hear calls here";
     match h.first_problem() {
+        None if !h.ready && h.steps.iter().all(|s| s.state == "skip") => Check {
+            level: Level::Warn,
+            title: TITLE.into(),
+            detail: format!("{} Full checklist: geekbridge-ctl calling", h.headline),
+            fix: None,
+        },
+        None if !h.headline.is_empty() && !h.headline.starts_with("Ready") => {
+            check(Level::Ok, TITLE, h.headline.clone(), None)
+        }
         None => check(
             Level::Ok,
             TITLE,
@@ -677,6 +686,35 @@ mod tests {
                 .iter()
                 .any(|c| c.title == "Hear calls here")
         );
+    }
+
+    #[test]
+    fn hear_calls_check_on_windows_is_not_ready_when_nothing_could_be_read() {
+        use bridge_core::ipc::{HearCalls, HearCallsStep};
+        let step = |state: &str| HearCallsStep {
+            id: "x".into(),
+            title: "Bluetooth adapter found".into(),
+            state: state.into(),
+            detail: "Cannot be checked from here".into(),
+            fix: None,
+        };
+        let unread = HearCalls {
+            headline: "Windows' Bluetooth devices could not be read just now.".into(),
+            steps: vec![step("skip"), step("skip")],
+            ..Default::default()
+        };
+        let c = hear_calls_check(&unread);
+        assert_eq!(c.level, Level::Warn, "{c:?}");
+        assert!(c.detail.contains("could not be read"), "{c:?}");
+        let ready = HearCalls {
+            ready: true,
+            headline: "Phone calls are connected in Windows; the voice plays on the default communications device.".into(),
+            steps: vec![step("ok"), step("skip")],
+            ..Default::default()
+        };
+        let c = hear_calls_check(&ready);
+        assert_eq!(c.level, Level::Ok);
+        assert!(c.detail.contains("default communications device"), "{c:?}");
     }
 
     fn find<'a>(c: &'a [Check], title: &str) -> Vec<&'a Check> {

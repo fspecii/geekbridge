@@ -144,10 +144,18 @@ fn linux_setup(selection: &Selection) -> Setup {
 
 // --------------------------------------------------------------------------------- Windows
 
+/// The PowerShell that lists one device class as JSON. A class with no device (a PC without
+/// Bluetooth) makes `Get-PnpDevice` report "no matching device" as an error, and PowerShell then
+/// exits with status 1; that is an empty answer, not a failure, so errors are silenced and the exit
+/// status is forced to 0. A PowerShell that cannot start at all still fails to spawn.
+fn pnp_script(class: &str) -> String {
+    format!(
+        "$ErrorActionPreference='SilentlyContinue'; Get-PnpDevice -Class {class} | Select-Object Status,FriendlyName,InstanceId | ConvertTo-Json -Compress; exit 0"
+    )
+}
+
 fn pnp(class: &str) -> Option<Vec<model::PnpDevice>> {
-    let script = format!(
-        "Get-PnpDevice -Class {class} | Select-Object Status,FriendlyName,InstanceId | ConvertTo-Json -Compress"
-    );
+    let script = pnp_script(class);
     run_text(
         "powershell.exe",
         &["-NoProfile", "-NonInteractive", "-Command", &script],
@@ -514,6 +522,16 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use bridge_core::call_audio::{StepState, Verdict};
+
+    #[test]
+    fn the_pnp_query_treats_no_device_as_an_empty_answer() {
+        let s = pnp_script("Bluetooth");
+        assert!(s.contains("-Class Bluetooth"));
+        assert!(s.starts_with("$ErrorActionPreference='SilentlyContinue'"));
+        assert!(s.ends_with("exit 0"));
+        // Empty output (no device) is an empty list, which the checklist reads as "no adapter".
+        assert!(model::parse_pnp_json("").is_empty());
+    }
 
     #[test]
     fn a_slow_read_never_holds_the_caller_and_the_next_call_gets_the_value() {

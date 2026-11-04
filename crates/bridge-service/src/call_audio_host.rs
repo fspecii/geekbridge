@@ -210,7 +210,10 @@ pub fn hear_calls_from_setup(
         bridge_core::ipc::NO_BLUETOOTH_WARNING.to_owned()
     } else {
         steps.iter().find(|x| x.state == "fail").map_or_else(
-            || setup_unsupported(os),
+            || {
+                let _ = os;
+                "Windows' Bluetooth devices could not be read just now. Check Settings > Bluetooth & devices: the phone must be paired with Phone calls turned on.".to_owned()
+            },
             |x| format!("{}: {}", x.title, x.detail),
         )
     };
