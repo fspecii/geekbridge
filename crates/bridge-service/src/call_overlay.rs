@@ -35,7 +35,22 @@ pub const SETTINGS_FILE: &str = "call-overlay";
 pub fn mode(state_dir: &Path) -> Mode {
     let env = std::env::var("GEEKBRIDGE_CALL_OVERLAY").ok();
     let file = std::fs::read_to_string(state_dir.join(SETTINGS_FILE)).ok();
-    Mode::resolve(env.as_deref(), file.as_deref())
+    let mode = Mode::resolve(env.as_deref(), file.as_deref());
+    // The Settings choice only narrows what the card shows, and only when no older switch decided.
+    let said = |t: &Option<String>| {
+        t.as_deref()
+            .map(str::trim)
+            .is_some_and(|w| !w.is_empty() && Mode::parse(w).is_some())
+    };
+    if mode == Mode::On
+        && !said(&env)
+        && !said(&file)
+        && crate::privacy::stored_choice(state_dir, bridge_core::privacy::PrivacyKey::CallerNumber)
+            == Some(false)
+    {
+        return Mode::NameOnly;
+    }
+    mode
 }
 
 /// Command-line arguments of the card process.
@@ -431,6 +446,34 @@ mod tests {
         assert_eq!(
             args(&launch(), Mode::NameOnly),
             ["--overlay", "--api-port", "17380", "--name-only"]
+        );
+    }
+
+    #[test]
+    fn the_privacy_switch_hides_the_number_unless_an_older_switch_decided() {
+        if std::env::var_os("GEEKBRIDGE_CALL_OVERLAY").is_some() {
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join(crate::privacy::FILE), "caller_number=off\n").unwrap();
+        assert_eq!(mode(d.path()), Mode::NameOnly);
+        std::fs::write(d.path().join(crate::privacy::FILE), "caller_number=on\n").unwrap();
+        assert_eq!(mode(d.path()), Mode::On);
+        // The call-overlay file still decides first: `on` there shows the number, `off` disables the card.
+        std::fs::write(d.path().join(crate::privacy::FILE), "caller_number=off\n").unwrap();
+        std::fs::write(d.path().join(SETTINGS_FILE), "off\n").unwrap();
+        assert_eq!(mode(d.path()), Mode::Off);
+        std::fs::write(d.path().join(SETTINGS_FILE), "on\n").unwrap();
+        assert_eq!(
+            mode(d.path()),
+            Mode::On,
+            "an explicit `on` forces the number"
+        );
+        std::fs::write(d.path().join(SETTINGS_FILE), "\n").unwrap();
+        assert_eq!(
+            mode(d.path()),
+            Mode::NameOnly,
+            "an empty file forces nothing"
         );
     }
 

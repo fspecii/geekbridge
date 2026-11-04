@@ -7,6 +7,13 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Settings -> Privacy: switches for **Show message text in notifications** (off), **Show caller number on the call card**
+  (on) and **Show phone notification text** (off), applied at once through the service (`PrivacyStatus` / `PrivacySet`,
+  `geekbridge-ctl privacy [show|set KEY on|off]`). The `sms-notify-content` file and the old environment variables still
+  force a value, and the page says so. An unread-message count is in the tray tooltip (all platforms) and the waybar
+  `unread` field, and falls when a conversation is read on this computer. Messages: the To field takes a contact name
+  (list with Up/Down/Enter, a chooser for several numbers), a refused reply comes back into the box with the reason, and
+  Enter that confirms an input-method composition no longer sends.
 - The computer now tells a GeekBridge phone what became of its share (`geekbridge.share.result`, GeekBridge-only, never sent
   to stock KDE Connect, kept out of the plaintext identity): accepted, declined (or lapsed), receiving off, too large, busy,
   and for text and links saved (a link is kept, never opened). The Share screen says so in plain words and stops waiting at

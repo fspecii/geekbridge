@@ -416,3 +416,35 @@ async fn a_state_change_signals_the_icon_status_tooltip_and_layout() {
     let tip: Tip = item.get_property("ToolTip").await.unwrap();
     assert_eq!(tip.3, "Incoming call");
 }
+
+#[tokio::test]
+async fn an_unread_count_changes_the_tooltip_live_and_reading_clears_it() {
+    let Some(bus) = PrivateBus::start() else {
+        return;
+    };
+    let (sni, _) = start(&bus, &phone()).await;
+    let client = bus.connect().await;
+    let item = item_proxy(&client, &sni.bus_name).await;
+    let mut new_tip = item.receive_signal("NewToolTip").await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    sni.update(&TrayInput {
+        unread: 3,
+        ..phone()
+    })
+    .await;
+    tokio::time::timeout(timeout, new_tip.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let tip: Tip = item.get_property("ToolTip").await.unwrap();
+    assert!(tip.3.ends_with("3 unread messages"), "{}", tip.3);
+
+    sni.update(&phone()).await;
+    tokio::time::timeout(timeout, new_tip.next())
+        .await
+        .unwrap()
+        .unwrap();
+    let tip: Tip = item.get_property("ToolTip").await.unwrap();
+    assert!(!tip.3.contains("unread"), "{}", tip.3);
+}

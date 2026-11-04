@@ -65,6 +65,7 @@ overridden by `--state-dir` / `$GEEKBRIDGE_STATE_DIR`; owner-only (mode 0700 on 
 | `whats-new.json` | the version whose "What's new" card was last shown/dismissed (`{"version":1,"last_seen":"X.Y.Z"}`) | `version` 1 | no card, rewritten with the running version | written by Home via `PlainIo`; missing + no paired phone = fresh install (recorded silently), downgrade is silent |
 | `device-name` | UTF-8 text, the computer's chosen name | plain text, unversioned | configured name is kept | validated again on read; atomic write |
 | `ipc-token` | 64 hex chars, local control token | unversioned | replaced with a new token (clients re-read it), line logged | holds no pairing data |
+| `privacy` | `message_text=on|off`, `caller_number=…`, `phone_notification_text=…` lines: what banners and the call card may show | unversioned text | defaults (text hidden, caller number shown); unknown keys and bad lines skipped | atomic write; `sms-notify-content` and the old environment variables still force a value |
 | `tray-paused` | JSON list of device ids paused from the tray | unversioned list | treated as empty | atomic write |
 | `tray-disabled`, `sms-notify-content` | empty marker files | n/a | n/a | existence is the value |
 | `control-token.lock`, `*.lock` | lock files | n/a | n/a | never deleted |

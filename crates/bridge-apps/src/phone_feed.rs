@@ -24,13 +24,33 @@ pub struct FeedState<V> {
     pub problem: Option<String>,
     /// Short confirmation of the last action ("Sent to the phone.").
     pub notice: Option<String>,
+    /// How many actions the worker has finished (accepted or refused). `Feed::run` returns the number
+    /// its action will have once finished, so a caller can tell when its own action is done.
+    pub acted: u64,
+    /// The reasons of the last few refused actions, by that number.
+    pub refusals: Vec<(u64, String)>,
 }
+
+impl<V> FeedState<V> {
+    /// Why action `ticket` (from `Feed::run`) was refused, if it was and is still remembered.
+    pub fn refusal(&self, ticket: u64) -> Option<&str> {
+        self.refusals
+            .iter()
+            .find(|(t, _)| *t == ticket)
+            .map(|(_, why)| why.as_str())
+    }
+}
+
+/// Refused actions remembered for `FeedState::refusal`.
+const REFUSALS_KEPT: usize = 8;
 impl<V> Default for FeedState<V> {
     fn default() -> Self {
         Self {
             view: None,
             problem: None,
             notice: None,
+            acted: 0,
+            refusals: Vec::new(),
         }
     }
 }
@@ -45,6 +65,7 @@ pub struct Feed<V> {
     params: Arc<Mutex<Request>>,
     commands: mpsc::Sender<Cmd>,
     stop: Arc<AtomicBool>,
+    issued: std::sync::atomic::AtomicU64,
 }
 
 /// What an action returned: a notice to show, or a refusal.
@@ -68,6 +89,8 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
             .name("geekbridge-phone-feed".into())
             .spawn(move || {
                 let mut sticky: (Option<String>, Option<String>) = (None, None);
+                let mut acted = 0_u64;
+                let mut refusals: Vec<(u64, String)> = Vec::new();
                 loop {
                     if halt.load(Ordering::Relaxed) {
                         return;
@@ -79,6 +102,8 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
                             view: Some(view),
                             problem: sticky.0.clone(),
                             notice: sticky.1.clone(),
+                            acted,
+                            refusals: refusals.clone(),
                         },
                         Err(why) => {
                             down = true;
@@ -86,6 +111,8 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
                                 view: None,
                                 problem: Some(why),
                                 notice: None,
+                                acted,
+                                refusals: refusals.clone(),
                             }
                         }
                     };
@@ -100,9 +127,16 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
                     let wait = if down { POLL_DOWN } else { interval };
                     match rx.recv_timeout(crate::pace::scaled(wait)) {
                         Ok(Cmd::Run(action)) => {
+                            acted += 1;
                             sticky = match act(&action) {
                                 Ok(notice) => (None, notice),
-                                Err(why) => (Some(why), None),
+                                Err(why) => {
+                                    if refusals.len() == REFUSALS_KEPT {
+                                        refusals.remove(0);
+                                    }
+                                    refusals.push((acted, why.clone()));
+                                    (Some(why), None)
+                                }
                             };
                         }
                         Ok(Cmd::Poll) | Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -119,6 +153,7 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
             params,
             commands,
             stop,
+            issued: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -136,9 +171,12 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
         }
     }
 
-    /// Queue an action; the worker runs it and then refreshes.
-    pub fn run(&self, request: Request) {
+    /// Queue an action; the worker runs it and then refreshes. Returns the action's number: it is
+    /// finished once `FeedState::acted` reaches it, and `FeedState::refusal` says why if it failed.
+    pub fn run(&self, request: Request) -> u64 {
+        let ticket = self.issued.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.commands.send(Cmd::Run(request));
+        ticket
     }
 }
 
@@ -272,5 +310,10 @@ mod tests {
             feed.state().view.is_some(),
             "a refused action keeps the view"
         );
+        let st = feed.state();
+        assert_eq!(st.acted, 2);
+        assert_eq!(st.refusal(1), None, "the first action was accepted");
+        assert_eq!(st.refusal(2), Some("refused"));
+        assert_eq!(feed.run(Request::Status), 3, "tickets count up");
     }
 }

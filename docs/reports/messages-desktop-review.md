@@ -41,6 +41,10 @@ only by the new header line.
 
 ## Known limits (not fixed, stated plainly)
 
+Follow-up: the notification-text switch, the unread badge, compose by name, restoring a refused reply and IME Enter
+are done; see [messages-followups.md](messages-followups.md). The matching bullets below are kept as history.
+
+
 - egui does not shape or reorder text: Arabic is drawn in isolated forms and Hebrew/Arabic run left to right in
   logical order. Glyphs now appear, but right-to-left messages are not typeset correctly. Fixing it needs a shaping
   engine (rustybuzz + bidi), a size and licence review of its own.

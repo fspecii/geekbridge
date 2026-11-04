@@ -99,6 +99,10 @@ pub struct HomeApp {
     connections: Connections,
     updates: Updates,
     clip: ClipLink,
+    privacy: crate::privacy_ui::PrivacyLink,
+    /// Screenshots: scroll Settings to the Privacy section (`GEEKBRIDGE_OPEN_PRIVACY`).
+    scroll_to_privacy: bool,
+    scroll_hold: u32,
     view: View,
     hotkey_draft: Option<String>,
     notice: Option<String>,
@@ -295,6 +299,7 @@ impl HomeApp {
         let repaint = ctx.clone();
         let poller = Poller::spawn(LOOK, api_port, move || repaint.request_repaint());
         let repaint = ctx.clone();
+        let privacy_wake = ctx.clone();
         let mut app = Self {
             api_port,
             model: DiscoveryModel::Checking,
@@ -302,6 +307,9 @@ impl HomeApp {
             connections: Connections::new(ctx.clone()),
             updates: Updates::new(ctx.clone()),
             clip: ClipLink::spawn(move || repaint.request_repaint()),
+            privacy: crate::privacy_ui::PrivacyLink::spawn(move || privacy_wake.request_repaint()),
+            scroll_to_privacy: false,
+            scroll_hold: 0,
             view: View::Home,
             hotkey_draft: None,
             notice: None,
@@ -322,6 +330,10 @@ impl HomeApp {
         if std::env::var_os("GEEKBRIDGE_OPEN_CALLAUDIO").is_some() {
             app.view = View::Settings;
             app.scroll_to_call_audio = true;
+        }
+        if std::env::var_os("GEEKBRIDGE_OPEN_PRIVACY").is_some() {
+            app.view = View::Settings;
+            app.scroll_to_privacy = true;
         }
         // Screenshots and tests: open Settings with the "Report a problem" preview already built.
         if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
@@ -1213,6 +1225,20 @@ impl HomeApp {
         nothing::card(ui, pal, |ui| {
             sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
         });
+        nothing::section(ui, pal, crate::i18n::tr("privacy.section"));
+        if std::env::var_os("GEEKBRIDGE_OPEN_PRIVACY").is_some() {
+            let size = ctx.screen_rect().size();
+            if self.shot_size.is_some_and(|s| s != size) {
+                self.scroll_to_privacy = true;
+            }
+            self.shot_size = Some(size);
+        }
+        if self.privacy.state.view.is_some() && std::mem::take(&mut self.scroll_to_privacy) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
+        nothing::card(ui, pal, |ui| {
+            crate::privacy_ui::show(ui, pal, &mut self.privacy)
+        });
         nothing::section(ui, pal, crate::i18n::tr("callaudio.title"));
         if std::env::var_os("GEEKBRIDGE_OPEN_CALLAUDIO").is_some() {
             // Screenshots: stay on the call audio section when the window is resized to its minimum.
@@ -1222,8 +1248,17 @@ impl HomeApp {
             }
             self.shot_size = Some(size);
         }
-        if std::mem::take(&mut self.scroll_to_call_audio) {
+        // The Privacy card above changes height once the service answers: scroll after that.
+        let privacy_settled =
+            self.privacy.state.view.is_some() || self.privacy.state.error.is_some();
+        // Screenshots only: keep the section in place for a while as late layout changes land.
+        if privacy_settled && self.scroll_to_call_audio {
+            self.scroll_hold += 1;
             ui.scroll_to_cursor(Some(egui::Align::TOP));
+            if self.scroll_hold > 40 {
+                self.scroll_to_call_audio = false;
+                self.scroll_hold = 0;
+            }
         }
         nothing::card(ui, pal, |ui| self.call_audio.show(ui, pal, false));
         nothing::section(ui, pal, report_ui::section());
@@ -1306,6 +1341,7 @@ impl HomeApp {
         crate::pace::observe(ctx, &self.model);
         self.connections.update();
         self.clip.update();
+        self.privacy.update();
         self.ensure_feeds(ctx);
         if let Some(rx) = &self.diagnostics
             && let Ok(result) = rx.try_recv()
@@ -1455,6 +1491,67 @@ mod tests {
         }
         assert!(tree.has_name_starting("Licence: GPL-3.0-or-later"));
         assert!(tree.has_name_starting("Independent implementation"));
+        assert_eq!(tree.unnamed_controls(), Vec::<String>::new());
+    }
+
+    /// Settings -> Privacy: three named switches whose state a screen reader can read, none unnamed.
+    #[cfg(feature = "accesskit")]
+    #[test]
+    fn settings_privacy_switches_are_named_with_their_state() {
+        use bridge_core::{
+            ipc::Response,
+            privacy::{ForcedBy, PrivacyItem, PrivacyKey, PrivacyView},
+        };
+        let ctx = egui::Context::default();
+        let mut home = HomeApp::new(1, &ctx);
+        home.view = View::Settings;
+        home.privacy = crate::privacy_ui::PrivacyLink::spawn_with(
+            |_| {
+                Ok(Response::Privacy(PrivacyView {
+                    items: vec![
+                        PrivacyItem {
+                            key: PrivacyKey::MessageText,
+                            on: true,
+                            forced: Some(ForcedBy::File),
+                        },
+                        PrivacyItem {
+                            key: PrivacyKey::CallerNumber,
+                            on: true,
+                            forced: None,
+                        },
+                        PrivacyItem {
+                            key: PrivacyKey::PhoneNotificationText,
+                            on: false,
+                            forced: None,
+                        },
+                    ],
+                }))
+            },
+            || {},
+        );
+        let mut first = true;
+        let tree = crate::a11y_tests::capture(egui::vec2(960.0, 2400.0), move |ctx| {
+            if first {
+                crate::theme::apply(ctx, AppKind::Calls);
+                first = false;
+            }
+            for _ in 0..40 {
+                home.frame(ctx);
+                if !home.privacy.rows().is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            home.frame(ctx);
+        });
+        for name in [
+            "Show message text in notifications",
+            "Show caller number on the call card",
+            "Show phone notification text",
+        ] {
+            assert!(tree.find(name).is_some(), "{name}\n{}", tree.outline());
+        }
+        assert!(tree.has_name_starting("Fixed on by the sms-notify-content file"));
         assert_eq!(tree.unnamed_controls(), Vec::<String>::new());
     }
 

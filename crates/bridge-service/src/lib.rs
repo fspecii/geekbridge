@@ -44,6 +44,7 @@ pub mod os_notify;
 pub mod phone_data;
 pub mod phone_debug;
 pub mod photos;
+pub mod privacy;
 pub mod private;
 pub mod reconnect;
 pub mod session_env;
@@ -517,6 +518,9 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         },
     )));
     options.dev_loopback = config.dev_loopback;
+    // Message text in notifications is opt-in (Settings, `geekbridge-ctl privacy`); the older
+    // `sms-notify-content` marker and GEEKBRIDGE_SMS_NOTIFY_CONTENT=show still force it on.
+    options.privacy_dir = Some(config.state_dir.clone());
     options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));
     call_audio::warm_up();
     options.call_audio = Some(call_audio::CallAudioService::new(
@@ -534,11 +538,6 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         options.call_notifier = Some(Arc::new(call_control::NotifySendCalls));
         options.sms_notifier = Some(Arc::new(phone_data::NotifySendSms));
         options.mirror_notifier = Some(Arc::new(mirror::NotifySendMirror));
-        // Message text in notifications is opt-in: `touch <state dir>/sms-notify-content` (or set
-        // GEEKBRIDGE_SMS_NOTIFY_CONTENT=show). Without it a notification names the sender only.
-        options.sms_show_content = std::env::var("GEEKBRIDGE_SMS_NOTIFY_CONTENT")
-            .is_ok_and(|v| v == "show")
-            || config.state_dir.join("sms-notify-content").exists();
         desktop_notify::spawn_update_watcher(options.updates.clone());
         if config.calling_probe {
             let session = bridge_calls::Session::new(bridge_calls::default_backend());

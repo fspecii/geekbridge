@@ -485,3 +485,241 @@ fn numbers_group_across_country_code_and_trunk_prefix_but_short_codes_stay_exact
     assert!(!same_number("22000", "+49 151 2322000"));
     assert!(!same_number("", "+49 151 2322000"));
 }
+
+/// A window whose service refuses every action with `why`.
+fn messages_refusing(view: MessagesView, why: &'static str) -> Messages {
+    let mut m = Messages {
+        env_checked: true,
+        open_number_checked: true,
+        ..Messages::default()
+    };
+    m.feed = Some(Feed::spawn_with(
+        Duration::from_millis(10),
+        Request::Status,
+        move |_| Ok(view.clone()),
+        move |_| Err(why.into()),
+        || {},
+    ));
+    m
+}
+
+fn person(name: &str, phones: &[&str]) -> bridge_core::phone_view::Person {
+    bridge_core::phone_view::Person {
+        device_id: "d".into(),
+        id: name.into(),
+        name: name.into(),
+        phones: phones.iter().map(|s| (*s).to_owned()).collect(),
+        emails: vec![],
+        organization: None,
+    }
+}
+
+/// A contact feed that always answers with these people.
+fn contacts_feed(people: Vec<bridge_core::phone_view::Person>) -> Feed<AgendaView> {
+    Feed::spawn_with(
+        Duration::from_millis(10),
+        Request::Status,
+        move |_| {
+            Ok(AgendaView {
+                people: people.clone(),
+                ..AgendaView::default()
+            })
+        },
+        |_| Ok(None),
+        || {},
+    )
+}
+
+fn compose_with_contacts() -> (Messages, Log, Rig) {
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    m.people = Some(contacts_feed(vec![
+        person("Ann Lee", &["+44 20 7946 0001"]),
+        person("Joanna Smith", &["+1 555 0100", "+1 555 0101"]),
+    ]));
+    m.open_compose();
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    wait_until("contacts", || {
+        m.people.as_ref().unwrap().state().view.is_some()
+    });
+    (m, log, rig)
+}
+
+#[test]
+fn a_refused_reply_comes_back_into_the_box_with_the_reason() {
+    let _clock = pin();
+    let mut m = messages_refusing(fixture(DataState::Ready, true), "The phone link is down");
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.type_text(&mut m, "hello there");
+    rig.key(&mut m, Key::Enter);
+    for _ in 0..300 {
+        rig.settle(&mut m, 1);
+        if m.reply == "hello there" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(m.reply, "hello there", "the text is back");
+    assert!(m.sent_replies.is_empty());
+    let (_, why) = m.reply_refused.clone().expect("the reason is kept");
+    assert_eq!(why, "The phone link is down");
+    // The next send clears the note.
+    let out = rig.settle(&mut m, 2);
+    assert!(shapes(&out) > 5);
+}
+
+#[test]
+fn an_accepted_reply_stays_gone_and_a_refused_one_goes_before_what_was_typed_since() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.type_text(&mut m, "fine");
+    rig.key(&mut m, Key::Enter);
+    wait_until("send", || !sends(&log).is_empty());
+    for _ in 0..30 {
+        rig.settle(&mut m, 1);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(m.reply, "");
+    assert!(m.reply_refused.is_none() && m.sent_replies.is_empty());
+    // Restoring in front of newer text keeps both; another conversation's box gets its own text back.
+    let key = ("d".to_owned(), 1_i64);
+    m.reply = "newer".into();
+    m.restore_reply(&key, "older");
+    assert_eq!(m.reply, "older\nnewer");
+    let other = ("d".to_owned(), 2_i64);
+    m.restore_reply(&other, "for two");
+    assert_eq!(m.drafts.get(&other).map(String::as_str), Some("for two"));
+}
+
+#[test]
+fn enter_that_confirms_an_input_method_composition_does_not_send() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.type_text(&mut m, "x");
+    let preedit = |t: &str| eframe::egui::Event::Ime(eframe::egui::ImeEvent::Preedit(t.into()));
+    rig.frame(&mut m, vec![preedit("ni")]);
+    rig.key(&mut m, Key::Enter);
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(
+        sends(&log).is_empty(),
+        "Enter during a preedit is not a send"
+    );
+    assert!(
+        !m.reply.contains('\n'),
+        "and not a new line either: {:?}",
+        m.reply
+    );
+    // The input method commits; a later Enter is a normal send.
+    rig.frame(
+        &mut m,
+        vec![
+            eframe::egui::Event::Ime(eframe::egui::ImeEvent::Commit("\u{4f60}".into())),
+            preedit(""),
+        ],
+    );
+    rig.settle(&mut m, 2);
+    rig.key(&mut m, Key::Enter);
+    wait_until("send", || !sends(&log).is_empty());
+    assert!(sends(&log)[0].1.contains('\u{4f60}'));
+}
+
+#[test]
+fn a_name_in_to_lists_contacts_and_enter_picks_the_number() {
+    let _clock = pin();
+    let (mut m, log, mut rig) = compose_with_contacts();
+    rig.type_text(&mut m, "ann");
+    rig.settle(&mut m, 3);
+    assert_eq!(m.recipient, "ann", "letters are kept while it is a name");
+    assert!(m.to_list_open, "the list is on screen");
+    // Sending to a name that was not resolved is not possible.
+    m.draft = "hi".into();
+    rig.key_with(&mut m, Key::Enter, Modifiers::COMMAND);
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(sends(&log).is_empty());
+    rig.key(&mut m, Key::Enter);
+    assert_eq!(m.recipient, "+442079460001");
+    assert_eq!(m.picked.as_ref().map(|p| p.0.as_str()), Some("Ann Lee"));
+    assert!(matches!(m.focus, Some(Focus::Draft)) || m.focus.is_none());
+    rig.settle(&mut m, 2);
+    rig.key_with(&mut m, Key::Enter, Modifiers::COMMAND);
+    wait_until("send", || !sends(&log).is_empty());
+    assert_eq!(sends(&log), vec![("+442079460001".into(), "hi".into())]);
+}
+
+#[test]
+fn a_contact_with_two_numbers_asks_and_up_down_enter_choose_one() {
+    let _clock = pin();
+    let (mut m, log, mut rig) = compose_with_contacts();
+    rig.type_text(&mut m, "jo");
+    rig.settle(&mut m, 3);
+    rig.key(&mut m, Key::Enter);
+    assert!(m.picker.asking.is_some(), "asks which number");
+    assert_eq!(m.recipient, "jo", "nothing is guessed");
+    rig.key(&mut m, Key::ArrowDown);
+    rig.key(&mut m, Key::Enter);
+    assert_eq!(m.recipient, "+15550101");
+    // Escape in the chooser goes back a step instead of leaving the page.
+    let (mut m2, _, mut rig2) = compose_with_contacts();
+    rig2.type_text(&mut m2, "jo");
+    rig2.settle(&mut m2, 3);
+    rig2.key(&mut m2, Key::Enter);
+    rig2.key(&mut m2, Key::Escape);
+    assert!(
+        m2.picker.asking.is_none() && m2.section == Section::Compose,
+        "asking={:?} open={}",
+        m2.picker.asking,
+        m2.to_list_open
+    );
+    rig2.key(&mut m2, Key::Escape);
+    assert!(
+        m2.to_closed && m2.section == Section::Compose,
+        "Escape closed the list only"
+    );
+    rig2.key(&mut m2, Key::Escape);
+    assert!(
+        m2.section == Section::Conversations,
+        "a second Escape leaves"
+    );
+    assert!(sends(&log).is_empty());
+}
+
+#[test]
+fn a_plain_number_never_asks_for_contacts_and_a_name_nobody_has_cannot_be_sent() {
+    let _clock = pin();
+    let (mut m, log) = messages_logged(fixture(DataState::Ready, true));
+    m.open_compose();
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    rig.type_text(&mut m, "+49 151 2345678");
+    rig.settle(&mut m, 3);
+    assert!(m.people.is_none(), "no contact search for a number");
+    assert_eq!(m.recipient, "+491512345678");
+    // A name with no match: kept as typed, the page says what to do, nothing is sent.
+    let (mut m, log2, mut rig) = compose_with_contacts();
+    rig.type_text(&mut m, "zed");
+    rig.settle(&mut m, 4);
+    assert_eq!(m.recipient, "zed");
+    m.draft = "hi".into();
+    rig.key_with(&mut m, Key::Enter, Modifiers::COMMAND);
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(sends(&log).is_empty() && sends(&log2).is_empty());
+}
+
+#[test]
+fn the_contact_list_is_named_for_a_screen_reader_and_leaving_compose_stops_the_search() {
+    let _clock = pin();
+    let (mut m, _, mut rig) = compose_with_contacts();
+    rig.type_text(&mut m, "a");
+    rig.settle(&mut m, 3);
+    let (cands, _) = (m.candidates_now(true), 0);
+    let rows = m.picker.rows(&cands);
+    assert!(rows.iter().all(|r| !r.spoken.is_empty()));
+    m.section = Section::Conversations;
+    rig.settle(&mut m, 2);
+    assert!(m.people.is_none(), "no contact polling outside compose");
+}

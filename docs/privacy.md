@@ -124,9 +124,16 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   the service and writes no file (grep of non-test `fs::write` / `File::create` in `crates/bridge-apps/src`). They do
   not survive a restart of the service, and are dropped on consent-off and unpair. After a restart, the unread counts
   come from the phone again.
-* Desktop banner names the sender only. Message text appears in a banner only if you create the marker file
-  `<state dir>/sms-notify-content` or set `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` ([code] `crates/bridge-service/src/lib.rs`
-  near line 504).
+* Desktop banner names the sender only. Message text appears in a banner only if you switch on **Settings -> Privacy
+  -> Show message text in notifications** (or `geekbridge-ctl privacy set message_text on`); it applies at once, no
+  restart ([code] `crates/bridge-service/src/privacy.rs`, `daemon.rs` `privacy_set`; [test]
+  `crates/bridge-service/tests/privacy_api.rs`). The older switches still force it on and the page then says so: the
+  marker file `<state dir>/sms-notify-content` or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show`. See
+  [Display privacy](#display-privacy-what-a-banner-or-the-call-card-shows).
+* The tray tooltip and the waybar module show a **count** of unread messages (no names, no text); it follows the
+  per-conversation read marks, so reading a conversation on this computer lowers it ([code] `tray/mod.rs` `collect`,
+  `phone_data.rs` `unread_total`). It is a number visible on screen all day: turn Messages off for the phone to remove
+  it.
 * Phone: the app keeps a bounded list of send-request ids (`sms_requests`, no message text) in its preferences
   ([code] `PhoneDataAndroid.kt`; contents of `RequestLedger` not re-read, **UNVERIFIED** that it holds no number).
 * Logged: no message content. The desktop service has no logging framework; its stderr lines are startup, state-file
@@ -159,10 +166,33 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   caller), answer/decline/hang up, and a dial request with a plain number. Call audio never travels on the link
   ([code] `crates/bridge-core/src/calls_link.rs` module comment).
 * Computer: call state is in memory only ([doc] `docs/state-formats.md`). The call popup shows the number or name.
+  The incoming-call card shows the number unless you switch off **Show caller number on the call card** (Settings ->
+  Privacy; then it shows the contact name, or "Unknown caller"). `GEEKBRIDGE_CALL_OVERLAY=name|on` or the
+  `call-overlay` file still decide first.
 * Dial protection on the phone: at most 3 requests per computer per 10 minutes, a visible notice, optional on-phone
   confirmation ([doc] CHANGELOG 0.1.0; tested with a stand-in phone only, **UNVERIFIED** on hardware).
 * Logged: the `diagnose` report and logs mask numbers ([code] `scrub` in `crates/bridge-service/src/diagnose.rs`).
 * Bluetooth hands-free audio is a separate path between phone and computer and is not part of this link.
+
+### Display privacy: what a banner or the call card shows
+
+Three choices control what is drawn on screen where someone else may read it. They are switches in **Settings ->
+Privacy** and `geekbridge-ctl privacy [show|set KEY on|off]`; the service holds them (control requests `PrivacyStatus`
+and `PrivacySet`) and a change applies at once.
+
+| Choice | Default | When off |
+| --- | --- | --- |
+| `message_text` (Show message text in notifications) | off | a new-message banner names the sender only |
+| `caller_number` (Show caller number on the call card) | on | the card shows the contact name or "Unknown caller", never the number |
+| `phone_notification_text` (Show phone notification text) | off | a mirrored notification banner shows app and title, not the text |
+
+* Stored in `<state dir>/privacy` (`name=on|off` lines, owner-only, atomic write). It holds three booleans, no content.
+* Backward compatible: `sms-notify-content` or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` force `message_text` and
+  `phone_notification_text` on; `GEEKBRIDGE_CALL_OVERLAY=on|name` or the `call-overlay` file force `caller_number`.
+  A forced value is shown as such and a change made in the UI is stored but does not override it ([test]
+  `crates/bridge-service/src/privacy.rs`).
+* The tray icon and its tooltip never carry a caller, message text or clipboard content; the unread **count** is the
+  only message-derived value there.
 
 ### Battery
 
@@ -181,7 +211,8 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 * Computer: memory only, at most 50 per phone, each for at most 3 hours; erased when consent is withdrawn, the link
   ends or the phone is unpaired ([code] `crates/bridge-service/src/mirror.rs` `MAX_PER_DEVICE`, `TTL`; `daemon.rs`
   `set_consent`, `forget_consent`). Titles and texts are never logged. A banner shows app and phone; the text only if
-  you chose to show message content.
+  you switched on **Show phone notification text** (Settings -> Privacy, `geekbridge-ctl privacy`; the old
+  `sms-notify-content` file forces it on too).
 * Threat note: mirrored notifications can contain one-time codes. The banner text is hidden by default for that reason,
   but the in-app list on the computer shows them while they are held.
 
@@ -296,7 +327,7 @@ Desktop state directory: `$XDG_DATA_HOME/geekbridge/service` (Linux, default `~/
 | --- | --- | --- | --- |
 | `identity.pem` (+`.bak`) | this computer's certificate and private key | yes (private key) | until purge |
 | `trusted_peers.json` | paired phones, pinned certificate, device name | yes | until unpair |
-| `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
+| `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `privacy` (three display switches), `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
 | `ipc-token` | local control token | yes (local) | until purge; replaced if damaged |
 | `phone-logs/<id>.log` | debug-build phone log (redacted) | medium | rotated at 5 MiB, 3 old files; removed on unpair and when `debug` consent is withdrawn |
 | `~/Downloads/GeekBridge/` | files and photos you received or saved | yes | until you delete |

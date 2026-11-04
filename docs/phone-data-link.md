@@ -200,7 +200,7 @@ status, notifications of what is shared. Sensitive content (contacts, event text
 * Incoming SMS (new inbox message after the first sync) -> desktop notification "New message from <name or number>"
   with a **Reply** action (and a click on the body does the same) that opens the Messages window on that number.
   The message text is **hidden by default**: it reaches the notifier only if the user chose to show message content
-  (`touch <state dir>/sms-notify-content` or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` for the service).
+  (Settings -> Privacy, `geekbridge-ctl privacy set message_text on`; the `sms-notify-content` file or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` still force it).
 * Honest states: *not allowed* (consent off), *offline*, *waiting*, *phone does not offer Messages* (exact steps:
   GeekBridge, Share with computer, Messages on, allow SMS; on a sideloaded Android 13+ first Settings, Apps, GeekBridge,
   ⋮ menu, Allow restricted settings, then Permissions, SMS, Allow; GeekBridge never needs to be the default SMS app),

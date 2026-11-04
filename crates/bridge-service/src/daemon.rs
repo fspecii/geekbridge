@@ -32,6 +32,7 @@ use bridge_core::ipc::{
     Endpoint, ErrorBody, ErrorCode, Event, EventKind, EventPage, Feature, LinkPhase, LinkRole,
     LinkStatus, PairChallenge, PairMode, PairedDevice, Request, Response, Status,
 };
+use bridge_core::privacy::PrivacyKey;
 use bridge_kde as kde;
 use serde_json::Map;
 use std::{
@@ -107,8 +108,8 @@ pub struct DaemonOptions {
     pub call_timings: crate::call_control::Timings,
     /// Desktop notification for a newly arrived text (sender only). `None` shows none.
     pub sms_notifier: Option<Arc<dyn crate::phone_data::SmsNotifier>>,
-    /// Show message text in new-message notifications. Default off ("hide message content").
-    pub sms_show_content: bool,
+    /// The state folder that holds the display-privacy choices (`privacy`); `None` keeps them in memory.
+    pub privacy_dir: Option<std::path::PathBuf>,
     /// Desktop banner (with Dismiss and the phone's buttons) for a mirrored phone notification. `None` shows
     /// none (tests); the notifications are still listed by `geekbridge-ctl notifications`.
     pub mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
@@ -144,7 +145,7 @@ impl DaemonOptions {
             call_overlay: None,
             call_timings: crate::call_control::Timings::default(),
             sms_notifier: None,
-            sms_show_content: false,
+            privacy_dir: None,
             mirror_notifier: None,
             device_name_file: None,
             call_audio: None,
@@ -228,6 +229,8 @@ pub struct Daemon {
     /// Mirrored phone notifications (memory only, bounded) and the banner for them.
     mirror: crate::mirror::Mirror,
     mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
+    /// Display-privacy choices (message text, caller number, phone notification text).
+    privacy: crate::privacy::Privacy,
     /// Recent phone photos: a list and thumbnails, asked for, memory only (`photos`).
     photos: crate::photos::Photos,
     /// Log lines and state dumps from a debug-build phone (`phone_debug`).
@@ -365,7 +368,8 @@ impl Daemon {
         }
         let debug = Arc::new(crate::phone_debug::PhoneDebug::new(consents.dir()));
         let data = crate::phone_data::PhoneData::new();
-        data.set_notify_content(options.sms_show_content);
+        let privacy = crate::privacy::Privacy::new(options.privacy_dir.clone());
+        data.set_notify_content(privacy.on(PrivacyKey::MessageText));
         if let Some(n) = options.sms_notifier.take() {
             data.set_notifier(n);
         }
@@ -387,7 +391,7 @@ impl Daemon {
             )
         };
         let mirror = crate::mirror::Mirror::default();
-        mirror.set_show_content(options.sms_show_content);
+        mirror.set_show_content(privacy.on(PrivacyKey::PhoneNotificationText));
         let mirror_notifier = options.mirror_notifier.take();
         let daemon = Arc::new(Self {
             endpoint,
@@ -406,6 +410,7 @@ impl Daemon {
             data,
             mirror,
             mirror_notifier,
+            privacy,
             photos: crate::photos::Photos::default(),
             debug,
             callwifi,
@@ -420,6 +425,28 @@ impl Daemon {
             }
         }));
         Ok(daemon)
+    }
+
+    /// Push the resolved privacy values into the parts that act on them, so a change is live.
+    fn apply_privacy(&self) {
+        self.data
+            .set_notify_content(self.privacy.on(PrivacyKey::MessageText));
+        self.mirror
+            .set_show_content(self.privacy.on(PrivacyKey::PhoneNotificationText));
+    }
+
+    fn privacy_view(&self) -> bridge_core::privacy::PrivacyView {
+        // A marker file made or removed while running takes effect on the next look.
+        self.apply_privacy();
+        self.privacy.view()
+    }
+
+    fn privacy_set(&self, key: PrivacyKey, on: bool) -> Result<(), ErrorBody> {
+        self.privacy
+            .set(key, on)
+            .map_err(|m| err(ErrorCode::Failed, m))?;
+        self.apply_privacy();
+        Ok(())
     }
 
     fn core(&self) -> MutexGuard<'_, Core> {
@@ -995,6 +1022,8 @@ impl Daemon {
                     Err(_) => Err(err(ErrorCode::Failed, "listing call-audio devices failed")),
                 }
             }
+            Request::PrivacyStatus => Ok(Response::Privacy(self.privacy_view())),
+            Request::PrivacySet { key, on } => self.privacy_set(key, on).map(|()| Response::Ack),
             Request::ClipboardStatus => self
                 .clipboard_status()
                 .map(|s| Response::ClipboardStatus(Box::new(s))),

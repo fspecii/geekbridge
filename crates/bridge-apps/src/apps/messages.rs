@@ -11,6 +11,7 @@ use crate::{
     input, localtime,
     phone_feed::{self, Feed},
     phone_ui,
+    recipient_pick::{self, PickKey, Step},
     shell::{AppView, Env, central},
     state::{DeviceInfo, DiscoveryModel, Tone},
     theme::{self, ButtonKind, Palette},
@@ -19,8 +20,9 @@ use bridge_core::{
     ipc::{Feature, Request},
     messages::{SmsEncoding, sms_segments},
     phone_view::{
-        ConversationItem, DataDevice, DataState, MAX_MESSAGES_LIMIT, MAX_MESSAGES_SHOWN,
-        MessageItem, MessagesView, SelectedThread, SendItem, SendPhase, SimItem, send_reason_text,
+        AgendaView, ConversationItem, DataDevice, DataState, MAX_MESSAGES_LIMIT,
+        MAX_MESSAGES_SHOWN, MessageItem, MessagesView, SelectedThread, SendItem, SendPhase,
+        SimItem, send_reason_text,
     },
 };
 use eframe::egui::{
@@ -78,6 +80,31 @@ pub struct Messages {
     limit_for: Option<(String, i64)>,
     /// Measured height of each bubble (with its day heading), by message and pane width.
     heights: HashMap<(i64, u32), f32>,
+    /// Input-method state: Enter that confirms a composition is not a send.
+    ime: input::Ime,
+    /// Replies sent and not yet confirmed by the local service; restored if it refuses.
+    sent_replies: Vec<SentReply>,
+    /// Why the service refused the last reply, and for which conversation.
+    reply_refused: Option<((String, i64), String)>,
+    /// Contacts matching the name typed in To (only while writing a new message).
+    people: Option<Feed<AgendaView>>,
+    picker: recipient_pick::Picker,
+    /// The contact and number chosen from the list, while To still holds that number.
+    picked: Option<(String, String)>,
+    /// Escape closed the contact list; it opens again when the text changes.
+    to_closed: bool,
+    /// The To field had the cursor at the end of the last frame (egui drops focus on Escape before the
+    /// frame's own code runs, so the previous frame's answer is the one to use).
+    to_had_focus: bool,
+    /// The contact list was on screen last frame (Escape then closes it instead of leaving compose).
+    to_list_open: bool,
+}
+
+/// A reply handed to the service whose answer has not been seen yet.
+struct SentReply {
+    key: (String, i64),
+    text: String,
+    ticket: u64,
 }
 /// Height assumed for a bubble that has not been drawn yet, and how far past the viewport bubbles are still drawn.
 const ESTIMATED_BUBBLE: f32 = 52.0;
@@ -378,9 +405,35 @@ impl Messages {
         format!("m{ms}-{}", self.clicks)
     }
 
-    fn run(&self, request: Request) {
-        if let Some(feed) = &self.feed {
-            feed.run(request);
+    /// Queue an action; returns its ticket (0 when there is no feed).
+    fn run(&self, request: Request) -> u64 {
+        self.feed.as_ref().map_or(0, |feed| feed.run(request))
+    }
+
+    /// Put a reply back in its box (before anything typed since) after the service refused it.
+    fn restore_reply(&mut self, key: &(String, i64), text: &str) {
+        let slot = if self.reply_for.as_ref() == Some(key) {
+            self.focus_reply = true;
+            &mut self.reply
+        } else {
+            self.drafts.entry(key.clone()).or_default()
+        };
+        *slot = if slot.trim().is_empty() {
+            text.to_owned()
+        } else {
+            format!("{text}\n{slot}")
+        };
+    }
+
+    /// Resolve replies whose action finished: a refused one comes back with the reason.
+    fn settle_replies(&mut self, state: &phone_feed::FeedState<MessagesView>) {
+        for sent in std::mem::take(&mut self.sent_replies) {
+            if sent.ticket > state.acted {
+                self.sent_replies.push(sent);
+            } else if let Some(why) = state.refusal(sent.ticket) {
+                self.restore_reply(&sent.key, &sent.text);
+                self.reply_refused = Some((sent.key, why.to_owned()));
+            }
         }
     }
 
@@ -673,6 +726,21 @@ impl Messages {
         if let Some(b) = &blocker {
             theme::blocked_note(ui, pal, b);
         }
+        if let Some((key, why)) = &self.reply_refused
+            && self.reply_for.as_ref() == Some(key)
+        {
+            let reason = why.trim();
+            let reason = if reason.ends_with(['.', '!', '?']) {
+                reason.to_owned()
+            } else {
+                format!("{reason}.")
+            };
+            theme::blocked_note(
+                ui,
+                pal,
+                &crate::i18n::tr_args("reply.refused", &[("reason", &reason)]),
+            );
+        }
         let can = blocker.is_none() && !self.reply.trim().is_empty();
         let mut go = send_key && can;
         ui.horizontal(|ui| {
@@ -697,13 +765,24 @@ impl Messages {
         if go && let (Some(to), Some(d)) = (to, dev) {
             let submission_id = self.submission();
             let sub_id = self.chosen_sim(d);
-            self.run(Request::MessagesSend {
+            let ticket = self.run(Request::MessagesSend {
                 device_id: d.device_id.clone(),
                 recipient: to,
                 text: self.reply.clone(),
                 submission_id,
                 sub_id,
             });
+            if ticket > 0
+                && let Some(key) = self.reply_for.clone()
+                && self.sent_replies.len() < 16
+            {
+                self.sent_replies.push(SentReply {
+                    key,
+                    text: self.reply.clone(),
+                    ticket,
+                });
+            }
+            self.reply_refused = None;
             self.reply.clear();
             reply.request_focus();
         }
@@ -803,6 +882,85 @@ impl Messages {
         }
     }
 
+    /// Keep the contact search in step with the name typed in To; none while a number is typed.
+    fn follow_people(&mut self, ctx: &egui::Context, name_mode: bool) {
+        if !name_mode {
+            return;
+        }
+        let request = Request::AgendaView {
+            query: self.recipient.trim().to_owned(),
+            day: {
+                let d = localtime::now().date;
+                format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)
+            },
+            utc_offset_minutes: 0,
+            days: 1,
+            people_limit: 12,
+        };
+        match &self.people {
+            Some(feed) => feed.set_params(request),
+            None => {
+                let repaint = ctx.clone();
+                self.people = Some(phone_feed::agenda_feed(
+                    move || repaint.request_repaint(),
+                    request,
+                ));
+            }
+        }
+    }
+
+    /// Contacts matching the typed name, from what the phone has shared.
+    fn candidates_now(&self, name_mode: bool) -> Vec<recipient_pick::Candidate> {
+        match (&self.people, name_mode) {
+            (Some(feed), true) => feed
+                .state()
+                .view
+                .map(|v| recipient_pick::candidates(&v.people, &self.recipient))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn recipient_list_visible(&self, cands: &[recipient_pick::Candidate]) -> bool {
+        !cands.is_empty()
+    }
+
+    /// The list under the To field. Returns a click as a step.
+    fn contact_list(
+        &mut self,
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        cands: &[recipient_pick::Candidate],
+    ) -> Step {
+        let mut step = Step::Ignored;
+        if cands.is_empty() {
+            let answered = self
+                .people
+                .as_ref()
+                .is_some_and(|f| f.state().view.is_some());
+            if answered {
+                ui.add(egui::Label::new(theme::caption(pal, recipient_pick::none_found())).wrap());
+            }
+            return step;
+        }
+        if let Some(h) = self.picker.heading() {
+            ui.add(egui::Label::new(theme::secondary(pal, h)).wrap());
+        }
+        let rows = self.picker.rows(cands);
+        let highlight = self.picker.highlight.min(rows.len().saturating_sub(1));
+        for (i, row) in rows.iter().enumerate() {
+            let r = ui.add_sized(
+                [ui.available_width(), 26.0],
+                egui::SelectableLabel::new(i == highlight, RichText::new(row.text.as_str())),
+            );
+            if crate::a11y::named(r, &row.spoken).clicked() {
+                step = self.picker.choose(i, cands);
+            }
+        }
+        ui.add(egui::Label::new(theme::caption(pal, crate::i18n::tr("compose.to.keys"))).wrap());
+        step
+    }
+
     fn compose(&mut self, ui: &mut egui::Ui, env: &Env) {
         let pal = env.pal;
         let now = ui.input(|i| i.time);
@@ -813,23 +971,74 @@ impl Messages {
             self.copied_at = None;
         }
 
-        // To: [number]
+        // To: [name or number]
+        let name_mode = recipient_pick::is_name_query(&self.recipient);
+        self.follow_people(ui.ctx(), name_mode);
+        let cands = self.candidates_now(name_mode);
+        if self
+            .picked
+            .as_ref()
+            .is_some_and(|(_, n)| *n != self.recipient)
+        {
+            self.picked = None;
+        }
+        let list_open = name_mode && !self.to_closed && self.picked.is_none();
+        let to_id = ui.id().with("to-field");
+        let to_focused = self.to_had_focus;
+        let mut escaped = false;
+        let mut step = Step::Ignored;
+        if list_open && to_focused {
+            for (key, pick) in [
+                (egui::Key::ArrowDown, PickKey::Down),
+                (egui::Key::ArrowUp, PickKey::Up),
+                (egui::Key::Enter, PickKey::Enter),
+                (egui::Key::Escape, PickKey::Escape),
+            ] {
+                if (pick != PickKey::Escape && cands.is_empty())
+                    || !ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key))
+                {
+                    continue;
+                }
+                escaped |= pick == PickKey::Escape;
+                step = match self.picker.key(pick, &cands) {
+                    Step::Ignored if pick == PickKey::Escape => Step::Dismissed,
+                    other => other,
+                };
+            }
+        }
         ui.horizontal(|ui| {
-            ui.add_sized([34.0, 28.0], egui::Label::new(theme::overline(pal, "To")));
+            ui.add_sized(
+                [34.0, 28.0],
+                egui::Label::new(theme::overline(pal, crate::i18n::tr("compose.to.label"))),
+            );
             let to = crate::a11y::named(
                 ui.add(
                     egui::TextEdit::singleline(&mut self.recipient)
+                        .id(to_id)
                         .frame(false)
-                        .hint_text(RichText::new("Phone number").color(pal.text3))
+                        .hint_text(
+                            RichText::new(crate::i18n::tr("compose.to.hint")).color(pal.text3),
+                        )
                         .font(FontId::new(16.0, FontFamily::Proportional))
                         .vertical_align(Align::Center)
                         .desired_width(f32::INFINITY),
                 ),
-                "Recipient phone number",
+                crate::i18n::tr("compose.to.a11y"),
             );
             theme::ring_when_focused(ui, pal, &to);
+            if escaped {
+                to.request_focus();
+            }
+            self.to_had_focus = to.has_focus() || escaped;
             if to.changed() {
-                self.recipient = input::sanitize_dial(&self.recipient);
+                if recipient_pick::is_name_query(&self.recipient) {
+                    input::limit_chars(&mut self.recipient, recipient_pick::MAX_NAME_CHARS);
+                } else {
+                    self.recipient = input::sanitize_dial(&self.recipient);
+                }
+                self.picker.reset();
+                self.picked = None;
+                self.to_closed = false;
             }
             if matches!(self.focus, Some(Focus::Recipient)) {
                 to.request_focus();
@@ -840,6 +1049,32 @@ impl Messages {
                 self.focus = Some(Focus::Draft);
             }
         });
+        if let Some((name, _)) = &self.picked {
+            ui.add(
+                egui::Label::new(theme::caption(
+                    pal,
+                    crate::i18n::tr_args("compose.to.sending_to", &[("name", name)]),
+                ))
+                .wrap(),
+            );
+        }
+        if list_open {
+            let clicked = self.contact_list(ui, pal, &cands);
+            if !matches!(clicked, Step::Ignored) {
+                step = clicked;
+            }
+        }
+        self.to_list_open = list_open && to_focused && self.recipient_list_visible(&cands);
+        match step {
+            Step::Picked { name, number } => {
+                self.recipient = input::sanitize_dial(&number);
+                self.picked = Some((name, self.recipient.clone()));
+                self.picker.reset();
+                self.focus = Some(Focus::Draft);
+            }
+            Step::Dismissed => self.to_closed = true,
+            Step::Moved | Step::Ignored => {}
+        }
         theme::hairline(ui, pal);
         ui.add_space(6.0);
 
@@ -895,6 +1130,7 @@ impl Messages {
             if state.notice.is_some() {
                 self.draft.clear();
                 self.recipient.clear();
+                self.picked = None;
                 self.awaiting = false;
                 self.section = Section::Conversations;
             } else if state.problem.is_some() {
@@ -926,11 +1162,14 @@ impl Messages {
         if let Some(why) = &state.problem {
             theme::blocked_note(ui, pal, why);
         }
+        if !self.recipient.is_empty() && !recipient_pick::dialable(&self.recipient) {
+            theme::blocked_note(ui, pal, crate::i18n::tr("compose.to.pick_number"));
+        }
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             let can_send = blocker.is_none()
                 && !self.awaiting
-                && !self.recipient.is_empty()
+                && recipient_pick::dialable(&self.recipient)
                 && !self.draft.trim().is_empty();
             let mut go = ctrl_enter && can_send;
             if theme::pill_button(
@@ -949,6 +1188,8 @@ impl Messages {
             {
                 self.draft.clear();
                 self.recipient.clear();
+                self.picked = None;
+                self.picker.reset();
                 self.focus = Some(Focus::Recipient);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1539,6 +1780,8 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
 impl AppView for Messages {
     fn show(&mut self, ctx: &egui::Context, env: &Env) {
         let pal = env.pal;
+        // An Enter that confirms an input-method composition is the input method's, not a send.
+        ctx.input_mut(|i| self.ime.drop_composing_enter(&mut i.events));
         if self.limit_for != self.thread {
             self.limit_for.clone_from(&self.thread);
             self.message_limit = 0;
@@ -1579,12 +1822,18 @@ impl AppView for Messages {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
             self.open_compose();
         } else if self.section == Section::Compose
+            && !self.to_list_open
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             self.section = Section::Conversations;
             self.focus_reply = true;
         }
         let (view, state) = self.view();
+        self.settle_replies(&state);
+        if self.section != Section::Compose {
+            self.people = None;
+            self.to_list_open = false;
+        }
         // Text in a script the bundled fonts lack (CJK, Arabic, Indic, ...) gets a system font on demand.
         crate::script_fonts::ensure(
             ctx,

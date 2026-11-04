@@ -27,6 +27,7 @@ pub mod phone_link;
 pub mod phone_view;
 pub mod photos_link;
 pub mod photos_view;
+pub mod privacy;
 pub mod report;
 pub mod share;
 pub mod share_result;

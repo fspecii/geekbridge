@@ -218,6 +218,7 @@ pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
         }
     }
     input.call_audio = call_audio_hint(state_dir);
+    input.unread = daemon.phone_data().unread_total();
     if let Response::Calls(c) = daemon.handle(Request::Calls).await
         && let Some(row) = c.view.ringing()
     {

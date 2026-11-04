@@ -60,6 +60,10 @@ Commands:
   messages-send DEVICE_ID NUMBER TEXT [SUB_ID] send one SMS (SUB_ID: a SIM the phone listed); the send id is not a receipt
   messages-resend DEVICE_ID SEND_ID   send a failed or unconfirmed text again as a NEW message (it may arrive twice)
   messages-read DEVICE_ID THREAD_ID   mark a conversation read on this computer only (the phone keeps its own unread state)
+  privacy [show|set KEY on|off]       what a banner or the call card may show: message_text (default off),
+                                      caller_number (default on), phone_notification_text (default off);
+                                      live, no restart; the sms-notify-content file and the older
+                                      environment variables still force a value
   calling                             Bluetooth calling summary and the 'Hear calls on this computer' checklist (fix per step)
   call-audio [test | use [--output NAME] [--input NAME]]
                                       hear and talk through this computer: the checklist (Bluetooth adapter,
@@ -298,6 +302,9 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "update" {
         return update_command(&args[1..], port, &state_dir);
+    }
+    if command == "privacy" {
+        return privacy_command(&args[1..], port, &state_dir);
     }
     if command == "clipboard" {
         return clipboard_command(&args[1..], port, &state_dir);
@@ -690,6 +697,55 @@ fn notify_clipboard(line: &str) {
     let _ = std::process::Command::new("notify-send")
         .args(["-a", "GeekBridge", "-t", "3000", "--", "Clipboard", line])
         .status();
+}
+
+fn privacy_command(
+    args: &[OsString],
+    port: u16,
+    state_dir: &std::path::Path,
+) -> Result<(), String> {
+    use bridge_core::privacy::{ForcedBy, PrivacyKey, parse_switch};
+    let words: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+    let token = load_token(state_dir)?;
+    let request = match words.as_slice() {
+        [] | ["show"] => None,
+        ["set", key, value] => {
+            let key = PrivacyKey::parse(key).ok_or_else(|| {
+                format!(
+                    "unknown setting {key}; use one of: {}",
+                    PrivacyKey::ALL.map(PrivacyKey::name).join(", ")
+                )
+            })?;
+            let on = parse_switch(value).ok_or("the value must be on or off")?;
+            Some(Request::PrivacySet { key, on })
+        }
+        _ => {
+            return Err(format!(
+                "usage: geekbridge-ctl privacy [show|set KEY on|off]\n\n{USAGE}"
+            ));
+        }
+    };
+    if let Some(request) = request {
+        clipboard_call(port, &token, &request)?;
+    }
+    match clipboard_call(port, &token, &Request::PrivacyStatus)? {
+        Response::Privacy(view) => {
+            for i in &view.items {
+                let forced = match i.forced {
+                    None => String::new(),
+                    Some(ForcedBy::Environment) => " (forced by an environment variable)".into(),
+                    Some(ForcedBy::File) => " (forced by a file in the state folder)".into(),
+                };
+                println!(
+                    "{:<24} {}{forced}",
+                    i.key.name(),
+                    if i.on { "on" } else { "off" }
+                );
+            }
+            Ok(())
+        }
+        _ => Err("unexpected reply from the service".into()),
+    }
 }
 
 fn clipboard_command(

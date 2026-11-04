@@ -30,9 +30,133 @@ pub fn limit_chars(text: &mut String, max: usize) {
     }
 }
 
+use eframe::egui;
+
+/// Whether an input-method composition (a preedit, as typing Chinese, Japanese or Korean produces) is
+/// open. Enter that confirms a composition belongs to the input method: it must neither send a message
+/// nor add a line. Platforms differ in whether the confirming Enter reaches the app at all, and in
+/// whether it arrives before or after the `Commit`, so every Enter is judged in event order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ime {
+    composing: bool,
+}
+
+impl Ime {
+    pub fn composing(&self) -> bool {
+        self.composing
+    }
+
+    /// Walk one frame's events in order and remove each Enter key press that happens while a composition
+    /// is open or in the same frame as the commit that ends it. Returns how many were removed.
+    pub fn drop_composing_enter(&mut self, events: &mut Vec<egui::Event>) -> usize {
+        use egui::{Event, ImeEvent};
+        let mut removed = 0;
+        let mut committed_this_frame = false;
+        let mut composing = self.composing;
+        events.retain(|e| {
+            match e {
+                Event::Ime(ImeEvent::Enabled) => {}
+                Event::Ime(ImeEvent::Preedit(text)) => composing = !text.is_empty(),
+                Event::Ime(ImeEvent::Commit(_)) => {
+                    composing = false;
+                    committed_this_frame = true;
+                }
+                Event::Ime(ImeEvent::Disabled) => composing = false,
+                Event::Key {
+                    key: egui::Key::Enter,
+                    pressed: true,
+                    ..
+                } if composing || committed_this_frame => {
+                    removed += 1;
+                    return false;
+                }
+                _ => {}
+            }
+            true
+        });
+        self.composing = composing;
+        removed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui::{Event, ImeEvent, Key, Modifiers};
+
+    fn enter(pressed: bool) -> Event {
+        Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        }
+    }
+    fn preedit(t: &str) -> Event {
+        Event::Ime(ImeEvent::Preedit(t.into()))
+    }
+
+    #[test]
+    fn enter_during_a_preedit_is_the_input_methods_and_enter_after_it_sends() {
+        let mut ime = Ime::default();
+        // Typing "ni" shows a preedit; Enter in a later frame is still inside the composition.
+        let mut frame = vec![Event::Ime(ImeEvent::Enabled), preedit("ni")];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 0);
+        assert!(ime.composing());
+        let mut frame = vec![enter(true), enter(false)];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 1);
+        assert_eq!(
+            frame.len(),
+            1,
+            "only the press is taken; a release is harmless"
+        );
+        assert!(ime.composing(), "the commit has not arrived yet");
+        // The input method commits (empty preedit follows): the next Enter is a real one.
+        let mut frame = vec![Event::Ime(ImeEvent::Commit("\u{4f60}".into())), preedit("")];
+        ime.drop_composing_enter(&mut frame);
+        assert!(!ime.composing());
+        let mut frame = vec![enter(true)];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 0);
+        assert_eq!(frame.len(), 1);
+    }
+
+    #[test]
+    fn the_enter_that_confirms_is_dropped_whichever_side_of_the_commit_it_arrives() {
+        // Platform A: Enter, then Commit, in one frame (Enter pressed while composing).
+        let mut ime = Ime::default();
+        let mut frame = vec![
+            preedit("a"),
+            enter(true),
+            Event::Ime(ImeEvent::Commit("a".into())),
+        ];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 1);
+        assert!(!frame.iter().any(|e| matches!(e, Event::Key { .. })));
+        // Platform B: Commit first, the same Enter right behind it in the same frame.
+        let mut ime = Ime::default();
+        let mut frame = vec![
+            preedit("a"),
+            Event::Ime(ImeEvent::Commit("a".into())),
+            enter(true),
+        ];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 1);
+        // A frame with an Enter and no composition anywhere is left alone, and so is another key.
+        let mut ime = Ime::default();
+        let mut frame = vec![enter(true), Event::Text("x".into())];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 0);
+        assert_eq!(frame.len(), 2);
+    }
+
+    #[test]
+    fn disabling_the_input_method_ends_a_composition() {
+        let mut ime = Ime::default();
+        ime.drop_composing_enter(&mut vec![preedit("x")]);
+        assert!(ime.composing());
+        ime.drop_composing_enter(&mut vec![Event::Ime(ImeEvent::Disabled)]);
+        assert!(!ime.composing());
+        let mut frame = vec![enter(true)];
+        assert_eq!(ime.drop_composing_enter(&mut frame), 0);
+    }
 
     #[test]
     fn dial_input_is_filtered() {

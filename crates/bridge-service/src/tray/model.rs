@@ -82,6 +82,8 @@ pub struct TrayInput {
     pub photos_available: bool,
     /// One extra tooltip line about call audio.
     pub call_audio: CallAudioHint,
+    /// Unread messages on this computer's view of the phones (a count only; cleared by reading).
+    pub unread: u32,
 }
 
 impl TrayInput {
@@ -164,6 +166,10 @@ impl TrayInput {
         if let Some(line) = call_audio {
             body.push('\n');
             body.push_str(line);
+        }
+        if self.unread > 0 {
+            body.push('\n');
+            body.push_str(&tr_n("tray.unread", u64::from(self.unread), &[]));
         }
         (self.headline(), body)
     }
@@ -387,6 +393,27 @@ mod tests {
         assert_eq!(i.tooltip().1, i.status_line());
         i.connected.clear();
         assert_eq!(i.status_line(), "No phone connected");
+    }
+
+    #[test]
+    fn the_tooltip_counts_unread_messages_and_says_nothing_when_there_are_none() {
+        let mut i = phone();
+        assert_eq!(i.tooltip().1, i.status_line());
+        i.unread = 1;
+        assert_eq!(i.tooltip().1, "Connected\n1 unread message");
+        i.unread = 3;
+        let (title, body) = i.tooltip();
+        assert!(body.ends_with("\n3 unread messages"), "{body}");
+        // Title and body together stay within the Windows buffer and carry no message text.
+        let units = tip_units(&format!("GeekBridge \u{2013} {title}: {body}"));
+        let end = units.iter().position(|u| *u == 0).unwrap();
+        assert!(
+            String::from_utf16(&units[..end])
+                .unwrap()
+                .contains("3 unread")
+        );
+        i.unread = 0;
+        assert_eq!(i.tooltip().1, "Connected", "reading clears the line");
     }
 
     #[test]

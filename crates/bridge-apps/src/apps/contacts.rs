@@ -692,6 +692,8 @@ mod tests {
             view: Some(view.clone()),
             problem: None,
             notice: None,
+            acted: 0,
+            refusals: Vec::new(),
         };
         let ctx = egui::Context::default();
         theme::install_fonts(&ctx);

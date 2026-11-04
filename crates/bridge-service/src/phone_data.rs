@@ -1073,6 +1073,7 @@ impl PhoneData {
                             body: self.notify_content.load(Ordering::Relaxed).then_some(text),
                         });
                     }
+                    crate::tray::poke(); // new or changed messages move the tray's unread count
                     v
                 }
                 wire::SMS_STATUS => d.on_sms_status(body, now),
@@ -1181,7 +1182,20 @@ impl PhoneData {
             .ok_or_else(|| err(ErrorCode::NotFound, "unknown conversation"))?;
         th.read_through_ms = th.conv.newest_date_ms().unwrap_or(0);
         th.unread_at_mark = th.phone_unread.unwrap_or(0);
+        drop(g);
+        crate::tray::poke(); // the tray's unread count follows the mark
         Ok(())
+    }
+
+    /// Unread messages over every phone whose Messages consent is on (the tray tooltip and the
+    /// waybar `unread` field). A count only: no text, no names.
+    pub fn unread_total(&self) -> u32 {
+        let g = self.lock();
+        g.devices
+            .values()
+            .filter(|d| d.consent[SMS])
+            .flat_map(|d| d.threads.values())
+            .fold(0_u32, |n, t| n.saturating_add(t.unread()))
     }
 
     pub fn send_text(

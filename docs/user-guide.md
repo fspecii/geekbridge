@@ -208,9 +208,18 @@ FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, 
 `agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `messages-resend`, `messages-read`, `notifications`, `photos [refresh|save|copy]`); **calls**
 (`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial|setup|audio-devices`, `call-audio`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
-`autostart`, `tray`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
+`autostart`, `tray`, `privacy [show|set KEY on|off]`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
 with a debug build of the phone app. `report` shows exactly what a prefilled bug report carries (the redacted `diagnose`
 output) and sends nothing itself.
+
+## Privacy switches
+
+Settings -> Privacy has three switches: **Show message text in notifications** (off), **Show caller number on the call
+card** (on) and **Show phone notification text** (off). They apply at once, with no restart. The same choices from a
+terminal: `geekbridge-ctl privacy` shows them, `geekbridge-ctl privacy set message_text on` changes one. The older
+`sms-notify-content` file and the `GEEKBRIDGE_SMS_NOTIFY_CONTENT` / `GEEKBRIDGE_CALL_OVERLAY` variables still win; the
+page says when one of them fixes a value. The tray tooltip and the waybar module show how many messages are unread
+(`geekbridge-ctl waybar` has an `unread` field); reading a conversation on this computer lowers it.
 
 ## Updates
 

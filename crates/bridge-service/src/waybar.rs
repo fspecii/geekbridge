@@ -128,6 +128,7 @@ pub fn render(s: &BarState) -> String {
         "class": classes,
         "alt": state,
         "battery": shown.map(|b| b.percent),
+        "unread": s.unread_sms.unwrap_or(0),
     })
     .to_string()
 }
@@ -276,6 +277,7 @@ mod tests {
         assert!(text.contains("Pixel") && text.contains(" 3") && !text.contains('<'));
         let tip = v["tooltip"].as_str().unwrap();
         assert!(tip.contains("3 unread messages") && tip.contains("Update available: 0.2.0"));
+        assert_eq!(v["unread"], 3);
         assert!(!tip.contains("<b>"));
     }
 

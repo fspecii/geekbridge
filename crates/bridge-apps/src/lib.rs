@@ -33,6 +33,8 @@ pub mod phone_ui;
 pub mod photos_pane;
 pub mod poller;
 pub mod prefill;
+pub mod privacy_ui;
+pub mod recipient_pick;
 pub mod report_ui;
 pub mod script_fonts;
 pub mod share_app;

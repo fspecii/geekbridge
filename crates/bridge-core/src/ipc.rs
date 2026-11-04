@@ -573,6 +573,14 @@ pub enum Request {
         #[serde(default)]
         auto_accept: Option<bool>,
     },
+    /// The display-privacy choices and what forces them.
+    PrivacyStatus,
+    /// Change one display-privacy choice. Persisted and live (no restart). A value forced by an
+    /// environment variable or marker file is stored but stays as forced; see `PrivacyItem::forced`.
+    PrivacySet {
+        key: crate::privacy::PrivacyKey,
+        on: bool,
+    },
     /// People matching `query` and the events of `day` (`YYYY-MM-DD`, seen at `utc_offset_minutes`)
     /// from every phone whose Contacts / Calendar consent is on. Memory only; nothing is stored.
     AgendaView {
@@ -1337,6 +1345,7 @@ pub enum Response {
     ConnectionTest(Box<crate::pairing_help::ConnectionTest>),
     Agenda(Box<crate::phone_view::AgendaView>),
     Messages(Box<crate::phone_view::MessagesView>),
+    Privacy(crate::privacy::PrivacyView),
     MessageQueued {
         send_id: u64,
     },
@@ -1372,6 +1381,7 @@ fn every_response_is_parsed(r: &Response) {
         | Response::ConnectionTest(_)
         | Response::Agenda(_)
         | Response::Messages(_)
+        | Response::Privacy(_)
         | Response::MessageQueued { .. }
         | Response::TransferStarted { .. }
         | Response::Ack
@@ -1428,6 +1438,7 @@ impl Response {
             "connection_test" => Response::ConnectionTest(Box::new(p(json)?)),
             "agenda" => Response::Agenda(Box::new(p(json)?)),
             "messages" => Response::Messages(Box::new(p(json)?)),
+            "privacy" => Response::Privacy(p(json)?),
             "message_queued" => Response::MessageQueued {
                 send_id: p::<SendId>(json)?.send_id,
             },
@@ -2038,6 +2049,12 @@ mod tests {
             (
                 "transfer_started",
                 json!({"kind": "transfer_started", "transfer_id": 0}),
+            ),
+            (
+                "privacy",
+                json!({"kind": "privacy", "items": [
+                    {"key": "message_text", "on": false, "forced": null},
+                    {"key": "caller_number", "on": true, "forced": "file"}]}),
             ),
             ("ack", json!({"kind": "ack"})),
             (

@@ -208,6 +208,7 @@ tasks_home() { # theme: screens of the home window; they show the unread count, 
   echo "geekbridge|$t|pair|ctrl+2|"
   echo "geekbridge|$t|settings|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"   # the fixture keeps the machine's real Bluetooth out of the picture
   echo "geekbridge|$t|settings-call-audio|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=connect GEEKBRIDGE_OPEN_CALLAUDIO=1"
+  echo "geekbridge|$t|settings-privacy|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth GEEKBRIDGE_OPEN_PRIVACY=1"
   echo "geekbridge|$t|settings-call-audio-test|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=testing GEEKBRIDGE_OPEN_CALLAUDIO=1"
   echo "geekbridge|$t|settings-call-audio-nobt|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth GEEKBRIDGE_OPEN_CALLAUDIO=1"
   echo "geekbridge|$t|settings-call-audio-mac|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=mac GEEKBRIDGE_OPEN_CALLAUDIO=1"
