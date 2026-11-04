@@ -10,7 +10,13 @@ import java.io.OutputStream
  * No Android types, so a JVM test drives it with the real HelperSession over pipes. Audio passes through to the
  * listener; nothing is stored or logged.
  */
-class HelperConnection(input: InputStream, private val output: OutputStream, private val token: String) {
+class HelperConnection(
+    input: InputStream,
+    private val output: OutputStream,
+    private val token: String,
+    /** The HELLO frame when the caller already read it (to check the token); null = it is still in the stream. */
+    helloRead: String? = null,
+) {
     interface Listener {
         fun onPcm(samples: ShortArray, cap: Int)
         fun onStatus(json: String)
@@ -20,7 +26,7 @@ class HelperConnection(input: InputStream, private val output: OutputStream, pri
     private val reader = Thread({ pump(input) }, "gb-callwifi-helper")
 
     @Volatile var listener: Listener? = null
-    @Volatile var hello: String? = null
+    @Volatile var hello: String? = helloRead
         private set
     @Volatile var closed = false
         private set

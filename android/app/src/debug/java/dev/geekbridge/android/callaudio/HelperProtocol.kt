@@ -9,7 +9,7 @@ import java.io.OutputStream
 /*
  * DEBUG BUILDS ONLY, EXPERIMENT (call audio over Wi-Fi, docs/design/call-audio-over-wifi.md).
  * Framing between the shell-uid helper and its client. Byte-for-byte twin of
- * experiments/callaudio-wifi/src/helper.rs; both are tested against the same vectors.
+ * crates/bridge-callwifi/src/helper.rs; both are tested against the same vectors.
  *
  *   frame  = type:u8 flags:u8 len:u16be payload[len]   (len <= MAX_PAYLOAD)
  *   HELLO 1, PCM 2 (seq:u32be cap:u32be s16le[320]; flags 0 = down, 1 = up), STATUS 3, INJECT 4 (as PCM), CMD 5

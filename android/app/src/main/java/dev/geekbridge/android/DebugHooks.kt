@@ -15,6 +15,9 @@ object DebugHooks {
     /** A `geekbridge.debug.*` request from the paired computer (called on the data-wait thread). */
     @JvmField @Volatile var onDataEvent: ((DataEvent) -> Unit)? = null
 
+    /** Adds a row to Settings for a debug-only experimental screen (null in release builds). */
+    @JvmField @Volatile var experimentalRow: ((Activity, UiKit, LinearLayout) -> Unit)? = null
+
     /** Adds the debug card to the Diagnostics screen. */
     @JvmField @Volatile var diagnosticsCard: ((Activity, Ui, LinearLayout) -> Unit)? = null
 }

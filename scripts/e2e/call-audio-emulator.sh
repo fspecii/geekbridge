@@ -20,6 +20,8 @@
 #   36g  system-images;android-36;google_apis;x86_64            (userdebug-like: adb root works; upper bound)
 #   36p  system-images;android-36;google_apis_playstore;x86_64  (user build: production-like; lower bound)
 #   34p  system-images;android-34;google_apis_playstore;x86_64
+# The integrated phone-app path (enable script, CallWifiReceiver, helper connection, in-app self-test with the no-call
+# control) is exercised too; the computer side of it is covered by crates/bridge-android/tests/callwifi_transport.rs.
 # Needs: a debug APK (android/app/build/outputs/apk/debug/app-debug.apk) and the lab binary (built here).
 # TMPDIR and every scratch file live under $GB_CA_SCRATCH (default ~/.cache/gb-callaudio-emu), never /tmp.
 # The emulator runs with -no-audio: its voice path carries no audio, so call sources can only show *whether*
@@ -129,6 +131,28 @@ for tag in $IMAGES; do
   }
 
   probe idle-shell
+
+  # ---- Integrated path (the phone app): receiver, enable script, helper connection, in-app self-test ----------
+  # Broadcast hooks of CallWifiReceiver (adb only). `am broadcast` prints: Broadcast completed: result=1, data="{...}"
+  cw() { adbe shell "am broadcast -n $PKG/.callaudio.CallWifiReceiver -a dev.geekbridge.callwifi.$1 ${*:2}" 2>&1 | tr -d '\r'; }
+  cwstatus() { cw STATUS | sed -n 's/.*data="\(.*\)"$/\1/p' | tail -1; }
+  cwfield() { python3 -I -c "import json,sys; print(json.loads(sys.argv[1]).get(sys.argv[2]))" "$1" "$2" 2>/dev/null; }
+  enable_script() { ANDROID_ADB_SERVER_PORT="$GB_EMU_ADB_PORT" "$ROOT/scripts/callaudio-enable.sh" --yes --serial "$GB_EMU_SERIAL" "$@"; }
+  adbe shell am start -n "$PKG/.HomeActivity" >/dev/null 2>&1; sleep 3
+  # Off by default: the script's hand-over is refused while the Experimental switch is off (forced off first, in case
+  # a kept AVD remembers an earlier run).
+  cw ENABLE --ez on false >/dev/null
+  if enable_script >"$log/enable-off.log" 2>&1; then row FAIL "$tag" integrated-off-by-default "the app took a helper while the switch was off"; else
+    if grep -q "turn the Experimental switch on" "$log/enable-off.log"; then row PASS "$tag" integrated-off-by-default "refused with result=2"; else row FAIL "$tag" integrated-off-by-default "$(tail -n2 "$log/enable-off.log" | tr '\n' ' ')"; fi
+  fi
+  cw ENABLE --ez on true | grep -q "result=1" && row PASS "$tag" integrated-enable ok || row FAIL "$tag" integrated-enable "receiver did not accept"
+  if enable_script >"$log/enable-on.log" 2>&1; then row PASS "$tag" integrated-enable-script "$(tail -n1 "$log/enable-on.log" | cut -c1-100)"; else row FAIL "$tag" integrated-enable-script "$(tail -n2 "$log/enable-on.log" | tr '\n' ' ')"; fi
+  st=""; for _ in $(seq 1 20); do st="$(cwstatus)"; [ "$(cwfield "$st" helper)" = True ] && break; sleep 1; done
+  sh "logcat -d -t 600" > "$log/logcat-integrated.txt" 2>&1
+  row INFO "$tag" integrated-avc "$(grep -c 'avc: *denied' "$log/logcat-integrated.txt") denials in the log tail; $(grep 'avc: *denied' "$log/logcat-integrated.txt" | grep -i 'gbca\|geekbridge' | head -1 | cut -c1-200)"
+  if [ "$(cwfield "$st" helper)" = True ]; then row PASS "$tag" integrated-helper-connected "$st"; else row FAIL "$tag" integrated-helper-connected "status=$st"; fi
+  cw SELFTEST --es step control >/dev/null; sleep 9
+  row INFO "$tag" integrated-control-done "no-call check ran (loud sources here are the emulator's synthetic signal)"
   adbe emu gsm call 5551230 >/dev/null 2>&1; sleep 3
   adbe emu gsm accept 5551230 >/dev/null 2>&1; sleep 3
   # `gsm list` prints nothing useful on recent emulators; the telephony registry is the truth (2 = off hook).
@@ -140,6 +164,15 @@ for tag in $IMAGES; do
   for _ in $(seq 1 30); do sh dumpsys audio | grep -qE 'mode.*(IN_CALL|MODE_IN_CALL)' && break; sleep 1; done
   row INFO "$tag" audio-mode "$(sh dumpsys audio | grep -m1 -oE 'mode[^,]*(IN_CALL|NORMAL|RINGTONE|IN_COMMUNICATION)[^,]*' | cut -c1-80)"
   probe incall-shell
+  cw SELFTEST --es step call >/dev/null
+  st=""; for _ in $(seq 1 40); do sleep 1; st="$(cwstatus)"; [ "$(cwfield "$st" verdict)" != not_run ] && [ -n "$st" ] && break; done
+  v="$(cwfield "$st" verdict)"
+  case "$v" in
+    works|silent|refused|unsure) row PASS "$tag" integrated-selftest "verdict=$v (emulator: unsure is the honest answer, its call sources sound with no call) status=$st" ;;
+    *) row FAIL "$tag" integrated-selftest "no verdict: ${st:-no status}" ;;
+  esac
+  cw STOP | grep -q "result=1" && row PASS "$tag" integrated-stop ok || row FAIL "$tag" integrated-stop "receiver did not accept"
+  cw ENABLE --ez on false >/dev/null
 
   # Chain: helper -> adb forward -> lab (Opus over the real TLS link code) -> decoded PCM, injection back.
   name="gbca$RANDOM$RANDOM"; token="t$(od -An -N8 -tx8 /dev/urandom | tr -d ' ')"

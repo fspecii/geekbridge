@@ -477,8 +477,25 @@ object CallAudioHelper {
             // Audio framework threads are not daemons; without this the process outlives its answer.
             System.exit(0)
         }
-        val name = arg("--listen") ?: return System.err.println("usage: --probe | --listen NAME --token T [--app-uid U]")
         val token = arg("--token") ?: return System.err.println("--token is required")
+        // The app (an untrusted_app) cannot connect to a socket owned by the shell: SELinux denies `connectto`
+        // (measured on a user-build emulator). So the helper connects OUT to the app's loopback listener instead.
+        // The app learns the port from its own listener, hands it (with the token) to the enable script, and accepts
+        // only a peer whose first frame carries that token.
+        arg("--connect")?.let { p ->
+            val port = p.toIntOrNull()?.takeIf { it in 1024..65535 } ?: return System.err.println("bad port")
+            if (!Regex("[A-Za-z0-9_-]{8,64}").matches(token)) return System.err.println("bad token")
+            val sock = java.net.Socket()
+            sock.connect(java.net.InetSocketAddress(java.net.InetAddress.getByName("127.0.0.1"), port), 5000)
+            sock.tcpNoDelay = true
+            val hello = "{\"v\":1,\"uid\":${Process.myUid()},\"sdk\":${Build.VERSION.SDK_INT},\"token\":\"$token\"}"
+            println("connected $port uid=${Process.myUid()} sdk=${Build.VERSION.SDK_INT}")
+            System.out.flush()
+            HelperSession(sock.getInputStream(), sock.getOutputStream(), token, hello, ::openCapture, ::openInjector, ::probe).run()
+            sock.close()
+            System.exit(0)
+        }
+        val name = arg("--listen") ?: return System.err.println("usage: --probe | --connect PORT --token T | --listen NAME --token T [--app-uid U]")
         val ok = Regex("[A-Za-z0-9_-]{8,64}")
         if (!ok.matches(name) || !ok.matches(token)) return System.err.println("bad name or token")
         val appUid = arg("--app-uid")?.toIntOrNull()

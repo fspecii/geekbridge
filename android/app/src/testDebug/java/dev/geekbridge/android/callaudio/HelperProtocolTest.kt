@@ -12,7 +12,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HelperProtocolTest {
-    /** Same vectors as experiments/callaudio-wifi/src/helper.rs. */
+    /** Same vectors as crates/bridge-callwifi/src/helper.rs. */
     @Test
     fun matchesTheRustVectors() {
         assertArrayEquals("\u0001\u0000\u0000\u0007{\"v\":1}".toByteArray(), HelperProtocol.text(HelperProtocol.HELLO, "{\"v\":1}"))

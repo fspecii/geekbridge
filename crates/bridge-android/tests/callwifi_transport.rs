@@ -94,6 +94,16 @@ impl Phone {
             .as_u64()
             .unwrap()
     }
+    /// Collect events until one named `ev` arrives (or `secs` pass); delivered events are not repeated.
+    fn events_until(&self, ev: &str, secs: u64) -> Vec<Value> {
+        let end = Instant::now() + Duration::from_secs(secs);
+        let mut all: Vec<Value> = Vec::new();
+        while Instant::now() < end && !all.iter().any(|e| e["ev"] == ev) {
+            all.extend(self.events(0, 1));
+        }
+        all
+    }
+
     fn events(&self, since: u64, secs: u64) -> Vec<Value> {
         let r = self.ok(
             "transport_callwifi_wait",
@@ -390,7 +400,7 @@ fn a_request_needs_switch_grant_self_test_and_a_call_then_audio_flows_and_stops_
         "stop took {:?}",
         t0.elapsed()
     );
-    let evs = phone.events(0, 2);
+    let evs = phone.events_until("stop", 5);
     assert!(evs.iter().any(|e| e["ev"] == "stop"), "{evs:?}");
     assert_eq!(
         phone.ok(
@@ -498,7 +508,7 @@ fn a_refused_offer_releases_the_helper_and_an_unchanged_config_is_not_repeated()
             reason: Some("no_consent".into()),
         }),
     );
-    let evs = phone.events(0, 3);
+    let evs = phone.events_until("stop", 5);
     assert!(evs.iter().any(|e| e["ev"] == "stop"), "{evs:?}");
     // The same config twice is not announced twice.
     config(&phone, true, "works");

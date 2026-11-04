@@ -54,13 +54,15 @@ log "rustc: $(rustc -V); NDK $GB_NDK_VERSION; JDK $(java -version 2>&1 | head -1
 # ---- 1. native libraries -----------------------------------------------------
 if (( RUN_HOST_TESTS )); then
     log "host unit tests: bridge-android"
-    cargo test -p bridge-android --target x86_64-unknown-linux-gnu
+    cargo test -p bridge-android --features callwifi --target x86_64-unknown-linux-gnu
 fi
 
 for entry in "${TARGETS[@]}"; do
     triple="${entry%%:*}"
-    log "cargo build --profile android -p bridge-android --target $triple"
-    cargo build --profile android -p bridge-android --target "$triple"
+    log "cargo build --profile android -p bridge-android --features callwifi --target $triple"
+    # `callwifi` is the EXPERIMENTAL Wi-Fi call audio hub of the DEBUG APK this script builds. The release workflow
+    # (.github/workflows/release.yml) builds the library without it: no Opus, no hub, no packet names.
+    cargo build --profile android -p bridge-android --features callwifi --target "$triple"
 done
 
 # ---- 2. stage into jniLibs (ignored by git) -----------------------------------

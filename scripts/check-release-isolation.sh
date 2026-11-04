@@ -17,7 +17,7 @@ bad() { echo "FAIL: $*" >&2; fail=1; }
 manifest="$("$aapt2" dump xmltree --file AndroidManifest.xml "$apk")"
 printf '%s\n' "$manifest" | grep -q 'debuggable' && bad "android:debuggable is present"
 printf '%s\n' "$manifest" | grep -qE 'usesCleartextTraffic|networkSecurityConfig' && bad "cleartext or a network security config is declared"
-for name in DebugControlReceiver ScaleSeedReceiver DebugBootProvider DesignGalleryActivity DebugPinWidgetActivity; do
+for name in DebugControlReceiver ScaleSeedReceiver DebugBootProvider DesignGalleryActivity DebugPinWidgetActivity CallWifiActivity CallWifiReceiver CallWifiStopReceiver; do
   printf '%s\n' "$manifest" | grep -q "$name" && bad "manifest declares $name"
 done
 perms="$("$aapt2" dump permissions "$apk")"
@@ -27,8 +27,16 @@ done
 
 unzip -q -o "$apk" 'classes*.dex' -d "$work"
 for dex in "$work"/classes*.dex; do
-  if strings -n 4 "$dex" | grep -qE 'DebugDiagnostics|DebugScroll|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|dev/geekbridge/android/callaudio/|geekbridge-debug-|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.'; then
+  if strings -n 4 "$dex" | grep -qE 'DebugDiagnostics|DebugScroll|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|HelperConnection|CallWifi|SelfTestVerdict|dev/geekbridge/android/callaudio/|dev\.geekbridge\.callwifi|geekbridge\.callaudio|geekbridge-debug-|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.'; then
     bad "$(basename "$dex") contains debug-only code or packet names"
+  fi
+done
+# The native library must not carry the experimental call audio hub either (the release build omits the `callwifi` feature).
+unzip -q -o "$apk" 'lib/*/libgeekbridge_android.so' -d "$work" 2>/dev/null || true
+for so in "$work"/lib/*/libgeekbridge_android.so; do
+  [ -f "$so" ] || continue
+  if strings -n 8 "$so" | grep -qE 'geekbridge\.callaudio|transport_callwifi'; then
+    bad "$(basename "$(dirname "$so")")/libgeekbridge_android.so contains the experimental call audio hub"
   fi
 done
 [ "$fail" = 0 ] && echo "ok: $apk has no debug diagnostics, receivers, cleartext or debug permissions"

@@ -92,6 +92,7 @@ object DebugDiagnostics {
         (ctx.applicationContext as? android.app.Application)?.let { DebugScroll.install(it) }
         DebugHooks.onDataEvent = { e -> onDataEvent(e) }
         DebugHooks.diagnosticsCard = { activity, ui, root -> addCard(activity, ui, root) }
+        dev.geekbridge.android.callaudio.CallWifiBoot.install(ctx)
         try {
             AppState.init(ctx)
             val c = LinkRuntime.controller()

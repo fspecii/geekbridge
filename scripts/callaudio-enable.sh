@@ -15,11 +15,11 @@
 #
 # What it does, in order, and nothing else:
 #   1. checks the phone has the GeekBridge debug build (`run-as` works only for debuggable apps),
-#   2. stops an older helper, makes a random socket name and token (kept only in the phone's memory and the app),
-#   3. starts the helper with `app_process` as the shell user (uid 2000), detached, output discarded,
-#   4. tells the GeekBridge app the name and token with one broadcast that only adb may send (permission DUMP).
-# The app then connects to the helper by itself (Settings > Experimental > Call audio over Wi-Fi). Nothing is
-# installed, no file is written on the phone, no network port is opened by the helper (abstract unix socket only).
+#   2. stops an older helper, then asks the app (one broadcast only adb may send, permission DUMP) for a loopback port
+#      and a one-time token; the app listens on 127.0.0.1 and accepts only a peer that presents the token,
+#   3. starts the helper with `app_process` as the shell user (uid 2000), detached, output discarded; it connects OUT
+#      to the app (an app cannot connect to a shell socket under SELinux).
+# Nothing is installed and no file is written on the phone; the helper opens no listening port.
 #
 # Exit codes: 0 done, 1 failed (the message says what to do), 2 usage.
 set -uo pipefail
@@ -27,7 +27,7 @@ set -uo pipefail
 PKG=dev.geekbridge.android
 HELPER=dev.geekbridge.android.callaudio.CallAudioHelper
 RECEIVER="$PKG/.callaudio.CallWifiReceiver"
-ACTION_HELPER=dev.geekbridge.callwifi.HELPER
+ACTION_OPEN=dev.geekbridge.callwifi.OPEN
 ACTION_STOP=dev.geekbridge.callwifi.STOP
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -117,23 +117,27 @@ fi
 for p in $(running); do ash "kill $p" >/dev/null; done
 
 hex() { od -An -N"$1" -tx1 /dev/urandom | tr -d ' \n'; }
-name="gbca-$(hex 8)"
-token="t$(hex 16)"
 uid="$(ash "pm list packages -U $PKG" | sed -n "s/.*uid:\([0-9][0-9]*\).*/\1/p" | head -1)"
 [[ "$uid" =~ ^[0-9]+$ ]] || die "could not read the app's uid"
 
-# Detached: `setsid nohup ... &` keeps it alive after adb disconnects. Output discarded (it never carries audio).
-adbs shell "CLASSPATH=\$(pm path $PKG | sed s/^package://) setsid nohup app_process /system/bin $HELPER --listen $name --token $token --app-uid $uid >/dev/null 2>&1 &" >/dev/null 2>&1
+# 1. Ask the app where the helper should connect. An app cannot connect to a shell-owned socket (SELinux), so the app
+#    listens on 127.0.0.1 and the helper connects out. The app makes the one-time token; only adb may ask (DUMP).
+out="$(ash "am broadcast -n $RECEIVER -a $ACTION_OPEN")"
+case "$out" in
+  *"result=1"*) ;;
+  *"result=2"*) die "the app refused: turn the Experimental switch on first (GeekBridge > Settings > Experimental), then run this again" ;;
+  *) die "the GeekBridge app did not answer (${out##*$'\n'}). Is this the debug build, and is it up to date?" ;;
+esac
+port="$(printf '%s' "$out" | sed -n 's/.*port=\([0-9][0-9]*\).*/\1/p' | head -1)"
+token="$(printf '%s' "$out" | sed -n 's/.*token=\([A-Za-z0-9_-]*\).*/\1/p' | head -1)"
+[[ "$port" =~ ^[0-9]+$ && -n "$token" ]] || die "the app gave no port or token"
+
+# 2. Start the helper, detached: `setsid nohup ... &` keeps it alive after adb disconnects. Output discarded.
+adbs shell "CLASSPATH=\$(pm path $PKG | sed s/^package://) setsid nohup app_process /system/bin $HELPER --connect $port --token $token --app-uid $uid >/dev/null 2>&1 &" >/dev/null 2>&1
 ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.5
   [ -n "$(running)" ] && { ok=1; break; }
 done
-[ "$ok" = 1 ] || die "the helper did not start (is this phone's Android older than 8, or the APK too old? rebuild with scripts/build-android.sh)"
-
-out="$(ash "am broadcast -n $RECEIVER -a $ACTION_HELPER --es name $name --es token $token")"
-case "$out" in
-  *"result=1"*) echo "helper started and handed to GeekBridge. Now open GeekBridge > Settings > Experimental > Call audio over Wi-Fi and run the self-test." ;;
-  *"result=2"*) echo "helper started, but the app refused it: turn the Experimental switch on in the app first (Settings > Experimental), then run this script again."; exit 1 ;;
-  *) echo "helper started, but the GeekBridge app did not take it (${out##*$'\n'}). Is this the debug build, and is it up to date?"; exit 1 ;;
-esac
+[ "$ok" = 1 ] || die "the helper did not start (rebuild the APK with scripts/build-android.sh and reinstall it)"
+echo "helper started and connecting to GeekBridge. Now open GeekBridge > Settings > Experimental > Call audio over Wi-Fi and run the self-test."

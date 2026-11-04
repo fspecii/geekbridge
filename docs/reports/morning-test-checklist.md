@@ -85,3 +85,26 @@ Off by default, a debug phone build only, and **not proven on any real phone**: 
 | `callwifi`: "not available on this computer: pw-cat ..." | install PipeWire's tools (Arch: `pipewire`); Wi-Fi call audio plays through `pw-cat` only |
 | listening starts but nothing is heard | `geekbridge-ctl call audio-devices` (the output it names is the one used); `callwifi` frames should rise by 50 per second; if they do not, the phone sends silence or nothing: record the self-test verdict and `scripts/realdevice-report.sh --no-adb` |
 | stops after about 5 seconds | no frames reached the PC (idle timeout); weak Wi-Fi or the helper died; start the helper again |
+
+## Experimental: Wi-Fi call audio, phone side step by step (OPTIONAL)
+
+The section above is the short version and the "if X then Y" table. This one walks the phone side in order, including the self-test, which is the most important answer.
+
+Only after sections 1 to 6 are done. This is an experiment: **debug APK only**, off by default, listen-first. Bluetooth stays the supported path; if anything here goes wrong, switch it off (the "Stop and turn it off" step) and carry on. Why it may fail on a Samsung: [report](call-audio-wifi-integration.md). Needs the debug APK from step 1 (`scripts/build-android.sh`), `adb` on the PC, and a second person to call you.
+
+1. **Turn it on, on the phone.** GeekBridge → Settings → **Experimental** → *Call audio over Wi-Fi (ADB helper)*. Read the risk card, switch it on, press *Turn on*. Expect: the switch stays on, a "Helper not running" line appears.
+2. **Allow your PC.** Same screen, "3. Which computers" → *Choose* → tick your PC → OK. Expect the line to name the PC.
+3. **Developer options.** Phone: Settings → Developer options → USB debugging on (cable) or Wireless debugging on. Allow the PC's debugging prompt.
+4. **Start the helper from the PC.** `scripts/callaudio-enable.sh` (answer `y`; with several devices add `--serial SERIAL`). Expect the last line: `helper started and handed to GeekBridge. Now open GeekBridge > Settings > Experimental ...`, and on the phone "Helper connected." If it says *turn the Experimental switch on* the switch (step 1) is off; if it says *release build* you installed the wrong APK.
+5. **Self-test, step 1 (no call).** On the phone press *Step 1: check with no call* (about 6 s, no call active). Expect a line ending "Now make a call and press step 2." If it says the phone "still produced sound ... with no call", the final answer will be Unsure; carry on anyway, it is useful evidence.
+6. **Self-test, step 2 (with a call).** Press *Step 2: test during a call*, then have the other person call you (or call voicemail) and answer; ask them to talk for ten seconds. Expect one of, in plain words:
+   - **Works**: the other person's voice reaches the helper. Go on to the PC step.
+   - **Silent**: the source opens but delivers silence (Samsung may block it). Stop here, send the report (the "Send back" step).
+   - **Refused**: Android denied it. Stop here.
+   - **Unsure**: sound with no call too, so it proves nothing. Treat as not working.
+7. **Listen on the PC.** On the PC: `geekbridge-ctl consent DEVICE_ID call_audio_wifi on` (this PC's consent for the phone), then `geekbridge-ctl callwifi` (expect the phone *ready to listen*), then during a call press **Listen here (Wi-Fi, experimental)** on the call card or run `geekbridge-ctl callwifi listen`. Expect: a notification on the phone "Call audio is being shared with <PC>", the PC card shows "Phone call audio here" and you hear the other person in the chosen headphones (the same device pick as the Bluetooth path). Ask them to say a word; note the delay (target under 0.3 s).
+   *Speak (experimental)* is separate and optional: on the phone switch it on (only offered after a *Works* test with an uplink route), then press **Speak** on the PC. Ask the other person whether they heard you. Expect "no" on most phones; that is a useful answer.
+8. **Stop and turn it off.** Press *Stop* in the phone notification (or `geekbridge-ctl callwifi stop`): the audio stops within a second on both devices. Then `scripts/callaudio-enable.sh --stop`, switch the Experimental switch off, and turn Wireless/USB debugging off.
+9. **Send back.** The phone result sentence (step 6), `geekbridge-ctl callwifi`, `scripts/callaudio-enable.sh --status`, whether you heard them (yes/no, delay), whether they heard you (yes/no), and `scripts/realdevice-report.sh --no-adb`. No audio is stored anywhere, so there is nothing else to attach.
+
+If the PC has no `callwifi` command yet, the phone steps 1 to 6 still work on their own and give the most important answer (does this Fold5 let the helper hear the call).

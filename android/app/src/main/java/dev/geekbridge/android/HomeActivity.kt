@@ -301,6 +301,7 @@ class HomeActivity : Activity() {
         ClipboardSettingsUi.addRows(this, kit, set) { lastSig = ""; render() }
         kit.divider(set)
         kit.row(set, R.drawable.ic_check, getString(R.string.home_setup_row), getString(R.string.home_setup_row_sub), null) { startActivity(SetupActivity.intent(this, review = true)) }
+        DebugHooks.experimentalRow?.let { kit.divider(set); it(this, kit, set) }
         kit.divider(set)
         kit.row(set, R.drawable.ic_settings, getString(R.string.home_diag_row), getString(R.string.home_diag_row_sub, BuildConfig.VERSION_NAME), null) {
             startActivity(Intent(this, MainActivity::class.java))
