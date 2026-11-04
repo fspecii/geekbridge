@@ -6,65 +6,6 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
-### Added
-- Settings -> Privacy: switches for **Show message text in notifications** (off), **Show caller number on the call card**
-  (on) and **Show phone notification text** (off), applied at once through the service (`PrivacyStatus` / `PrivacySet`,
-  `geekbridge-ctl privacy [show|set KEY on|off]`). The `sms-notify-content` file and the old environment variables still
-  force a value, and the page says so. An unread-message count is in the tray tooltip (all platforms) and the waybar
-  `unread` field, and falls when a conversation is read on this computer. Messages: the To field takes a contact name
-  (list with Up/Down/Enter, a chooser for several numbers), a refused reply comes back into the box with the reason, and
-  Enter that confirms an input-method composition no longer sends.
-- The computer now tells a GeekBridge phone what became of its share (`geekbridge.share.result`, GeekBridge-only, never sent
-  to stock KDE Connect, kept out of the plaintext identity): accepted, declined (or lapsed), receiving off, too large, busy,
-  and for text and links saved (a link is kept, never opened). The Share screen says so in plain words and stops waiting at
-  once on a refusal; an older computer keeps today's hint. See docs/reports/share-result-packet.md.
-- Dev update channel (docs/updates.md#dev-channel, docs/reports/dev-channel.md): a rolling `dev` GitHub prerelease with the
-  newest main build (debug-signed APK, Linux archive, `SHA256SUMS`, `dev-manifest.json`), published by
-  `scripts/release-dev.sh` (dry run unless `--publish`) or the opt-in `dev-release.yml`. The Android app (debug builds
-  default to Dev; **Update channel: Stable / Dev** in the App updates card) and `bridge-update`
-  (`geekbridge-ctl update channel dev`, `GEEKBRIDGE_UPDATE_CHANNEL`, Details panel) can follow it. Debug APKs now have
-  `versionCode = 20000 + commit count`, so each main build is accepted as an update of the previous one.
-- Incoming-call card: the service starts `geekbridge-calls --overlay` on every ring, a small always-on-top Answer / Reject
-  card in the top-right corner (not inside the Calls window), closing itself when the call ends. Hyprland rules in
-  `geekbridge-ctl hotkey install`, `geekbridge-ctl call-overlay-test`, a `doctor` line, `GEEKBRIDGE_CALL_OVERLAY=off|name`.
-  See docs/omarchy.md.
-
-- Linking a phone is now like WhatsApp Web (docs/reports/pairing-ux-2.md). Computer: **Link a phone** shows a big QR code
-  that renews itself before its 2 minutes are up, with a live line (Waiting for phone… / Phone scanned — confirm on
-  phone / Paired ✓ with X); with nothing paired yet it is already on screen, and it is revoked when the view is left.
-  Phone: **Scan QR code from my computer** opens an in-app camera screen (Camera2; the picture is decoded in memory by
-  the native core, new action `pairing_decode_qr`, no scanner library, no Play services; new `CAMERA` permission asked on
-  first use, optional), then **Connect to X?**, **Pair**, and Home says **Paired ✓ with X**.
-- **Don't have GeekBridge on your computer yet?** on the phone: share sheet or mail draft with the public releases page
-  and three install lines (no secrets), a copyable short address.
-- **Unlink** replaces Forget/Unpair wording on both sides; the phone's pair step has an Unlink button per computer.
-
-### Changed
-- The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile
-  data"): the core binds its outgoing connections and the announcement socket to the Wi-Fi IPv4 address, with a fallback
-  to the plain route. Wi-Fi lock claims corrected (it does not keep the radio awake with the screen off on Android 14+),
-  and the debug state shows a link-health section (last close reason, network then, silence before it).
-  See docs/reports/wifi-binding.md.
-- Safety net for that binding (docs/reports/wifi-binding-safety.md): a bound dial whose handshake does not finish in 6 s,
-  or a bound link that dies within 10 s without the computer being heard, makes the core dial unbound at once and for
-  10 minutes; a `bind_wifi` preference (default on, debug builds can flip it) and `GB_BIND_WIFI=0` switch binding off;
-  the debug Link health section shows the switch and the last fallback reason.
-
-### Fixed
-- Home-network hostility (docs/reports/network-hostility.md): the LAN announcement now goes to each NIC's real
-  directed broadcast (a /16 Wi-Fi was announced to `x.y.z.255`, which nobody listens on); "different network" in
-  `test-connection` and the why-not-connected answer uses the real prefix (a /16 or /23 home network was reported as
-  another network); `test-connection` answers within the control deadline when a router drops TCP silently (it used
-  to end as "cannot reach the service") and names client isolation; the service also listens on `[::]:1716`, so
-  the IPv6 address in an IPv6-only QR works; a wrong clock (year 2020, 1970) no longer stops the service, rotates
-  nothing and no longer makes paired devices refuse each other's certificate (dates are not enforced; pinning is).
-- Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state
-  directory that holds pairings (it needs `--forget-pairings` and then moves the old state aside instead of deleting it);
-  a running service that is older than its binary is no longer reused silently (`--restart` runs the new binary and keeps
-  every pairing); `scripts/realdevice.sh install` compares the signing key and versionCode of the APK with the app on the
-  phone first and stops before Android would refuse the update (a build signed with `~/.android/debug.keystore` instead of
-  the project key, or a downgrade), saying why and what it costs.
-
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android
@@ -217,6 +158,38 @@ builds have not been run on real hardware (see "Known limitations").
   (GSM/UCS-2), local-only read marks, per-conversation memory cap, MMS "Attachment" placeholders, notification Reply
   action (text hidden unless chosen), plain-language failure reasons and exact SMS-permission steps in the setup wizard.
 
+**Added after the first draft of these notes (2026-11-04)**
+- Settings -> Privacy: switches for **Show message text in notifications** (off), **Show caller number on the call card**
+  (on) and **Show phone notification text** (off), applied at once through the service (`PrivacyStatus` / `PrivacySet`,
+  `geekbridge-ctl privacy [show|set KEY on|off]`). The `sms-notify-content` file and the old environment variables still
+  force a value, and the page says so. An unread-message count is in the tray tooltip (all platforms) and the waybar
+  `unread` field, and falls when a conversation is read on this computer. Messages: the To field takes a contact name
+  (list with Up/Down/Enter, a chooser for several numbers), a refused reply comes back into the box with the reason, and
+  Enter that confirms an input-method composition no longer sends.
+- The computer now tells a GeekBridge phone what became of its share (`geekbridge.share.result`, GeekBridge-only, never sent
+  to stock KDE Connect, kept out of the plaintext identity): accepted, declined (or lapsed), receiving off, too large, busy,
+  and for text and links saved (a link is kept, never opened). The Share screen says so in plain words and stops waiting at
+  once on a refusal; an older computer keeps today's hint. See docs/reports/share-result-packet.md.
+- Dev update channel (docs/updates.md#dev-channel, docs/reports/dev-channel.md): a rolling `dev` GitHub prerelease with the
+  newest main build (debug-signed APK, Linux archive, `SHA256SUMS`, `dev-manifest.json`), published by
+  `scripts/release-dev.sh` (dry run unless `--publish`) or the opt-in `dev-release.yml`. The Android app (debug builds
+  default to Dev; **Update channel: Stable / Dev** in the App updates card) and `bridge-update`
+  (`geekbridge-ctl update channel dev`, `GEEKBRIDGE_UPDATE_CHANNEL`, Details panel) can follow it. Debug APKs now have
+  `versionCode = 20000 + commit count`, so each main build is accepted as an update of the previous one.
+- Incoming-call card: the service starts `geekbridge-calls --overlay` on every ring, a small always-on-top Answer / Reject
+  card in the top-right corner (not inside the Calls window), closing itself when the call ends. Hyprland rules in
+  `geekbridge-ctl hotkey install`, `geekbridge-ctl call-overlay-test`, a `doctor` line, `GEEKBRIDGE_CALL_OVERLAY=off|name`.
+  See docs/omarchy.md.
+- Linking a phone is now like WhatsApp Web (docs/reports/pairing-ux-2.md). Computer: **Link a phone** shows a big QR code
+  that renews itself before its 2 minutes are up, with a live line (Waiting for phone… / Phone scanned — confirm on
+  phone / Paired ✓ with X); with nothing paired yet it is already on screen, and it is revoked when the view is left.
+  Phone: **Scan QR code from my computer** opens an in-app camera screen (Camera2; the picture is decoded in memory by
+  the native core, new action `pairing_decode_qr`, no scanner library, no Play services; new `CAMERA` permission asked on
+  first use, optional), then **Connect to X?**, **Pair**, and Home says **Paired ✓ with X**.
+- **Don't have GeekBridge on your computer yet?** on the phone: share sheet or mail draft with the public releases page
+  and three install lines (no secrets), a copyable short address.
+- **Unlink** replaces Forget/Unpair wording on both sides; the phone's pair step has an Unlink button per computer.
+
 ### Fixed
 - Desktop to phone file transfers no longer stall at "Waiting" with a secure-channel or timeout error when the link
   arrived on a network other than the phone's default: the phone dials the normal route first, and a route counts only
@@ -225,6 +198,19 @@ builds have not been run on real hardware (see "Known limitations").
 - Reconnect, replay and leak bugs found in code review and chaos testing, each with a regression test.
 - Idle footprint: event-driven clipboard watching and UI poll back-off on the desktop; no wake locks or timers in the
   Android link service ([docs/performance.md](docs/performance.md)).
+- Home-network hostility (docs/reports/network-hostility.md): the LAN announcement now goes to each NIC's real
+  directed broadcast (a /16 Wi-Fi was announced to `x.y.z.255`, which nobody listens on); "different network" in
+  `test-connection` and the why-not-connected answer uses the real prefix (a /16 or /23 home network was reported as
+  another network); `test-connection` answers within the control deadline when a router drops TCP silently (it used
+  to end as "cannot reach the service") and names client isolation; the service also listens on `[::]:1716`, so
+  the IPv6 address in an IPv6-only QR works; a wrong clock (year 2020, 1970) no longer stops the service, rotates
+  nothing and no longer makes paired devices refuse each other's certificate (dates are not enforced; pinning is).
+- Real-device upgrade safety (docs/reports/preflight-upgrade.md): `scripts/run-desktop.sh --fresh` no longer wipes a state
+  directory that holds pairings (it needs `--forget-pairings` and then moves the old state aside instead of deleting it);
+  a running service that is older than its binary is no longer reused silently (`--restart` runs the new binary and keeps
+  every pairing); `scripts/realdevice.sh install` compares the signing key and versionCode of the APK with the app on the
+  phone first and stops before Android would refuse the update (a build signed with `~/.android/debug.keystore` instead of
+  the project key, or a downgrade), saying why and what it costs.
 
 ### Changed
 - The service size budget is 6.0 MB (was 5.8); the Android libraries are linked with lld `--icf=all` (about -100 kB per
@@ -238,6 +224,15 @@ builds have not been run on real hardware (see "Known limitations").
   every paired computer is linked. Code-audited and tested; no battery measurement on a real phone yet.
 - Docs: one real phone (Samsung SM-F946B) has been paired; Windows and macOS are CI-tested only and have no prebuilt
   binaries. The Android update check never moves a debug build to a release build (uninstall once).
+- The phone's redials and announcements stay on Wi-Fi when mobile data is the default network (One UI "Switch to mobile
+  data"): the core binds its outgoing connections and the announcement socket to the Wi-Fi IPv4 address, with a fallback
+  to the plain route. Wi-Fi lock claims corrected (it does not keep the radio awake with the screen off on Android 14+),
+  and the debug state shows a link-health section (last close reason, network then, silence before it).
+  See docs/reports/wifi-binding.md.
+- Safety net for that binding (docs/reports/wifi-binding-safety.md): a bound dial whose handshake does not finish in 6 s,
+  or a bound link that dies within 10 s without the computer being heard, makes the core dial unbound at once and for
+  10 minutes; a `bind_wifi` preference (default on, debug builds can flip it) and `GB_BIND_WIFI=0` switch binding off;
+  the debug Link health section shows the switch and the last fallback reason.
 
 ### Security
 - Recent photos review (docs/reports/security-review-6.md): a photo offer larger than any photo fails the request, a photo
