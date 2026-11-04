@@ -33,6 +33,8 @@ rec() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" | tee -a "$RESULTS" >&2; }
 shot() { $ADB exec-out screencap -p >"$SHOTS/qr-$1.png" 2>/dev/null; }
 ctl() { timeout 20 "${CTL[@]}" "$@"; }
 ui() { timeout 90 "$UI" "$@"; }
+# A tap that cannot be lost to timing (waits until the node is tappable and the screen moved on); see e2e-android.sh.
+tap_to() { timeout 240 "$UI" tapto "$@"; }
 jget() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 paired_n() { ctl status | jget 'len(d["paired"])'; }
 
@@ -60,8 +62,8 @@ payload() { ctl pair-qr 2>/dev/null; }
 fresh_phone
 P_OLD="$(payload)"; [[ "$P_OLD" == geekbridge://pair?* ]] || { rec setup FAIL "no payload: $P_OLD"; exit 1; }
 echo "waiting 125 s for the code to expire..." >&2; sleep 125
-scan "$P_OLD"; ui wait "Pair with" 15 && shot confirm-expired
-ui tap "Continue" >/dev/null
+scan "$P_OLD"; ui wait "Connect to a computer" 15 && shot confirm-expired
+tap_to Continue >/dev/null
 if ui wait "did not accept the QR code" 40; then shot expired; rec expired PASS "refused in plain words; paired=$(paired_n)"; else shot expired-fail; rec expired FAIL "no plain-language refusal"; fi
 [[ "$(paired_n)" == 0 ]] || rec expired FAIL "something got paired"
 
@@ -70,7 +72,7 @@ fresh_phone
 P1="$(payload)"
 scan "$P1"
 if ui wait "Connect to a computer" 20; then shot confirm; else shot confirm-fail; fi
-ui tap "Continue" >/dev/null
+tap_to Continue >/dev/null
 if ui wait "Computer identity" 40; then
   shot approve
   ui dump | grep -q "Compare\|same code" && rec pair FAIL "a code comparison was shown"
@@ -82,7 +84,7 @@ fi
 
 # ------------------------------------------------------------------ reuse
 fresh_phone
-scan "$P1"; ui wait "Pair with" 15 >/dev/null; ui tap "Continue" >/dev/null
+scan "$P1"; ui wait "Connect to a computer" 15 >/dev/null; tap_to Continue >/dev/null
 if ui wait "did not accept the QR code" 40; then shot reused; rec reuse PASS "second use refused; paired=$(paired_n)"; else shot reused-fail; rec reuse FAIL "no refusal"; fi
 [[ "$(paired_n)" == 0 ]] || rec reuse FAIL "something got paired"
 ctl events | jget '"; ".join(e["kind"] + ":" + e.get("reason","") for e in d["events"] if e["kind"]=="qr_refused")' >&2
@@ -99,7 +101,6 @@ if ui wait "Scan QR code from my computer" 25; then
   rec wizard PASS "step 1 offers the scan first (lines: $order)"
 else shot wizard-fail; rec wizard FAIL "no 'Scan QR code from my computer' on step 1"; fi
 $ADB shell pm grant $PKG android.permission.CAMERA >/dev/null 2>&1
-tap_to() { timeout 240 "$UI" tapto "$@"; }
 tap_to "Scan QR code from my computer" >/dev/null
 if ui wait "Point the camera at the QR code" 20; then shot camera; rec camera PASS "scan screen with the camera allowed: $(ui dump | cut -f1 | grep -m1 'recorded or sent')"; else shot camera-fail; rec camera FAIL "scan screen did not open"; fi
 $ADB shell input keyevent KEYCODE_BACK; sleep 1
@@ -120,7 +121,7 @@ if ui wait "Don't have GeekBridge on your computer yet?" 25; then
   tap_to "Don't have GeekBridge on your computer yet?" >/dev/null
   if ui wait "github.com/fspecii/geekbridge/releases/latest" 15; then
     shot invite
-    tap_to "Send me the download link" --exact >/dev/null 2>&1
+    tap_to "Send me the download link" >/dev/null 2>&1
     if ui wait "Send the download link with" 15; then rec invite PASS "download page, short address and share sheet"; else shot invite-share-fail; rec invite FAIL "no share sheet"; fi
   else shot invite-fail; rec invite FAIL "no short address on the page"; fi
 else shot invite-entry-fail; rec invite FAIL "no entry on step 1"; fi
@@ -129,7 +130,7 @@ $ADB shell input keyevent KEYCODE_BACK; $ADB shell input keyevent KEYCODE_BACK
 # ------------------------------------------------------------------ unlink
 fresh_phone
 P3="$(payload)"
-scan "$P3"; ui wait "Connect to a computer" 20 >/dev/null; ui tap "Continue" >/dev/null
+scan "$P3"; ui wait "Connect to a computer" 20 >/dev/null; tap_to Continue >/dev/null
 ui wait "Computer identity" 40 >/dev/null && ui tap "Pair" --exact >/dev/null
 if ui wait "Paired ✓ with" 40 >/dev/null; then
   ui tap "Got it" >/dev/null

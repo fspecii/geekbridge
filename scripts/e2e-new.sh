@@ -44,7 +44,7 @@ scan() { $ADB shell am start -W -a android.intent.action.VIEW -d "'$1'" $PKG >/d
 hint_case() { # name address expected-text
   local name="$1" addr="$2" want="$3" p
   p="$(qr_with_addr "$addr")"; [[ "$p" == geekbridge://* ]] || { rec "hint_$name" FAIL "no QR payload"; return; }
-  scan "$p"; ui wait "Pair with" 15 >/dev/null; ui tap "Continue" >/dev/null
+  scan "$p"; ui wait "Connect to a computer" 15 >/dev/null; ui tap "Continue" >/dev/null
   if ! ui wait "Test connection" 60; then nshot "hint-$name-nofail"; rec "hint_$name" FAIL "no failure screen with a Test connection button: $(ui dump | cut -f1 | head -6 | tr '\n' '|')"; return; fi
   nshot "hint-$name-failed"
   local head; head="$(ui dump | cut -f1 | grep -iE "did not answer|different network|not accept|could not|did not work|closed" | head -1)"
