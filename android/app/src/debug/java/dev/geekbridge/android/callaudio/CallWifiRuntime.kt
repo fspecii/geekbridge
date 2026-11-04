@@ -498,7 +498,7 @@ object CallWifiRuntime {
                 if (json.contains("\"injectIn\"")) {
                     fun n(k: String) = Regex("\"$k\":\"?([A-Za-z0-9_()]+)").find(json)?.groupValues?.get(1) ?: "?"
                     injectNote = "route ${n("injectRoute")}: ${n("injectIn")} frames from the computer, " +
-                        "${n("injected")} written, level ${n("injectRms")}"
+                        "${n("injected")} written, level ${n("injectRms")}, errors ${n("injectErrors")}"
                     changed()
                 }
             }

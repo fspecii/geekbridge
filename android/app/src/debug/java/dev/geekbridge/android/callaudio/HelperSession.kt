@@ -94,6 +94,9 @@ class HelperSession(
         private set
 
     /** Sum of squares of the injected samples since the last STATUS (the level that went into the route). */
+    @Volatile var injectErrors = 0L
+        private set
+    @Volatile private var injectError = ""
     @Volatile private var injSumSq = 0.0
     @Volatile private var injSamples = 0L
 
@@ -114,7 +117,14 @@ class HelperSession(
                         for (v in f.samples) sq += v.toDouble() * v
                         injSumSq += sq
                         injSamples += f.samples.size
-                        if (injector.write(f.samples)) injected++
+                        // A route that fails while playing (the track was refused, the call ended) must not end the
+                        // helper: the failure is counted and named in STATUS instead.
+                        try {
+                            if (injector.write(f.samples)) injected++
+                        } catch (e: RuntimeException) {
+                            injectErrors++
+                            injectError = e.javaClass.simpleName + ": " + (e.message ?: "").take(80)
+                        }
                     }
                 }
             }
@@ -216,7 +226,8 @@ class HelperSession(
                     status(
                         "{\"frames\":$framesOut,\"rms\":${rms.toInt()},\"peak\":$peak,\"silenced\":$silencedSeen," +
                             "\"injectRoute\":\"${injector.route}\",\"injectIn\":$framesIn,\"injected\":$injected," +
-                            "\"injectRms\":$injRms}",
+                            "\"injectRms\":$injRms,\"injectErrors\":$injectErrors," +
+                            "\"injectError\":\"${injectError.filter { it.isLetterOrDigit() || it in " .,:_()=/-" }}\"}",
                     )
                     sumSq = 0.0
                     peak = 0

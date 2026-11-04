@@ -69,7 +69,8 @@ class HelperConnection(
     /** The computer's voice for the helper's injection route (speak back). */
     fun inject(seq: Int, samples: ShortArray) {
         try {
-            HelperProtocol.write(output, HelperProtocol.pcm(HelperProtocol.INJECT, true, seq, 0, samples))
+            // INJECT carries flags 0 (only PCM uses the direction flag); anything else ends the helper's session.
+            HelperProtocol.write(output, HelperProtocol.pcm(HelperProtocol.INJECT, false, seq, 0, samples))
         } catch (_: IOException) {
             closed = true
         }

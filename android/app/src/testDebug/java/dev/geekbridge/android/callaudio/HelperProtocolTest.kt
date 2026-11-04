@@ -92,6 +92,45 @@ class HelperProtocolTest {
         assertTrue("injector released when the client goes", inj.closed)
     }
 
+    /** The app's own client (HelperConnection.inject, the Speak path) must produce frames the helper accepts. */
+    @Test
+    fun theAppsInjectFramesReachTheRouteAndAFailingRouteDoesNotEndTheSession() {
+        val toHelper = PipedOutputStream()
+        val helperIn = PipedInputStream(toHelper, 1 shl 16)
+        val fromHelper = PipedInputStream(1 shl 20)
+        val helperOut = PipedOutputStream(fromHelper)
+        var writes = 0
+        val inj = object : PcmInjector {
+            override val route = "tx_interception"
+            override fun write(buf: ShortArray): Boolean {
+                if (++writes == 3) throw IllegalStateException("play() called on uninitialized AudioTrack")
+                return true
+            }
+            override fun close() {}
+        }
+        val s = HelperSession(
+            helperIn, helperOut, "tok12345", "{\"v\":1}",
+            openCapture = { if (it == "TONE") ToneCapture(440.0, paced = false) else null },
+            openInjector = { inj },
+            probe = { "" },
+        )
+        val t = Thread { s.run() }
+        t.start()
+        val c = HelperConnection(fromHelper, toHelper, "tok12345")
+        c.start()
+        c.command("start", "source" to "TONE", "inject" to "tx_interception")
+        val tone = ShortArray(320) { (it * 37).toShort() }
+        repeat(10) { c.inject(it, tone) }
+        val end = System.currentTimeMillis() + 5000
+        while (s.framesIn < 10 && System.currentTimeMillis() < end) Thread.sleep(10)
+        assertEquals(10L, s.framesIn)
+        assertEquals(9L, s.injected)
+        assertEquals(1L, s.injectErrors)
+        assertTrue("session still up", t.isAlive)
+        c.close()
+        t.join(5000)
+    }
+
     @Test
     fun aWrongTokenEndsTheSessionWithoutAudio() {
         val out = ByteArrayOutputStream()

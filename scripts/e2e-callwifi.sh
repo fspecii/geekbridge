@@ -11,12 +11,18 @@
 #              of the private headset, phone shows the indicator; Stop from the computer ends it
 #   linkloss   dropping the link ends the session on both sides
 #   notif      GeekBridge notifications blocked -> the phone refuses to share (review 8, fix 4)
+#   speak      Speak from the computer: a tone played into a private virtual microphone goes through pw-cat, Opus,
+#              the TLS link and the phone hub into the helper's uplink route (frames and level counted on the
+#              phone; whether a far party would hear it cannot be shown on an emulator); the echo guard silences it
+#              while the far party talks; "Test speaking" beeps through each route and the HEARD answer picks one
+#   setup      the helper is started by `geekbridge-ctl callwifi setup --yes` (the guided start), not the script
 #
 #   scripts/e2e-callwifi.sh [STAGE[,STAGE...]] [--stop]       stages: env battery pair callwifi (default: all)
 #   GB_CW_FRESH=1 deletes the AVD clone at the end (default keeps it so a re-run is quick; --stop stops everything)
 #
 # Isolation: its own AVD clone (gbcw, console port 5662, adb server 16150), service state under $SCRATCH, control port
-# 17591, Xvfb :89, a private PipeWire in $SCRATCH/pw. Never the user's config, session, ports 1716/17381/8000, or
+# 17591, Xvfb :89, a private PipeWire in $SCRATCH/pw. GB_CW_SLOT=1 shifts every one of them (AVD gbcw1, ports +10,
+# inbound listener 27331 (1743 is often an emulator's), Xvfb :91, scratch ...-1) so two runs can share a machine. Never the user's config, session, ports 1716/17381/8000, or
 # /tmp (TMPDIR below). The emulator has no real call audio: the phone helper's TONE source plays the far party, and
 # the self-test verdict is set through a debug hook because the emulator's call sources sound with no call (the real
 # self-test says "unsure" there, which is checked and reported). Results: dist/android/logs/e2e-callwifi-results.tsv
@@ -26,15 +32,19 @@ cd "$ROOT"
 STAGES="${1:-env,battery,pair,callwifi}"
 [[ "$STAGES" == --stop ]] && { STAGES=""; STOP=1; }
 set --
-SCR="${GB_CW_SCRATCH:-$HOME/.cache/gb-callwifi-linked}"
+SLOT="${GB_CW_SLOT:-0}"; [[ "$SLOT" =~ ^[0-9]$ ]] || { echo "GB_CW_SLOT is one digit" >&2; exit 2; }
+SFX=""; ((SLOT)) && SFX="$SLOT"
+SCR="${GB_CW_SCRATCH:-$HOME/.cache/gb-callwifi-linked${SFX:+-$SFX}}"
 export TMPDIR="${TMPDIR:-$HOME/.cache/gb-tmp}"
 [[ "$TMPDIR" == /tmp* ]] && export TMPDIR="$HOME/.cache/gb-tmp"
 mkdir -p "$SCR" "$TMPDIR"
 export GB_BASE_AVD="${GB_BASE_AVD:-gbhome}"
-export E2E_SOURCE_ONLY=1 E2E_AVD=gbcw E2E_EMU_PORT=5662 E2E_ADB_PORT=16150 E2E_TAG=-cw \
+O=$((SLOT * 10))
+export E2E_SOURCE_ONLY=1 E2E_AVD="gbcw$SFX" E2E_EMU_PORT=$((5662 + O)) E2E_ADB_PORT=$((16150 + O)) E2E_TAG="-cw$SFX" \
   E2E_RUN="$SCR/run" E2E_SCRATCH="$SCR/android" E2E_TARGET="$SCR/t" \
-  E2E_RESULTS="$ROOT/dist/android/logs/e2e-callwifi-results.tsv" E2E_XDISP=:89 \
-  E2E_CTRL_PORT=17591 E2E_API_PORT=17590 E2E_DISC_PORT=17526 E2E_LISTEN_PORT=1733 E2E_REDIR_PORT=17181
+  E2E_RESULTS="$ROOT/dist/android/logs/e2e-callwifi${SFX:+-$SFX}-results.tsv" E2E_XDISP=":$((89 + SLOT * 2))" \
+  E2E_CTRL_PORT=$((17591 + O)) E2E_API_PORT=$((17590 + O)) E2E_DISC_PORT=$((17526 + O)) E2E_LISTEN_PORT=$((SLOT ? 27330 + SLOT : 1733)) \
+  E2E_REDIR_PORT=$((17181 + O))
 # shellcheck disable=SC1091
 source scripts/e2e-android.sh
 BUILD=no
@@ -58,13 +68,19 @@ pw_start() {
   (cd "$SCR" && DBUS_SESSION_BUS_ADDRESS=disabled: XDG_RUNTIME_DIR="$RT" PIPEWIRE_RUNTIME_DIR="$RT" setsid nohup pipewire-pulse >"$SCR/pipewire-pulse.log" 2>&1 & echo $! >>"$PWPIDS")
   wait_for 10 test -S "$RT/pulse/native" || return 1
   local s
-  for s in gb-spk gb-mic; do
+  for s in gb-spk; do
     pw_env pw-cli create-node adapter "{ factory.name=support.null-audio-sink node.name=$s node.description=$s media.class=Audio/Sink audio.position=[MONO] audio.rate=16000 object.linger=true node.driver=true }" >/dev/null
     for _ in $(seq 1 50); do [[ -n "$(pw_nid $s)" ]] && break; sleep 0.2; done
     [[ -n "$(pw_nid $s)" ]] || return 1
     pw_env pw-cli set-param "$(pw_nid $s)" PortConfig "{ direction: Input, mode: dsp, monitor: true, format: { mediaType: audio, mediaSubtype: raw, format: F32P, rate: 16000, channels: 1, position: [ MONO ] } }" >/dev/null
   done
-  # Speak (not exercised here) would record from the monitor of gb-mic; the call-audio pick below names both.
+  # The computer's "microphone" for Speak: a virtual source gb-mic, fed by playing into the sink gb-mic-in.
+  (cd "$SCR" && DBUS_SESSION_BUS_ADDRESS=disabled: XDG_RUNTIME_DIR="$RT" PIPEWIRE_RUNTIME_DIR="$RT" PIPEWIRE_REMOTE=pipewire-0 setsid nohup \
+    pw-loopback --capture-props='media.class=Audio/Sink node.name=gb-mic-in node.description=gb-mic-in audio.position=[MONO]' \
+      --playback-props='media.class=Audio/Source node.name=gb-mic node.description=gb-mic audio.position=[MONO]' \
+      >"$SCR/pw-loopback.log" 2>&1 & echo $! >>"$PWPIDS")
+  for _ in $(seq 1 50); do [[ -n "$(pw_nid gb-mic)" ]] && break; sleep 0.2; done
+  [[ -n "$(pw_nid gb-mic)" ]] || return 1
   pw_pick
   pw_env pactl list short sinks 2>/dev/null | grep -q gb-spk
 }
@@ -77,7 +93,7 @@ pw_linker() {
 pw_stop() {
   [[ -f "$SCR/wp.pid" ]] && kill "$(cat "$SCR/wp.pid")" 2>/dev/null; rm -f "$SCR/wp.pid"
   [[ -f "$PWPIDS" ]] && for p in $(cat "$PWPIDS"); do
-    [[ "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)" == pipewire* ]] && kill "$p" 2>/dev/null
+    case "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)" in pipewire*|pw-loopback*) kill "$p" 2>/dev/null ;; esac
   done
   rm -f "$PWPIDS"; rm -rf "$RT"
 }
@@ -223,7 +239,8 @@ XML
   ensure_session
   local neg; neg="$(ctl status | jget '",".join(d["links"][0]["negotiated"])')"
   if [[ "$neg" == *geekbridge.callaudio* ]]; then rec cw_negotiated PASS "$(tr ',' '\n' <<<"$neg" | grep -c callaudio) callaudio packet types negotiated"; else rec cw_negotiated FAIL "not negotiated: $neg"; fi
-  if env -u ADB ANDROID_ADB_SERVER_PORT="$ANDROID_ADB_SERVER_PORT" "$ROOT/scripts/callaudio-enable.sh" --yes --serial "$SERIAL" >"$LOGS/e2e-cw-enable.log" 2>&1; then rec cw_helper_start PASS "$(tail -n1 "$LOGS/e2e-cw-enable.log" | cut -c1-90)"; else rec cw_helper_start FAIL "$(tail -n2 "$LOGS/e2e-cw-enable.log" | tr '\n' ' ')"; return 1; fi
+  # The guided start (geekbridge-ctl callwifi setup) with this run's own adb server; the script path is used later.
+  if env -u ADB ANDROID_ADB_SERVER_PORT="$ANDROID_ADB_SERVER_PORT" timeout 120 "${CTL[@]}" callwifi setup --yes --serial "$SERIAL" --adb "$(command -v "${ADB%% *}" || echo "${ADB%% *}")" >"$LOGS/e2e-cw-enable.log" 2>&1; then rec cw_helper_start_setup PASS "$(grep -m1 -E 'Helper started|helper ready' "$LOGS/e2e-cw-enable.log" | cut -c1-100)"; else rec cw_helper_start_setup FAIL "$(tail -n3 "$LOGS/e2e-cw-enable.log" | tr '\n' ' ')"; return 1; fi
   local st; wait_eq 20 True phone_helper; st="$(cwstatus)"
   [[ "$(cwf "$st" helper)" == True ]] && rec cw_helper_connected PASS "$st" || { rec cw_helper_connected FAIL "$st"; return 1; }
   # ---- control (no call), then the in-call step on a simulated call
@@ -266,6 +283,9 @@ XML
   wait_eq 15 False phone_sharing && rec cw_stop_phone PASS "phone stopped sharing" || rec cw_stop_phone FAIL "$(cwstatus)"
   $ADB shell dumpsys notification --noredact | grep -q "Call audio is being shared" && rec cw_indicator_gone FAIL "notification still posted" || rec cw_indicator_gone PASS "notification removed"
   [[ "$(cwf "$(cwstatus)" helper)" == True ]] && rec cw_helper_survives_stop INFO "helper still connected after Stop" || rec cw_helper_survives_stop INFO "helper disconnected by Stop (re-run the enable script for the next session)"
+  # ---- speak (the computer's microphone into the phone's uplink route)
+  helper_back
+  cw_speak_checks
   # ---- link loss
   helper_back
   ctl_cw listen "$PHONE_ID" >/dev/null 2>&1
@@ -291,6 +311,58 @@ XML
   $ADB emu gsm cancel 5551230 >/dev/null 2>&1
   cw STOP >/dev/null; cw ENABLE --ez on false >/dev/null
   ctl consent "$PHONE_ID" call_audio_wifi off >/dev/null 2>&1
+}
+# Play a tone into the private microphone for SECONDS (raw s16 mono, generated in a pipe, nothing stored).
+mic_tone() { # HZ SECONDS
+  python3 -I -c 'import math,struct,sys
+hz,sec=float(sys.argv[1]),int(sys.argv[2])
+sys.stdout.buffer.write(b"".join(struct.pack("<h",int(12000*math.sin(2*math.pi*hz*i/16000))) for i in range(16000*sec)))' "$1" "$2" \
+    | pw_env pw-cat -p --raw --format s16 --rate 16000 --channels 1 --target gb-mic-in - >/dev/null 2>&1
+}
+# The phone's helper report while sharing: "route R: N frames from the computer, W written, level L" -> "N W L".
+inject_nums() { cwstatus | sed -n 's/.*: \([0-9]*\) frames from the computer, \([0-9]*\) written, level \([0-9]*\).*/\1 \2 \3/p'; }
+phone_speaking() { cwf "$(cwstatus)" speaking; }
+cw_speak_checks() {
+  # Stand in for a self-test that found an uplink route (the emulator cannot be heard by anyone), opt in on the phone.
+  cw CONFIG --es verdict works --es source TONE --es uplink telephony_tx >/dev/null
+  cw SPEAK --ez on true >/dev/null; sleep 3
+  if wait_eq 20 True "vf" "d['phones'][0]['speak']"; then rec cw_speak_offered PASS "the computer is offered Speak (phone opt-in + uplink route)"; else rec cw_speak_offered FAIL "$(view | cut -c1-300)"; return 1; fi
+  ctl_cw echo off >/dev/null
+  ctl_cw listen "$PHONE_ID" >/dev/null 2>&1
+  wait_eq 25 live sess_state || { rec cw_speak_live FAIL "no session: $(sess_state)"; return 1; }
+  ctl_cw speak on >"$LOGS/e2e-cw-speak.log" 2>&1
+  if wait_eq 15 True vf "(d['session'] or {}).get('speaking')"; then rec cw_speak_on PASS "speaking on both sides after the phone agreed"; else rec cw_speak_on FAIL "$(tail -n2 "$LOGS/e2e-cw-speak.log" | tr '\n' ' ')"; return 1; fi
+  mic_tone 660 30 & local tone=$!
+  sleep 8
+  local route frames written level
+  route="$(cwstatus | sed -n 's/.*"inject":"route \([^:]*\):.*/\1/p')"
+  read -r frames written level < <(inject_nums)
+  if [[ "${written:-0}" -gt 100 && "${level:-0}" -gt 1000 ]]; then
+    rec cw_speak_injected PASS "computer mic tone -> pw-cat -> Opus -> TLS -> phone hub -> helper route $route: $frames frames in, $written written into the route, level $level (no far party exists on an emulator)"
+  else rec cw_speak_injected FAIL "route=$route frames=$frames written=$written level=$level status=$(cwstatus | cut -c1-300) crash: $($ADB logcat -d -s AndroidRuntime:E 2>/dev/null | grep -v '^-' | tail -4 | tr '\n' ' ' | cut -c1-400)"; fi
+  rec cw_speak_numbers INFO "$(vf "{k: d['session'][k] for k in ('up_sent','up_got','up_lost','up_dropped','up_depth_ms','jitter_ms','depth_ms','late','concealed','echo_guard','echo_held_pct')}")"
+  [[ "$(vf "d['session']['up_got'] > 100")" == True ]] && rec cw_speak_phone_report PASS "the phone's uplink report reached the computer" || rec cw_speak_phone_report FAIL "$(vf "d['session']")"
+  # Echo guard on: the far party (the helper's tone) talks all the time, so the microphone must be held silent.
+  ctl_cw echo on >/dev/null; sleep 4
+  read -r frames written level < <(inject_nums)
+  if [[ "${level:-9999}" -lt 200 && "$(vf "d['session']['echo_guard']")" == True ]]; then rec cw_echo_guard PASS "guard on: level into the route $level while the far party talks ($(vf "d['session']['echo_held_pct']") % of frames silenced)"
+  else rec cw_echo_guard FAIL "level=$level view=$(vf "d['session']" | cut -c1-200)"; fi
+  ctl_cw echo auto >/dev/null
+  rec cw_echo_auto INFO "$(ctl_cw status | grep 'echo guard:' | sed 's/^ *//')"
+  ctl_cw speak off >/dev/null
+  wait_eq 10 False vf "(d['session'] or {}).get('speaking')" && rec cw_speak_off PASS "microphone off on the computer" || rec cw_speak_off FAIL "$(vf "d['session']")"
+  wait_eq 10 False phone_speaking; [[ "$(phone_speaking)" == False ]] && rec cw_speak_off_phone PASS "phone stopped injecting" || rec cw_speak_off_phone FAIL "$(cwstatus | cut -c1-200)"
+  kill "$tone" 2>/dev/null; wait "$tone" 2>/dev/null
+  ctl_cw stop >/dev/null; wait_eq 10 none sess_state
+  # "Test speaking": beeps through each route; on the emulator nobody can count them, so the routes that open are recorded.
+  cw SELFTEST --es step speak >/dev/null
+  local st=""; for _ in $(seq 1 40); do sleep 1; st="$(cwstatus)"; [[ "$(cwf "$st" uplinkTest)" == *route* ]] && break; done
+  if [[ "$(cwf "$st" uplinkTest)" == *played* ]]; then rec cw_speak_test PASS "$(cwf "$st" uplinkTest | cut -c1-400)"; else rec cw_speak_test FAIL "$(cwf "$st" uplinkTest) / $(cwf "$st" progress)"; fi
+  cw HEARD --ei beeps 2 >/dev/null; sleep 1
+  [[ "$(cwf "$(cwstatus)" uplink)" == tx_voice ]] && rec cw_speak_heard PASS "answer 'two beeps' picks route tx_voice for Speak" || rec cw_speak_heard FAIL "$(cwstatus | cut -c1-200)"
+  cw HEARD --ei beeps 0 >/dev/null; sleep 2
+  [[ "$(vf "d['phones'][0]['speak']")" == False ]] && rec cw_speak_heard_none PASS "answer 'nothing': the computer is no longer offered Speak" || rec cw_speak_heard_none FAIL "$(view | cut -c1-200)"
+  cw SPEAK --ez on false >/dev/null
 }
 # After a Stop or a lost link the phone may have dropped its helper connection: start it again if so.
 helper_back() {

@@ -177,7 +177,7 @@ object CallAudioHelper {
         // track does not start by running dry. After that the track's own buffer (200 ms) absorbs bursts.
         override fun write(buf: ShortArray): Boolean {
             val ok = track.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING) > 0
-            if (++writes == 3) track.play()
+            if (++writes == 3) track.play() // may throw IllegalStateException: the session counts it, never dies
             return ok
         }
         override fun close() {
