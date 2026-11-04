@@ -102,12 +102,14 @@ qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the
   for ((i = 0; i < 40; i++)); do
     dump="$(ui dump | cut -f1)"
     grep -q "^Paired ✓ with" <<<"$dump" && break
+    # The banner can be scrolled off or already dismissed: the computer listing the phone and the phone on Home count too.
+    if pc_paired && grep -q "^Stay connected" <<<"$dump"; then break; fi
     if grep -q "^Computer identity" <<<"$dump"; then
       ((seen)) || pshot "$TAG-qr-approve"; seen=1; ui tap Link --exact >/dev/null
     fi
     sleep 1
   done
-  grep -q "^Paired ✓ with" <<<"$dump" || { pshot "$TAG-qr-no-done"; return 3; }
+  { grep -q "^Paired ✓ with" <<<"$dump" || { pc_paired && grep -q "^Stay connected" <<<"$dump"; }; } || { pshot "$TAG-qr-no-done"; return 3; }
   pshot "$TAG-qr-done"
   wait_for 10 pc_paired || return 5
   echo $(( $(date +%s) - t0 ))
