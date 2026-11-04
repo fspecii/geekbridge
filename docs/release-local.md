@@ -103,7 +103,7 @@ warnings`, `cargo test --workspace` unless `--skip-tests`; the Android tools; th
 certificate must equal the pinned SHA-256 (required for stable, a warning for prerelease).
 
 Verification (before any tag or upload): `SHA256SUMS` checks out; the tarball is extracted and
-`geekbridge-ctl --version` must print exactly `geekbridge-ctl <version>`; installer tarball has `install.sh`; the `.deb`
+the first line of `geekbridge-ctl --version` must be exactly `geekbridge-ctl <version>` (the rest is the About text); installer tarball has `install.sh`; the `.deb`
 control `Version` matches and all nine binaries are listed; the Arch package `.PKGINFO` `pkgver` matches and lists all
 nine binaries; both APKs pass `apksigner verify` with v2 and v3, the signer equals the pin, `aapt2 dump badging` shows
 the right `versionName` and the `versionCode` from `scripts/version-code.sh` (formula in

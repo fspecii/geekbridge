@@ -35,7 +35,7 @@ case "$mode" in
   system) prefix=/usr/local; unitdir=/usr/lib/systemd/user; autostart=/etc/xdg/autostart;;
   custom) unitdir="$prefix/lib/systemd/user"; autostart="$prefix/etc/xdg/autostart";;
 esac
-bindir="$prefix/bin" appdir="$prefix/share/applications" icondir="$prefix/share/icons/hicolor"
+bindir="$prefix/bin" docdir="$prefix/share/doc/geekbridge" appdir="$prefix/share/applications" icondir="$prefix/share/icons/hicolor"
 bins=(geekbridge geekbridge-service geekbridge-ctl geekbridge-calls geekbridge-messages geekbridge-clipboard geekbridge-agenda geekbridge-contacts geekbridge-share geekbridge-service-launch)
 desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
 iconnames=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
@@ -51,6 +51,7 @@ if [[ $uninstall -eq 1 ]]; then
     for s in 48 128 256; do rm -f "$icondir/${s}x${s}/apps/$n.png"; done
   done
   rm -f "$unitdir/geekbridge-service.service" "$autostart/geekbridge-service.desktop"
+  rm -f "$docdir/LICENSE" "$docdir/THIRD_PARTY_NOTICES.md"; rmdir "$docdir" 2>/dev/null || true
   user_systemd && systemctl --user daemon-reload || true
   if [[ $purge -eq 1 ]]; then
     # Only ever the one directory this program owns; never an empty or relative path.
@@ -69,6 +70,8 @@ for b in "${bins[@]}"; do
   install -m 0755 "$here/bin/$b" "$bindir/$b"
 done
 for d in "${desktops[@]}"; do install -m 0644 "$here/share/applications/$d.desktop" "$appdir/$d.desktop"; done
+# The licence text and third-party notices, where the About section looks for them (<prefix>/share/doc/geekbridge).
+for doc in LICENSE THIRD_PARTY_NOTICES.md; do [[ -f "$here/$doc" ]] && install -Dm 0644 "$here/$doc" "$docdir/$doc"; done
 for n in "${iconnames[@]}"; do
   install -Dm 0644 "$here/share/icons/hicolor/scalable/apps/geekbridge.svg" "$icondir/scalable/apps/$n.svg"
   for s in 48 128 256; do install -Dm 0644 "$here/share/icons/hicolor/${s}x${s}/apps/geekbridge.png" "$icondir/${s}x${s}/apps/$n.png"; done
@@ -91,5 +94,14 @@ else
 fi
 command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$icondir" 2>/dev/null || true
 command -v update-desktop-database >/dev/null && update-desktop-database -q "$appdir" 2>/dev/null || true
+# Nothing below is needed to start; each line names what stops working without it.
+missing_note=""
+add_note() { missing_note+="  - $1"$'\n'; }
+command -v notify-send >/dev/null || add_note "desktop notifications: install libnotify (notify-send; Debian: libnotify-bin)"
+command -v wl-copy >/dev/null || command -v xclip >/dev/null || add_note "clipboard sync: install wl-clipboard (Wayland) or xclip (X11)"
+command -v xdg-open >/dev/null || add_note "opening links and files: install xdg-utils"
+command -v bluetoothctl >/dev/null || add_note "call audio: install bluez (Bluetooth)"
+command -v pipewire >/dev/null && command -v wpctl >/dev/null || add_note "call audio: install pipewire, wireplumber and pipewire-pulse"
+if [[ -n "$missing_note" ]]; then printf 'Optional programs not found (GeekBridge still starts without them):\n%s' "$missing_note"; fi
 case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: $bindir is not on your PATH." ;; esac
 echo "Installed. Start 'GeekBridge' from your application menu or run: geekbridge"

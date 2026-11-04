@@ -280,6 +280,8 @@ fn every_english_key_is_used() {
     let mut all: String = sources().into_iter().map(|(_, s)| s).collect();
     // The checklist model names its own catalogue keys (`FixKind::key`, `StepId::key`).
     all.push_str(include_str!("../../bridge-core/src/call_audio.rs"));
+    // The About lines are built in bridge-core, shared by the window and `geekbridge-ctl about`.
+    all.push_str(include_str!("../../bridge-core/src/about.rs"));
     for k in english().keys() {
         let base = base_key(k);
         assert!(

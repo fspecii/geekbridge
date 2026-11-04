@@ -3,6 +3,7 @@
 pub mod a11y;
 #[cfg(all(test, feature = "accesskit"))]
 mod a11y_tests;
+pub mod about_ui;
 pub mod apps;
 pub mod calendar_model;
 pub mod call_audio_ui;

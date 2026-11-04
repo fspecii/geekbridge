@@ -77,6 +77,23 @@ check deb-scripts-leave-home-alone $([[ -z "$(grep -E '\$HOME|~/|/home/' "$d"/ct
 miss=""; for l in libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2; do grep -q "^Depends:.*$l" "$d/ctl/control" || miss+=" $l"; done
 check deb-depends-complete $([[ -z $miss ]]; echo $?) "missing:${miss:- none}"
 
+# control file fields: parse as RFC-822 stanzas, runtime Recommends/Suggests list the programs the apps shell out to
+cf="$d/ctl/control"
+field() { awk -v f="$1" 'BEGIN{FS=": "} $0 ~ "^"f":" {sub("^"f": *",""); print; exit}' "$cf"; }
+bad=""; for f in Package Version Architecture Maintainer Depends Recommends Suggests Section Priority Homepage Description; do [[ -n "$(field "$f")" ]] || bad+=" $f"; done
+check deb-control-fields-present $([[ -z $bad ]]; echo $?) "missing:${bad:- none}"
+check deb-control-no-bad-lines $([[ -z "$(grep -vE '^([A-Za-z][A-Za-z0-9-]*: .+| .*)$' "$cf")" ]]; echo $?)
+miss=""; for p in libnotify-bin wl-clipboard xclip xdg-utils bluez pipewire wireplumber pipewire-pulse; do field Recommends | grep -qw -- "$p" || miss+=" $p"; done
+check deb-recommends-complete $([[ -z $miss ]]; echo $?) "missing:${miss:- none}"
+check deb-suggests-notification-daemon $(field Suggests | grep -q 'mako-notifier'; echo $?) "$(field Suggests)"
+# the real tool, when this machine has it
+if command -v dpkg-deb >/dev/null; then
+  check deb-dpkg-deb-info $(dpkg-deb -I "$DEB" control >"$S/dpkg-control.txt" 2>&1; echo $?) "$(grep -E '^(Depends|Recommends)' "$S/dpkg-control.txt" | cut -c1-60 | tr '\n' '|')"
+else
+  rec deb-dpkg-deb-info SKIP "dpkg-deb not installed"
+fi
+check deb-ships-licence-and-notices $([[ -s "$d/data/usr/share/doc/geekbridge/THIRD_PARTY_NOTICES.md" && -s "$d/data/usr/share/doc/geekbridge/LICENSE" ]]; echo $?)
+
 # ---- 2b. Arch package, statically (a full makepkg build takes ~10 min: packaging/arch/build-local.sh)
 pk="$ROOT/packaging/arch"
 apps_pkgbuild="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s\n" "${_apps[@]}" | sort' _ "$pk/PKGBUILD")"
@@ -85,6 +102,9 @@ check arch-apps-match-desktop-files $([[ "$apps_pkgbuild" == "$apps_files" ]]; e
 check arch-install-script-syntax $(bash -n "$pk/geekbridge.install"; echo $?)
 check arch-install-enables-nothing $([[ -z "$(grep -E '^[^#]*systemctl[^"]*(enable|start)' "$pk/geekbridge.install" | grep -v -e 'echo' -e '^ ')" ]]; echo $?)
 check arch-remove-names-real-state-dir $(grep -q '\.local/state/geekbridge' "$pk/geekbridge.install"; echo $?)
+pkg_opt="$(bash -c 'source "$1" >/dev/null 2>&1; printf "%s\n" "${optdepends[@]}"' _ "$pk/PKGBUILD")"
+miss=""; for p in libnotify wl-clipboard xclip bluez pipewire wireplumber pipewire-pulse xdg-utils; do grep -q "^$p: ." <<<"$pkg_opt" || miss+=" $p"; done
+check arch-optdepends-explained $([[ -z $miss ]]; echo $?) "missing:${miss:- none}"
 
 # ---- 3. installer tarball contents
 t="$S/tgz"; mkdir -p "$t"; tar -xzf "$TGZ" -C "$t"; T="$t/geekbridge-$VER"
@@ -101,6 +121,11 @@ check install-unit-points-at-home $(grep -qx "ExecStart=$L/bin/geekbridge-servic
 check install-autostart-absolute $(grep -qx "Exec=$L/bin/geekbridge-service-launch" "$A"; echo $?)
 check install-launcher-absolute $(grep -q "^exec \"$L/bin/geekbridge-service\"" "$L/bin/geekbridge-service-launch"; echo $?)
 check install-service-enabled-via-systemd $(grep -q 'enable --now geekbridge-service.service' "$S/systemctl.log"; echo $?)
+check install-docs-for-about $([[ -s "$L/share/doc/geekbridge/LICENSE" && -s "$L/share/doc/geekbridge/THIRD_PARTY_NOTICES.md" ]]; echo $?)
+ab="$("$L/bin/geekbridge-ctl" about 2>&1)"
+check install-ctl-about-finds-installed-docs $([[ "$ab" == *"Licence: GPL-3.0-or-later"* && "$ab" == *"Third-party notices: $L/share/doc/geekbridge/THIRD_PARTY_NOTICES.md"* && "$ab" == *"Licence text: $L/share/doc/geekbridge/LICENSE"* ]]; echo $?) "$(echo "$ab" | grep -E 'notices|text' | tr '\n' '|')"
+if command -v notify-send >/dev/null; then note_ok=0; else grep -q 'notify-send' "$S/install1.log"; note_ok=$?; fi
+check install-optional-programs-note $note_ok "missing optional programs are named, never fatal"
 check install-desktop-entries $([[ "$(ls "$L/share/applications"/*.desktop | wc -l)" == 8 ]]; echo $?)
 check install-icons $([[ "$(find "$L/share/icons" -type f \( -name '*.png' -o -name '*.svg' \) | wc -l)" == 32 ]]; echo $?)
 bad=0; for f in "$L"/share/applications/*.desktop "$A"; do desktop-file-validate "$f" || bad=1; done; check install-desktop-validate $bad

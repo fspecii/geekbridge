@@ -152,7 +152,7 @@ desktop() {
   mkdir -p "$DW/x010"; tar xzf "$S/out/010/geekbridge-0.1.0-linux-x86_64-installer.tar.gz" -C "$DW/x010"
   ( cd "$DW/x010/geekbridge-0.1.0" && ./install.sh --prefix "$DW/prefix-010" ) >"$DW/install-010.log" 2>&1
   SVC="$DW/prefix-010/bin/geekbridge-service"; CTLBIN="$DW/prefix-010/bin/geekbridge-ctl"
-  out="$("$CTLBIN" --version 2>&1)"; check desktop-installed-v0.1.0 $([[ "$out" == *" 0.1.0" ]]; echo $?) "$out ($DW/prefix-010)"
+  out="$("$CTLBIN" --version 2>&1 | head -1)"; check desktop-installed-v0.1.0 $([[ "$out" == *" 0.1.0" ]]; echo $?) "$out ($DW/prefix-010)"
   start_replica || { rec desktop FAIL "replica did not start"; return 1; }
 
   # ---- state of an existing install: the state-versioning agent's v1 fixtures (identity, trusted peer, consent, ...)
@@ -216,7 +216,7 @@ desktop() {
   local P11="$DW/prefix-011"; mkdir -p "$P11/bin"
   if [[ -x "$x11/$top/install.sh" ]]; then ( cd "$x11/$top" && ./install.sh --prefix "$P11" ) >"$DW/install-011.log" 2>&1
   else install -m 0755 "$x11/$top"/geekbridge* "$P11/bin/"; fi
-  out="$("$P11/bin/geekbridge-ctl" --version 2>&1)"
+  out="$("$P11/bin/geekbridge-ctl" --version 2>&1 | head -1)"
   check desktop-manual-install-v0.1.1 $([[ "$out" == *" 0.1.1" ]]; echo $?) "$out ($P11), archive layout: $top/ $(ls "$x11/$top" | wc -l) files"
 
   # ---- 8. state compatibility: new service on the same state dir

@@ -269,6 +269,15 @@ impl Updates {
         self.status.as_ref().map(summary_line)
     }
 
+    /// Commit and channel of the running build, once the service has answered.
+    pub fn about(&mut self) -> bridge_core::about::About {
+        self.poll();
+        bridge_core::about::About {
+            commit: self.status.as_ref().and_then(|s| s.current_commit.clone()),
+            channel: self.status.as_ref().map(|s| s.channel.as_str().to_owned()),
+        }
+    }
+
     /// Details-panel section: manual check and the automatic-check switch.
     pub fn details(&mut self, ui: &mut egui::Ui, pal: &Palette) {
         self.poll();
@@ -416,7 +425,7 @@ fn release_url_ok(url: &str) -> bool {
     })
 }
 
-fn open_in_desktop(target: &str) {
+pub(crate) fn open_in_desktop(target: &str) {
     #[cfg(target_os = "macos")]
     let program = "open";
     #[cfg(windows)]

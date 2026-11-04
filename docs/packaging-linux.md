@@ -51,7 +51,27 @@ loads windowing/GL libraries with `dlopen`. The dlopen names were read from the 
 `libxcb.so.1`, `libXcursor.so.1`, `libXi.so.6`, `libXrandr.so.2`) and each exists on this machine and belongs to
 one of the packages above. That check found `libxkbcommon-x11` missing from the first draft of `depends`; it was
 added and the package rebuilt, and the numbers in this document are from the rebuilt package.
-`makedepends`: cargo, pkgconf, librsvg. Optional: wl-clipboard, xclip, libnotify, mako, bluez, pipewire-pulse, xdg-utils, zenity.
+`makedepends`: cargo, pkgconf, librsvg.
+
+Optional programs (the apps start without them; each loses one feature). Arch `optdepends` carries a one-line reason for
+each, the `.deb` lists them as `Recommends` (installed by default by apt) and the installer tarball names the missing ones
+when it finishes:
+
+| Feature | Arch `optdepends` | Debian `Recommends` | Program the code runs |
+| --- | --- | --- | --- |
+| Clipboard sync | wl-clipboard (Wayland), xclip (X11) | `wl-clipboard \| xclip` | `wl-copy`, `wl-paste`, `xclip` |
+| Desktop notifications | libnotify, mako | `libnotify-bin` (`Suggests: mako-notifier \| dunst \| notification-daemon`) | `notify-send` |
+| Call audio | bluez, pipewire, wireplumber, pipewire-pulse | `bluez`, `pipewire`, `wireplumber`, `pipewire-pulse` | `bluetoothctl`, `wpctl`, `pactl` |
+| Open links, files, the licence text | xdg-utils | `xdg-utils` | `xdg-open` |
+| File picker in Share | zenity | `zenity \| kdialog` | `zenity`, `kdialog` |
+
+### About and licence
+
+The Settings window has an "About GeekBridge" section (version, commit, update channel, licence, independence statement,
+project address, buttons for the licence text and the third-party notices) and `geekbridge-ctl about` / `--version` print
+the same lines. The documents are looked for next to the binary, then in `<prefix>/share/doc/geekbridge` (the installer
+puts `LICENSE` and `THIRD_PARTY_NOTICES.md` there; uninstall removes them), then in `/usr/share/doc/geekbridge` (`.deb`) and
+`/usr/share/licenses/geekbridge` (Arch), and finally the GitHub pages are opened instead.
 
 ### Scratch-root install test (extracted with `bsdtar -xf … -C <scratch>`)
 
@@ -71,7 +91,7 @@ Not done: an actual `pacman -U` / install / uninstall round trip, running the GU
 ## `scripts/package-linux.sh`
 
 Run against the existing `target/release` binaries into a scratch `--out`: produced the `.deb` and the installer
-tarball. `.deb`: control file well formed (`Depends: libc6, libgcc-s1, libxkbcommon0, libwayland-client0, libgl1, libx11-6, libxcb1`),
+tarball. `.deb`: control file well formed (`Depends: libc6, libgcc-s1, libxkbcommon0, libwayland-client0, libgl1, libx11-6, libxcb1`, plus `Recommends` and `Suggests` as in the table above; `scripts/e2e/install-sandbox.sh` parses the fields, and runs `dpkg-deb -I` where dpkg is installed),
 54 files, unit mode 0644, includes the autostart entry and `geekbridge-service-launch`. Tarball: 26 files
 (`bin/`, `share/`, `install.sh`, README). The Debian dependency list now includes `libxkbcommon-x11-0`, `libxcursor1`, `libxi6` and `libxrandr2`, which the
 binaries also dlopen (fixed 2026-11-02, see [reports/install-upgrade-sandbox.md](reports/install-upgrade-sandbox.md)).

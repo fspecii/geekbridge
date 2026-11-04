@@ -1280,6 +1280,9 @@ impl HomeApp {
                 .wrap(),
             );
         });
+        nothing::section(ui, pal, crate::i18n::tr("about.section"));
+        let about = self.updates.about();
+        nothing::card(ui, pal, |ui| crate::about_ui::show(ui, pal, &about));
     }
 }
 
@@ -1428,6 +1431,33 @@ pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
+    /// The About section is in Settings, its buttons carry spoken names, and its words are there.
+    #[cfg(feature = "accesskit")]
+    #[test]
+    fn settings_about_section_is_named() {
+        let ctx = egui::Context::default();
+        let mut home = HomeApp::new(1, &ctx);
+        home.view = View::Settings;
+        let mut first = true;
+        let tree = crate::a11y_tests::capture(egui::vec2(960.0, 1600.0), move |ctx| {
+            if first {
+                crate::theme::apply(ctx, AppKind::Calls);
+                first = false;
+            }
+            home.frame(ctx);
+        });
+        for name in [
+            "Open the third-party notices",
+            "Open the licence text",
+            "Open the project page in your browser",
+        ] {
+            assert!(tree.find(name).is_some(), "{name}\n{}", tree.outline());
+        }
+        assert!(tree.has_name_starting("Licence: GPL-3.0-or-later"));
+        assert!(tree.has_name_starting("Independent implementation"));
+        assert_eq!(tree.unnamed_controls(), Vec::<String>::new());
+    }
+
     /// Settings at the smallest window: nothing may reach past the right edge (it would be clipped).
     #[cfg(feature = "accesskit")]
     #[test]

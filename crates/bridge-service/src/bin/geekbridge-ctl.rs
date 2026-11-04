@@ -14,6 +14,8 @@ use std::{ffi::OsString, path::PathBuf, process::ExitCode};
 const USAGE: &str = "geekbridge-ctl [--state-dir DIR] [--control-port PORT] COMMAND
 
 Commands:
+  about                               version, build commit, update channel, licence and where the licence text and
+                                      third-party notices are (also --version)
   status                              service identity, paired devices, links, pending challenges
   events [AFTER]                      events newer than AFTER (default 0)
   connect DEVICE_ID [IP PORT]         dial a device (endpoint from discovery if omitted)
@@ -126,6 +128,39 @@ fn main() -> ExitCode {
     }
 }
 
+/// Version, licence and where the documents are: the same lines as "About GeekBridge" in the
+/// desktop Settings. The update channel comes from the running service; offline it is left out.
+/// `--version` keeps `geekbridge-ctl VERSION` as its first line for scripts.
+fn about_command(port: u16, state_dir: &std::path::Path, version_flag: bool) {
+    let mut about = bridge_core::about::About {
+        commit: bridge_update::Config::github(bridge_core::about::VERSION).build_commit,
+        channel: None,
+    };
+    if let Ok(token) = load_token(state_dir)
+        && let Ok(status) = update_call(port, &token, &Request::UpdateStatus)
+    {
+        about.commit = status.current_commit.or(about.commit);
+        about.channel = Some(status.channel.as_str().to_owned());
+    }
+    if version_flag {
+        println!("geekbridge-ctl {}", bridge_core::about::VERSION);
+    }
+    let lines = bridge_core::about::lines(
+        &about,
+        &|key| bridge_i18n::tr(key).to_owned(),
+        &|key, args| {
+            let args: Vec<(&str, &dyn std::fmt::Display)> = args
+                .iter()
+                .map(|(k, v)| (*k, v as &dyn std::fmt::Display))
+                .collect();
+            bridge_i18n::tr_args(key, &args)
+        },
+    );
+    for line in lines {
+        println!("{line}");
+    }
+}
+
 fn text(arg: Option<&OsString>, what: &str) -> Result<String, String> {
     arg.and_then(|a| a.to_str())
         .map(str::to_owned)
@@ -155,7 +190,10 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 return Ok(());
             }
             "-V" | "--version" => {
-                println!("geekbridge-ctl {}", env!("CARGO_PKG_VERSION"));
+                match state_dir.clone().or_else(ipc::default_state_dir) {
+                    Some(dir) => about_command(port, &dir, true),
+                    None => about_command(port, std::path::Path::new(""), true),
+                }
                 return Ok(());
             }
             _ => break,
@@ -165,6 +203,10 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     let state_dir = state_dir
         .or_else(ipc::default_state_dir)
         .ok_or("cannot determine the state directory; pass --state-dir")?;
+    if command == "about" {
+        about_command(port, &state_dir, false);
+        return Ok(());
+    }
     if command == "firewall" {
         println!("{}", bridge_service::autostart::firewall_help());
         return Ok(());

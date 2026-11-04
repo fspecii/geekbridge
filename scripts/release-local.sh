@@ -484,7 +484,7 @@ python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["bomFor
 vdir="$(mktemp -d "$WORK/tmp/verify.XXXXXX")"
 tar -xzf "$OUT/geekbridge-linux-x86_64.tar.gz" -C "$vdir"
 for b in "${BINS[@]}"; do [[ -x "$vdir/geekbridge-linux-x86_64/$b" ]] || bad "tarball lacks $b"; done
-ctl_out="$("$vdir/geekbridge-linux-x86_64/geekbridge-ctl" --version 2>&1 || true)"
+ctl_out="$("$vdir/geekbridge-linux-x86_64/geekbridge-ctl" --version 2>&1 | head -1 || true)"
 [[ "$ctl_out" == "geekbridge-ctl $VERSION" ]] && ok "geekbridge-ctl --version = '$ctl_out'" || bad "geekbridge-ctl --version printed '$ctl_out', wanted 'geekbridge-ctl $VERSION'"
 rm -rf "$vdir"
 

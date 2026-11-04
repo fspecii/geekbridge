@@ -78,7 +78,7 @@ chmod 0644 "$root/usr/lib/systemd/user/geekbridge-service.service"
 install -m 0644 "$pk/geekbridge-service.desktop" "$root/etc/xdg/autostart/"
 [[ -f "$ROOT/README.md" ]] && install -m 0644 "$ROOT/README.md" "$root/usr/share/doc/geekbridge/README.md"
 install -m 0644 "$pk/copyright" "$root/usr/share/doc/geekbridge/copyright"
-install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"
+install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"   # the About section opens these
 
 size_kb=$(du -sk "$root" | cut -f1)
 ctl="$work/control"; mkdir -p "$ctl"
@@ -89,7 +89,8 @@ Architecture: amd64
 Maintainer: GeekBridge <noreply@users.noreply.github.com>
 Installed-Size: $size_kb
 Depends: libc6, libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libgl1, libx11-6, libxcb1, libxcursor1, libxi6, libxrandr2
-Recommends: wl-clipboard | xclip, xdg-utils, zenity | kdialog
+Recommends: wl-clipboard | xclip, libnotify-bin, xdg-utils, zenity | kdialog, bluez, pipewire, wireplumber, pipewire-pulse
+Suggests: mako-notifier | dunst | notification-daemon
 Section: net
 Priority: optional
 Homepage: https://github.com/fspecii/geekbridge

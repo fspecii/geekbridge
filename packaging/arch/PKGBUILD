@@ -15,13 +15,16 @@ license=('GPL-3.0-or-later')
 # The GUI loads these with dlopen at run time, so ldd on the binaries lists only glibc and libgcc.
 depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libxkbcommon-x11' 'libglvnd' 'libx11' 'libxcb' 'libxcursor' 'libxi' 'libxrandr')
 makedepends=('cargo' 'pkgconf' 'librsvg')
-optdepends=('wl-clipboard: clipboard sync on Wayland'
+# Nothing here is needed to start the apps; each line says what stops working without it.
+optdepends=('wl-clipboard: clipboard sync on Wayland (use xclip on X11)'
             'xclip: clipboard sync on X11'
-            'libnotify: desktop notifications'
-            'mako: notification daemon for wlroots/Hyprland sessions'
-            'bluez: Bluetooth link for call audio'
-            'pipewire-pulse: call audio routing'
-            'xdg-utils: open links and files'
+            'libnotify: desktop notifications (notify-send) for pairing, files and calls'
+            'mako: notification daemon for wlroots/Hyprland sessions without one'
+            'bluez: Bluetooth link between the phone and this computer, needed for call audio'
+            'pipewire: sound server that carries call audio'
+            'wireplumber: PipeWire session manager that exposes the phone as an audio device'
+            'pipewire-pulse: PulseAudio compatibility for choosing the call headphones and microphone'
+            'xdg-utils: open links, files and the licence text from the apps'
             'zenity: file picker for the Share window')
 options=('!lto')
 install=geekbridge.install
