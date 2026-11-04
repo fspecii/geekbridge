@@ -10,3 +10,12 @@ Run 41766609345 (b5633caee) failed three jobs.
   opus or camera code); growth is serde code for the new wire types (call-audio `Setup`, pairing, Calls window) and
   `call_cli`. Legitimate feature growth, so budgets are raised to service 6.2 MB and ctl 1.5 MB, documented in
   `docs/performance.md` and `scripts/perf-check.sh`.
+
+## Follow-up: idle RSS over budget after 4c196e52b
+
+The next head (call-audio routing on the computer's headset, 4c196e52b) kept the size checks green (that commit raised
+them to 6.7 MB and 1.55 MB itself, merged with this fix) but the performance job then failed on idle RSS: 9692 kB on
+CI against 8000 kB (7720 kB before, reproduced locally: 9280 vs 7720). Cause: the service now links libpulse, which pulls
+16 more shared objects into the process at start (`ldd` 5 -> 21). Not a leak or a new thread. RSS budgets raised to
+9500 kB (local) and 10500 kB (CI) with the explanation in `docs/performance.md`; the proper fix (lazy `dlopen` of libpulse)
+is left to the call-audio work.

@@ -26,12 +26,12 @@ UI=0
 # GB_CI=1 (set by .github/workflows/check.yml): shared runners have other CPUs, noisy neighbours and a different
 # libc/kernel, so the load-dependent rows get documented slack. Sizes stay strict. Explicit BUDGET_* overrides win (CI values are only defaults, applied before the normal ones).
 if [[ ${GB_CI:-} == 1 ]]; then
-    : "${BUDGET_RSS_KIB:=8000}" "${BUDGET_THREADS:=10}" "${BUDGET_FDS:=24}" "${BUDGET_WAKEUPS_PER_S:=6}"
+    : "${BUDGET_RSS_KIB:=10500}" "${BUDGET_THREADS:=10}" "${BUDGET_FDS:=24}" "${BUDGET_WAKEUPS_PER_S:=6}"
     : "${BUDGET_CPU_TICKS:=6}" "${BUDGET_STARTUP_MS:=1000}"
 fi
 
 # Budgets (service, idle, no phone linked). Measured baseline in docs/performance.md.
-: "${BUDGET_RSS_KIB:=6000}"           # resident set (10000 -> 6000: idle code pages are dropped 2 s after start, 3.4 MB measured, docs/performance.md)
+: "${BUDGET_RSS_KIB:=9500}"           # 6000 -> 9500 (CI 8000 -> 10500): 9 280 kB locally, 9 692 kB on CI after the call-audio routing commit, which links libpulse (and through it libsystemd, libdbus, libxcb, libvorbisenc, libsndfile: +1.2 MB of mapped library data and heap, docs/performance.md); before: resident set (10000 -> 6000: idle code pages are dropped 2 s after start, 3.4 MB measured, docs/performance.md)
 : "${BUDGET_THREADS:=8}"              # OS threads
 : "${BUDGET_FDS:=20}"                 # open descriptors
 : "${BUDGET_WAKEUPS_PER_S:=3}"        # context switches per second, whole process

@@ -9,7 +9,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 
 | Metric (service, idle) | Before | After | Budget |
 | --- | --- | --- | --- |
-| Idle RSS | 6824 kB | 5808 kB (3.4-3.6 MB after round 3, below) | 6000 kB (was 10000; round 3) |
+| Idle RSS | 6824 kB | 5808 kB (3.4-3.6 MB after round 3, below) | 9500 kB local, 10500 kB on CI (6000/8000 until the call-audio routing commit; see "libpulse" below) |
 | Threads | 25 | 3 | 8 |
 | Open fds | 12 | 12 | 20 |
 | Wakeups (voluntary context switches, all threads) | ~1/s | ~0.3-2/s | 3/s |
@@ -23,7 +23,7 @@ builds (load average 23-32), which affects timings but not RSS, thread or volunt
 | UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
 
 On CI (`GB_CI=1`, set by the performance job) the load-dependent rows get slack because shared runners differ in CPU count,
-neighbours and kernel: RSS 8000 kB, threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
+neighbours and kernel: RSS 10500 kB (8000 before the libpulse link, see below), threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
 8060-8188 kB, 5-6 threads, 20 fds, 1-4 wakeups/s (the 3/s budget was exceeded once), 0 ticks, 12 ms. Binary sizes stay strict on CI. Any `BUDGET_*` variable still overrides.
 
 Size budgets were raised on 2026-11-02 (service 5.0 -> 5.3 MB, ctl 0.8 -> 1.2 MB) after trimming was
@@ -271,3 +271,15 @@ payload size, not full equality, for mutated input.
 The phone side in these tests is a real `bridge-kde` endpoint. `bridge-phone-sim` simulates a
 Bluetooth telephony stack, not the KDE Connect transport, and `bridge-android` has its own tests
 (`tests/transport*.rs`); no test here drives `bridge-android` against the desktop service.
+
+## libpulse and idle RSS (2026-11-04)
+
+The call-audio routing commit (4c196e52b) made `geekbridge-service` link `libpulse` (via `libpulse-binding`). The dynamic
+loader now maps 16 more shared objects at start (`ldd` 5 -> 21 entries: libpulse, libpulsecommon, libsystemd, libdbus-1,
+libxcb, libvorbisenc, libsndfile and friends). `/proc/PID/smaps_rollup` after 5 s: RSS 3576 -> 4748 kB, anonymous
+660 -> 1152 kB, file-backed 1676 -> 2074 kB (no new threads). The perf script's whole-process figure, which includes the
+tray and the D-Bus session, went 7720 -> 9280 kB locally and 9692 kB on CI, over the old budgets (6000 local, 8000 CI), so
+RSS budgets are now 9500 kB local and 10500 kB CI. The code pages are already dropped by `codepages::drop_idle`; what
+remains is library data and the loader's relocations/heap. A real fix is to `dlopen` libpulse only when the call-audio
+feature is used (which would also let the service start on machines without libpulse installed); that is a larger change
+left for the call-audio owner. Until then the higher budget is the honest number.
