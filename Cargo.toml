@@ -17,6 +17,21 @@ bridge-core = { path = "crates/bridge-core" }
 [profile.dev]
 debug = 1
 
+# `cargo test` only: the deterministic fuzz pass (bridge-fuzz/tests/deterministic.rs, 2000 inputs per target)
+# took 114 s unoptimised, the slowest test in the workspace and a big part of the Windows CI test step.
+# Optimising just the fuzz harness and the protocol crate it exercises brings it down while keeping debug
+# assertions and overflow checks on; ordinary `cargo build`/`cargo run` are unaffected.
+[profile.test.package.bridge-fuzz]
+opt-level = 2
+[profile.test.package.bridge-core]
+opt-level = 2
+[profile.test.package.bridge-kde]
+opt-level = 2
+[profile.test.package.bridge-android]
+opt-level = 2
+[profile.test.package.bridge-update]
+opt-level = 2
+
 # Desktop release builds (geekbridge-service, geekbridge-ctl and the egui apps). Measured on
 # bridge-service + bridge-apps, x86_64 Linux (docs/performance.md has the table): the defaults gave a
 # 10.7 MB service binary; fat LTO + one codegen unit + stripped symbols + opt-level "s" gives 4.3 MB

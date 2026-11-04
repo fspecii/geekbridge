@@ -65,6 +65,32 @@ async fn drain(link: &mut kde::TrustedLink, window: Duration) -> Vec<String> {
     got
 }
 
+/// Like `drain`, but returns as soon as `want` has arrived (the positive wait; only the "nothing else
+/// comes" checks need a full quiet window). `window` is still the upper bound.
+async fn drain_until(link: &mut kde::TrustedLink, window: Duration, want: &str) -> Vec<String> {
+    let mut got = Vec::new();
+    let end = tokio::time::Instant::now() + window;
+    while let Ok(ev) = timeout(
+        end.saturating_duration_since(tokio::time::Instant::now()),
+        link.recv(),
+    )
+    .await
+    {
+        if let Ok(kde::LinkEvent::Packet(p)) = ev
+            && p.kind == CLIPBOARD
+        {
+            got.push(p.body["content"].as_str().unwrap_or_default().to_owned());
+            if got.last().map(String::as_str) == Some(want) {
+                break;
+            }
+        }
+        if tokio::time::Instant::now() >= end {
+            break;
+        }
+    }
+    got
+}
+
 async fn setup(
     faults: Faults,
 ) -> (
@@ -144,7 +170,7 @@ async fn late_echoes_do_not_start_a_send_loop() {
         let a = format!("A{r}");
         let b = format!("B{r}");
         clip.user_copy(&a, false);
-        let got = drain(&mut link, Duration::from_secs(3)).await;
+        let got = drain_until(&mut link, Duration::from_secs(3), &a).await;
         assert_eq!(got.last(), Some(&a), "round {r}");
         // The user copies B; the phone's (late) echo of A arrives after it.
         clip.user_copy(&b, false);
