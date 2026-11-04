@@ -281,10 +281,11 @@ impl Gate {
                     }))];
                 }
                 self.requested = None;
+                // Listening only: speaking back is a separate step (`speak`), whatever the offer claims.
                 self.session = Some(Session {
                     id: o.session,
                     down: o.down,
-                    up: o.up,
+                    up: false,
                     uplink: o.uplink,
                     live: true,
                     last_frame_ms: now_ms,
@@ -294,7 +295,7 @@ impl Gate {
                         session: o.session,
                         accept: true,
                         down: o.down,
-                        up: o.up,
+                        up: false,
                         reason: None,
                     })),
                     Action::IndicatorOn,
@@ -366,7 +367,9 @@ impl Gate {
             }
             (Side::Computer, Msg::Speak { session, on }) => {
                 match (self.session.as_mut(), self.speak_asked) {
-                    (Some(s), Some((id, _))) if s.live && s.id == session && id == session => {
+                    (Some(s), Some((id, asked)))
+                        if s.live && s.id == session && id == session && (!on || asked) =>
+                    {
                         s.up = on;
                         self.speak_asked = None;
                         vec![Action::SpeakState(on)]
@@ -442,6 +445,30 @@ mod tests {
         assert!(p.may_send(Dir::Down) && !p.may_send(Dir::Up));
         assert!(c.may_send(Dir::Up) && !c.may_send(Dir::Down));
         (p, c)
+    }
+
+    #[test]
+    fn an_offer_claiming_up_does_not_turn_the_microphone_on() {
+        let mut c = Gate::new(Side::Computer);
+        c.set_consent(true, false);
+        let offer = Msg::Offer(Offer {
+            session: 9,
+            down: true,
+            up: true,
+            uplink: Uplink::TelephonyTx,
+        });
+        let r = c.on_msg(offer, 0);
+        assert!(matches!(&sent(&r)[0], Msg::Answer(a) if a.accept && a.down && !a.up));
+        assert!(!c.may_send(Dir::Up) && !c.session().unwrap().up);
+    }
+
+    #[test]
+    fn a_phone_cannot_answer_speak_off_with_on() {
+        let (_p, mut c) = listen_pair();
+        c.ask_speak(false);
+        let r = c.on_msg(Msg::Speak { session: 7, on: true }, 3);
+        assert!(matches!(r[0], Action::Drop(_)));
+        assert!(!c.may_send(Dir::Up));
     }
 
     #[test]
