@@ -2,6 +2,7 @@
 //! Calls: a dialer in the style of the macOS phone keypad. The number is local text only;
 //! placing a call needs the service to offer it (Telephony allowed, the phone permits it, no call going on)
 //! and the user to confirm the number in a sheet; the service re-checks everything before sending.
+use crate::a11y::ScrollBars as _;
 use crate::{
     call_audio_ui::CallAudioPanel,
     call_feed::{CallFeed, FeedState},
@@ -488,14 +489,18 @@ impl AppView for Calls {
             Tab::Keypad => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
+                    .drag_to_scroll(false)
                     .id_salt("calls-keypad")
-                    .show(ui, |ui| self.keypad(ui, env));
+                    .show(ui, |ui| self.keypad(ui, env))
+                    .bars(ui.ctx());
             }
             Tab::Recents => {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
+                    .drag_to_scroll(false)
                     .id_salt("calls-recents")
-                    .show(ui, |ui| self.recents(ui, env));
+                    .show(ui, |ui| self.recents(ui, env))
+                    .bars(ui.ctx());
             }
         });
         self.panel.popup(ctx, pal, &feed);
