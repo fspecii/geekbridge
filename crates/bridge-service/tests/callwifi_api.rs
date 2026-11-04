@@ -260,7 +260,7 @@ async fn a_press_an_offer_and_frames_play_and_every_stop_path_ends_it() {
     loop {
         let loud = {
             let p = played.lock().unwrap();
-            p.len() > 3200 && p.chunks_exact(1600).any(|c| rms(c) > 1000.0)
+            p.len() > 3200 && p.windows(1600).step_by(1600).any(|c| rms(c) > 1000.0)
         };
         if loud {
             break;
