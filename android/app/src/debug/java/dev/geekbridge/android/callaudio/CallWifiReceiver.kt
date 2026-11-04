@@ -34,6 +34,23 @@ class CallWifiReceiver : BroadcastReceiver() {
                 if (intent.getStringExtra("step") == "call") CallWifiRuntime.runCallTest() else CallWifiRuntime.runControl()
                 resultCode = 1
             }
+            // Linked-emulator e2e only: allow (or withdraw) the experiment for one paired computer, as the Settings row does.
+            "dev.geekbridge.callwifi.GRANT" -> {
+                val device = intent.getStringExtra("device").orEmpty()
+                if (device.isEmpty()) {
+                    resultCode = 0
+                } else {
+                    dev.geekbridge.android.ComputerGrantsRuntime.init(context)
+                    dev.geekbridge.android.ComputerGrantsRuntime.allow(device, dev.geekbridge.android.GrantFeature.CallAudio, intent.getBooleanExtra("on", true))
+                    resultCode = 1
+                }
+            }
+            // Linked-emulator e2e only: stand in for a finished self-test, because the emulator's call sources cannot
+            // give a real verdict (they sound with no call). Source TONE is the helper's synthetic far party.
+            "dev.geekbridge.callwifi.CONFIG" -> {
+                CallWifiRuntime.setTestConfig(intent.getStringExtra("verdict"), intent.getStringExtra("source"))
+                resultCode = 1
+            }
             "dev.geekbridge.callwifi.STATUS" -> {
                 // Numbers and words only, never audio or names.
                 resultCode = 1

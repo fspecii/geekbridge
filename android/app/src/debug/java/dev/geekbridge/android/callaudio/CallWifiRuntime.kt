@@ -116,6 +116,16 @@ object CallWifiRuntime {
         changed()
     }
 
+    /** Test hook (adb only): a stored verdict and capture source, as the self-test would leave them. Uplink stays none. */
+    fun setTestConfig(v: String?, src: String?) {
+        if (v != null) verdict = Verdict.fromWire(v)
+        if (!src.isNullOrEmpty()) source = src
+        uplink = "none"
+        prefs?.edit()?.putString("verdict", verdict.wire)?.putString("source", source)?.putString("uplink", uplink)?.apply()
+        pushConfig()
+        changed()
+    }
+
     fun setSpeak(on: Boolean) {
         speakOptIn = on
         prefs?.edit()?.putBoolean("speak", on)?.apply()
