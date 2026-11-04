@@ -179,12 +179,18 @@ jobs:
           export CC_aarch64_linux_android="$bin/aarch64-linux-android26-clang"
           export CC_x86_64_linux_android="$bin/x86_64-linux-android26-clang"
           export AR_aarch64_linux_android="$bin/llvm-ar" AR_x86_64_linux_android="$bin/llvm-ar"
-          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384"
-          cargo build --release --locked -p bridge-android --target aarch64-linux-android --target x86_64-linux-android
+          # Same profile and linker flags as scripts/android-env.sh and release-local.sh (opt-level z, lld ICF, 16 KiB pages): the library CI
+          # ships is the one measured in docs/android-perf.md.
+          export RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384 -C link-arg=-Wl,--icf=all"
+          cargo build --profile android --locked -p bridge-android --target aarch64-linux-android --target x86_64-linux-android
           mkdir -p android/app/src/main/jniLibs/arm64-v8a android/app/src/main/jniLibs/x86_64
-          cp target/aarch64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
-          cp target/x86_64-linux-android/release/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
+          cp target/aarch64-linux-android/android/libgeekbridge_android.so android/app/src/main/jniLibs/arm64-v8a/
+          cp target/x86_64-linux-android/android/libgeekbridge_android.so android/app/src/main/jniLibs/x86_64/
           "$bin/llvm-strip" android/app/src/main/jniLibs/*/libgeekbridge_android.so
+          # Android 15+ devices with 16 KiB pages refuse a library whose LOAD segments are aligned to less.
+          for so in android/app/src/main/jniLibs/*/libgeekbridge_android.so; do
+            "$bin/llvm-readelf" -lW "$so" | awk -v f="$so" '$1=="LOAD" && strtonum($NF) < 16384 { print f ": LOAD alignment " $NF " < 16 KiB"; bad=1 } END { exit bad }'
+          done
       - name: Test and build unsigned APKs (no secrets in this step)
         shell: bash
         run: |

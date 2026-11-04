@@ -110,6 +110,51 @@ on an emulator and by unit tests only ([README](../README.md) feature table).
 The README and the packet gate describe the same rule. Two cases are "on" without a switch and are not secret: the
 device name and the identity announcement (below).
 
+## Android permissions in the release APK
+
+Every `<uses-permission>` in `android/app/src/main/AndroidManifest.xml` has a row here, and the debug-only
+permissions (`src/debug/AndroidManifest.xml`: `RECORD_AUDIO`, `WRITE_CONTACTS`; its `WRITE_CALENDAR` duplicates the main one) are
+not in the release APK. `crates/bridge-core/tests/privacy_doc.rs` fails if the two lists differ.
+"Install" means granted at install time with no prompt; "runtime" means an Allow button the user presses.
+
+<!-- guard:android-permissions -->
+| Permission | Kind | Why |
+| --- | --- | --- |
+| `INTERNET` | install | The LAN link to a paired computer (TLS, pinned certificates) and the optional update check to GitHub |
+| `ACCESS_NETWORK_STATE` | install | Notice Wi-Fi coming and going so the link redials |
+| `CHANGE_NETWORK_STATE` | install | Prerequisite Android 14+ lists for a `connectedDevice` foreground service |
+| `CHANGE_WIFI_MULTICAST_STATE` | install | Receive discovery broadcasts while discovery listening is on; also a `connectedDevice` prerequisite |
+| `WAKE_LOCK` | install | A Wi-Fi lock (no CPU wake lock) while a computer is linked |
+| `FOREGROUND_SERVICE` | install | The quiet link service, only while a computer is paired |
+| `FOREGROUND_SERVICE_CONNECTED_DEVICE` | install | Android 14+ type declaration for that service |
+| `RECEIVE_BOOT_COMPLETED` | install | Restart the link service after a reboot or an app update, only if a computer is paired |
+| `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | install | The setup step "Allow unrestricted battery" opens the system dialog; Android asks the user |
+| `REQUEST_INSTALL_PACKAGES` | install | "Install update" hands a SHA-256-verified APK to the system installer; Android asks and the user confirms each install |
+| `POST_NOTIFICATIONS` | runtime (Android 13+) | Link status, clipboard tap request, transfers, dial questions; everything works without it |
+| `CAMERA` | runtime | The in-app QR scan screen, only while it is open |
+| `READ_CONTACTS` | runtime | The phonebook feature |
+| `READ_CALENDAR` | runtime | Calendar (read) |
+| `WRITE_CALENDAR` | runtime | Only when "Let the computer edit my calendar" is switched on |
+| `READ_MEDIA_IMAGES` | runtime | "Show recent photos on the computer" |
+| `READ_MEDIA_VISUAL_USER_SELECTED` | runtime | The same on Android 14+ when the user shares only chosen photos |
+| `READ_EXTERNAL_STORAGE` | runtime, Android 12L and older (`maxSdkVersion` 32) | The same on those versions |
+| `READ_PHONE_STATE` | runtime | Coarse call state (idle, ringing, in call), no number |
+| `ANSWER_PHONE_CALLS` | runtime | Answer, decline or end a call from a computer you allowed |
+| `READ_CALL_LOG` | runtime | Android's only way to give the app the caller's number; the log itself is never read |
+| `CALL_PHONE` | runtime | Place a call a paired computer asked for, after the computer's confirmation |
+| `READ_SMS` | runtime, hard-restricted | Messages sharing, off by default |
+| `SEND_SMS` | runtime, hard-restricted | Sending from the computer's Messages app |
+| `RECEIVE_SMS` | runtime, hard-restricted | New texts for the computer |
+| `BLUETOOTH_CONNECT` | runtime (Android 12+) | "Allow Bluetooth check" in the call-audio setup: lists connected hands-free devices, never scans or pairs |
+| `BLUETOOTH` | install, Android 11 and older (`maxSdkVersion` 30) | The same on those versions |
+<!-- /guard -->
+
+The SMS permissions are hard-restricted on Android 13+ for an app that no store installed: the switch stays greyed out until
+the user chooses "Allow restricted settings" in the app's info page, and the app says so
+(`SmsRestriction`, `SmsReadiness.kt`). Notification access is restricted the same way. The app declares no exact-alarm
+permission (its one alarm, the Agenda widget tick, is inexact), no `SYSTEM_ALERT_WINDOW`, no storage-wide permission, no location and no
+`QUERY_ALL_PACKAGES`.
+
 ## Per category
 
 For each: what travels, where it is kept, how long, what is logged, how it is erased.

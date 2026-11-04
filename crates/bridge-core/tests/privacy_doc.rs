@@ -122,6 +122,59 @@ fn privacy_doc_lists_the_phone_grants_as_in_code() {
     );
 }
 
+/// `android:name="android.permission.X"` of every `<uses-permission ...>` element in a manifest.
+fn manifest_permissions(path: &str) -> BTreeSet<String> {
+    let xml = std::fs::read_to_string(root().join(path)).unwrap();
+    // Drop comments first: they mention permission names in prose.
+    let mut clean = String::new();
+    let mut rest = xml.as_str();
+    while let Some((a, b)) = rest.split_once("<!--") {
+        clean.push_str(a);
+        rest = b.split_once("-->").expect("unclosed comment").1;
+    }
+    clean.push_str(rest);
+    clean
+        .split("<uses-permission")
+        .skip(1)
+        .filter_map(|el| el.split('>').next())
+        .filter_map(|el| el.split("android.permission.").nth(1))
+        .map(|n| n.split('"').next().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn privacy_doc_lists_every_release_android_permission_and_nothing_else() {
+    let main = manifest_permissions("android/app/src/main/AndroidManifest.xml");
+    assert!(main.len() > 20, "manifest parse found {main:?}");
+    assert_eq!(
+        guarded(&doc(), "android-permissions"),
+        main,
+        "docs/privacy.md Android permission table differs from the main AndroidManifest.xml"
+    );
+}
+
+#[test]
+fn debug_only_permissions_stay_out_of_the_release_manifest() {
+    let main = manifest_permissions("android/app/src/main/AndroidManifest.xml");
+    for p in ["RECORD_AUDIO", "WRITE_CONTACTS", "DUMP"] {
+        assert!(!main.contains(p), "{p} is a debug-only permission");
+    }
+    // The debug manifest's receivers are protected by DUMP and must never be copied to main.
+    let xml =
+        std::fs::read_to_string(root().join("android/app/src/main/AndroidManifest.xml")).unwrap();
+    for c in [
+        "ScaleSeedReceiver",
+        "DebugControlReceiver",
+        "CallWifiReceiver",
+        "DebugBootProvider",
+        "DesignGalleryActivity",
+        "DebugPinWidgetActivity",
+        "debug_network_security",
+    ] {
+        assert!(!xml.contains(c), "{c} belongs in src/debug only");
+    }
+}
+
 #[test]
 fn privacy_doc_describes_the_call_trace_as_in_code() {
     let doc = doc();
