@@ -62,7 +62,7 @@ payload() { ctl pair-qr 2>/dev/null; }
 fresh_phone
 P_OLD="$(payload)"; [[ "$P_OLD" == geekbridge://pair?* ]] || { rec setup FAIL "no payload: $P_OLD"; exit 1; }
 echo "waiting 125 s for the code to expire..." >&2; sleep 125
-scan "$P_OLD"; ui wait "Connect to a computer" 15 && shot confirm-expired
+scan "$P_OLD"; ui wait "Link to a computer?" 15 && shot confirm-expired
 tap_to Continue >/dev/null
 if ui wait "did not accept the QR code" 40; then shot expired; rec expired PASS "refused in plain words; paired=$(paired_n)"; else shot expired-fail; rec expired FAIL "no plain-language refusal"; fi
 [[ "$(paired_n)" == 0 ]] || rec expired FAIL "something got paired"
@@ -71,12 +71,12 @@ if ui wait "did not accept the QR code" 40; then shot expired; rec expired PASS 
 fresh_phone
 P1="$(payload)"
 scan "$P1"
-if ui wait "Connect to a computer" 20; then shot confirm; else shot confirm-fail; fi
+if ui wait "Link to a computer?" 20; then shot confirm; else shot confirm-fail; fi
 tap_to Continue >/dev/null
 if ui wait "Computer identity" 40; then
   shot approve
   ui dump | grep -q "Compare\|same code" && rec pair FAIL "a code comparison was shown"
-  ui tap "Pair" --exact >/dev/null
+  ui tap "Link" --exact >/dev/null
   if ui wait "Paired ✓ with" 40; then shot done; rec pair PASS "paired=$(paired_n); events: $(ctl events | jget '",".join(e["kind"] for e in d["events"] if e["kind"].startswith("qr_") or e["kind"]=="paired")')"; else shot done-fail; rec pair FAIL "never reached Home's "Paired ✓ with" banner; paired=$(paired_n)"; fi
 else
   shot approve-fail; rec pair FAIL "no approval dialog"
@@ -84,7 +84,7 @@ fi
 
 # ------------------------------------------------------------------ reuse
 fresh_phone
-scan "$P1"; ui wait "Connect to a computer" 15 >/dev/null; tap_to Continue >/dev/null
+scan "$P1"; ui wait "Link to a computer?" 15 >/dev/null; tap_to Continue >/dev/null
 if ui wait "did not accept the QR code" 40; then shot reused; rec reuse PASS "second use refused; paired=$(paired_n)"; else shot reused-fail; rec reuse FAIL "no refusal"; fi
 [[ "$(paired_n)" == 0 ]] || rec reuse FAIL "something got paired"
 ctl events | jget '"; ".join(e["kind"] + ":" + e.get("reason","") for e in d["events"] if e["kind"]=="qr_refused")' >&2
@@ -130,8 +130,8 @@ $ADB shell input keyevent KEYCODE_BACK; $ADB shell input keyevent KEYCODE_BACK
 # ------------------------------------------------------------------ unlink
 fresh_phone
 P3="$(payload)"
-scan "$P3"; ui wait "Connect to a computer" 20 >/dev/null; tap_to Continue >/dev/null
-ui wait "Computer identity" 40 >/dev/null && ui tap "Pair" --exact >/dev/null
+scan "$P3"; ui wait "Link to a computer?" 20 >/dev/null; tap_to Continue >/dev/null
+ui wait "Computer identity" 40 >/dev/null && ui tap "Link" --exact >/dev/null
 if ui wait "Paired ✓ with" 40 >/dev/null; then
   ui tap "Got it" >/dev/null
   $ADB shell am start -W -n $PKG/.HomeActivity >/dev/null; ui tap "Setup and permissions" >/dev/null; sleep 2

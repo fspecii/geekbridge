@@ -44,7 +44,7 @@ scan() { $ADB shell am start -W -a android.intent.action.VIEW -d "'$1'" $PKG >/d
 hint_case() { # name address expected-text
   local name="$1" addr="$2" want="$3" p
   p="$(qr_with_addr "$addr")"; [[ "$p" == geekbridge://* ]] || { rec "hint_$name" FAIL "no QR payload"; return; }
-  scan "$p"; ui wait "Connect to a computer" 15 >/dev/null; ui tap "Continue" >/dev/null
+  scan "$p"; ui wait "Link to a computer?" 15 >/dev/null; ui tap "Continue" >/dev/null
   if ! ui wait "Test connection" 60; then nshot "hint-$name-nofail"; rec "hint_$name" FAIL "no failure screen with a Test connection button: $(ui dump | cut -f1 | head -6 | tr '\n' '|')"; return; fi
   nshot "hint-$name-failed"
   local head; head="$(ui dump | cut -f1 | grep -iE "did not answer|different network|not accept|could not|did not work|closed" | head -1)"
@@ -65,8 +65,8 @@ stage_pairdone() {
   for id in $(paired_ids); do ctl unpair "$id" >/dev/null; done
   $ADB shell pm clear $PKG >/dev/null; wake
   local p; p="$(ctl pair-qr 2>/dev/null)"; scan "$p"
-  ui wait "Connect to a computer" 20 >/dev/null; ui tap Continue >/dev/null
-  ui wait "Computer identity" 40 >/dev/null; ui tap Pair --exact >/dev/null
+  ui wait "Link to a computer?" 20 >/dev/null; ui tap Continue >/dev/null
+  ui wait "Computer identity" 40 >/dev/null; ui tap Link --exact >/dev/null
   if ui wait "Paired ✓ with" 40; then PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     rec pairdone PASS "paired by QR link: $PHONE_ID"
   else rec pairdone FAIL "no next-steps card"; return 1; fi

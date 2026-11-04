@@ -94,7 +94,7 @@ qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the
   local t0 p; t0=$(date +%s); p="$(ctl pair-qr 2>/dev/null | head -1)"
   [[ "$p" == geekbridge://pair?* ]] || return 1
   scan "$p"
-  ui wait "Connect to a computer" 20 >/dev/null || { pshot "$TAG-qr-no-confirm"; return 2; }
+  ui wait "Link to a computer?" 20 >/dev/null || { pshot "$TAG-qr-no-confirm"; return 2; }
   tap_to Continue >/dev/null
   # The phone asks for approval ("Computer identity") unless it already trusts this exact certificate (B: only the
   # computer forgot), in which case it pairs straight away.
@@ -103,7 +103,7 @@ qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the
     dump="$(ui dump | cut -f1)"
     grep -q "^Paired ✓ with" <<<"$dump" && break
     if grep -q "^Computer identity" <<<"$dump"; then
-      ((seen)) || pshot "$TAG-qr-approve"; seen=1; ui tap Pair --exact >/dev/null
+      ((seen)) || pshot "$TAG-qr-approve"; seen=1; ui tap Link --exact >/dev/null
     fi
     sleep 1
   done
@@ -125,7 +125,7 @@ code_pair() { # same contract as qr_pair
   dcode="$(ctl status | jget 'd["challenges"][0]["verification_key"]')"
   [[ -n "$code" && "$code" == "$dcode" ]] || { echo "codes differ phone=$code pc=$dcode" >&2; return 5; }
   ctl approve "$id" "$code" >/dev/null || return 6
-  ui tap Pair >/dev/null; sleep 4
+  ui tap Link --exact >/dev/null; sleep 4
   wait_for 15 pc_paired || { pshot "$TAG-code-not-paired"; return 7; }
   pshot "$TAG-code-done"
   echo $(( $(date +%s) - t0 ))
@@ -214,7 +214,7 @@ s_repeat() {
   [[ "$c2" == "$d2" ]] || { echo "codes differ phone=$c2 pc=$d2"; return 6; }
   ctl approve "$id1" "$c1" >/dev/null 2>&1 && { echo "the stale first challenge was still approvable"; return 7; }
   ctl approve "$id2" "$c2" >/dev/null || { echo "approving the new challenge failed"; return 8; }
-  ui tap Pair >/dev/null; sleep 4
+  ui tap Link --exact >/dev/null; sleep 4
   wait_for 15 pc_paired || { pshot "$TAG-repeat-not-paired"; echo "not paired after approving the new prompt"; return 9; }
   verify_paired || return 10
   echo "$(( $(date +%s) - ${T0:-$(date +%s)} ))"

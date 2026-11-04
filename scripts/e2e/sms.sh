@@ -193,11 +193,11 @@ stage_pair() {
     local qr; qr="$(ctl pair-qr 2>/dev/null | grep -m1 "^geekbridge://")"
     [[ "$qr" == geekbridge://* ]] || { rec sms_pair FAIL "pair-qr gave: ${qr:0:120}"; return 1; }
     scan "$qr"
-    ui wait "Connect to a computer" 20 >/dev/null || { rec sms_pair FAIL "no pairing page after the link: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
+    ui wait "Link to a computer?" 20 >/dev/null || { rec sms_pair FAIL "no pairing page after the link: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     tap_to Continue --expect "Computer identity" >>"$LOGS/e2e-sms-tap.log" 2>&1
     ui wait "Computer identity" 40 >/dev/null || { rec sms_pair FAIL "no identity step: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
-    tap_to Pair >>"$LOGS/e2e-sms-tap.log" 2>&1
-    ui wait "What to do next" 40 >/dev/null || { rec sms_pair FAIL "QR pairing did not finish: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
+    tap_to Link >>"$LOGS/e2e-sms-tap.log" 2>&1
+    ui wait "Paired ✓ with" 40 >/dev/null || { rec sms_pair FAIL "QR pairing did not finish: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     tap "Back to home" >/dev/null 2>&1 || tap "Done" >/dev/null 2>&1
     phone_config "sms" true false || true

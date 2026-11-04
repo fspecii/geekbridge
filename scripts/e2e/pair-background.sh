@@ -68,7 +68,7 @@ pb_prehome_once() {
   sleep 8
   if [[ -z "$(link_phases)" ]]; then PB_WHY="the phone dropped the link when it left the foreground during pairing (service=$(svc_running && echo up || echo down))"; return 1; fi
   ctl approve "$id" "$code" >/dev/null || { PB_WHY="desktop approve refused"; return 1; }
-  goto_home; ui wait Pair 20 >/dev/null; ui tap Pair >/dev/null; sleep 4
+  goto_home; ui wait Link 20 >/dev/null; ui tap Link --exact >/dev/null; sleep 4
   wait_for 20 is_paired || { PB_WHY="not paired after returning to the app"; return 1; }
   return 0
 }
