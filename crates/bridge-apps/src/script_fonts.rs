@@ -380,7 +380,8 @@ mod tests {
         let id = egui::FontId::proportional(14.0);
         let _ = ctx.run(Default::default(), |_| {});
         let has = |c: char| ctx.fonts(|f| f.has_glyph(&id, c));
-        assert!(!has('\u{4E2D}'), "the bundled fonts have no CJK");
+        // (Another test in this process may have loaded the font already: the list is process-wide.)
+        let before = has('\u{4E2D}');
         ensure(&ctx, ["\u{4E2D}\u{6587}"]);
         crate::theme::install_fonts(&ctx); // also covers another test having loaded it first
         let _ = ctx.run(Default::default(), |_| {});
@@ -388,6 +389,7 @@ mod tests {
             eprintln!("skipped: no system font with CJK on this machine");
             return;
         }
+        let _ = before;
         assert!(has('\u{6587}'));
         assert!(has('a'), "Latin still comes from the first font");
     }
