@@ -458,4 +458,106 @@ class CallControlTest {
         // Skipping them never blocks the required steps.
         assertNull(SetupModel.firstOpen(steps.filter { it.required }))
     }
+
+    // ---- real-device robustness (call chain review)
+
+    @Test fun everyPermissionCombinationReportsOnlyWhatItAllows() {
+        for (mask in 0 until 32) {
+            val p = CallPermissions(
+                readPhoneState = mask and 1 != 0, answerPhoneCalls = mask and 2 != 0, readCallLog = mask and 4 != 0,
+                readContacts = mask and 8 != 0, callPhone = mask and 16 != 0,
+            )
+            val r = CallRules.report(CallState.Ringing, "+15550100", "Ada", 34, p)
+            assertEquals("mask $mask number", if (p.readCallLog) "+15550100" else null, r.number)
+            assertEquals("mask $mask name", if (p.readCallLog && p.readContacts) "Ada" else null, r.name)
+            assertEquals("mask $mask answer", p.answerPhoneCalls && p.readPhoneState, r.canAnswer)
+            assertEquals("mask $mask end", p.answerPhoneCalls && p.readPhoneState, r.canEnd)
+            assertEquals("mask $mask dial", p.callPhone && p.readPhoneState, r.canDial)
+            // Idle never carries a party, whatever is allowed.
+            val idle = CallRules.report(CallState.Idle, "+15550100", "Ada", 34, p)
+            assertNull(idle.number); assertNull(idle.name)
+        }
+    }
+
+    @Test fun dialIsNotOfferedWithoutTheCallStateItNeedsToCheckTheLineIsFree() {
+        val p = all.copy(readPhoneState = false, callPhone = true)
+        assertFalse(CallRules.canDial(p))
+        assertEquals(CallFailure.PermissionMissing, CallRules.dialPreflight(CallState.Idle, p, "+15550100"))
+    }
+
+    @Test fun aCallPlacedOnThePhoneItselfIsReportedAsALiveCallThatCanBeEnded() {
+        val h = Harness(all, names = mapOf("+15550100" to "Ada"))
+        h.engine.onState(CallState.Idle)
+        h.engine.onState(CallState.OffHook) // no ringing before it: dialed on the phone
+        assertEquals("offhook", h.sent.last().getString("state"))
+        assertFalse(h.sent.last().has("number"))
+        assertTrue(h.sent.last().getBoolean("can_end"))
+        h.engine.onRequests(listOf(CallRequest(1, 1, "h-1", CallAction.Hangup)))
+        assertEquals(listOf("end"), h.telecom.log)
+        h.engine.onState(CallState.Idle) // the other side hung up, or ours did
+        assertEquals("idle", h.sent.last { it.getString("action") == "transport_calls_report" }.getString("state"))
+    }
+
+    @Test fun aMissedCallEndsAsIdleAndANumberArrivingLateIsNotKeptForever() {
+        val h = Harness(all)
+        h.engine.onState(CallState.Ringing)
+        h.engine.onState(CallState.Idle)
+        h.engine.onNumber("+15550100") // the number broadcast lost the race with the state
+        h.now += 10_000
+        h.engine.onState(CallState.Ringing)
+        assertFalse(h.sent.last().has("number"))
+    }
+
+    @Test fun decliningAWaitingCallLeavesTheLiveCallReportedWithoutAGuessedParty() {
+        val h = Harness(all)
+        h.engine.onState(CallState.Ringing)
+        h.engine.onNumber("+15550100")
+        h.engine.onState(CallState.OffHook)
+        h.engine.onState(CallState.Ringing) // call waiting
+        h.engine.onRequests(listOf(CallRequest(1, 1, "x-1", CallAction.Reject)))
+        assertEquals(listOf("end"), h.telecom.log)
+        h.engine.onState(CallState.OffHook) // the first call continues
+        assertEquals("offhook", h.sent.last { it.getString("action") == "transport_calls_report" }.getString("state"))
+        h.engine.onState(CallState.Idle)
+        assertEquals("idle", h.sent.last { it.getString("action") == "transport_calls_report" }.getString("state"))
+    }
+
+    @Test fun aRestartedProcessReportsTheCurrentStateOnceTheCoreIsUp() {
+        val h = Harness(all)
+        h.coreOk = false // the core is not running yet after the restart
+        h.engine.onState(CallState.OffHook)
+        h.coreOk = true
+        h.engine.permissionsChanged() // nothing was accepted before, so this sends the live state
+        assertEquals("offhook", h.sent.last().getString("state"))
+    }
+
+    @Test fun permissionChangesAreNoticedOnceAgainstTheFirstLookAsBaseline() {
+        val w = PermissionWatch()
+        assertFalse(w.changed(all)) // baseline
+        assertFalse(w.changed(all))
+        assertTrue(w.changed(all.copy(readCallLog = false)))
+        assertFalse(w.changed(all.copy(readCallLog = false)))
+        w.reset()
+        assertFalse(w.changed(all)) // after a reset the next look is a baseline again
+        assertTrue(w.changed(none))
+    }
+
+    @Test fun promptsAreOnlyAskedWhereTheyCanBeSeen() {
+        assertTrue(DialPromptRules.canShow(appEnabled = true, channelImportance = 4))
+        assertFalse(DialPromptRules.canShow(appEnabled = false, channelImportance = 4)) // POST_NOTIFICATIONS denied (Android 13+)
+        assertFalse(DialPromptRules.canShow(appEnabled = true, channelImportance = 0)) // channel switched off
+        assertTrue(DialPromptRules.canShow(appEnabled = true, channelImportance = null)) // no channel info: try
+    }
+
+    @Test fun theOutgoingAccountIsOnlyChosenWhenTheUserHasNoDefaultOne() {
+        val a = "simA"; val b = "simB"
+        // The user's own "always use this SIM" choice is never overridden.
+        assertNull(DialAccounts.choose(hasDefault = true, accounts = listOf(a to 1, b to 2), defaultVoiceSub = 2))
+        // "Ask every time": the default voice subscription, else the only one, else leave the choice to the system.
+        assertEquals(b, DialAccounts.choose(false, listOf(a to 1, b to 2), 2))
+        assertEquals(a, DialAccounts.choose(false, listOf(a to 1), null))
+        assertNull(DialAccounts.choose(false, listOf(a to 1, b to 2), null))
+        assertNull(DialAccounts.choose(false, listOf(a to 1, b to 2), 9))
+        assertNull(DialAccounts.choose(false, emptyList<Pair<String, Int?>>(), 1))
+    }
 }

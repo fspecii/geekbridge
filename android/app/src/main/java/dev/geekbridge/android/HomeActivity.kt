@@ -82,6 +82,7 @@ class HomeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         lastSig = "" // permissions and battery may have changed in system settings
+        CallControlRuntime.recheckPermissions() // a call permission granted in Settings takes effect now
         PhoneDataRuntime.resync() // a permission granted in Settings must be re-declared to the computer without a reconnect by hand
         render()
     }

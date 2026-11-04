@@ -68,6 +68,7 @@ class SetupActivity : Activity() {
         super.onResume()
         hfp = null // back from Bluetooth settings: look again
         WidgetUpdater.refreshAll(this)
+        CallControlRuntime.recheckPermissions() // a call permission granted in Settings takes effect now
         PhoneDataRuntime.resync() // back from app settings: re-declare what is allowed now
         render()
     }

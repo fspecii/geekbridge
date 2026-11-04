@@ -55,6 +55,7 @@ class LinkService : Service() {
                 Intent.ACTION_SCREEN_OFF -> controller.setScreen(false)
                 Intent.ACTION_SCREEN_ON -> {
                     controller.setScreen(true)
+                    CallControlRuntime.recheckPermissions() // a call permission granted in Settings while the screen was off
                     // The user is back: ping now so a dead link shows itself at once, and wake a redial or an
                     // announcement whose timer stood still while the CPU slept.
                     if (ScreenRules.nudgeOnScreenOn) controller.heartbeatNow()

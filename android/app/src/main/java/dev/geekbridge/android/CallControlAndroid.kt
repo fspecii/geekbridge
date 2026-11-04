@@ -20,6 +20,7 @@ import java.util.concurrent.Executors
 
 /** `TelecomManager` behind [TelecomPort]. Both calls are guarded by ANSWER_PHONE_CALLS (checked by the caller). */
 class AndroidTelecom(context: Context) : TelecomPort {
+    private val app = context.applicationContext
     private val telecom: TelecomManager? = context.applicationContext.getSystemService(TelecomManager::class.java)
 
     @Suppress("DEPRECATION")
@@ -32,7 +33,28 @@ class AndroidTelecom(context: Context) : TelecomPort {
     override fun placeCall(number: String) {
         val t = telecom ?: throw IllegalStateException("No telecom service")
         // A tel: URI built from parts, so the number is data and never parsed as anything else.
-        t.placeCall(Uri.fromParts("tel", number, null), android.os.Bundle())
+        // placeCall needs no activity start, so it is allowed from the background service (Android 10+ restrictions
+        // only apply to startActivity). With "ask every time" and several SIMs it would open the system's SIM picker
+        // on a phone nobody is looking at, so the default voice subscription's account is passed when it can be told.
+        val extras = android.os.Bundle()
+        accountFor(t)?.let { extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, it) }
+        t.placeCall(Uri.fromParts("tel", number, null), extras)
+    }
+
+    @SuppressLint("MissingPermission") // READ_PHONE_STATE is a precondition of dialing (CallRules.canDial); failures mean "let Android choose"
+    private fun accountFor(t: TelecomManager): android.telecom.PhoneAccountHandle? = try {
+        val hasDefault = t.getDefaultOutgoingPhoneAccount("tel") != null
+        if (hasDefault) {
+            null
+        } else {
+            val tm = app.getSystemService(TelephonyManager::class.java)
+            val accounts = t.callCapablePhoneAccounts.map { h ->
+                h to (if (Build.VERSION.SDK_INT >= 30) tm?.createForPhoneAccountHandle(h)?.subscriptionId else null)
+            }
+            DialAccounts.choose(false, accounts, SubscriptionReader.defaultVoiceId())
+        }
+    } catch (_: RuntimeException) {
+        null
     }
 
     @Suppress("DEPRECATION")
@@ -81,6 +103,10 @@ class AndroidDialPrompts(private val ctx: Context) : DialPrompts {
     }
 
     override fun ask(requestId: String, text: String): Boolean {
+        // Without POST_NOTIFICATIONS (Android 13+) or with the channel switched off, notify() succeeds and shows
+        // nothing: the owner could never answer. Say so now so the computer hears "declined" at once, not after 45 s.
+        val nm = manager()
+        if (!DialPromptRules.canShow(nm.areNotificationsEnabled(), nm.getNotificationChannel(CHANNEL)?.importance)) return false
         fun action(allow: Boolean, label: Int): android.app.Notification.Action {
             val i = Intent(ctx, DialDecisionReceiver::class.java)
                 .setAction(if (allow) DialDecisionReceiver.ACTION_ALLOW else DialDecisionReceiver.ACTION_DENY)
@@ -89,7 +115,10 @@ class AndroidDialPrompts(private val ctx: Context) : DialPrompts {
                 ctx, id(requestId) + if (allow) 1 else 2, i,
                 android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            return android.app.Notification.Action.Builder(null, ctx.getString(label), pi).build()
+            val b = android.app.Notification.Action.Builder(null, ctx.getString(label), pi)
+            // Allowing a call from the lock screen needs the owner's unlock (Android 12+); Deny never does.
+            if (allow && Build.VERSION.SDK_INT >= 31) b.setAuthenticationRequired(true)
+            return b.build()
         }
         return try {
             val n = android.app.Notification.Builder(ctx, CHANNEL)
@@ -189,6 +218,7 @@ class AndroidCallSources(
         val lock = Any()
         var closed = false
         val subs = LinkedHashMap<Int, Pair<String, AutoCloseable>>()
+        val slots = HashMap<Int, Int>() // subId -> slot, to drop that slot's broadcast state with its SIM
         val base = registrar.telephony ?: throw IllegalStateException("No telephony service")
 
         val defaultHandle = registrar.registerOn(base, executor) { onSource("default", it) }
@@ -206,11 +236,13 @@ class AndroidCallSources(
                     subs.remove(id)
                     ledger.sourceGone(entry.first)
                     onGone(entry.first)
+                    slots.remove(id)?.let { onGone(SimText.broadcastSource(it)) }
                 }
                 for (sim in sims) {
                     if (sim.subId in subs) continue
                     try {
                         val tm = base.createForSubscriptionId(sim.subId)
+                        slots[sim.subId] = sim.slot
                         subs[sim.subId] = sim.sourceName to registrar.registerOn(tm, executor) { onSource(sim.sourceName, it) }
                     } catch (e: RuntimeException) {
                         ledger.sourceFailed(sim.sourceName, e.javaClass.simpleName)
@@ -250,7 +282,7 @@ class AndroidCallSources(
                 override fun onReceive(context: Context, intent: Intent) {
                     if (intent.action != TelephonyManager.ACTION_PHONE_STATE_CHANGED) return
                     val raw = SimText.fromBroadcast(intent.getStringExtra(TelephonyManager.EXTRA_STATE)) ?: return
-                    onSource("broadcast", raw)
+                    onSource(SimText.broadcastSource(intent.getIntExtra("slot", -1)), raw)
                 }
             }
             val filter = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
@@ -316,6 +348,7 @@ object CallControlRuntime {
     private var receiver: BroadcastReceiver? = null
     private var waiter: Thread? = null
     private var linkRunning = false
+    private val watch = PermissionWatch()
 
     /** Native calls and telephony lookups, off the main thread, in order. */
     private val sender = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-calls-send").apply { isDaemon = true } }
@@ -391,6 +424,7 @@ object CallControlRuntime {
                 ensureWaiter(e)
                 // A registration that failed or was lost is not final: try again, spaced, while it is wanted.
                 if (monitor == null && ListenerRetry.due(ledger.lastAttemptAt(), System.currentTimeMillis())) ensureMonitor(e, "retry")
+                recheckPermissions()
             }
             return
         }
@@ -411,9 +445,22 @@ object CallControlRuntime {
         async { e.permissionsChanged() }
     }
 
+    /**
+     * A permission granted or revoked outside the setup screen (system Settings) is noticed here, from the places the
+     * app comes back to or the link reports in: the listener, the number receiver and the capabilities are redone
+     * at once instead of waiting for a restart. Main thread.
+     */
+    fun recheckPermissions() {
+        val a = app ?: return
+        if (!settings.enabled || !linkRunning) return
+        if (watch.changed(CallPermissionsReader.read(a))) onPermissionsChanged()
+    }
+
     @Synchronized
     private fun startObserving(e: CallControlEngine) {
         val a = app ?: return
+        watch.reset()
+        watch.changed(CallPermissionsReader.read(a)) // baseline for recheckPermissions
         async { e.reset() }
         async { core.transportAction(CallsProtocol.configRequest(true)) } // the core forgets the opt-in when the process dies
         val perms = CallPermissionsReader.read(a)

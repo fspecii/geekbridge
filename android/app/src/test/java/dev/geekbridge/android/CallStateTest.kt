@@ -358,6 +358,17 @@ class CallSourceMergerTest {
         assertNull(SimText.fromBroadcast("ringing"))
     }
 
+    @Test fun broadcastsAreKeptApartPerSlotSoOneSimsIdleDoesNotHideTheOthersRinging() {
+        assertEquals("broadcast", SimText.broadcastSource(null))
+        assertEquals("broadcast/slot1", SimText.broadcastSource(1))
+        assertEquals("broadcast", SimText.broadcastSource(-1))
+        assertEquals("broadcast", SimText.broadcastSource(99))
+        val m = CallSourceMerger()
+        assertEquals(1, m.update("broadcast/slot0", 1))
+        assertNull(m.update("broadcast/slot1", 0))
+        assertEquals(0, m.remove("broadcast/slot0")) // that SIM went away mid-ring
+    }
+
     @Test fun subscriptionSummaryHasSlotsEsimFlagAndDefaultVoiceButNoIdentifiers() {
         val sims = listOf(ActiveSim(3, 0, false), ActiveSim(7, 1, true))
         assertEquals(

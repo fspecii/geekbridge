@@ -152,6 +152,12 @@ object SimText {
         else -> null
     }
 
+    /**
+     * Source name for a phone-state broadcast. Each SIM sends its own, so they are kept apart by slot; one SIM going
+     * idle must not hide another's ringing. Unknown or implausible slots share one name.
+     */
+    fun broadcastSource(slot: Int?): String = if (slot != null && slot in 0..7) "broadcast/slot$slot" else "broadcast"
+
     fun summary(sims: List<ActiveSim>, defaultVoiceSubId: Int?): String {
         val list = sims.joinToString(", ") { "sub${it.subId} slot ${it.slot} ${if (it.embedded) "eSIM" else "physical"}" }
         val def = defaultVoiceSubId?.takeIf { it >= 0 }?.let { id ->

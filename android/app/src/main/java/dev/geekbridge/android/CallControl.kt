@@ -96,8 +96,11 @@ object CallRules {
     /** Declining and ending use `TelecomManager.endCall()`, which exists from API 28. */
     fun canEnd(sdk: Int, p: CallPermissions) = sdk >= MIN_SDK_END && p.answerPhoneCalls && p.readPhoneState
 
-    /** Placing a call needs CALL_PHONE (any API level that has TelecomManager.placeCall, i.e. 21+). */
-    fun canDial(p: CallPermissions) = p.callPhone
+    /**
+     * Placing a call needs CALL_PHONE (any API level that has TelecomManager.placeCall, i.e. 21+) and the call state,
+     * because a dial is only placed from a phone known to be idle; without READ_PHONE_STATE every dial would fail.
+     */
+    fun canDial(p: CallPermissions) = p.callPhone && p.readPhoneState
 
     /** The only numbers this phone dials for a computer: digits, optional leading +. No USSD/MMI (`*`, `#`). */
     private val dialNumber = Regex("\\+?[0-9]{1,20}")
@@ -228,6 +231,46 @@ interface DialPrompts {
 
     /** The question is no longer pending. */
     fun withdraw(requestId: String)
+}
+
+/** Notices a runtime permission granted or revoked while the app runs (Settings, another screen). */
+class PermissionWatch {
+    private var last: CallPermissions? = null
+
+    /** True if [now] differs from the previous look; the first look after creation or [reset] is only a baseline. */
+    @Synchronized fun changed(now: CallPermissions): Boolean {
+        val before = last
+        last = now
+        return before != null && before != now
+    }
+
+    @Synchronized fun reset() {
+        last = null
+    }
+}
+
+/** Whether a dial question can reach the owner. Without POST_NOTIFICATIONS the system drops it silently. */
+object DialPromptRules {
+    private const val IMPORTANCE_NONE = 0
+
+    fun canShow(appEnabled: Boolean, channelImportance: Int?): Boolean =
+        appEnabled && (channelImportance == null || channelImportance != IMPORTANCE_NONE)
+}
+
+/** Which phone account (SIM) a requested dial uses. */
+object DialAccounts {
+    /**
+     * Null means "pass nothing and let Android decide". The user's own default outgoing account always wins; with
+     * "ask every time" the default voice subscription's account is used, or the only one there is. [accounts] pairs
+     * an account with its subscription id.
+     */
+    fun <T> choose(hasDefault: Boolean, accounts: List<Pair<T, Int?>>, defaultVoiceSub: Int?): T? {
+        if (hasDefault) return null
+        if (defaultVoiceSub != null && defaultVoiceSub >= 0) {
+            accounts.firstOrNull { it.second == defaultVoiceSub }?.let { return it.first }
+        }
+        return accounts.singleOrNull()?.first
+    }
 }
 
 /** Resolves a caller's number to a contact name on this phone (needs READ_CONTACTS), or null. */
