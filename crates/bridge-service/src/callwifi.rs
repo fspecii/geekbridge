@@ -1737,7 +1737,17 @@ mod tests {
     }
 
     /// Live, speaking, with the far party's tone arriving the whole time.
-    fn speaking_with_far_talk(r: &Rig) -> (u64, std::thread::JoinHandle<()>) {
+    /// The far party talking until `join()` (a runner may take seconds to get the microphone going; a fixed
+    /// burst could end before the guard had anything to hold).
+    struct FarTalk(Arc<AtomicBool>, std::thread::JoinHandle<()>);
+    impl FarTalk {
+        fn join(self) -> std::thread::Result<()> {
+            self.0.store(true, Ordering::SeqCst);
+            self.1.join()
+        }
+    }
+
+    fn speaking_with_far_talk(r: &Rig) -> (u64, FarTalk) {
         phone(r, true, true);
         let s = go_live(r);
         r.hub.speak(true).unwrap();
@@ -1750,9 +1760,14 @@ mod tests {
             },
         );
         let hub = r.hub.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = stop.clone();
         let t = std::thread::spawn(move || {
             let (mut enc, mut tone) = (Encoder::new().unwrap(), Tone::new(440.0, 8000.0));
-            for seq in 0..60u32 {
+            for seq in 0..1500u32 {
+                if flag.load(Ordering::SeqCst) {
+                    break;
+                }
                 let opus = enc.encode(&tone.frame()).unwrap();
                 let f = Msg::Frame(Frame {
                     session: s,
@@ -1766,7 +1781,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(20));
             }
         });
-        (s, t)
+        (s, FarTalk(stop, t))
     }
 
     #[test]
