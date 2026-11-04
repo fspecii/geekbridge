@@ -51,7 +51,11 @@ fn pw_cat(mode: &str, target: Option<&str>, env: &PwEnv) -> Command {
         .args(["--media-role", "Communication"])
         .args([
             "-P",
-            "node.name=geekbridge-callaudio,node.description=GeekBridge phone call (experimental)",
+            if mode == "--playback" {
+                r#"{ node.name = "geekbridge-callaudio-out" node.description = "GeekBridge Phone Call (experimental)" }"#
+            } else {
+                r#"{ node.name = "geekbridge-callaudio-in" node.description = "GeekBridge Phone Call (experimental)" }"#
+            },
         ]);
     if let Some(t) = target {
         c.args(["--target", t]);
