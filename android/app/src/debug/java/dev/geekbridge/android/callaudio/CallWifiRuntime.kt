@@ -154,10 +154,15 @@ object CallWifiRuntime {
     }
 
     private fun acceptHelper(server: java.net.ServerSocket, token: String) {
+        // One deadline for the whole window: a local app that keeps connecting and failing cannot hold it open.
+        val deadline = System.currentTimeMillis() + 90_000
         try {
             while (enabled && !server.isClosed) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) throw java.net.SocketTimeoutException()
+                server.soTimeout = left.toInt()
                 val s = server.accept()
-                s.soTimeout = 5_000
+                s.soTimeout = 2_000
                 val hello = try {
                     val f = HelperProtocol.read(s.getInputStream())
                     (f as? HelperProtocol.Frame.Text)?.takeIf { it.type == HelperProtocol.HELLO }?.text
@@ -193,7 +198,12 @@ object CallWifiRuntime {
     }
 
     fun disconnect() {
-        synchronized(lock) { disconnectLocked() }
+        // Switching off (or stopping) also closes a listener still waiting for its helper, and forgets its token.
+        synchronized(lock) {
+            runCatching { listener?.close() }
+            listener = null
+            disconnectLocked()
+        }
         helperUp = false
         pushConfig()
         changed()
@@ -331,6 +341,19 @@ object CallWifiRuntime {
         var since = 0L
         var lastPush = 0L
         while (enabled) {
+            // A thrown error must not end the loop: it is what notices a call ending and an idle session.
+            try {
+                since = loopOnce(since, lastPush).also { lastPush = it.second }.first
+            } catch (_: Exception) {
+                Thread.sleep(1000)
+            }
+        }
+    }
+
+    private fun loopOnce(sinceIn: Long, lastPushIn: Long): Pair<Long, Long> {
+        var since = sinceIn
+        var lastPush = lastPushIn
+        run {
             val now = System.currentTimeMillis()
             if (now - lastPush > 5_000) {
                 pushConfig()
@@ -347,9 +370,9 @@ object CallWifiRuntime {
             }
             if (r !is CoreOutcome.Ok) {
                 Thread.sleep(1000)
-                continue
+                return since to lastPush
             }
-            val o = r.result as? JSONObject ?: continue
+            val o = r.result as? JSONObject ?: return since to lastPush
             val evs: JSONArray = o.optJSONArray("events") ?: JSONArray()
             for (i in 0 until evs.length()) {
                 val e = evs.optJSONObject(i) ?: continue
@@ -358,6 +381,7 @@ object CallWifiRuntime {
             }
             if (o.optBoolean("stopped")) Thread.sleep(1000)
         }
+        return since to lastPush
     }
 
     private fun handle(e: JSONObject) {
@@ -442,6 +466,12 @@ object CallWifiRuntime {
         val a = app ?: return
         val nm = a.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL, "Call audio sharing", NotificationManager.IMPORTANCE_HIGH))
+        // A blocked app or a silenced-to-nothing channel would hide the indicator: then nothing may be shared.
+        if (!nm.areNotificationsEnabled() || nm.getNotificationChannel(CHANNEL)?.importance == NotificationManager.IMPORTANCE_NONE) {
+            progress = "Notifications for GeekBridge are off, so call audio is not shared. Turn them on."
+            endSession()
+            return
+        }
         val stop = PendingIntent.getBroadcast(
             a, 0, Intent(a, CallWifiStopReceiver::class.java).setAction(ACTION_STOP_SESSION),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
