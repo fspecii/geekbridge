@@ -30,6 +30,7 @@ for tool in Xvfb xdotool import cc; do command -v $tool >/dev/null || { echo "go
 # the whole group, helpers included, is killed.
 if [ -z "${GOLDEN_INNER:-}" ]; then
   if [ -z "${GOLDEN_NO_BUILD:-}" ]; then
+    export GEEKBRIDGE_BUILD_COMMIT=0123456789ab GEEKBRIDGE_BUILD_COUNT=1   # the About line prints the build commit: pinned, or every commit would change a golden
     timeout 1800 cargo build -q -p bridge-service -p bridge-apps --bins && timeout 1800 cargo build -q -p bridge-phone-sim --example data_sim || exit 1
   fi
   GOLDEN_INNER=1 exec timeout -k 5 "${GOLDEN_TIMEOUT:-240}" "$0" "$@"
@@ -40,7 +41,7 @@ RUN="${RUN:-${GOLDEN_SCRATCH:-$HOME/.cache/gb-golden}/desktop}"
 DIFF="$ROOT/dist/golden-diff"
 JOBS=${GOLDEN_JOBS:-$(n=$(nproc 2>/dev/null || echo 4); [ "$n" -gt 8 ] && n=8; echo "$n")}   # workers; one more X server is for the Messages group
 IMG="python3 -I $ROOT/scripts/golden/golden_img.py"
-rm -rf "$RUN"; mkdir -p "$RUN"/{state,nostate,raw,xdg,xdg-data,fail}; chmod 700 "$RUN/nostate"; mkdir -p /tmp/gb-golden-home "$GOLDEN_DIR" "$DIFF"; chmod 700 "$RUN/state"   # HOME is a fixed path: the share window prints its save folder
+rm -rf "$RUN"; mkdir -p "$RUN"/{state,nostate,raw,xdg,xdg-data,fail,no-bt}; chmod 700 "$RUN/nostate"; mkdir -p /tmp/gb-golden-home "$GOLDEN_DIR" "$DIFF"; chmod 700 "$RUN/state"   # HOME is a fixed path: the share window prints its save folder
 [ "$MODE" = check ] && rm -f "$DIFF"/desktop-*.png
 cc -shared -fPIC -O2 -o "$RUN/fakeclock.so" scripts/golden/fakeclock.c -ldl || { echo "golden-desktop: C compiler failed"; exit 2; }
 T=target/debug
@@ -78,6 +79,7 @@ MOCKP=$(cat "$RUN/mock.port")
 
 export GOLDEN_NOW=1781524800   # 2026-06-15 12:00:00 UTC, a Monday
 DET=(TZ=UTC LANG=en_US.UTF-8 LC_ALL= LANGUAGE= GEEKBRIDGE_CLOCK=24 GEEKBRIDGE_BUNDLED_FONTS_ONLY=1 GEEKBRIDGE_NO_TRAY=1 GEEKBRIDGE_FIXED_CALL_SECONDS=83 GEEKBRIDGE_CALLAUDIO_FIXTURE=ready
+     GEEKBRIDGE_FIXED_PORT_LABEL=34211 GEEKBRIDGE_BT_SYSFS="$RUN/no-bt"   # no Bluetooth controller: the Calls window footer line comes from this machine, not from the fixture
      GEEKBRIDGE_FIREWALL_FIXTURE=none GEEKBRIDGE_AUTOSTART_FIXTURE=on   # the first-run guide reads this computer's firewall and autostart: pinned
      GEEKBRIDGE_NO_UPDATE_CHECK=1 GEEKBRIDGE_UPDATE_BASE_URL=http://127.0.0.1:$MOCKP GOLDEN_NOW=$GOLDEN_NOW LD_PRELOAD="$RUN/fakeclock.so"
      XDG_CONFIG_HOME="$RUN/xdg" XDG_DATA_HOME="$RUN/xdg-data" HOME=/tmp/gb-golden-home)
@@ -240,6 +242,7 @@ tasks_rest() { # theme
   echo "geekbridge-calls|$t|calls-audio-confirm|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLAUDIO_FIXTURE=flow-confirm"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
+  grep -v '^#' "$ROOT/scripts/golden/tasks-call-wifi.txt" | sed "s/@THEME@/$t/"   # Wi-Fi call audio states
   echo "geekbridge-calls+overlay|$t|call-overlay|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-contacts|$t|contacts|-|"
   echo "geekbridge-contacts|$t|contacts-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"

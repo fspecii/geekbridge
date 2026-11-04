@@ -1300,6 +1300,9 @@ impl HomeApp {
                 egui::Label::new(theme::caption(pal, crate::i18n::tr("home.diag.caption"))).wrap(),
             );
             ui.add_space(S1);
+            // Golden-image tests print a fixed port (scripts/golden-desktop.sh picks a free one per run); never set in normal use.
+            let port_label = std::env::var("GEEKBRIDGE_FIXED_PORT_LABEL")
+                .unwrap_or_else(|_| self.api_port.to_string());
             ui.add(
                 egui::Label::new(theme::caption(
                     pal,
@@ -1309,7 +1312,7 @@ impl HomeApp {
                         } else {
                             "home.diag.service_stopped"
                         },
-                        &[("port", &self.api_port)],
+                        &[("port", &port_label)],
                     ),
                 ))
                 .wrap(),

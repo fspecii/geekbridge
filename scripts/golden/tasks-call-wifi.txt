@@ -1,0 +1,6 @@
+# Golden screens for the experimental Wi-Fi call audio states of the live-call card (Calls window).
+# One task per line, "app|theme|name|keys|ENV=VAL ..."; @THEME@ becomes light or dark.
+# Read by tasks_rest in scripts/golden-desktop.sh (see docs/golden-images.md, "Extra screen lists").
+geekbridge-calls|@THEME@|call-wifi-offer|-|GEEKBRIDGE_CALLS_FIXTURE=active-wifi
+geekbridge-calls|@THEME@|call-wifi-listening|-|GEEKBRIDGE_CALLS_FIXTURE=listening-wifi
+geekbridge-calls|@THEME@|call-wifi-speaking|-|GEEKBRIDGE_CALLS_FIXTURE=speaking-wifi
