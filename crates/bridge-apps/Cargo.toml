@@ -10,7 +10,7 @@ publish = false
 bridge-core.workspace = true
 bridge-i18n = { path = "../bridge-i18n" }
 qrcode = { version = "0.14", default-features = false }
-eframe = { version = "0.31.1", default-features = false, features = ["glow", "wayland", "x11"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11"] }
 
 [features]
 # Screen-reader support on the desktop (AT-SPI on Linux, UIA on Windows, NSAccessibility on macOS)
