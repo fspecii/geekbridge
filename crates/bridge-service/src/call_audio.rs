@@ -473,10 +473,10 @@ mod tests {
         assert!(s.choose(Some("-evil".into()), None).is_err());
         let after = s.choose(Some("o2".into()), Some("i1".into())).unwrap();
         assert_eq!(after.chosen_output.as_deref(), Some("o2"));
-        let file = d.path().join(SELECTION_FILE);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            let file = d.path().join(SELECTION_FILE);
             assert_eq!(
                 std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
                 0o600
