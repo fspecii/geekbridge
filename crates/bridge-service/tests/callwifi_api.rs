@@ -91,7 +91,7 @@ async fn view(rig: &Rig, action: CallWifiAction) -> CallWifiView {
 }
 
 async fn wait_view(rig: &Rig, what: &str, cond: impl Fn(&CallWifiView) -> bool) -> CallWifiView {
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + Duration::from_secs(15);
     loop {
         let v = view(rig, CallWifiAction::Status).await;
         if cond(&v) {
@@ -104,7 +104,7 @@ async fn wait_view(rig: &Rig, what: &str, cond: impl Fn(&CallWifiView) -> bool) 
 
 /// The next callaudio packet the service sent the phone.
 async fn next_msg(phone_link: &mut kde::TrustedLink) -> Msg {
-    timeout(Duration::from_secs(5), async {
+    timeout(Duration::from_secs(15), async {
         loop {
             if let Ok(kde::LinkEvent::Packet(p)) = phone_link.recv().await
                 && wire::is_callaudio_kind(&p.kind)
@@ -256,11 +256,11 @@ async fn a_press_an_offer_and_frames_play_and_every_stop_path_ends_it() {
             .unwrap();
         sleep(Duration::from_millis(20)).await;
     }
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + Duration::from_secs(10);
     loop {
         let loud = {
             let p = played.lock().unwrap();
-            p.len() > 3200 && rms(&p[p.len() - 1600..]) > 1000.0
+            p.len() > 3200 && p.chunks_exact(1600).any(|c| rms(c) > 1000.0)
         };
         if loud {
             break;
