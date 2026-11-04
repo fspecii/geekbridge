@@ -1034,7 +1034,14 @@ impl Daemon {
                 }
             }
             Request::PrivacyStatus => Ok(Response::Privacy(self.privacy_view())),
-            Request::PrivacySet { key, on } => self.privacy_set(key, on).map(|()| Response::Ack),
+            Request::PrivacySet { key, on } => {
+                // The choice is saved with an fsync: not on an async worker.
+                let daemon = Arc::clone(self);
+                match tokio::task::spawn_blocking(move || daemon.privacy_set(key, on)).await {
+                    Ok(r) => r.map(|()| Response::Ack),
+                    Err(_) => Err(err(ErrorCode::Failed, "the choice could not be saved")),
+                }
+            }
             Request::ClipboardStatus => self
                 .clipboard_status()
                 .map(|s| Response::ClipboardStatus(Box::new(s))),

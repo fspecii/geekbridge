@@ -26,6 +26,9 @@ pub struct Privacy {
     dir: Option<PathBuf>,
     env: Env,
     chosen: Mutex<Vec<(PrivacyKey, bool)>>,
+    /// Serialises writers; `chosen` is held only to copy and to publish, never across the file write, so a slow
+    /// fsync cannot freeze the readers (`Daemon::status`, the notification paths).
+    writer: Mutex<()>,
 }
 
 impl Privacy {
@@ -40,6 +43,7 @@ impl Privacy {
             dir,
             env,
             chosen: Mutex::new(chosen),
+            writer: Mutex::new(()),
         }
     }
 
@@ -102,20 +106,28 @@ impl Privacy {
         self.item(key).on
     }
 
-    /// Store a choice (and write it). The caller applies the new view to the live parts.
+    /// Store a choice (and write it). The caller applies the new view to the live parts. Does file I/O with an
+    /// fsync: call it from `spawn_blocking`, not on an async worker.
     pub fn set(&self, key: PrivacyKey, on: bool) -> Result<(), String> {
-        let mut g = self.lock();
-        let mut next = g.clone();
+        self.set_with(key, on, |text| match &self.dir {
+            Some(dir) => bridge_kde::fsutil::atomic_write_private(&dir.join(FILE), text.as_bytes())
+                .map_err(|_| "the choice could not be saved".to_owned()),
+            None => Ok(()),
+        })
+    }
+
+    fn set_with(
+        &self,
+        key: PrivacyKey,
+        on: bool,
+        write: impl FnOnce(&str) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let mut next = self.lock().clone();
         next.retain(|(k, _)| *k != key);
         next.push((key, on));
-        if let Some(dir) = &self.dir {
-            bridge_kde::fsutil::atomic_write_private(
-                &dir.join(FILE),
-                privacy::format_choices(&next).as_bytes(),
-            )
-            .map_err(|_| "the choice could not be saved".to_owned())?;
-        }
-        *g = next;
+        write(&privacy::format_choices(&next))?;
+        *self.lock() = next;
         Ok(())
     }
 }
@@ -146,6 +158,38 @@ mod tests {
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect();
         Arc::new(move |k| m.get(k).cloned())
+    }
+
+    #[test]
+    fn a_slow_write_does_not_block_readers() {
+        let p = Arc::new(Privacy::with_env(None, env(&[])));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let writer = {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                p.set_with(PrivacyKey::MessageText, true, |_| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap(); // the fsync that takes seconds on a busy disk
+                    Ok(())
+                })
+            })
+        };
+        started_rx.recv().unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reader = {
+            let p = p.clone();
+            std::thread::spawn(move || {
+                let _ = (p.view(), p.on(PrivacyKey::MessageText));
+                done_tx.send(()).unwrap();
+            })
+        };
+        let answered = done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+        release_tx.send(()).unwrap();
+        writer.join().unwrap().unwrap();
+        reader.join().unwrap();
+        assert!(answered, "a reader waited for the writer's file I/O");
+        assert!(p.on(PrivacyKey::MessageText), "the choice is published afterwards");
     }
 
     #[test]
