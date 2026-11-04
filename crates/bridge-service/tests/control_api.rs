@@ -784,9 +784,12 @@ async fn connection_cap_deadline_and_size_limits_hold() {
     // Idle clients are cut off by the exchange deadline, after which service resumes.
     let start = Instant::now();
     let mut rest = Vec::new();
-    let _ = timeout(Duration::from_secs(5), idle[0].read_to_end(&mut rest))
-        .await
-        .unwrap();
+    let _ = timeout(
+        control::EXCHANGE_DEADLINE + Duration::from_secs(20),
+        idle[0].read_to_end(&mut rest),
+    )
+    .await
+    .unwrap();
     assert!(start.elapsed() < control::EXCHANGE_DEADLINE + Duration::from_secs(1));
     drop(idle);
     rig.wait("service available again", |_| true).await;

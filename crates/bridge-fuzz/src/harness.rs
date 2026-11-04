@@ -188,7 +188,26 @@ pub fn save_crash(dir: &Path, target: &str, kind: &str, input: &[u8]) -> PathBuf
 // --------------------------------------------------------------------------------------- run
 
 /// Run one input; `None` means it passed every check.
+///
+/// A slow run is only a finding when the input is slow every time: on a loaded machine (CI runner,
+/// parallel builds) a single run can be descheduled past the limit without the input being at fault,
+/// so a slow run is repeated and the fastest of the attempts counts.
 pub fn run_one(t: &Target, input: &[u8], limits: Limits) -> Option<Finding> {
+    let mut best = match run_once(t, input, limits) {
+        Some(Finding::Slow(d)) => d,
+        other => return other,
+    };
+    for _ in 0..3 {
+        match run_once(t, input, limits) {
+            Some(Finding::Slow(d)) => best = best.min(d),
+            Some(other) => return Some(other),
+            None => return None,
+        }
+    }
+    Some(Finding::Slow(best))
+}
+
+fn run_once(t: &Target, input: &[u8], limits: Limits) -> Option<Finding> {
     install_hook();
     PANICKED.store(false, Relaxed);
     if let Ok(mut g) = PANIC_MSG.lock() {

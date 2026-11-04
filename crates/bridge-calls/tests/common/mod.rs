@@ -438,6 +438,40 @@ impl MockService {
         Self { conn, shared, opts }
     }
 
+    /// Drops the service and returns only once the bus no longer lists an owner for the name.
+    /// Dropping alone is asynchronous: a call sent right after can still be delivered to the dying
+    /// connection and come back as `NoReply` instead of the clean "service absent" answer.
+    pub fn stop(self, bus: &PrivateBus) {
+        drop(self);
+        let probe = zbus::blocking::connection::Builder::address(bus.address.as_str())
+            .unwrap()
+            .build()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let owned: bool = probe
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "NameHasOwner",
+                    &(SERVICE,),
+                )
+                .unwrap()
+                .body()
+                .deserialize()
+                .unwrap();
+            if !owned {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the bus still lists an owner of {SERVICE}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     pub fn unique_name(&self) -> String {
         self.conn.unique_name().unwrap().to_string()
     }

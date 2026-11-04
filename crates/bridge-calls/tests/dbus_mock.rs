@@ -301,7 +301,7 @@ fn service_loss_and_restart_void_old_handles() {
     let old_unique = mock.unique_name();
 
     // Service dies: name vanishes, every phone goes link-down with LinkLost.
-    drop(mock);
+    mock.stop(&bus);
     let ev = s.refresh().unwrap();
     assert!(ev.iter().any(|e| matches!(
         e.event,

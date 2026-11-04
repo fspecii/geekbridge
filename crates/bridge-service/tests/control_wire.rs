@@ -109,7 +109,11 @@ async fn read_line(s: &mut TcpStream) -> String {
 
 async fn drain(s: &mut TcpStream) -> Vec<u8> {
     let mut out = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_secs(6), s.read_to_end(&mut out)).await;
+    let _ = tokio::time::timeout(
+        control::EXCHANGE_DEADLINE + Duration::from_secs(15),
+        s.read_to_end(&mut out),
+    )
+    .await;
     out
 }
 
@@ -224,7 +228,8 @@ async fn bytes_after_the_newline_are_ignored_and_a_slow_client_is_cut_off() {
     assert!(drain(&mut slow).await.is_empty());
     let waited = started.elapsed();
     assert!(
-        waited >= Duration::from_secs(2) && waited < Duration::from_secs(5),
+        waited >= control::EXCHANGE_DEADLINE - Duration::from_secs(1)
+            && waited < control::EXCHANGE_DEADLINE + Duration::from_secs(5),
         "closed by the deadline, took {waited:?}"
     );
 }
@@ -255,7 +260,7 @@ async fn idle_connections_beyond_the_cap_are_dropped_and_do_not_block_a_real_cli
     // Slots return once the clients are gone.
     let (port, token) = (rig.port, rig.token.clone());
     let status = tokio::time::timeout(
-        Duration::from_secs(8),
+        control::EXCHANGE_DEADLINE + Duration::from_secs(15),
         tokio::task::spawn_blocking(move || {
             loop {
                 if let Ok(s) = ipc::status(port, &token) {

@@ -24,7 +24,7 @@ use tokio::{
 };
 
 pub const MAX_CONNECTIONS: usize = 8;
-pub const EXCHANGE_DEADLINE: Duration = Duration::from_secs(3);
+pub const EXCHANGE_DEADLINE: Duration = Duration::from_secs(8);
 
 pub enum Control {
     Ready {

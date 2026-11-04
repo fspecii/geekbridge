@@ -420,6 +420,13 @@ async fn paste_from_phone_pulls_a_text_item_and_reports_the_outcome() {
         })
         .await;
     assert_eq!(s.last_pull.unwrap().kind.as_deref(), Some("url"));
+    // "Delivered" means accepted; the write to the clipboard itself happens on a background task.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while rig.clip.text().as_deref() != Some("https://example.org/p")
+        && std::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     assert_eq!(rig.clip.text().as_deref(), Some("https://example.org/p"));
 
     // A refusal from the phone is reported with its reason.

@@ -563,7 +563,18 @@ async fn a_full_picture_is_taken_only_because_it_was_asked_for_and_without_the_r
     let path = PathBuf::from(f.path.clone().unwrap());
     assert_eq!(path, rig.save_dir.join("IMG_0002.jpg"));
     assert_eq!(std::fs::read(&path).unwrap(), data(5002));
-    assert!(matches!(seen.try_recv(), Ok(wire::Ask::Get { id }) if id == "p2"));
+    // The phone task reports an ask after it has served it, which can be after the host already
+    // shows Done, and thumbnail asks may be interleaved: wait for the Get instead of peeking.
+    let got = timeout(Duration::from_secs(30), async {
+        while let Some(ask) = seen.recv().await {
+            if matches!(&ask, wire::Ask::Get { id } if id == "p2") {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(got, Ok(true), "the phone was asked for p2");
 
     // It was single use: the same name offered again is refused.
     push.send(Push::File("IMG_0002.jpg")).await.unwrap();

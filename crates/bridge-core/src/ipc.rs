@@ -44,8 +44,11 @@ pub const IPC_VERSION: u32 = 1;
 pub const DEFAULT_CONTROL_PORT: u16 = crate::DEFAULT_API_PORT + 1;
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-/// Total time one client exchange (connect, hello, request, response) may take.
-pub const CLIENT_DEADLINE: Duration = Duration::from_secs(4);
+/// Total time one client exchange (connect, hello, request, response) may take. It stays longer than
+/// the service's own exchange deadline so a slow request is answered or closed by the service first.
+/// Handlers fsync several state files (file lock, rename, directory sync); a busy or slow disk must
+/// not turn a half-finished change into a closed connection.
+pub const CLIENT_DEADLINE: Duration = Duration::from_secs(10);
 pub const TOKEN_FILE_NAME: &str = "ipc-token";
 pub const TOKEN_BYTES: usize = 32;
 pub const ENV_STATE_DIR: &str = "GEEKBRIDGE_STATE_DIR";
@@ -2221,7 +2224,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let peer = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            for _ in 0..200 {
+            for _ in 0..(CLIENT_DEADLINE.as_millis() / 40 + 100) {
                 if s.write_all(b"x").is_err() {
                     break;
                 }

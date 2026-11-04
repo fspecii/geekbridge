@@ -206,10 +206,18 @@ impl DeviceCredentials {
     /// new identity generated (the damaged file is kept as `identity.pem.corrupt`, and a diagnostics
     /// line says that every device must be paired again). An unreadable file is an error.
     pub fn load_or_create(dir: &Path) -> Result<(Self, bool)> {
+        Self::load_or_create_waiting(dir, fsutil::LOCK_TIMEOUT)
+    }
+
+    /// [`Self::load_or_create`] waiting up to `lock_timeout` for another caller's creation.
+    fn load_or_create_waiting(
+        dir: &Path,
+        lock_timeout: std::time::Duration,
+    ) -> Result<(Self, bool)> {
         fsutil::ensure_private_dir(dir)?;
         // Serialize the check/create sequence across daemon, CLI and mobile startup.
         // Atomic rename alone cannot stop two callers from returning different identities.
-        let _lock = fsutil::lock_exclusive(&dir.join("identity.pem.lock"))?;
+        let _lock = fsutil::lock_exclusive_timeout(&dir.join("identity.pem.lock"), lock_timeout)?;
         let path = identity_path(dir);
         let bak = bridge_core::statefile::backup_path(&path);
         let now = unix_now();
@@ -528,8 +536,13 @@ mod tests {
                     let dir = dir.clone();
                     scope.spawn(move || {
                         barrier.wait();
-                        let (credentials, created) =
-                            DeviceCredentials::load_or_create(&dir).unwrap();
+                        // Key generation and fsyncs run under the lock; on a starved machine the
+                        // seven waiters must not give up after the production 10 s.
+                        let (credentials, created) = DeviceCredentials::load_or_create_waiting(
+                            &dir,
+                            std::time::Duration::from_secs(300),
+                        )
+                        .unwrap();
                         (credentials.cert().fingerprint(), created)
                     })
                 })

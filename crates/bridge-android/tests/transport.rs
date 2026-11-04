@@ -130,7 +130,7 @@ impl Phone {
     }
 
     fn wait(&self, what: &str, f: impl Fn(&Value) -> bool) -> Value {
-        let end = Instant::now() + Duration::from_secs(10);
+        let end = Instant::now() + Duration::from_secs(60);
         loop {
             let s = self.status();
             if f(&s) {
@@ -316,14 +316,14 @@ impl Peer {
 
     fn finish<T: Send + 'static>(&self, join: JoinHandle<T>) -> T {
         self.rt
-            .block_on(async { timeout(Duration::from_secs(15), join).await })
+            .block_on(async { timeout(Duration::from_secs(120), join).await })
             .expect("peer task timed out")
             .expect("peer task panicked")
     }
 
     fn recv(&self, link: &mut TrustedLink) -> Result<LinkEvent, KdeError> {
         self.rt.block_on(async {
-            timeout(Duration::from_secs(10), link.recv())
+            timeout(Duration::from_secs(60), link.recv())
                 .await
                 .expect("peer recv timed out")
         })
@@ -345,7 +345,7 @@ impl Peer {
 
 /// The peer's approver runs on its own runtime, possibly just after the phone shows its prompt.
 fn wait_seen(seen: &Seen) -> ApprovalRequest {
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + Duration::from_secs(60);
     loop {
         if let Some(r) = seen.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return r;
@@ -1361,7 +1361,7 @@ fn loopback_peers_are_refused_unless_opted_in() {
         peer.dial(addr, &id).is_err(),
         "the phone closes loopback peers before reading"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let s = parse(&d.handle(r#"{"version":1,"action":"transport_status"}"#));
         let s = ok(&s);

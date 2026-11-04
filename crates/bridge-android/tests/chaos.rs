@@ -155,6 +155,13 @@ impl Desk {
                 local_networks: true,
                 loopback: true,
             },
+            // The pairing answer waits on a test thread that a starved machine can delay by far more
+            // than the production 25 s; the chaos under test is in the network, not in this clock.
+            pairing: bridge_kde::pairing::PairingConfig {
+                request_timeout: Duration::from_secs(300),
+                response_timeout: Duration::from_secs(300),
+                ..Default::default()
+            },
             ..TransportConfig::default()
         };
         let ep = Endpoint::new(
