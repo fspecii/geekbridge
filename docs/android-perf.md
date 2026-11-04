@@ -13,9 +13,9 @@ emulators or `android/app/build`).
 
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
-| Release APK, phone + emulator ABIs | <= 6.5 MB | 6.12 MB | ok |
-| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.5 MB | 2.99 MB | ok |
-| `classes.dex` (release) | <= 0.5 MB | 0.35 MB (was 2.8 MB unshrunk) | ok |
+| Release APK, phone + emulator ABIs | <= 7.25 MB (was 6.5) | 7.10 MB (7 102 616 B, CI profile, 2026-11-05) | ok |
+| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.6 MB (was 3.5) | 3.55 MB (3 549 719 B) | ok |
+| `classes.dex` (release) | <= 0.6 MB (was 0.5) | 0.58 MB (576 680 B; 2.8 MB unshrunk) | ok |
 | Cold start `am start -W` (HomeActivity) | <= 1000 ms (emulator) | 765 ms median of 7 (750-814, first 1107 once) | ok |
 | Idle PSS, app closed, link service paired + connected | <= 35 MB | 22.8-23.4 MB just after closing; 26.5 MB after 30 min | ok |
 | Threads, same state | <= 32 | 26-27 after closing, 31 after 30 min | ok |
@@ -25,6 +25,16 @@ emulators or `android/app/build`).
 | 100 MB transfer leaves no growth | <= 1 MB PSS, no fd/thread growth | **Over budget on the first transfer only:** +4.6 MB after GC, then -3.5 to -0.9 MB on the next five; after-GC PSS stays 31.1-32.9 MB. No fd growth, threads +1 at most (see "Large transfers") | see note |
 
 ## Size
+
+Budgets raised 2026-11-05 (measured with the CI recipe: `--profile android`, `--icf=all`, `llvm-strip --strip-unneeded`, R8). The growth is
+feature code, not a dependency or a leftover: arm64 library 2.74 -> 3.06 MB (x86_64 3.13 -> 3.55 MB), `classes.dex` 0.35 -> 0.58 MB across
+~110 Kotlin files (calls, messages, calendar, widgets, updater), resources 111 kB `resources.arsc` + 60 kB of widget PNGs. The Wi-Fi call audio
+code is not in the release library (no `opus`/`callwifi` strings; the `callwifi` feature is debug-only). Checked and not worth it:
+`panic = "abort"` would drop most of the ~830 kB of unwind tables per library (`.eh_frame`, `.eh_frame_hdr`, `.gcc_except_table`) but lets one
+bad request kill the app process instead of becoming an error reply, so it stays `unwind` on purpose; `-repackageclasses` and
+`-allowaccessmodification` in R8 saved 1 kB of dex; `clap` in `bridge-kde` is only used by a bin and is not linked into the library. Dropping
+x86_64 from the published APK is not done: the release docs publish the universal APK (which the updater reads) next to the phone-only one, and
+the universal one is the emulator-capable build; `-Pgb.abis=arm64-v8a` (`geekbridge-android-arm64.apk`) is the phone-only artifact.
 
 | | Before | After |
 | --- | --- | --- |
