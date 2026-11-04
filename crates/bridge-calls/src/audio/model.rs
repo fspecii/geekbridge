@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Platform-neutral description of an audio server's state: cards, devices and streams.
 //!
-//! These are plain data. The Linux adapter fills them from libpulse (`pipewire-pulse`); tests
+//! These are plain data. The Linux adapter fills them from `pactl -f json` (`pipewire-pulse`); tests
 //! fill them by hand. Nothing here performs I/O.
 //!
 //! ## How a phone call looks on PipeWire (1.x, checked against 1.6.9 sources)

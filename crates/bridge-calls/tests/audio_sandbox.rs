@@ -4,7 +4,7 @@
 //! `--ignored`); outside the sandbox every test returns at once.
 //!
 //! Real: PipeWire's bluez5 hands-free code and telephony service, the phone's `bluez_card`, the
-//! sound server, GeekBridge's telephony session, call-audio controller and libpulse adapter.
+//! sound server, GeekBridge's telephony session, call-audio controller and pactl adapter.
 //! Stand-ins: the SCO voice link (two pw-cat streams with the properties PipeWire gives the real
 //! ones), the headset/speaker (null sinks) and the microphone (a remap of a null sink).
 #![cfg(target_os = "linux")]

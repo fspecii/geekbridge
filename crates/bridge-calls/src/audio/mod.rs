@@ -11,7 +11,7 @@
 //! * [`route`]: pure decisions (find the call, resolve devices, name problems with fixes).
 //! * [`controller`]: the per-call state machine.
 //! * [`prefs`]: the user's device pick and the restore file.
-//! * [`AudioServer`]: the narrow server interface; [`PulseServer`] on Linux (libpulse against
+//! * [`AudioServer`]: the narrow server interface; [`PulseServer`] on Linux (`pactl`/`parec` against
 //!   `pipewire-pulse`), [`UnsupportedAudioServer`] elsewhere.
 
 pub mod controller;

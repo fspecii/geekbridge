@@ -24,9 +24,8 @@ zbus = "5"
 zbus_xml = "5"
 async-io = "2"
 futures-lite = "2"
-# Native PulseAudio/pipewire-pulse client for call-audio routing (links libpulse; CI has
-# libpulse-dev). Windows/macOS use the explicit unsupported audio adapter instead.
-libpulse-binding = "2"
+# Call-audio routing talks to PulseAudio/pipewire-pulse through `pactl`/`parec` at call time, not
+# an in-process libpulse (that would add ~2.2 MB idle RSS to the service; docs/performance.md).
 
 [dev-dependencies]
 tempfile = "3"

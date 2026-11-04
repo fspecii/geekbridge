@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Opt-in, read-only check of the real libpulse adapter against this host's audio server:
+//! Opt-in, read-only check of the real pactl adapter against this host's audio server:
 //! `cargo test -p bridge-calls --test audio_live_inventory -- --ignored --nocapture`.
 //!
 //! It connects, reads cards, devices and streams and prints a summary. It moves, mutes and

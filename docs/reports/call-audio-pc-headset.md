@@ -17,7 +17,7 @@ Checked against the PipeWire 1.6.9 sources (`spa/plugins/bluez5/bluez5-device.c`
 
 ## 2. What was built
 
-All Linux code is in `crates/bridge-calls` (data, decisions, BlueZ/telephony/libpulse adapters) and `crates/bridge-service` (`call_audio_host.rs`, the Linux host in `call_control.rs`, `doctor.rs`, the CLI).
+All Linux code is in `crates/bridge-calls` (data, decisions, BlueZ/telephony adapters, the `pactl`/`parec` sound-server adapter) and `crates/bridge-service` (`call_audio_host.rs`, the Linux host in `call_control.rs`, `doctor.rs`, the CLI).
 
 * **Call-audio controller** (`bridge_calls::audio::controller::CallAudio`), run every poll (250 ms) on the Bluetooth thread:
   * *Answered or dialled here* (`call answer`, the Calls window, the call card, `call dial` over Bluetooth): `RejectSCO=false` is sent before the answer goes out; the card is switched to `audio-gateway` if it is `off`; if the phone has not opened the voice link 1.5 s after the call is live, GeekBridge asks for it (`Activate`, HFP `AT+BCC`), at most twice; the two streams are moved to the picked output and microphone.
@@ -46,8 +46,8 @@ All Linux code is in `crates/bridge-calls` (data, decisions, BlueZ/telephony/lib
 | `org.pipewire.Telephony` | on | telephony backend | `bluez5.telephony-dbus-service = true` (fix-config) |
 | Phone paired + trusted + connected | | `bluetoothctl devices Paired` / `info` | `call setup` |
 | Phone's calls profile connected | | an AG object with the phone's address | phone: Bluetooth > this computer > Calls on; `call setup` reconnects; `auto-connect` gets `hfp_ag` |
-| Card `bluez_card.<ADDR>` in `audio-gateway` | | libpulse cards | switched for calls answered here; `pactl set-card-profile ... audio-gateway` |
-| Headphones and microphone | HyperX (USB) | libpulse | `call audio-devices` |
+| Card `bluez_card.<ADDR>` in `audio-gateway` | | `pactl` cards | switched for calls answered here; `pactl set-card-profile ... audio-gateway` |
+| Headphones and microphone | HyperX (USB) | `pactl` | `call audio-devices` |
 
 ### 3.1 Samsung One UI (Fold5)
 Settings > Connections > Bluetooth > gear icon next to the computer: **Calls** must be on (One UI's per-device toggles are "Calls", "Audio", "Contacts and call history"; stock Android names it "Phone calls"). During a call, the call screen's Bluetooth/audio button picks where the audio plays. After pairing, One UI may ask to allow access to contacts and call history; contacts are not needed for audio.
@@ -81,6 +81,7 @@ The file sorts after the owner's `bluetooth-a2dp-autoconnect.conf`, so its rule 
 * **What is still a stand-in**: the SCO voice link (no kernel controller, so no SCO socket). The two voice streams are played/recorded by `pw-cat` with the properties PipeWire gives the real ones.
 * **Stage 1** (`crates/bridge-calls/tests/audio_sandbox.rs`, 6 scenarios): answered here (card off then on, `AT+BCC` sent after 1.5 s, "no voice link" problem after 3 s, streams moved to the pick, level checks clean, real mic muted, re-pick mid-call, everything restored after hang-up); answered on the phone (RejectSCO held 5 s, then handed back; never activated; later "use computer" then "use the phone": card off, RejectSCO on, all restored); silence and an externally muted microphone named within seconds; a crash mid-call undone at the next start; setup pairs, trusts and connects a new phone with the code confirmed; the phone leaving mid-call.
 * **Stage 2**: a private `geekbridge-service` driven only through `geekbridge-ctl` (25 checks): `calling` through the service, `doctor`, `call audio-devices` (list, refuse a typo, pick), ring, `call answer`, routed to the pick, `call mute on` (real source muted, shown), `call audio phone` (card off), hang-up (microphone unmuted, card restored, no restore file left), `call setup --phone "Setup Phone"` + `--confirm yes` (phone remembered), `--fix-config` (nothing to change).
+* The sound-server adapter runs `pactl -f json`/`pactl move-*`/`set-*` and `parec` (level meter) only while a call is handled, never a shell, with a deadline per run. An in-process libpulse was tried first: it maps libpulse, libpulsecommon, libdbus, libsndfile and libsystemd into the service at start, and CI measured idle RSS 9 692 kB against the 8 000 kB budget (main: ~7 500 kB), so it was replaced. `pactl`/`parec` come with libpulse, which Arch's `pipewire-pulse` depends on.
 * Unit tests over an in-memory server (`audio/controller_tests.rs`, route, prefs, model), the checklist over canned facts (`hear_tests.rs`, including the owner's real WirePlumber fragment), the setup matcher, a D-Bus mock test for the RejectSCO write, the IPC listing.
 
 Results today: sandbox stage 1 6/6 and stage 2 25/25 (final runs listed in section 7); workspace `cargo fmt`, `clippy --workspace --all-targets -D warnings` and `cargo test --workspace` green; `scripts/tests/realdevice-kit-test.sh` green. Bugs the sandbox found and fixed: a mute forgotten after "use the phone" (now tracked per call), a card entry stuck in the restore file after the phone left, a restore replay that could undo a live call's changes, `systemctl` failures counted as "not active", the checklist picking the wrong of two phones, and the Calls view not offering mute until the telephony service reported its transport (the voice streams now count as the audio link).
