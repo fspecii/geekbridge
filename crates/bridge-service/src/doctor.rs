@@ -65,6 +65,8 @@ pub struct Inputs {
     pub systemd_unit: bool,
     /// The "Hear calls on this computer" checklist (`bridge_calls::hear`), read on this machine.
     pub hear_calls: Option<bridge_core::ipc::HearCalls>,
+    /// EXPERIMENTAL Wi-Fi call audio, as the service reports it (`Request::CallWifi`).
+    pub callwifi: Option<bridge_core::call_wifi_view::CallWifiView>,
 }
 
 /// Windows Defender Firewall and the macOS application firewall, when `fw` was read on those systems.
@@ -517,6 +519,98 @@ pub fn run(i: &Inputs) -> Vec<Check> {
     if let Some(h) = &i.hear_calls {
         out.push(hear_calls_check(h));
     }
+    if let Some(v) = &i.callwifi {
+        out.extend(callwifi_checks(v));
+    }
+    out
+}
+
+/// Lines for the experimental Wi-Fi call audio. Nothing at all unless a connected phone's app offers it
+/// (it is off by default and hidden otherwise); never a failure, Bluetooth stays the supported path.
+pub fn callwifi_checks(v: &bridge_core::call_wifi_view::CallWifiView) -> Vec<Check> {
+    const TITLE: &str = "Wi-Fi call audio (experimental)";
+    if v.phones.is_empty() && v.session.is_none() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if !v.supported {
+        out.push(check(
+            Level::Warn,
+            TITLE,
+            format!(
+                "A phone offers it, but this computer cannot play it: {}.",
+                v.problem.as_deref().unwrap_or("unsupported system")
+            ),
+            Some("Install PipeWire's tools (pw-cat), or use Bluetooth for call audio: geekbridge-ctl calling"),
+        ));
+        return out;
+    }
+    if let Some(s) = &v.session {
+        out.push(check(
+            Level::Ok,
+            TITLE,
+            format!(
+                "{} with {}{}; {} frames, {} lost. Stop: geekbridge-ctl callwifi stop",
+                s.state,
+                s.name,
+                if s.speaking {
+                    " (your microphone is on)"
+                } else {
+                    ""
+                },
+                s.frames,
+                s.lost
+            ),
+            None,
+        ));
+    }
+    for p in &v.phones {
+        let (level, detail, fix) = if !p.allowed {
+            (
+                Level::Ok,
+                format!("{}: off (the default).", p.name),
+                Some(format!(
+                    "To allow it for this phone: geekbridge-ctl consent {} call_audio_wifi on",
+                    p.device_id
+                )),
+            )
+        } else if !p.ready {
+            (
+                Level::Warn,
+                format!(
+                    "{}: allowed here, but the phone's helper is not running (its last self-test: {}).",
+                    p.name, p.test
+                ),
+                Some("On the phone: Settings > Experimental > Call audio over Wi-Fi; or run scripts/callaudio-enable.sh".to_owned()),
+            )
+        } else if !p.listen {
+            (
+                Level::Warn,
+                format!(
+                    "{}: the phone's self-test says \"{}\", so this phone's calls cannot be heard here over Wi-Fi.",
+                    p.name, p.test
+                ),
+                Some("Use Bluetooth for call audio: geekbridge-ctl calling".to_owned()),
+            )
+        } else {
+            (
+                Level::Ok,
+                format!(
+                    "{}: ready to listen{}{}.",
+                    p.name,
+                    if p.speak { " and to speak" } else { "" },
+                    if p.in_call { "; a call is live" } else { "" }
+                ),
+                None,
+            )
+        };
+        out.push(Check {
+            level,
+            title: TITLE.into(),
+            detail,
+            fix,
+        });
+    }
     out
 }
 
@@ -666,7 +760,66 @@ mod tests {
             firewall: Firewall::default(),
             systemd_unit: false,
             hear_calls: None,
+            callwifi: None,
         }
+    }
+
+    #[test]
+    fn wifi_call_audio_lines_are_hidden_until_a_phone_offers_it_and_never_fail() {
+        use bridge_core::call_wifi_view::{CallWifiPhone, CallWifiSession, CallWifiView};
+        let mut v = CallWifiView {
+            supported: true,
+            ..Default::default()
+        };
+        assert!(callwifi_checks(&v).is_empty());
+        let mut p = CallWifiPhone {
+            device_id: "ab".into(),
+            name: "Fold".into(),
+            connected: true,
+            test: "not_run".into(),
+            ..Default::default()
+        };
+        v.phones.push(p.clone());
+        let c = callwifi_checks(&v);
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].level, Level::Ok);
+        assert!(c[0].detail.contains("off (the default)"));
+        assert!(
+            c[0].fix
+                .as_deref()
+                .unwrap()
+                .contains("consent ab call_audio_wifi on")
+        );
+        p.allowed = true;
+        v.phones = vec![p.clone()];
+        assert_eq!(callwifi_checks(&v)[0].level, Level::Warn);
+        p.ready = true;
+        p.test = "silent".into();
+        v.phones = vec![p.clone()];
+        let c = callwifi_checks(&v);
+        assert_eq!(c[0].level, Level::Warn);
+        assert!(c[0].detail.contains("silent"));
+        p.listen = true;
+        p.speak = true;
+        v.phones = vec![p];
+        assert!(
+            callwifi_checks(&v)[0]
+                .detail
+                .contains("ready to listen and to speak")
+        );
+        v.session = Some(CallWifiSession {
+            name: "Fold".into(),
+            state: "live".into(),
+            speaking: true,
+            ..Default::default()
+        });
+        let c = callwifi_checks(&v);
+        assert!(c[0].detail.contains("microphone is on"));
+        v.supported = false;
+        v.problem = Some("pw-cat is missing".into());
+        let c = callwifi_checks(&v);
+        assert_eq!((c.len(), c[0].level), (1, Level::Warn));
+        assert!(c.iter().all(|c| c.level != Level::Fail));
     }
 
     #[test]

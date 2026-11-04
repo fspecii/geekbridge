@@ -222,6 +222,8 @@ pub struct Daemon {
     photos: crate::photos::Photos,
     /// Log lines and state dumps from a debug-build phone (`phone_debug`).
     debug: Arc<crate::phone_debug::PhoneDebug>,
+    /// EXPERIMENTAL: a phone call heard on this computer over the link (`callwifi`). Off by default.
+    callwifi: Arc<crate::callwifi::CallWifi>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
     reconnect: Mutex<crate::reconnect::Book>,
     /// Dial-back after a silent loss, for phones whose announcements do not reach us (see `reconnect::Fallback`).
@@ -354,6 +356,16 @@ impl Daemon {
         if let Some(n) = options.sms_notifier.take() {
             data.set_notifier(n);
         }
+        let callwifi = {
+            let (send_to, calls_of) = (data.clone(), calls.clone());
+            crate::callwifi::CallWifi::new(
+                Arc::new(move |id, kind, body| send_to.send_stock(id, kind, body)),
+                Arc::new(move |id| calls_of.phone_in_call(id)),
+                Arc::new(crate::callwifi::PipeWireAudio::new(
+                    consents.dir().map(std::path::Path::to_path_buf),
+                )),
+            )
+        };
         let mirror = crate::mirror::Mirror::default();
         mirror.set_show_content(options.sms_show_content);
         let mirror_notifier = options.mirror_notifier.take();
@@ -376,6 +388,7 @@ impl Daemon {
             mirror_notifier,
             photos: crate::photos::Photos::default(),
             debug,
+            callwifi,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             fallback: Mutex::new(crate::reconnect::Fallback::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
@@ -900,7 +913,14 @@ impl Daemon {
                 self.call_audio(move |s| s.choose(output, input)).await
             }
             Request::CallAudioTest => self.call_audio(|s| s.start_test()).await,
-            Request::Calls => Ok(Response::Calls(Box::new(self.calls.status()))),
+            Request::Calls => {
+                let mut status = self.calls.status();
+                let wifi = self.callwifi.view(false);
+                if !wifi.phones.is_empty() || wifi.session.is_some() {
+                    status.wifi = Some(wifi);
+                }
+                Ok(Response::Calls(Box::new(status)))
+            }
             Request::CallAction { target, action } => {
                 let hub = self.calls.clone();
                 blocking(move || hub.act(&target, action)).await
@@ -921,8 +941,16 @@ impl Daemon {
                 let hub = self.calls.clone();
                 blocking(move || hub.audio_to_phone(&source)).await
             }
-            // Wired in by the call-audio-over-Wi-Fi hub (docs/design/call-audio-over-wifi.md).
-            Request::CallWifi { .. } => Ok(Response::CallWifi(Box::default())),
+            // EXPERIMENTAL Wi-Fi call audio (docs/design/call-audio-over-wifi.md). Reads the sound server, so it
+            // runs off the async workers.
+            Request::CallWifi { action } => {
+                let hub = self.callwifi.clone();
+                match tokio::task::spawn_blocking(move || hub.act(action)).await {
+                    Ok(Ok(view)) => Ok(Response::CallWifi(Box::new(view))),
+                    Ok(Err(why)) => Err(err(ErrorCode::Failed, why)),
+                    Err(_) => Err(err(ErrorCode::Failed, "the request was interrupted")),
+                }
+            }
             Request::HearCalls => self.hear_calls(None).await,
             Request::CallAudioPair { action } => self.hear_calls(Some(action)).await,
             Request::CallAudioDevices { set, output, input } => {
@@ -1643,6 +1671,7 @@ impl Daemon {
     }
 
     fn forget_consent(&self, device_id: &str) -> Result<(), ErrorBody> {
+        self.callwifi.set_allowed(device_id, false);
         self.mirror.clear(device_id);
         self.photos.clear(device_id);
         self.share.forget_device(device_id);
@@ -1682,6 +1711,10 @@ impl Daemon {
         }
         if feature == Feature::Telephony {
             self.calls.set_enabled(device_id, enabled);
+        }
+        if feature == Feature::CallAudioWifi {
+            // Withdrawn: a running session ends at once and the phone is told.
+            self.callwifi.set_allowed(device_id, enabled);
         }
         self.data.set_enabled(device_id, feature, enabled);
         if feature == Feature::Notifications {
@@ -2327,6 +2360,7 @@ async fn trusted_loop(
     let (mut clip_rx, _clip_guard) = clipboard_link(d, id, &link);
     let (mut call_rx, _call_guard) = calls_link(d, id, &link);
     let (mut data_rx, _data_guard) = data_link(d, id, &link);
+    callwifi_link(d, id, &link);
     let (mut answer_rx, _answer_guard) = answer_link(d, id, &link);
     let debug_declared = debug_declared(&link);
     debug_default(d, id, debug_declared).await;
@@ -2405,6 +2439,16 @@ async fn trusted_loop(
                     if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::Battery {
                         let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
                         if (!clean || !on_battery_packet(d, id, attempt, &packet))
+                            && !count_rejected(d, id, attempt)
+                        {
+                            break "too many packets outside the negotiated set".to_owned();
+                        }
+                        continue;
+                    }
+                    if gate::classify_incoming(&packet.kind, &negotiated_in) == Incoming::CallWifi {
+                        // Frames carry no payload transfer; a packet with one is malformed.
+                        let clean = packet.payload_size.is_none() && packet.payload_transfer_info.is_none();
+                        if (!clean || !d.callwifi.on_packet(id, &packet.kind, &packet.body))
                             && !count_rejected(d, id, attempt)
                         {
                             break "too many packets outside the negotiated set".to_owned();
@@ -2662,6 +2706,18 @@ fn data_link(
     )
 }
 
+/// EXPERIMENTAL Wi-Fi call audio: tells the hub about a trusted link. A phone that did not declare the
+/// `geekbridge.callaudio.*` packets (every stock peer, and a GeekBridge phone without the feature) is not listed.
+fn callwifi_link(d: &Arc<Daemon>, id: &str, link: &kde::TrustedLink) {
+    let peer = &link.info().peer;
+    let out = gate::negotiated_outgoing(peer);
+    let inn = gate::negotiated_incoming(peer);
+    let speaks = out.iter().any(|k| k == gate::CALLAUDIO_REQUEST)
+        && inn.iter().any(|k| k == gate::CALLAUDIO_OFFER);
+    let allowed = d.consents().is_enabled(id, Feature::CallAudioWifi);
+    d.callwifi.link_up(id, &peer.device_name, speaks, allowed);
+}
+
 /// Registers a trusted link for the answers to the phone's shares. Only a phone that declared
 /// `geekbridge.share.result` gets any; any other peer's queue stays empty and closed.
 fn answer_link(
@@ -2894,6 +2950,7 @@ impl Drop for DataLinkGuard {
             && d.data.link_down(&id, generation)
         {
             // What was mirrored belongs to that session: gone with the link.
+            d.callwifi.link_down(&id);
             d.mirror.clear(&id);
             d.photos.clear(&id);
             d.share.drop_expectations(&id);
@@ -3043,6 +3100,7 @@ fn on_packet(
         | Incoming::Battery
         | Incoming::Notification
         | Incoming::Photos
+        | Incoming::CallWifi
         | Incoming::Reject => {
             link.status.rejected_packets += 1;
             if link.status.rejected_packets == 1 {

@@ -904,6 +904,9 @@ pub struct CallsStatus {
     /// (for example no Bluetooth controller): what works, what stays on the phone, the next step.
     #[serde(default)]
     pub audio_note: Option<String>,
+    /// EXPERIMENTAL Wi-Fi call audio, for the call card's buttons. Absent from a service without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<crate::call_wifi_view::CallWifiView>,
 }
 
 /// The opening line of `geekbridge-ctl calling` (see [`HearCalls::banner`]); also used when the

@@ -19,6 +19,7 @@ bridge-core.workspace = true
 bridge-i18n = { path = "../bridge-i18n" }
 bridge-kde = { path = "../bridge-kde" }
 bridge-calls = { path = "../bridge-calls" }
+bridge-callwifi = { path = "../bridge-callwifi" }
 bridge-calls-windows = { path = "../bridge-calls-windows" }
 bridge-update = { path = "../bridge-update" }
 serde.workspace = true

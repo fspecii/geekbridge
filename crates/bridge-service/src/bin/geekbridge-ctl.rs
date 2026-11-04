@@ -65,6 +65,10 @@ Commands:
                                       hear and talk through this computer: the checklist (Bluetooth adapter,
                                       phone paired, hands-free, headphones), a five-second tone and microphone
                                       test, or choose the headphones and microphone (no name = system default)
+  callwifi [status | listen [DEVICE_ID] | stop | speak on|off] [--json]
+                                      EXPERIMENTAL, off by default: hear a phone call on this computer over Wi-Fi
+                                      (needs `consent ID call_audio_wifi on` and the phone's own switch; plays on
+                                      the headphones chosen for calls; Bluetooth stays the supported way)
   calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
@@ -297,6 +301,13 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "clipboard" {
         return clipboard_command(&args[1..], port, &state_dir);
+    }
+    if command == "callwifi" {
+        let words: Vec<String> = args[1..]
+            .iter()
+            .filter_map(|a| a.to_str().map(str::to_owned))
+            .collect();
+        return bridge_service::callwifi_cli::run(&words, port, &load_token(&state_dir)?);
     }
     if command == "call-audio" {
         let words: Vec<String> = args
@@ -1143,8 +1154,8 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
             let status = ipc::status(port, &token).map_err(|e| e.to_string())?;
             Ok((token, status))
         });
-    let (status, clipboard, calling, data) = match connected {
-        Err(e) => (Err(e), None, None, Vec::new()),
+    let (status, clipboard, calling, data, callwifi) = match connected {
+        Err(e) => (Err(e), None, None, Vec::new(), None),
         Ok((token, status)) => {
             let ask = |r: Request| ipc::call(port, &token, &r).ok();
             let clipboard = match ask(Request::ClipboardStatus) {
@@ -1153,6 +1164,12 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
             };
             let calling = match ask(Request::CallingStatus) {
                 Some(Response::CallingStatus(c)) => Some(c),
+                _ => None,
+            };
+            let callwifi = match ask(Request::CallWifi {
+                action: bridge_core::call_wifi_view::CallWifiAction::Status,
+            }) {
+                Some(Response::CallWifi(v)) => Some(*v),
                 _ => None,
             };
             let data = match ask(Request::MessagesView {
@@ -1167,7 +1184,7 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
                 }
                 _ => Vec::new(),
             };
-            (Ok(status), clipboard, calling, data)
+            (Ok(status), clipboard, calling, data, callwifi)
         }
     };
     let mut checks = doctor::run(&Inputs {
@@ -1176,6 +1193,7 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
         clipboard,
         calling,
         data,
+        callwifi,
         session: SessionEnv {
             wayland_display: set("WAYLAND_DISPLAY"),
             display: set("DISPLAY"),

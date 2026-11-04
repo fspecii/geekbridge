@@ -42,6 +42,14 @@ pub use bridge_core::debug_link::{
     LOG as DEBUG_LOG, STATE as DEBUG_STATE, STATE_REQUEST as DEBUG_STATE_REQUEST,
 };
 
+/// EXPERIMENTAL Wi-Fi call audio (`geekbridge.callaudio.*`, `crate::callwifi`). GeekBridge-only; each packet is
+/// dropped unread unless this computer's `call_audio_wifi` consent for that phone is on.
+pub use bridge_callwifi::wire::{
+    ANSWER as CALLAUDIO_ANSWER, FRAME as CALLAUDIO_FRAME, OFFER as CALLAUDIO_OFFER,
+    READY as CALLAUDIO_READY, REQUEST as CALLAUDIO_REQUEST, SPEAK as CALLAUDIO_SPEAK,
+    STATS as CALLAUDIO_STATS, STOP as CALLAUDIO_STOP,
+};
+
 pub use bridge_core::goodbye::GOODBYE;
 pub use bridge_core::share_result::RESULT as SHARE_RESULT;
 
@@ -49,7 +57,7 @@ pub const PING: &str = "kdeconnect.ping";
 /// What this build declares in its identity packet.
 /// File, link and text sharing (`crate::share`).
 pub const SHARE_REQUEST: &str = "kdeconnect.share.request";
-pub const LOCAL_INCOMING: [&str; 20] = [
+pub const LOCAL_INCOMING: [&str; 26] = [
     PING,
     BATTERY,
     NOTIFICATION,
@@ -71,8 +79,15 @@ pub const LOCAL_INCOMING: [&str; 20] = [
     // GeekBridge-only: a stock peer never declares these, so it is never offered or sent them.
     PHOTOS_LIST,
     PHOTOS_THUMB,
+    // GeekBridge-only, experimental: what a phone's Wi-Fi call audio sends (computer side of the gate).
+    CALLAUDIO_OFFER,
+    CALLAUDIO_FRAME,
+    CALLAUDIO_STATS,
+    CALLAUDIO_STOP,
+    CALLAUDIO_READY,
+    CALLAUDIO_SPEAK,
 ];
-pub const LOCAL_OUTGOING: [&str; 21] = [
+pub const LOCAL_OUTGOING: [&str; 27] = [
     PING,
     BATTERY_REQUEST,
     NOTIFICATION_REQUEST,
@@ -92,6 +107,13 @@ pub const LOCAL_OUTGOING: [&str; 21] = [
     SMS_REQUEST,
     DEBUG_STATE_REQUEST,
     PHOTOS_REQUEST,
+    // GeekBridge-only, experimental: what this computer says to a phone's Wi-Fi call audio.
+    CALLAUDIO_REQUEST,
+    CALLAUDIO_ANSWER,
+    CALLAUDIO_FRAME,
+    CALLAUDIO_STATS,
+    CALLAUDIO_STOP,
+    CALLAUDIO_SPEAK,
     // GeekBridge-only: said to a GeekBridge phone that declared it, never to a stock peer.
     GOODBYE,
     // GeekBridge-only: the answer to a share, said to a GeekBridge phone that declared it.
@@ -139,6 +161,9 @@ pub fn feature_of(kind: &str) -> Option<Feature> {
     if bridge_core::photos_link::is_photos_kind(kind) {
         return Some(Feature::Photos);
     }
+    if bridge_callwifi::wire::is_callaudio_kind(kind) {
+        return Some(Feature::CallAudioWifi);
+    }
     if kind == SMS_STATUS {
         return Some(Feature::Sms);
     }
@@ -169,6 +194,7 @@ pub fn adapter_integrated(feature: Feature) -> bool {
             | Feature::Battery
             | Feature::Notifications
             | Feature::Photos
+            | Feature::CallAudioWifi
     )
 }
 
@@ -194,6 +220,9 @@ pub enum Incoming {
     /// A `geekbridge.photos.list` / `.thumb` packet from the phone. Acted on only for a paired device whose
     /// `photos` consent is on and only as an answer to a request this computer made; otherwise dropped unread.
     Photos,
+    /// A `geekbridge.callaudio.*` packet from the phone (experimental Wi-Fi call audio). Acted on only for a paired
+    /// device whose `call_audio_wifi` consent is on; otherwise dropped unread (`crate::callwifi`).
+    CallWifi,
     Reject,
 }
 
@@ -222,6 +251,10 @@ pub fn classify_incoming(kind: &str, negotiated: &[String]) -> Incoming {
         Incoming::Notification
     } else if matches!(kind, PHOTOS_LIST | PHOTOS_THUMB) && negotiated.iter().any(|k| k == kind) {
         Incoming::Photos
+    } else if bridge_callwifi::wire::COMPUTER_INCOMING.contains(&kind)
+        && negotiated.iter().any(|k| k == kind)
+    {
+        Incoming::CallWifi
     } else if matches!(kind, DEBUG_LOG | DEBUG_STATE) && negotiated.iter().any(|k| k == kind) {
         Incoming::Debug
     } else {
@@ -493,6 +526,59 @@ mod tests {
         );
         assert_eq!(
             classify_incoming(PHOTOS_LIST, &negotiated_incoming(&stock)),
+            Incoming::Reject
+        );
+    }
+
+    #[test]
+    fn wifi_call_audio_is_geekbridge_only_consent_gated_and_one_way_per_kind() {
+        let phone = peer(
+            &[
+                CALLAUDIO_REQUEST,
+                CALLAUDIO_ANSWER,
+                CALLAUDIO_FRAME,
+                CALLAUDIO_STATS,
+                CALLAUDIO_STOP,
+                CALLAUDIO_SPEAK,
+            ],
+            &[
+                CALLAUDIO_OFFER,
+                CALLAUDIO_FRAME,
+                CALLAUDIO_STATS,
+                CALLAUDIO_STOP,
+                CALLAUDIO_READY,
+                CALLAUDIO_SPEAK,
+            ],
+        );
+        let inn = negotiated_incoming(&phone);
+        assert_eq!(inn.len(), 6);
+        for k in bridge_callwifi::wire::COMPUTER_INCOMING {
+            assert_eq!(classify_incoming(k, &inn), Incoming::CallWifi, "{k}");
+            assert_eq!(feature_of(k), Some(Feature::CallAudioWifi));
+        }
+        // The computer never hears a `request` or an `answer` (those are for the phone).
+        assert_eq!(classify_incoming(CALLAUDIO_REQUEST, &inn), Incoming::Reject);
+        assert_eq!(classify_incoming(CALLAUDIO_ANSWER, &inn), Incoming::Reject);
+        let out = negotiated_outgoing(&phone);
+        assert_eq!(out.len(), 6);
+        assert_eq!(
+            check_outgoing(CALLAUDIO_REQUEST, &out, |_| false),
+            Outgoing::ConsentRequired(Feature::CallAudioWifi)
+        );
+        assert_eq!(
+            check_outgoing(CALLAUDIO_REQUEST, &out, |_| true),
+            Outgoing::Allowed
+        );
+        // A stock peer is never offered or sent any of it.
+        let stock = peer(&[PING], &[PING]);
+        assert!(
+            !negotiated_outgoing(&stock)
+                .iter()
+                .chain(&negotiated_incoming(&stock))
+                .any(|k| k.contains("callaudio"))
+        );
+        assert_eq!(
+            classify_incoming(CALLAUDIO_FRAME, &negotiated_incoming(&stock)),
             Incoming::Reject
         );
     }

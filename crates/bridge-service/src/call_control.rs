@@ -520,7 +520,16 @@ impl CallHub {
             notice: self.inner().notice.clone(),
             sources,
             audio_note: audio_problem.or_else(|| Self::audio_note(&snaps)),
+            wifi: None,
         }
+    }
+
+    /// A call is live (not just ringing) on this phone, as its GeekBridge link reports it.
+    pub fn phone_in_call(&self, device_id: &str) -> bool {
+        self.inner()
+            .links
+            .get(device_id)
+            .is_some_and(|p| p.enabled && p.state.calls.values().any(|c| !c.phase.is_ringing()))
     }
 
     /// Names of the phones whose GeekBridge link is up.

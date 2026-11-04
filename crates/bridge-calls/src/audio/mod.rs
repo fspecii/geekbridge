@@ -15,6 +15,7 @@
 //!   `pipewire-pulse`), [`UnsupportedAudioServer`] elsewhere.
 
 pub mod controller;
+pub mod endpoint;
 pub mod model;
 pub mod prefs;
 pub mod route;
@@ -25,6 +26,7 @@ mod unsupported;
 mod pulse;
 
 pub use controller::{AudioStatus, CallAudio, Options, PhoneInput, Place, Request, Want};
+pub use endpoint::{Endpoint, endpoint, endpoint_in};
 pub use model::{BtAddress, ProfileKind, ServerIdentity, ServerSnapshot};
 pub use prefs::Choice;
 pub use route::{Device, DeviceList, FlowProblem, Role};

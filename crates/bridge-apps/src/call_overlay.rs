@@ -757,6 +757,7 @@ mod tests {
                 notice: None,
                 sources: vec![],
                 audio_note: None,
+                wifi: None,
             }),
             problem: problem.map(str::to_owned),
         }
@@ -918,6 +919,7 @@ mod tests {
                 notice: None,
                 sources: vec![],
                 audio_note: None,
+                wifi: None,
             }),
             problem: None,
         };

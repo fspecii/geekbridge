@@ -144,6 +144,7 @@ mod tests {
             notice: None,
             sources: vec![],
             audio_note: None,
+            wifi: None,
         }
     }
 

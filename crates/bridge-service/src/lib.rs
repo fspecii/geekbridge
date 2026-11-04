@@ -13,6 +13,8 @@ pub mod call_cli;
 pub mod call_control;
 pub mod call_overlay;
 pub mod calling;
+pub mod callwifi;
+pub mod callwifi_cli;
 pub mod clipboard;
 #[cfg(target_os = "macos")]
 mod clipboard_mac;

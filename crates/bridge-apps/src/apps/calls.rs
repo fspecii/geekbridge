@@ -448,6 +448,7 @@ pub(crate) fn fixture_feed(ringing: bool, wake: egui::Context) -> CallFeed {
         notice: None,
         sources: Vec::new(),
         audio_note: None,
+        wifi: None,
     };
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),

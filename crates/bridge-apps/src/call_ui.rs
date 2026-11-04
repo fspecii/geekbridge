@@ -687,6 +687,7 @@ mod tests {
             notice: None,
             sources: Vec::new(),
             audio_note: None,
+            wifi: None,
         }
     }
 
@@ -930,6 +931,7 @@ mod tests {
             notice: None,
             sources: Vec::new(),
             audio_note: None,
+            wifi: None,
         };
         let feed = crate::call_feed::CallFeed::spawn_with(
             Duration::from_millis(20),
