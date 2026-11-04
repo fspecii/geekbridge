@@ -67,6 +67,8 @@ Right after any failure: `scripts/realdevice-report.sh --no-adb` (or `--serial S
 
 ## Experimental: Wi-Fi call audio (optional, skip it if Bluetooth works)
 
+**Newer procedure (hear and speak, guided setup with `geekbridge-ctl callwifi setup`, beep test for the uplink): [call-audio-wifi-realphone.md](call-audio-wifi-realphone.md).** The steps below still work.
+
 Off by default, a debug phone build only, and **not proven on any real phone**: whether a Samsung Fold5 lets the `shell` user read the caller's voice is exactly what this section finds out. Bluetooth (section 3) stays the supported way; do this only after Bluetooth works or if you have no dongle. Design: [call-audio-over-wifi](../design/call-audio-over-wifi.md); status: [integration](call-audio-wifi-integration.md). It needs `pw-cat` (PipeWire's tools) on the PC and uses the same headphones you picked for Bluetooth calls (`geekbridge-ctl call audio-devices`).
 
 1. **Phone side first** (needs the build from the phone agent's change): phone Settings > Experimental > "Call audio over Wi-Fi", read the Wireless debugging warning, then start the helper from the PC with `scripts/callaudio-enable.sh` (`--status` shows whether it runs, `--stop` stops it). In the phone's self-test, make or take a short call while the test runs: the result must say **works**. `silent` (Samsung blocks it), `refused` or `unsure` mean this phone cannot be heard here; stop, note the verdict, use Bluetooth.

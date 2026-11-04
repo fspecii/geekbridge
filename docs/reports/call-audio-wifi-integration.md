@@ -3,6 +3,11 @@
 Date: 2026-11-04. EXPERIMENTAL, off by default, listen-first, debug phone builds only. Bluetooth stays primary.
 Background: [design](../design/call-audio-over-wifi.md), [prototype results](call-audio-wifi-prototype.md).
 
+**Update 2026-11-05:** the phone side, Speak end to end (uplink routes, "Test speaking" beeps, echo guard, uplink
+numbers), the in-call card's Speak button and `geekbridge-ctl callwifi setup` are built; the "Not done" list below is
+partly outdated. Current state, the honest route table and the real-phone procedure:
+[call-audio-wifi-realphone.md](call-audio-wifi-realphone.md).
+
 ## Done in this change (tested on the host only)
 
 * New workspace crate `crates/bridge-callwifi`: wire format, three-consent gate, Opus codec, jitter buffer, helper
