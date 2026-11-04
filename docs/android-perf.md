@@ -9,6 +9,8 @@ emulators or `android/app/build`).
 
 ## Budgets
 
+> Re-measured 2026-11-05 at 6a4122922: APK 7.10 MB / arm64-only 3.55 MB / dex 0.58 MB are over the budgets below, cold start median 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
+
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
 | Release APK, phone + emulator ABIs | <= 6.5 MB | 6.12 MB | ok |
