@@ -109,7 +109,6 @@ impl Privacy {
         next.retain(|(k, _)| *k != key);
         next.push((key, on));
         if let Some(dir) = &self.dir {
-            std::fs::create_dir_all(dir).map_err(|_| "the choice could not be saved".to_owned())?;
             bridge_kde::fsutil::atomic_write_private(
                 &dir.join(FILE),
                 privacy::format_choices(&next).as_bytes(),
@@ -152,7 +151,8 @@ mod tests {
     #[test]
     fn defaults_set_persist_and_reload() {
         let d = tempfile::tempdir().unwrap();
-        let p = Privacy::with_env(Some(d.path().to_owned()), env(&[]));
+        let state = d.path().join("state");
+        let p = Privacy::with_env(Some(state.clone()), env(&[]));
         let v = p.view();
         assert!(!v.get(PrivacyKey::MessageText).unwrap().on);
         assert!(!v.get(PrivacyKey::PhoneNotificationText).unwrap().on);
@@ -160,30 +160,28 @@ mod tests {
         p.set(PrivacyKey::MessageText, true).unwrap();
         p.set(PrivacyKey::CallerNumber, false).unwrap();
         assert!(p.on(PrivacyKey::MessageText) && !p.on(PrivacyKey::CallerNumber));
-        let again = Privacy::with_env(Some(d.path().to_owned()), env(&[]));
+        let again = Privacy::with_env(Some(state.clone()), env(&[]));
         assert!(again.on(PrivacyKey::MessageText) && !again.on(PrivacyKey::CallerNumber));
         assert!(
             !again.on(PrivacyKey::PhoneNotificationText),
             "keys are independent"
         );
-        assert_eq!(
-            stored_choice(d.path(), PrivacyKey::CallerNumber),
-            Some(false)
-        );
+        assert_eq!(stored_choice(&state, PrivacyKey::CallerNumber), Some(false));
     }
 
     #[test]
     fn the_old_marker_and_variable_still_force_the_text_choices_on() {
         let d = tempfile::tempdir().unwrap();
-        let p = Privacy::with_env(Some(d.path().to_owned()), env(&[]));
+        let state = d.path().join("state");
+        let p = Privacy::with_env(Some(state.clone()), env(&[]));
         p.set(PrivacyKey::MessageText, false).unwrap();
-        std::fs::write(d.path().join(MARKER_FILE), b"").unwrap();
+        std::fs::write(state.join(MARKER_FILE), b"").unwrap();
         for k in [PrivacyKey::MessageText, PrivacyKey::PhoneNotificationText] {
             let i = p.item(k);
             assert!(i.on && i.forced == Some(ForcedBy::File), "{k:?}");
         }
         assert!(p.item(PrivacyKey::CallerNumber).forced.is_none());
-        std::fs::remove_file(d.path().join(MARKER_FILE)).unwrap();
+        std::fs::remove_file(state.join(MARKER_FILE)).unwrap();
         assert!(
             !p.on(PrivacyKey::MessageText),
             "the stored off applies again"

@@ -445,6 +445,16 @@ async fn an_unread_count_changes_the_tooltip_live_and_reading_clears_it() {
         .await
         .unwrap()
         .unwrap();
-    let tip: Tip = item.get_property("ToolTip").await.unwrap();
-    assert!(!tip.3.contains("unread"), "{}", tip.3);
+    // The host's property cache may trail the signal by a moment.
+    let mut last = String::new();
+    for _ in 0..100 {
+        let fresh = item_proxy(&client, &sni.bus_name).await;
+        let tip: Tip = fresh.get_property("ToolTip").await.unwrap();
+        last = tip.3;
+        if !last.contains("unread") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!last.contains("unread"), "{last}");
 }

@@ -2090,7 +2090,7 @@ mod tests {
     #[test]
     fn from_json_covers_every_response_variant_and_round_trips() {
         let all = every_response_json();
-        assert_eq!(all.len(), 20, "one sample per Response variant");
+        assert_eq!(all.len(), 21, "one sample per Response variant");
         let mut seen = std::collections::HashSet::new();
         for (name, j) in &all {
             let bytes = serde_json::to_vec(j).unwrap();
@@ -2110,7 +2110,7 @@ mod tests {
             assert_eq!(serde_json::to_value(&r).unwrap()["kind"], *name);
             seen.insert(std::mem::discriminant(&r));
         }
-        assert_eq!(seen.len(), 20, "every variant was produced");
+        assert_eq!(seen.len(), 21, "every variant was produced");
     }
 
     /// Every way to break one value: drop it, or swap it for each JSON type.
