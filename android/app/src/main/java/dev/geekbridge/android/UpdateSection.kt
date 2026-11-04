@@ -101,15 +101,19 @@ class UpdateSection(
         if (busy || target == channel) return
         if (target == UpdateChannel.Dev && !BuildConfig.DEBUG) {
             // A release build is signed with the release key; dev builds are debug-signed. Say so before switching.
-            android.app.AlertDialog.Builder(activity)
-                .setTitle(R.string.upd_channel_warn_title)
-                .setMessage(R.string.upd_channel_warn)
-                .setPositiveButton(R.string.upd_channel_warn_ok) { _, _ -> applyChannel(target) }
-                .setNegativeButton(R.string.upd_channel_warn_cancel, null)
-                .show()
+            channelWarning(activity) { applyChannel(target) }.show()
         } else {
             applyChannel(target)
         }
+    }
+
+    /** Shows the card as it looks in a given state, without a network check (the debug design gallery). */
+    internal fun preview(o: UpdateOffer?, isVerified: Boolean, text: String, tone: Tone, dev: Boolean) {
+        channel = if (dev) UpdateChannel.Dev else UpdateChannel.Stable
+        offer = o
+        verified = isVerified
+        say(text, tone)
+        render()
     }
 
     private fun applyChannel(target: UpdateChannel) {
@@ -126,7 +130,12 @@ class UpdateSection(
 
     private fun render() {
         channelLine.text = activity.getString(R.string.upd_channel_line, channelName(channel))
-        channelButtons.forEachIndexed { i, b -> b.isEnabled = !busy && (i == 1) != (channel == UpdateChannel.Dev) }
+        channelButtons.forEachIndexed { i, b ->
+            val which = if (i == 1) UpdateChannel.Dev else UpdateChannel.Stable
+            val name = channelName(which)
+            b.isEnabled = !busy
+            ui.markSelected(b, which == channel, name, activity.getString(R.string.upd_channel_selected, name))
+        }
         val o = offer
         val canDownload = o != null && o.sha256 != null && !verified
         downloadButton.visibility = if (canDownload) android.view.View.VISIBLE else android.view.View.GONE
@@ -311,6 +320,15 @@ class UpdateSection(
     }
 
     companion object {
+        /** The question before switching a release build to the dev channel (dev builds are debug-signed). Not shown yet. */
+        internal fun channelWarning(activity: Activity, onOk: () -> Unit): android.app.AlertDialog =
+            android.app.AlertDialog.Builder(activity)
+                .setTitle(R.string.upd_channel_warn_title)
+                .setMessage(R.string.upd_channel_warn)
+                .setPositiveButton(R.string.upd_channel_warn_ok) { _, _ -> onOk() }
+                .setNegativeButton(R.string.upd_channel_warn_cancel, null)
+                .create()
+
         private const val KEY_AUTO = "auto_check"
         private const val KEY_LAST_CHECK = "last_check_ms"
         private const val KEY_ETAG = "etag"

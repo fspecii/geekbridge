@@ -3,6 +3,7 @@
 """Golden-image helper (Pillow). Run as `python3 -I scripts/golden/golden_img.py ...`.
 
   reduce SRC.png DST.png [--crop X,Y,W,H]   scale to 50 %, reduce to a 256-colour palette, write a small PNG
+  same A.png B.png                          (GOLDEN_CROP applied to both) exit 0 if the cropped pictures are pixel-identical
   compare ACTUAL.png GOLDEN.png DIFF.png    (GOLDEN_CROP=X,Y,W,H crops ACTUAL first) exit 0 if equal within tolerance, 1 otherwise (writes DIFF.png)
 
 Tolerance: a pixel differs when any RGB channel differs by more than PIXEL_THRESHOLD (default 24, out of 255);
@@ -83,6 +84,8 @@ if __name__ == "__main__":
         if "--crop" in args:
             crop = tuple(int(v) for v in args[args.index("--crop") + 1].split(","))
         cmd_reduce(args[1], args[2], crop)
+    elif len(args) == 3 and args[0] == "same":
+        sys.exit(0 if ImageChops.difference(load_reduced(args[1]), load_reduced(args[2])).getbbox() is None else 1)
     elif len(args) == 4 and args[0] == "compare":
         sys.exit(cmd_compare(*args[1:]))
     else:

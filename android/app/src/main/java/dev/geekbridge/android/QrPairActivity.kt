@@ -296,25 +296,10 @@ class QrPairActivity : Activity() {
     }
 
     private fun confirm(root: LinearLayout, t: QrTarget, scanned: Boolean) {
-        val name = QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) }
-        val card = kit.panel(root)
-        // The name and address come from whoever made the link: say so, and show the part that cannot be faked.
-        if (scanned) {
-            card.addView(kit.text(getString(R.string.qr_scan_confirm_title, Bidi.isolate(name)), 20f, bold = true))
-            card.addView(kit.text(getString(R.string.qr_scan_confirm_body), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
-        } else {
-            card.addView(kit.text(getString(R.string.qr_confirm_title2), 20f, bold = true))
-            card.addView(kit.text(getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
-        }
-        card.addView(kit.text(getString(R.string.qr_confirm_name_label), 12f, Tone.Muted))
-        card.addView(kit.text(getString(R.string.qr_confirm_name_unverified, Bidi.isolate(name), getString(R.string.qr_confirm_unverified)), 16f, Tone.Warn, bold = true))
-        card.addView(kit.text(getString(R.string.qr_confirm_addr_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
-        card.addView(kit.ui.mono(QrConfirmText.address(t), 13f))
-        card.addView(kit.text(getString(R.string.qr_confirm_fp_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
-        card.addView(kit.ui.mono(QrConfirmText.fingerprintPrefix(t.certSha256), 16f, bold = true))
-        card.addView(kit.text(getString(R.string.qr_confirm_fp_hint), 12f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
-        kit.button(card, getString(R.string.qr_continue), BtnStyle.Primary) { begin(t) }
-        kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) { gate.supersede(); mode = Mode.Entry; render() }
+        QrConfirmView.add(
+            kit, root, t, scanned, onContinue = { begin(t) },
+            onCancel = { gate.supersede(); mode = Mode.Entry; render() },
+        )
     }
 
     private fun connecting(root: LinearLayout, t: QrTarget) {
@@ -352,6 +337,32 @@ class QrPairActivity : Activity() {
         const val EXTRA_SCAN = "scan"
 
         fun scanIntent(ctx: android.content.Context): Intent = Intent(ctx, QrPairActivity::class.java).putExtra(EXTRA_SCAN, true)
+    }
+}
+
+/** The "Link to <computer>?" page before anything connects (also drawn by the debug design gallery). */
+object QrConfirmView {
+    fun add(kit: UiKit, root: LinearLayout, t: QrTarget, scanned: Boolean, onContinue: () -> Unit, onCancel: () -> Unit) {
+        val c = kit.context
+        val name = QrConfirmText.safeName(t.name).ifEmpty { c.getString(R.string.pair_this_computer) }
+        val card = kit.panel(root)
+        // The name and address come from whoever made the link: say so, and show the part that cannot be faked.
+        if (scanned) {
+            card.addView(kit.cardTitle(c.getString(R.string.qr_scan_confirm_title, Bidi.isolate(name)), 20f))
+            card.addView(kit.text(c.getString(R.string.qr_scan_confirm_body), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        } else {
+            card.addView(kit.cardTitle(c.getString(R.string.qr_confirm_title2), 20f))
+            card.addView(kit.text(c.getString(R.string.qr_confirm_body2), 15f).apply { setPadding(0, kit.dp(8), 0, kit.dp(8)) })
+        }
+        card.addView(kit.text(c.getString(R.string.qr_confirm_name_label), 12f, Tone.Muted))
+        card.addView(kit.text(c.getString(R.string.qr_confirm_name_unverified, Bidi.isolate(name), c.getString(R.string.qr_confirm_unverified)), 16f, Tone.Warn, bold = true))
+        card.addView(kit.text(c.getString(R.string.qr_confirm_addr_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.ui.mono(QrConfirmText.address(t), 13f))
+        card.addView(kit.text(c.getString(R.string.qr_confirm_fp_label), 12f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.ui.mono(QrConfirmText.fingerprintPrefix(t.certSha256), 16f, bold = true))
+        card.addView(kit.text(c.getString(R.string.qr_confirm_fp_hint), 12f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
+        kit.button(card, c.getString(R.string.qr_continue), BtnStyle.Primary) { onContinue() }
+        kit.button(card, c.getString(R.string.qr_cancel), BtnStyle.Plain) { onCancel() }
     }
 }
 

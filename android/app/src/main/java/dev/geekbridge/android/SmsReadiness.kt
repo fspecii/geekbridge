@@ -149,12 +149,12 @@ object SmsReadinessAndroid {
         ),
     )
 
-    fun evaluate(a: Activity): SmsReadiness {
+    fun evaluate(a: Activity, switchOn: Boolean = PhoneDataRuntime.settings.sms): SmsReadiness {
         ComputerGrantsRuntime.init(a)
         val peers = AppState.pairedPeers
         val allowed = ComputerGrantsRuntime.grants.devicesFor(GrantFeature.Sms)
         return SmsReadinessLogic.evaluate(
-            switchOn = PhoneDataRuntime.settings.sms,
+            switchOn = switchOn,
             status = SmsPerm.entries.associateWith { status(a, it) },
             restrictedCapable = restrictedCapable(a),
             pairedCount = peers.size,

@@ -32,9 +32,10 @@ object PhoneDataUi {
         kit.divider(parent)
     }
 
-    fun addSection(a: Activity, kit: UiKit, parent: LinearLayout, rerender: () -> Unit) {
+    /** [preview]: draw the section for these switch positions instead of the saved ones (the debug design gallery). */
+    fun addSection(a: Activity, kit: UiKit, parent: LinearLayout, preview: PhoneDataSettings? = null, rerender: () -> Unit) {
         PhoneDataRuntime.init(a)
-        val s = PhoneDataRuntime.settings
+        val s = preview ?: PhoneDataRuntime.settings
         parent.addView(kit.text(a.getString(R.string.pd_intro), 13.5f, Tone.Muted).apply { setPadding(0, 0, 0, kit.dp(10)) })
 
         fun feature(icon: Int, title: Int, sub: Int, enabled: Boolean, perms: Array<String>, grant: GrantFeature, set: (Boolean) -> Unit) {
@@ -53,7 +54,7 @@ object PhoneDataUi {
             )
             if (grant == GrantFeature.Sms) {
                 // Say exactly what is missing (switch / which permission / restricted setting / computer) in plain words.
-                val r = SmsReadinessAndroid.evaluate(a)
+                val r = SmsReadinessAndroid.evaluate(a, s.sms)
                 parent.addView(
                     kit.text(SmsReadinessLogic.message(r, a.strings), 13.5f, if (r.ready) Tone.Ok else if (r.step == SmsStep.TurnOn) Tone.Muted else Tone.Warn)
                         .apply { setPadding(0, kit.dp(6), 0, 0) },

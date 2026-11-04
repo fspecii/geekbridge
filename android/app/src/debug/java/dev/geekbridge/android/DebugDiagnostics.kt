@@ -89,6 +89,7 @@ object DebugDiagnostics {
     }
 
     private fun install(ctx: Context) {
+        (ctx.applicationContext as? android.app.Application)?.let { DebugScroll.install(it) }
         DebugHooks.onDataEvent = { e -> onDataEvent(e) }
         DebugHooks.diagnosticsCard = { activity, ui, root -> addCard(activity, ui, root) }
         try {
@@ -308,6 +309,11 @@ object DebugDiagnostics {
 
     private fun showState(activity: Activity) {
         val text = stateText()
+        stateDialog(activity, text).show()
+    }
+
+    /** The "Debug state" dialog for [text] (also drawn by the design gallery with made-up link-health lines). */
+    fun stateDialog(activity: Activity, text: String): AlertDialog {
         val tv = TextView(activity).apply {
             this.text = text
             typeface = android.graphics.Typeface.MONOSPACE
@@ -315,7 +321,7 @@ object DebugDiagnostics {
             setTextIsSelectable(true)
             setPadding(32, 24, 32, 24)
         }
-        AlertDialog.Builder(activity)
+        return AlertDialog.Builder(activity)
             .setTitle("Debug state")
             .setView(ScrollView(activity).apply { addView(tv) })
             .setPositiveButton("Copy") { _, _ ->
@@ -324,7 +330,7 @@ object DebugDiagnostics {
                 Toast.makeText(activity, "Copied (redacted)", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("Close", null)
-            .show()
+            .create()
     }
 
     private val EXCEPTION = Regex("""\b\w+(Exception|Error)\b""")

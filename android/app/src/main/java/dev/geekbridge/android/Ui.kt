@@ -330,11 +330,24 @@ class Ui(private val ctx: Context) {
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
         val buttons = specs.mapIndexed { i, (label, action) ->
             styledButton(label, true, Emphasis.Secondary, null, action).also {
-                row.addView(it, LinearLayout.LayoutParams(0, WRAP, 1f).apply { if (i > 0) marginStart = dp(8) })
+                // Equal width and, when a label wraps at a large font size, equal height too.
+                row.addView(it, LinearLayout.LayoutParams(0, MATCH, 1f).apply { if (i > 0) marginStart = dp(8) })
             }
         }
         card.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) })
         return buttons
+    }
+
+    /** Shows [b] (from [buttonRow]) as the chosen one of a group: filled like a primary button, and announced as selected. */
+    fun markSelected(b: Button, selected: Boolean, label: String, selectedLabel: String) {
+        b.backgroundTintList = if (selected) ColorStateList.valueOf(color(R.color.gb_accent)) else null
+        b.setTextColor(
+            ColorStateList(
+                arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+                intArrayOf(color(R.color.gb_muted), color(if (selected) R.color.gb_on_accent else R.color.gb_text)),
+            ),
+        )
+        b.contentDescription = if (selected) selectedLabel else label
     }
 
     fun input(

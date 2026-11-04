@@ -93,7 +93,7 @@
     <string name="name_err_chars">Use letters, numbers and spaces only.</string>
     <string name="name_err_length">Use at most %1$d characters.</string>
     <string name="name_err_empty">Enter a name.</string>
-    <string name="grant_none_paired">No computer paired yet</string>
+    <string name="grant_none_paired">No computer linked yet</string>
     <string name="grant_none_allowed">No computer allowed yet</string>
     <string name="grant_allowed">Allowed: %1$s</string>
     <string name="list_separator">", "</string>

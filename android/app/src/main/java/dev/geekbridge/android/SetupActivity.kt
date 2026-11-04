@@ -195,6 +195,7 @@ class SetupActivity : Activity() {
             StepId.Pair -> pairStep(panel)
             StepId.Sms -> {
                 PhoneDataUi.addSection(this, kit, panel) { render() }
+                panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
                 kit.divider(panel)
                 kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
                 panel.addView(kit.text(getString(R.string.setup_sms_restricted), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
@@ -240,7 +241,7 @@ class SetupActivity : Activity() {
         if (CallControlRuntime.settings.enabled) GrantsUi.add(this, kit, panel, GrantFeature.Calls) { render() }
         panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
         kit.divider(panel)
-        panel.addView(kit.text(getString(R.string.setup_dial_title), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+        panel.addView(kit.cardTitle(getString(R.string.setup_dial_title), 16f).apply { setPadding(0, kit.dp(14), 0, 0) })
         if (checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
             panel.addView(kit.text(getString(R.string.setup_dial_done), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
         } else {
@@ -267,7 +268,7 @@ class SetupActivity : Activity() {
     private fun callAudioPart(panel: LinearLayout) {
         panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
         kit.divider(panel)
-        panel.addView(kit.text(getString(R.string.setup_ca_title), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+        panel.addView(kit.cardTitle(getString(R.string.setup_ca_title), 16f).apply { setPadding(0, kit.dp(14), 0, 0) })
         panel.addView(kit.text(getString(R.string.setup_ca_explain), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
         kit.button(panel, getString(R.string.setup_ca_pair), BtnStyle.Primary) {
             startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

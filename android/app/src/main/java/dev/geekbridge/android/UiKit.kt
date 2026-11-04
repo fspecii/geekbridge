@@ -78,6 +78,11 @@ class UiKit(private val ctx: Context, val ui: Ui) {
             setLineSpacing(0f, 1.12f)
         }
 
+    /** A bold title inside a card, announced as a heading so TalkBack's heading navigation finds it. */
+    fun cardTitle(s: String, sp: Float = 17f, tone: Tone = Tone.Normal): TextView = text(s, sp, tone, bold = true).apply {
+        if (Build.VERSION.SDK_INT >= 28) isAccessibilityHeading = true
+    }
+
     fun heading(s: String, sp: Float = 28f): TextView = text(s, sp, bold = true).apply {
         typeface = Typeface.create("sans-serif", Typeface.BOLD)
         letterSpacing = -0.01f

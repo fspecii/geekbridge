@@ -153,7 +153,7 @@ class PairPanel(
                         14f, Tone.Muted,
                     ).apply { setPadding(0, kit.dp(8), 0, 0) },
                 )
-                kit.button(container, activity.getString(R.string.pair_look), BtnStyle.Primary) { start() }
+                kit.button(container, activity.getString(R.string.pair_look), if (names.isEmpty()) BtnStyle.Tonal else BtnStyle.Plain) { start() }
             }
             LinkPhase.Starting, LinkPhase.Stopping ->
                 container.addView(kit.text(activity.getString(R.string.pair_working), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })

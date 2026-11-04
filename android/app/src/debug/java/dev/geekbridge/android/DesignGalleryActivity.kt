@@ -23,8 +23,66 @@ class DesignGalleryActivity : Activity() {
             "shareoff" -> share(kit, root, on = false)
             "shareon" -> share(kit, root, on = true)
             "dial" -> dial(kit, root)
+            "msgson" -> msgsOn(kit, root)
+            "scanask" -> scan(kit, root) { QrScanViews.needPermission(kit, root) {} }
+            "scanblocked" -> scan(kit, root) { QrScanViews.blocked(kit, root) {} }
+            "scannocamera" -> scan(kit, root) { QrScanViews.noCamera(kit, root) }
+            "scanconfirm" -> linkTitle(kit, root).also { QrConfirmView.add(kit, root, target, scanned = true, onContinue = {}, onCancel = {}) }
+            "scanconfirmlink" -> linkTitle(kit, root).also { QrConfirmView.add(kit, root, target, scanned = false, onContinue = {}, onCancel = {}) }
+            "pairdlgqr" -> { linkTitle(kit, root); PairPromptDialog.create(this, kit.ui, prompt(qr = true)) {}.show() }
+            "pairdlgcode" -> { linkTitle(kit, root); PairPromptDialog.create(this, kit.ui, prompt(qr = false)) {}.show() }
+            "updates" -> updates(kit, root, 0)
+            "updatesavail" -> updates(kit, root, 1)
+            "updatesdev" -> updates(kit, root, 2)
+            "updateswarn" -> { updates(kit, root, 0); UpdateSection.channelWarning(this) {}.show() }
+            "diagstate" -> DebugDiagnostics.stateDialog(this, diagText()).show()
             else -> status(kit, root)
         }
+    }
+
+    private val target = QrTarget(
+        deviceId = "0123456789abcdef0123456789abcdef", name = "Desk",
+        certSha256 = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+        token = "gallery-token", addresses = listOf(QrAddress("192.168.1.20", 1716)),
+    )
+
+    private fun prompt(qr: Boolean) = PairPrompt(
+        requestId = 1, connectionId = 1, direction = "outgoing", peerDeviceId = target.deviceId, peerName = "Desk",
+        peerCertSha256 = target.certSha256, ownCertSha256 = target.certSha256.reversed(), code = "482 913",
+        expiresInMs = 60_000, qrPinned = qr,
+    )
+
+    private fun linkTitle(kit: UiKit, root: LinearLayout) {
+        root.addView(DotText(this, getString(R.string.qr_title), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8); bottomMargin = kit.dp(16) })
+    }
+
+    /** The camera screen without a camera: its title, one explanation card and the way out. */
+    private fun scan(kit: UiKit, root: LinearLayout, card: () -> Unit) {
+        root.addView(DotText(this, getString(R.string.scan_title), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8); bottomMargin = kit.dp(12) })
+        card()
+        kit.button(root, getString(R.string.scan_other_way), BtnStyle.Plain) {}
+    }
+
+    /** The "App updates" card of Diagnostics: 0 not checked, 1 a newer stable build found, 2 on the dev channel with a build found. */
+    private fun updates(kit: UiKit, root: LinearLayout, state: Int) {
+        // The switch reads this setting (on unless the user turned it off): do not let a run's leftovers change the picture.
+        getSharedPreferences("updates", MODE_PRIVATE).edit().putBoolean("auto_check", true).putString("channel", if (state == 2) "dev" else "stable").commit()
+        val section = UpdateSection(this, kit.ui, root)
+        val offer = UpdateOffer(
+            version = if (state == 2) "dev-3bfefaae7c01" else "0.2.0", tag = "v0.2.0", notes = "Link health, a calmer setup, fixes.",
+            releaseUrl = "https://example.invalid/release", apkName = "geekbridge.apk", apkUrl = "https://example.invalid/a.apk",
+            apkSize = 6_000_000, sha256 = "0".repeat(64), dev = state == 2,
+        )
+        when (state) {
+            0 -> section.preview(null, false, getString(R.string.upd_not_checked), Tone.Muted, dev = false)
+            1 -> section.preview(offer, false, getString(R.string.upd_available, offer.version, BuildConfig.VERSION_NAME), Tone.Ok, dev = false)
+            else -> section.preview(offer, true, getString(R.string.upd_verified, offer.version), Tone.Ok, dev = true)
+        }
+    }
+
+    private fun diagText(): String = buildString {
+        appendLine("== Link health ==")
+        LinkHealthText.render(DropNote(0, "peer_closed", "wifi", 95_000), 3, 480_000, true, BindNote(240_000, "no_route"), 1).forEach(::appendLine)
     }
 
     private fun status(kit: UiKit, root: LinearLayout) {
@@ -91,6 +149,16 @@ class DesignGalleryActivity : Activity() {
             kit.button(c, getString(R.string.mirror_pick_apps) + " · " + getString(R.string.mirror_apps_none), BtnStyle.Tonal) {}
             note(kit, c, R.string.mirror_honest, Tone.Muted, 13f)
         }
+    }
+
+    /** The "Share with computer" step with every switch on and no permission given: what each part asks for. */
+    private fun msgsOn(kit: UiKit, root: LinearLayout) {
+        root.addView(DotText(this, getString(R.string.setup_title_sms), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3))
+        val c = kit.panel(root, 16).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(16) }
+        PhoneDataUi.addSection(
+            this, kit, c,
+            PhoneDataSettings(contacts = true, calendar = true, battery = true, notifications = true, photos = true, sms = true),
+        ) {}
     }
 
     /** The calls step: answer permission, the call-status switch and the dial and confirm-dial rows. */

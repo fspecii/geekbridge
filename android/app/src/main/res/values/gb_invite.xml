@@ -31,7 +31,8 @@
     <string name="scan_perm_allow">Allow camera</string>
     <string name="scan_blocked_title">The camera is turned off for GeekBridge</string>
     <string name="scan_blocked_body">Turn on the Camera permission in the app’s settings to scan here. Or use your phone’s camera app on the QR code, or paste the link.</string>
-    <string name="scan_nocamera">The camera could not be started. Close other apps that use it, or use your phone’s camera app on the QR code, or paste the link.</string>
+    <string name="scan_nocamera_title">The camera could not be started</string>
+    <string name="scan_nocamera">Close other apps that use it, or use your phone’s camera app on the QR code, or paste the link.</string>
     <string name="scan_other_way">Use another way</string>
     <string name="pair_dont_have_computer_app">Don’t have GeekBridge on your computer yet?</string>
     <string name="home_paired_banner_body">This phone and your computer are linked. Try sending a file or the clipboard below.</string>

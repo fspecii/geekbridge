@@ -216,7 +216,7 @@
 
     <!-- Computer link card (LinkSection) -->
     <string name="link_title">Computer link</string>
-    <string name="link_intro">Your phone and your computer talk over an encrypted link on your own network (TCP + TLS with certificate pinning). Pairing needs your approval of an exact code and certificate. Once paired you can share the clipboard, send files and answer calls, and, if you switch them on, share texts, contacts and calendar. The link starts when you tap Start and stops when you leave the app.</string>
+    <string name="link_intro">Your phone and your computer talk over an encrypted link on your own network (TCP + TLS with certificate pinning). Linking needs your approval of an exact code and certificate. Once linked you can share the clipboard, send files and answer calls, and, if you switch them on, share texts, contacts and calendar. The link starts when you tap Start and stops when you leave the app.</string>
     <string name="link_state_stopped_short">Link: stopped.</string>
     <string name="link_start">Start link</string>
     <string name="link_stop">Stop link</string>
@@ -274,7 +274,7 @@
     <string name="link_conn_head">%1$s · %2$s · %3$s</string>
     <string name="link_their_cert">Their certificate (SHA-256):</string>
     <string name="link_send_ping">Send ping</string>
-    <string name="link_pair_ellipsis">Pair…</string>
+    <string name="link_pair_ellipsis">Link…</string>
     <string name="link_wait_for_request">Wait for their request</string>
     <string name="link_disconnect">Disconnect</string>
     <string name="link_auto_accept">Auto-accept files from this computer</string>
@@ -283,17 +283,17 @@
     <string name="link_unpair_message">This phone stops trusting this computer: its stored certificate is removed. To use it again, scan a new QR code from the computer. Also click Unlink next to this phone in GeekBridge on the computer.</string>
     <string name="link_unpair">Unlink</string>
     <string name="link_cancel">Cancel</string>
-    <string name="link_prompt_outgoing">You asked %1$s to pair. Compare this code with the one it shows:</string>
-    <string name="link_prompt_incoming">%1$s asks to pair. Compare this code with the one it shows:</string>
+    <string name="link_prompt_outgoing">You asked %1$s to link. Compare this code with the one it shows:</string>
+    <string name="link_prompt_incoming">%1$s asks to link. Compare this code with the one it shows:</string>
     <string name="link_their_device_id">Their device id</string>
     <string name="link_their_cert_must_match">Their certificate (SHA-256) — must match what that device shows for itself</string>
     <string name="link_own_cert_short">This phone’s certificate (SHA-256)</string>
     <plurals name="link_prompt_warning">
-        <item quantity="one">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: pairing also needs the other device to accept. This request expires in about %1$d second.</item>
-        <item quantity="other">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: pairing also needs the other device to accept. This request expires in about %1$d seconds.</item>
+        <item quantity="one">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: linking also needs the other device to accept. This request expires in about %1$d second.</item>
+        <item quantity="other">Approve only if the code and certificate match on both devices. Approving here is only this phone’s half: linking also needs the other device to accept. This request expires in about %1$d seconds.</item>
     </plurals>
-    <string name="link_prompt_title_outgoing">Pair with %1$s?</string>
-    <string name="link_prompt_title_incoming">Pairing request</string>
-    <string name="link_prompt_pair">Pair</string>
+    <string name="link_prompt_title_outgoing">Link with %1$s?</string>
+    <string name="link_prompt_title_incoming">Link request</string>
+    <string name="link_prompt_pair">Link</string>
     <string name="link_prompt_decline">Decline</string>
 </resources>

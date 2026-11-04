@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="pd_intro">Optional, off by default. Each switch lets a computer you paired and allowed on its side ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
+    <string name="pd_intro">Optional, off by default. Each switch lets a computer you linked and allowed on its side ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
     <string name="pd_contacts">Share contacts</string>
     <string name="pd_contacts_sub">Read-only: names, numbers, emails for the Contacts app on your computer. Photos are never sent.</string>
     <string name="pd_calendar">Share calendar</string>
@@ -23,8 +23,8 @@
     <string name="photos_state_ready">Ready: allowed computers can list your newest photos and ask for one.</string>
     <string name="photos_state_partial">Ready, with only the photos you picked: Android shows GeekBridge just those.</string>
     <string name="photos_state_turn_on">Switched off. Nothing about your photos leaves this phone.</string>
-    <string name="photos_state_access">Android still needs your OK. Tap “Grant” and choose which photos GeekBridge may see.</string>
-    <string name="photos_state_pair">No computer is paired. Pair a computer first.</string>
+    <string name="photos_state_access">Android still needs your OK. Tap “Allow access” and choose which photos GeekBridge may see.</string>
+    <string name="photos_state_pair">No computer is linked. Link a computer first.</string>
     <string name="photos_state_choose">No computer is allowed yet. Tap “Allowed computers…” to allow one.</string>
     <string name="mirror_open_access">Open Notification access settings</string>
     <string name="mirror_pick_apps">Choose apps…</string>
@@ -40,7 +40,7 @@
     <string name="mirror_state_access">Android still needs your OK. Tap “Open Notification access settings” and switch GeekBridge on.</string>
     <string name="mirror_state_restricted">Android blocks Notification access for apps installed outside a store (a “restricted setting”). Follow the steps below.</string>
     <string name="mirror_state_apps">Choose which apps may be shown. None are chosen, so nothing is sent.</string>
-    <string name="mirror_state_pair">No computer is paired. Pair a computer first.</string>
+    <string name="mirror_state_pair">No computer is linked. Link a computer first.</string>
     <string name="mirror_state_choose">No computer is allowed yet. Tap “Allowed computers…” to allow one.</string>
     <string name="pd_grant">Allow access</string>
     <string name="pd_sms_special">Short codes and premium numbers</string>
@@ -58,8 +58,8 @@
     <string name="sms_state_allow">Android still needs your OK for SMS. Missing: %1$s. Tap “Allow access” and choose Allow.</string>
     <string name="sms_state_settings">Android will not ask for SMS again. Missing: %1$s. Open app settings › Permissions › SMS and choose Allow.</string>
     <string name="sms_state_restricted">Android blocks SMS for apps installed outside a store (“restricted setting”). Missing: %1$s. Open app settings, tap ⋮ (top right) › Allow restricted settings, then Permissions › SMS › Allow. If ⋮ has no such item yet, tap “Allow access” once and look again.</string>
-    <string name="sms_state_pair">SMS is allowed on this phone, but no computer is paired. Pair a computer first.</string>
-    <string name="sms_state_choose">SMS is allowed on this phone, but no paired computer may use it. Tap “Allowed computers…” and tick your computer.</string>
+    <string name="sms_state_pair">SMS is allowed on this phone, but no computer is linked. Link a computer first.</string>
+    <string name="sms_state_choose">SMS is allowed on this phone, but no linked computer may use it. Tap “Allowed computers…” and tick your computer.</string>
     <string name="sms_sim_ask">This phone has two SIM slots. To let your computer choose which SIM sends a text, GeekBridge must be allowed to see your SIM cards (Android calls this “Phone” access, the same one the call features use). It is optional: without it every text is sent from your phone’s default SIM.</string>
     <string name="sms_sim_blocked">Choosing a SIM is off because Android will not ask again, so every text is sent from your phone’s default SIM. To change that, open app settings › Permissions › Phone and choose Allow.</string>
     <string name="sms_sim_allow">Allow SIM choice</string>

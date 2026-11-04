@@ -22,10 +22,10 @@
 
     <!-- Setup model -->
     <plurals name="setup_paired_count">
-        <item quantity="one">%1$d paired</item>
-        <item quantity="other">%1$d paired</item>
+        <item quantity="one">%1$d linked</item>
+        <item quantity="other">%1$d linked</item>
     </plurals>
-    <string name="setup_detail_none_paired">No computer paired yet</string>
+    <string name="setup_detail_none_paired">No computer linked yet</string>
     <string name="setup_detail_notif_na">Not needed on this Android version</string>
     <string name="setup_detail_sms">Optional · battery, notifications, contacts, calendar and texts for your computer, off until you switch them on</string>
     <string name="setup_detail_allowed">Allowed</string>
@@ -40,7 +40,7 @@
     <string name="setup_warn_battery">Battery optimisation is on. GeekBridge may disconnect in the background.</string>
     <string name="setup_warn_notifications">Notifications are off. The background connection notice and alerts will not show.</string>
     <string name="setup_warn_revoked">%1$s access was turned off. Related features are paused.</string>
-    <string name="setup_title_pair">Pair with your computer</string>
+    <string name="setup_title_pair">Link to your computer</string>
     <string name="setup_title_notifications">Notifications</string>
     <string name="setup_title_contacts">Contacts</string>
     <string name="setup_title_calendar">Calendar</string>

@@ -5,8 +5,14 @@
 #   scripts/golden-android.sh --check    install the debug APK, render each screen, compare with tests/golden/android/
 #   scripts/golden-android.sh --update   overwrite the goldens. ONLY after a visual review (CONTRIBUTING.md "Golden images").
 #   ONLY='^status' scripts/golden-android.sh --check    just matching screens
-# Screens: the debug-only DesignGalleryActivity pages (status, controls, calendar, shareoff, shareon, dial: the new Share-with-computer and call switches) and the real Home screen (MainActivity,
-# unpaired). Each in light and dark, at font scale 1.0 and 2.0 -> NAME-{light,dark}-fs{10,20}.png (50 %, 256 colours).
+# Screens: the debug-only DesignGalleryActivity pages (status, controls, calendar, shareoff, shareon, dial: the Share-with-computer and call
+# switches), the real Home screen (MainActivity, unpaired) and, from the Android visual QA, the screens added later: g-scan* (camera
+# permission ask / blocked / no camera, the "Link to <computer>?" page for a scanned and an opened link), g-pairdlg* (the "Link with
+# <computer>?" dialogs), g-updates* (App updates card, dev-channel warning), g-diagstate (debug state with link health), g-msgson
+# (Share with computer, every switch on), and the real ComputerLinkActivity (invite) and SetupActivity (setup-pair, -notifications,
+# -answer, -answer-bt, -battery, -sms) and MainActivity (diag, scrolled). The first group is shot in light and dark at font scale 1.0 and
+# 2.0 -> NAME-{light,dark}-fs{10,20}.png (50 %, 256 colours); the later group at 1.0 and 1.5 -> -fs{10,15}, and a long screen in
+# pages NAME, NAME-p1, NAME-p2... (each page scrolls 85 % of the screen height further: debug-only DebugScroll, `--ei gb_scroll N`).
 # Fixed state: demo mode (clock 12:00, full battery, wifi, no notification icons), animations off, rotation locked,
 # en-US, UTC, date pinned to 2026-06-15 (needs `adb root`, which the google_apis image allows), screencaps cropped
 # to the app area (status bar and gesture bar removed: GOLDEN_CROP_TOP/GOLDEN_CROP_BOTTOM px, default 140/100).
@@ -104,25 +110,64 @@ grab() { # out : screencap until two consecutive frames match
   done
 }
 FAILED=0
-shoot() { # name am-start-args...
+# shoot NAME START-ARGS...: light and dark at the font scales in $FS (default "1.0 2.0"), pages 0..$PAGES-1 of a long screen
+# (page k scrolls the screen k times 85 % of its height: debug-only DebugScroll; a page that looks like the one before it is dropped).
+FS="1.0 2.0"; PAGES=1
+shoot() {
   local name="$1"; shift
-  for night in no yes; do for fs in 1.0 2.0; do
-    local theme=light; [ $night = yes ] && theme=dark
-    local f="$name-$theme-fs${fs/./}"
-    [ -n "${ONLY:-}" ] && ! [[ "$f" =~ $ONLY ]] && continue
+  for night in no yes; do for fs in $FS; do
+    local theme=light prev=""; [ $night = yes ] && theme=dark
     $ADB shell cmd uimode night $night >/dev/null; $ADB shell settings put system font_scale $fs
-    $ADB shell am force-stop dev.geekbridge.android; sleep 1
-    $ADB shell am start -W -n "$@" >/dev/null 2>&1 || { echo "golden-android: cannot start for $f"; FAILED=1; continue; }
-    sleep 3; grab "$RUN/raw/$f.png" || { echo "golden-android: screencap failed for $f"; FAILED=1; }
+    for pg in $(seq 0 $((PAGES-1))); do
+      local pn="$name"; [ $pg -gt 0 ] && pn="$name-p$pg"
+      local f="$pn-$theme-fs${fs/./}"
+      [ -n "${ONLY:-}" ] && ! [[ "$f" =~ $ONLY ]] && continue
+      local extra=(); [ $pg -gt 0 ] && extra=(--ei gb_scroll $pg)
+      $ADB shell am force-stop dev.geekbridge.android; sleep 1
+      $ADB shell am start -W -n "$@" "${extra[@]}" >/dev/null 2>&1 || { echo "golden-android: cannot start for $f"; FAILED=1; continue; }
+      sleep 3; [ $pg -gt 0 ] && sleep 2
+      grab "$RUN/raw/$f.png" || { echo "golden-android: screencap failed for $f"; FAILED=1; }
+      if [ -n "$prev" ] && $IMG same "$RUN/raw/$f.png" "$prev"; then rm -f "$RUN/raw/$f.png"; break; fi
+      cp "$RUN/raw/$f.png" "$RUN/prevpage.png"; prev="$RUN/prevpage.png"
+    done
   done; done
 }
-shoot status dev.geekbridge.android/.DesignGalleryActivity --es page status
-shoot controls dev.geekbridge.android/.DesignGalleryActivity --es page controls
-shoot calendar dev.geekbridge.android/.DesignGalleryActivity --es page calendar
-shoot shareoff dev.geekbridge.android/.DesignGalleryActivity --es page shareoff
-shoot shareon dev.geekbridge.android/.DesignGalleryActivity --es page shareon
-shoot dial dev.geekbridge.android/.DesignGalleryActivity --es page dial
-shoot home dev.geekbridge.android/.MainActivity
+G=dev.geekbridge.android
+shoot status $G/.DesignGalleryActivity --es page status
+shoot controls $G/.DesignGalleryActivity --es page controls
+shoot calendar $G/.DesignGalleryActivity --es page calendar
+shoot shareoff $G/.DesignGalleryActivity --es page shareoff
+shoot shareon $G/.DesignGalleryActivity --es page shareon
+shoot dial $G/.DesignGalleryActivity --es page dial
+shoot home $G/.MainActivity
+# The screens added after the first goldens: font scales 1.0 and 1.5, long screens in several pages. They start from the
+# app's first-run state (no saved settings, no permission, nothing asked before).
+$ADB shell pm clear $G >/dev/null 2>&1
+FS="1.0 1.5"
+for pg in scanask scanblocked scannocamera scanconfirm scanconfirmlink pairdlgqr pairdlgcode updatesdev updateswarn diagstate; do
+  PAGES=1; shoot "g-$pg" $G/.DesignGalleryActivity --es page $pg
+done
+for pg in updates updatesavail; do PAGES=3; shoot "g-$pg" $G/.DesignGalleryActivity --es page $pg; done
+PAGES=3; shoot invite $G/.ComputerLinkActivity
+PAGES=3; shoot setup-pair $G/.SetupActivity --es step Pair
+$ADB shell pm revoke $G android.permission.POST_NOTIFICATIONS >/dev/null 2>&1
+PAGES=1; shoot setup-notifications $G/.SetupActivity --es step Notifications
+$ADB shell pm revoke $G android.permission.ANSWER_PHONE_CALLS >/dev/null 2>&1; $ADB shell pm revoke $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
+PAGES=5; shoot setup-answer $G/.SetupActivity --es step AnswerCalls
+$ADB shell pm grant $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
+PAGES=5; shoot setup-answer-bt $G/.SetupActivity --es step AnswerCalls
+$ADB shell pm revoke $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
+PAGES=3; shoot setup-battery $G/.SetupActivity --es step Battery
+PAGES=6; shoot setup-sms $G/.SetupActivity --es step Sms
+PAGES=8; shoot g-msgson $G/.DesignGalleryActivity --es page msgson
+# Diagnostics: the update check that runs when the app opens needs the network (and the emulator's pinned date breaks TLS): say
+# it was done a minute ago, so the card shows "Not checked yet." every time.
+$ADB shell am force-stop $G; UID_=$($ADB shell stat -c %u /data/data/$G | tr -d '\r')
+printf '%s' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?><map><boolean name=\"auto_check\" value=\"true\" /><string name=\"channel\">stable</string><long name=\"last_check_ms\" value=\"1781524740000\" /></map>" >"$RUN/updates.xml"
+$ADB push "$RUN/updates.xml" /data/local/tmp/gb-updates.xml >/dev/null
+$ADB shell "mkdir -p /data/data/$G/shared_prefs; cp /data/local/tmp/gb-updates.xml /data/data/$G/shared_prefs/updates.xml; chown $UID_:$UID_ /data/data/$G/shared_prefs/updates.xml; chmod 660 /data/data/$G/shared_prefs/updates.xml; rm /data/local/tmp/gb-updates.xml"
+PAGES=6; shoot diag $G/.MainActivity
+FS="1.0 2.0"; PAGES=1
 demo exit; $ADB shell cmd uimode night no >/dev/null; $ADB shell settings put system font_scale 1.0
 
 n=0; bad=0

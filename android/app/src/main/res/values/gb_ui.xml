@@ -63,7 +63,7 @@
     <string name="setup_ask_again">Ask again</string>
     <string name="setup_allow">Allow</string>
     <string name="setup_optional_note">Optional: GeekBridge works without it; the related feature stays off.</string>
-    <string name="setup_required_note">Recommended. You can pair without it, but alerts and the background connection notice will not show.</string>
+    <string name="setup_required_note">Recommended. You can link without it, but alerts and the background connection notice will not show.</string>
     <string name="channel_dial">Calls requested by a computer</string>
     <string name="channel_dial_desc">Tells you when a paired computer asks this phone to place a call, and asks first if you chose that.</string>
     <string name="dial_notice_title">Call placed for a computer</string>
@@ -133,7 +133,7 @@
     <string name="chip_denied">Denied</string>
     <string name="chip_blocked">Blocked</string>
     <string name="chip_info">Info</string>
-    <string name="setup_why_pair">Pair this phone with your computer once. After that they find each other on your network automatically, and nothing is trusted until you confirm a matching code.</string>
+    <string name="setup_why_pair">Link this phone with your computer once. After that they find each other on your network automatically, and nothing is trusted until you confirm a matching code.</string>
     <string name="setup_why_notifications">Lets GeekBridge show a quiet notice while it stays connected, and tell you about incoming files.</string>
     <string name="setup_why_contacts">Lets this phone show names instead of numbers for calls and messages, and, if you share contacts, fills the Contacts app on your computer. Read on this phone; nothing is uploaded.</string>
     <string name="setup_why_calendar">Lets you share your calendars (including Google Calendar accounts that sync on this phone) with the Calendar app on your computer. Read-only; the computer can only add or change events if you separately switch on editing later, in Share with computer.</string>
@@ -146,8 +146,8 @@
     <string name="setup_why_battery">Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late.</string>
 
     <!-- Pairing panel and prompt -->
-    <string name="pair_paired_and_trusted">Paired and trusted</string>
-    <string name="pair_chip_paired">Paired</string>
+    <string name="pair_paired_and_trusted">Linked and trusted</string>
+    <string name="pair_chip_paired">Linked</string>
     <string name="pair_intro_first">Open GeekBridge or KDE Connect on your computer, on the same Wi-Fi network as this phone, then look for it.</string>
     <string name="pair_manage_hint">To stop trusting a computer, tap Unlink next to it.</string>
     <string name="pair_intro_more">To add another computer, open GeekBridge on it, on the same Wi-Fi network, then look for it.</string>
@@ -155,24 +155,24 @@
     <string name="pair_working">Working…</string>
     <string name="pair_looking">Looking for computers on this network… keep GeekBridge open on the computer. Nothing showing up? Check that both devices use the same Wi-Fi and that a guest or VPN network is not in the way.</string>
     <string name="pair_connecting">Connecting…</string>
-    <string name="pair_action">Pair</string>
-    <string name="pair_phase_parked">Connected. Not paired yet.</string>
+    <string name="pair_action">Link</string>
+    <string name="pair_phase_parked">Connected. Not linked yet.</string>
     <string name="pair_phase_request">Waiting for the computer to answer…</string>
-    <string name="pair_phase_await">Waiting for the computer to ask to pair…</string>
-    <string name="pair_with">Pair with %1$s</string>
+    <string name="pair_phase_await">Waiting for the computer to ask to link…</string>
+    <string name="pair_with">Link with %1$s</string>
     <string name="pair_wait_for">Wait for %1$s to ask</string>
     <string name="pair_stop_looking">Stop looking</string>
     <string name="pair_this_computer">this computer</string>
-    <string name="pair_dlg_outgoing">You asked %1$s to pair. It shows a code too; check that both codes are the same:</string>
-    <string name="pair_dlg_incoming">%1$s wants to pair. It shows a code too; check that both codes are the same:</string>
+    <string name="pair_dlg_outgoing">You asked %1$s to link. It shows a code too; check that both codes are the same:</string>
+    <string name="pair_dlg_incoming">%1$s wants to link. It shows a code too; check that both codes are the same:</string>
     <string name="pair_dlg_cert">Computer’s certificate (SHA-256), shown the same on both screens</string>
     <plurals name="pair_dlg_warning">
-        <item quantity="one">Pair only if the code and certificate match. Pairing also needs the computer to accept. This request expires in about %1$d second.</item>
-        <item quantity="other">Pair only if the code and certificate match. Pairing also needs the computer to accept. This request expires in about %1$d seconds.</item>
+        <item quantity="one">Link only if the code and certificate match. Linking also needs the computer to accept. This request expires in about %1$d second.</item>
+        <item quantity="other">Link only if the code and certificate match. Linking also needs the computer to accept. This request expires in about %1$d seconds.</item>
     </plurals>
-    <string name="pair_dlg_title_outgoing">Pair with %1$s?</string>
-    <string name="pair_dlg_title_incoming">Pairing request</string>
-    <string name="pair_dlg_pair">Pair</string>
+    <string name="pair_dlg_title_outgoing">Link with %1$s?</string>
+    <string name="pair_dlg_title_incoming">Link request</string>
+    <string name="pair_dlg_pair">Link</string>
     <string name="pair_dlg_decline">Decline</string>
 
     <!-- Share sheet -->

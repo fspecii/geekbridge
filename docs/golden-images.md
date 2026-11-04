@@ -32,7 +32,12 @@ private Xvfb and service state; a scripted phone (`bridge-phone-sim`); the wall 
 mock release server (no network); each screen is captured until two consecutive frames are identical. Every screen is shot
 in light and dark at the standard window size (`-std`) and resized to the app's minimum (`-min`).
 
-Android (`scripts/golden-android.sh`): a headless emulator on its own free console port and adb server port (chosen at run time), started
+Android (`scripts/golden-android.sh`): which screens, see its header. The debug design gallery (`DesignGalleryActivity`, pages
+`status`, `controls`, `calendar`, `shareoff`, `shareon`, `dial`, `msgson`, `scanask`, `scanblocked`, `scannocamera`, `scanconfirm`,
+`scanconfirmlink`, `pairdlgqr`, `pairdlgcode`, `updates`, `updatesavail`, `updatesdev`, `updateswarn`, `diagstate`) draws the real view
+code of each screen with made-up data (`QrScanViews`, `QrConfirmView`, `PairPromptDialog.create`, `UpdateSection`, `PhoneDataUi`);
+the setup steps, the invite page and Diagnostics are the real activities, started from a cleared app (`pm clear`, nothing allowed,
+nothing asked before). A long screen is captured in pages with `--ei gb_scroll N` (`DebugScroll`, debug builds only). A headless emulator on its own free console port and adb server port (chosen at run time), started
 read-only so the AVD is not modified. System state: demo mode (clock 12:00, full battery), animations off, rotation locked,
 en-US, UTC, date pinned to 2026-06-15, font scale 1.0 and 2.0, light and dark; screencaps cropped to the app area.
 The AVD that gives stable pixels: system image `system-images;android-36;google_apis;x86_64` (the google_apis flavour,
@@ -59,11 +64,15 @@ window prints its save folder), and the order of the captures (Home before Messa
 
 ## Tolerance and size
 
-Both goldens are 50 % scale, 256-colour PNGs (about 0.8 MB desktop, 0.6 MB Android). A pixel counts as different when any
+Both goldens are 50 % scale, 256-colour PNGs (about 2.0 MB desktop, 6 MB Android). A pixel counts as different when any
 RGB channel differs by more than 24/255 (`GOLDEN_PIXEL_THRESHOLD`); the check fails when more than 0.05 % of the pixels
 differ (`GOLDEN_MAX_RATIO`) or the size changes (`scripts/golden/golden_img.py`).
 
 ## Known limits
+
+* Android: the camera preview itself (QrScanActivity while scanning) is not covered (the emulator camera is a moving test pattern);
+  its permission and failure cards are. The "denied" camera state draws the same card as "ask" (`ScanRules`); "blocked" differs.
+* Android: states that need a paired computer (the pairing panel with a found computer, grants per computer) are not drawn.
 
 * The pairing QR dialog is not covered: its code embeds fresh keys on every run.
 * The home screen shows "Updated to <version>" with the changelog bullets, so a release or changelog edit changes the

@@ -30,19 +30,19 @@ class ComputerLinkActivity : Activity() {
         root.addView(kit.text(getString(R.string.invite_why), 15f, Tone.Muted))
 
         val send = kit.panel(root).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(16) }
-        send.addView(kit.text(getString(R.string.invite_send_title), 17f, bold = true))
+        send.addView(kit.cardTitle(getString(R.string.invite_send_title)))
         send.addView(kit.text(getString(R.string.invite_send_body), 14f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, 0) })
         kit.button(send, getString(R.string.invite_send), BtnStyle.Primary) { share() }
         kit.button(send, getString(R.string.invite_mail), BtnStyle.Tonal) { mail() }
 
         val typed = kit.panel(root).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12) }
-        typed.addView(kit.text(getString(R.string.invite_type_title), 17f, bold = true))
+        typed.addView(kit.cardTitle(getString(R.string.invite_type_title)))
         typed.addView(kit.text(getString(R.string.invite_type_body), 14f, Tone.Muted).apply { setPadding(0, kit.dp(6), 0, kit.dp(6)) })
         typed.addView(kit.ui.mono(ComputerInvite.SHORT_URL, 16f, bold = true))
         kit.button(typed, getString(R.string.invite_copy), BtnStyle.Tonal) { copy() }
 
         val steps = kit.panel(root).also { (it.layoutParams as LinearLayout.LayoutParams).topMargin = kit.dp(12) }
-        steps.addView(kit.text(getString(R.string.invite_steps_title), 17f, bold = true))
+        steps.addView(kit.cardTitle(getString(R.string.invite_steps_title)))
         ComputerInvite.lines(strings).forEachIndexed { i, line ->
             steps.addView(kit.text(getString(R.string.list_numbered, i + 1, line), 14f).apply { setPadding(0, kit.dp(6), 0, 0) })
         }

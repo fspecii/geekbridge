@@ -40,6 +40,7 @@
     <string name="upd_checking_github">Checking GitHub…</string>
     <string name="upd_checking">Checking for updates…</string>
     <string name="upd_available_no_sha">Version %1$s is available, but the release publishes no SHA-256 for the app, so it can\'t be downloaded here.</string>
+    <string name="upd_channel_selected">%1$s, selected</string>
     <string name="upd_available">Version %1$s is available (you have %2$s).</string>
     <string name="upd_up_to_date">GeekBridge %1$s is up to date.</string>
     <string name="upd_downloading_name">Downloading %1$s…</string>

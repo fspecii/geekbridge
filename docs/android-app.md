@@ -283,6 +283,7 @@ a few KB of code and vector line icons.
 * **Accessibility.** Targets are 48 dp, text and tiles scale to font scale 2.0 (dot text caps its growth at 1.4x and wraps),
   dark/light follow the system, RTL aligns dot text to the start edge, decorative dot art is hidden from TalkBack.
 * **Design gallery (debug builds only).** `DesignGalleryActivity` shows every component with synthetic data:
-  `adb shell am start -n dev.geekbridge.android/.DesignGalleryActivity --es page status|calendar|controls`.
+  `adb shell am start -n dev.geekbridge.android/.DesignGalleryActivity --es page status|calendar|controls|...`
+  (the page names are listed in `docs/golden-images.md`; `--ei gb_scroll N` on any activity scrolls its screen N pages down).
 * **Screenshots.** `dist/screenshots/android/nothing-*.png` (light and dark); four are in `docs/img/android-*.png`
   (`android-status-dark`, `android-setup-light`, `android-share-dark`, `android-calendar-dark`), reduced from `tests/golden/android/`.

@@ -96,22 +96,9 @@ class QrScanActivity : Activity() {
         root.addView(DotText(this, getString(R.string.scan_title), maxPitchDp = Tok.DOT_NUMERAL, maxLines = 3, accentDot = true), LinearLayout.LayoutParams(Ui.MATCH, Ui.WRAP).apply { topMargin = kit.dp(8); bottomMargin = kit.dp(12) })
         when (state) {
             ScanState.Starting, ScanState.Scanning -> preview(root)
-            ScanState.NeedPermission -> {
-                val card = kit.panel(root)
-                card.addView(kit.text(getString(R.string.scan_perm_title), 18f, bold = true))
-                card.addView(kit.text(getString(R.string.scan_perm_body), 15f).apply { setPadding(0, kit.dp(8), 0, 0) })
-                kit.button(card, getString(R.string.scan_perm_allow), BtnStyle.Primary) { askCamera() }
-            }
-            ScanState.PermissionBlocked -> {
-                val card = kit.panel(root)
-                card.addView(kit.text(getString(R.string.scan_blocked_title), 18f, Tone.Warn, bold = true))
-                card.addView(kit.text(getString(R.string.scan_blocked_body), 15f).apply { setPadding(0, kit.dp(8), 0, 0) })
-                kit.button(card, getString(R.string.setup_open_app_settings), BtnStyle.Primary) { PowerChecks.openAppSettings(this) }
-            }
-            ScanState.NoCamera -> {
-                val card = kit.panel(root)
-                card.addView(kit.text(getString(R.string.scan_nocamera), 15f, Tone.Warn))
-            }
+            ScanState.NeedPermission -> QrScanViews.needPermission(kit, root) { askCamera() }
+            ScanState.PermissionBlocked -> QrScanViews.blocked(kit, root) { PowerChecks.openAppSettings(this) }
+            ScanState.NoCamera -> QrScanViews.noCamera(kit, root)
             ScanState.CoreMissing -> {
                 val card = kit.panel(root)
                 card.addView(kit.text(getString(R.string.qr_err_core_missing), 15f, Tone.Warn))
@@ -319,5 +306,31 @@ class QrScanActivity : Activity() {
         const val EXTRA_LINK = "link"
         private const val REQ_CAMERA = 91
         private const val FRAME_GAP_MS = 200L
+    }
+}
+
+/** The camera-permission cards of the scan screen (also drawn by the debug design gallery). */
+object QrScanViews {
+    fun needPermission(kit: UiKit, root: LinearLayout, onAllow: () -> Unit) {
+        val c = kit.context
+        val card = kit.panel(root)
+        card.addView(kit.cardTitle(c.getString(R.string.scan_perm_title), 18f))
+        card.addView(kit.text(c.getString(R.string.scan_perm_body), 15f).apply { setPadding(0, kit.dp(8), 0, 0) })
+        kit.button(card, c.getString(R.string.scan_perm_allow), BtnStyle.Primary) { onAllow() }
+    }
+
+    fun noCamera(kit: UiKit, root: LinearLayout) {
+        val c = kit.context
+        val card = kit.panel(root)
+        card.addView(kit.cardTitle(c.getString(R.string.scan_nocamera_title), 18f, Tone.Warn))
+        card.addView(kit.text(c.getString(R.string.scan_nocamera), 15f).apply { setPadding(0, kit.dp(8), 0, 0) })
+    }
+
+    fun blocked(kit: UiKit, root: LinearLayout, onSettings: () -> Unit) {
+        val c = kit.context
+        val card = kit.panel(root)
+        card.addView(kit.cardTitle(c.getString(R.string.scan_blocked_title), 18f, Tone.Warn))
+        card.addView(kit.text(c.getString(R.string.scan_blocked_body), 15f).apply { setPadding(0, kit.dp(8), 0, 0) })
+        kit.button(card, c.getString(R.string.setup_open_app_settings), BtnStyle.Primary) { onSettings() }
     }
 }

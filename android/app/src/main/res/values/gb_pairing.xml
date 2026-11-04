@@ -13,10 +13,10 @@
     <string name="qr_paste">Paste from clipboard</string>
     <string name="qr_reading">Reading the pairing link…</string>
     <string name="qr_continue">Continue</string>
-    <string name="qr_confirm_title2">Connect to a computer?</string>
-    <string name="qr_confirm_body2">Another app or web page opened this pairing link. Nothing connects until you tap Continue, and you still approve the pairing after that. Only continue if you just clicked “Link a phone” on your own computer.</string>
-    <string name="qr_scan_confirm_title">Connect to %1$s?</string>
-    <string name="qr_scan_confirm_body">You scanned the code on a computer’s screen. Nothing connects until you tap Continue, and you still approve the pairing after that. The name below comes from the code; check it is your computer.</string>
+    <string name="qr_confirm_title2">Link to a computer?</string>
+    <string name="qr_confirm_body2">Another app or web page opened a GeekBridge link. Nothing connects until you tap Continue, and you still approve the link after that. Only continue if you just clicked “Link a phone” on your own computer.</string>
+    <string name="qr_scan_confirm_title">Link to %1$s?</string>
+    <string name="qr_scan_confirm_body">You scanned the code on a computer’s screen. Nothing connects until you tap Continue, and you still approve the link after that. The name below comes from the code; check it is your computer.</string>
     <string name="qr_confirm_name_label">Name given by the link</string>
     <string name="qr_confirm_unverified">unverified</string>
     <string name="qr_confirm_addr_label">This phone would connect to</string>
@@ -39,7 +39,7 @@
     <string name="qr_no_picker">No file picker is available on this phone.</string>
     <string name="pair_scan_qr">Scan QR code from my computer</string>
     <string name="pair_test_connection">Test connection</string>
-    <string name="qr_dlg_title">Pair with %1$s?</string>
-    <string name="qr_dlg_body">This is the computer you scanned: its identity matches the QR code, so there is no code to compare. Pair only if you started this on your own computer.</string>
+    <string name="qr_dlg_title">Link with %1$s?</string>
+    <string name="qr_dlg_body">This is the computer you scanned: its identity matches the QR code, so there is no code to compare. Link only if you started this on your own computer.</string>
     <string name="qr_dlg_cert">Computer identity</string>
 </resources>
