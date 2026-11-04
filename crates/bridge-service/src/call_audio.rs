@@ -240,6 +240,18 @@ impl<T: Clone + Send + 'static> Refreshing<T> {
     }
 }
 
+/// Read Windows' Bluetooth devices in the background at start-up, so the first `calling` or
+/// `doctor` already has an answer (PowerShell needs seconds to start). Nothing on other systems.
+pub fn warm_up() {
+    if std::env::consts::OS == "windows" {
+        let _ = std::thread::Builder::new()
+            .name("geekbridge-call-audio-warm".into())
+            .spawn(|| {
+                let _ = windows_setup_now();
+            });
+    }
+}
+
 /// Windows' own picture of the phone and the headset, read at most every 20 seconds and never
 /// holding the caller for longer than 2.5 seconds.
 pub(crate) fn windows_setup_now() -> Setup {

@@ -514,6 +514,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
     options.dev_loopback = config.dev_loopback;
     options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));
+    call_audio::warm_up();
     options.call_audio = Some(call_audio::CallAudioService::new(
         Box::new(call_audio::SystemHost),
         Some(config.state_dir.join(call_audio::SELECTION_FILE)),
