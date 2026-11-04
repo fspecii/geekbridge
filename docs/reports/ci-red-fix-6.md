@@ -12,7 +12,7 @@ Causes and fixes:
 2. Determinism: `localtime` gained a thread-local `FixedClock` and `unix_now_ms()`; `localtime::now()`
    and the apps' `now_ms()` helpers (calendar, contacts, messages, home) use it. The calendar and
    messages render tests pin Wed 4 Nov 2026 noon UTC. Remaining `SystemTime` uses are id generators.
-3. `bridge-android` transport test helper `Peer::answering` is only used by unix-only tests; it is now
+3. Dead-code helper in the android transport test was fixed concurrently upstream (cfg(unix)); no change here.
    `#[cfg_attr(not(unix), allow(dead_code))]`, fixing the Windows/macOS dead-code error.
 4. `bridge-calls` `dbus_mock::signals_wake_the_watcher_and_quiet_times_out` drained startup signals
    with one fixed 200 ms wait; it now drains until the bus is quiet (bounded), before and after the burst.
