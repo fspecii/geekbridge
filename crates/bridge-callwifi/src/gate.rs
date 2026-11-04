@@ -656,7 +656,10 @@ mod tests {
             p.note_sent(t);
             assert!(p.tick(t).is_empty(), "idle at {t} ms while frames go out");
         }
-        assert!(p.tick(t + IDLE_TIMEOUT_MS + 1).contains(&Action::IndicatorOff));
+        assert!(
+            p.tick(t + IDLE_TIMEOUT_MS + 1)
+                .contains(&Action::IndicatorOff)
+        );
     }
 
     #[test]
