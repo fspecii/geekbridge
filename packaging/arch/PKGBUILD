@@ -67,7 +67,9 @@ package() {
     done
   done
 
-  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  # relative docs/ links would be dead under /usr/share/doc: same rewrite as the tarball and .deb
+  ( source scripts/lib/readme.sh; gb_absolute_readme README.md > "$srcdir/README.md" )
+  install -Dm644 "$srcdir/README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_NOTICES.md"
   install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

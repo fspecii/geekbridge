@@ -93,6 +93,9 @@ else
   rec deb-dpkg-deb-info SKIP "dpkg-deb not installed"
 fi
 check deb-ships-licence-and-notices $([[ -s "$d/data/usr/share/doc/geekbridge/THIRD_PARTY_NOTICES.md" && -s "$d/data/usr/share/doc/geekbridge/LICENSE" ]]; echo $?)
+check deb-readme-links-absolute $([[ -s "$d/data/usr/share/doc/geekbridge/README.md" ]] && ! grep -q -E '(\]\((docs|assets)/|(src|href)="(docs|assets)/)' "$d/data/usr/share/doc/geekbridge/README.md"; echo $?)
+# the Arch package rewrites the README with the same helper (it cannot be built here: that compiles the whole workspace)
+check arch-readme-links-absolute $(grep -q 'scripts/lib/readme.sh' "$ROOT/packaging/arch/PKGBUILD" && ( source "$ROOT/scripts/lib/readme.sh"; ! gb_absolute_readme "$ROOT/README.md" | grep -q -E '(\]\((docs|assets)/|(src|href)="(docs|assets)/)' ); echo $?)
 
 # ---- 2b. Arch package, statically (a full makepkg build takes ~10 min: packaging/arch/build-local.sh)
 pk="$ROOT/packaging/arch"

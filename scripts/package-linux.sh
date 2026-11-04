@@ -35,6 +35,7 @@ command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)
 
 source "$ROOT/scripts/lib-tmp.sh"
 source "$ROOT/scripts/lib/repro.sh"
+source "$ROOT/scripts/lib/readme.sh"
 work="$(gb_mktemp package -d)"; trap 'rm -rf "$work"' EXIT
 pk="$ROOT/packaging/linux"
 desktops=(dev.geekbridge.GeekBridge dev.geekbridge.Calls dev.geekbridge.Messages dev.geekbridge.Agenda dev.geekbridge.Contacts dev.geekbridge.Clipboard dev.geekbridge.Share dev.geekbridge.PasteFromPhone)
@@ -56,15 +57,7 @@ mkdir -p "$out"
 t="$work/geekbridge-$version"; mkdir -p "$t"
 cp -a "$pay/." "$t/"; install -m 0755 "$pk/install.sh" "$t/install.sh"
 # The repository README links to docs/ and images by relative path, which would be dead next to the binaries:
-# ship it with absolute GitHub links instead (scripts/e2e/install-sandbox.sh checks that none are left).
-gb_absolute_readme() {
-  local repo="https://github.com/fspecii/geekbridge" raw="https://raw.githubusercontent.com/fspecii/geekbridge/main"
-  sed -E \
-    -e "s#(src|href)=\"(assets|docs)/#\1=\"$raw/\2/#g" \
-    -e "s#\]\((assets|docs)/([^)]*\.(png|svg|jpg|gif))\)#]($raw/\1/\2)#g" \
-    -e "s#\]\(([A-Za-z0-9_][A-Za-z0-9_./-]*)(\#[^)]*)?\)#]($repo/blob/main/\1\2)#g" \
-    "$1"
-}
+# ship it with absolute GitHub links instead (scripts/lib/readme.sh; scripts/e2e/install-sandbox.sh checks that none are left).
 gb_absolute_readme "$ROOT/README.md" > "$t/README.md"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$t/"   # GPL-3.0-or-later: the licence text travels with the binaries
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then   # reproducible: sorted entries, fixed mtime, no gzip header time (docs/reproducible-builds.md)
