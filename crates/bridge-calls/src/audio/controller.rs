@@ -20,8 +20,9 @@
 //! * **"Use the phone"** ([`Want::Phone`]): refuse the voice link and switch the phone's card off
 //!   for the rest of the call, which closes the link; the phone takes the audio back.
 //! * Within 3 s of the call being live here, the route is checked (voice link open, streams
-//!   linked, microphone not muted, no digital silence) and every problem becomes a line with a
-//!   fix. Nothing fails silently.
+//!   linked, microphone not muted) and every problem becomes a line with a fix; digital silence
+//!   is reported from the second level check (8 s) on, because the first seconds of a call are
+//!   often truly silent. Nothing fails silently.
 //! * Every change that outlives a stream (a card profile, a microphone mute, `RejectSCO`) is
 //!   written to the restore file *before* it is made and undone when the call ends, at shutdown,
 //!   or at the next start after a crash.
@@ -769,7 +770,11 @@ impl<S: AudioServer> CallAudio<S> {
                 }
             }
         }
-        // Level checks: at most twice per call, only until sound has been seen once.
+        // Level checks: at most twice per call, only until sound has been seen once. The first
+        // one can only clear: a few seconds into a call true digital silence is normal (dialling
+        // before the ringback, a far end that has not spoken, a source just resumed from
+        // suspend), so silence is reported only when the later check finds it too.
+        let may_report_silence = checks >= 1;
         let due = match checks {
             0 => true,
             1 => now.duration_since(start) >= opts.recheck_after,
@@ -789,8 +794,8 @@ impl<S: AudioServer> CallAudio<S> {
                 };
                 match self.measure(&t) {
                     Some(v) if v > 0.0 => heard.0 = true,
-                    Some(_) => problems.push(FlowProblem::RxSilent),
-                    None => {}
+                    Some(_) if may_report_silence => problems.push(FlowProblem::RxSilent),
+                    _ => {}
                 }
             }
             if !mic_heard
@@ -801,10 +806,10 @@ impl<S: AudioServer> CallAudio<S> {
             {
                 match self.measure(&PeakTarget::Source(input.clone())) {
                     Some(v) if v > 0.0 => heard.1 = true,
-                    Some(_) => problems.push(FlowProblem::MicSilent {
+                    Some(_) if may_report_silence => problems.push(FlowProblem::MicSilent {
                         device: route::describe(snap, Role::Input, input),
                     }),
-                    None => {}
+                    _ => {}
                 }
             }
         } else {

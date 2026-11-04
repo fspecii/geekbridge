@@ -16,8 +16,9 @@
 //! the same device name the GeekBridge link reports), and the user confirms the same six-digit
 //! code on both screens, which is what binds them. The address learned here is remembered.
 
-use std::collections::HashMap;
-use std::sync::mpsc;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -28,8 +29,19 @@ pub const HFP_AG_UUID: &str = crate::hear::HFP_AG_UUID;
 const BLUEZ: &str = "org.bluez";
 const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
+const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
 const PROPS: &str = "org.freedesktop.DBus.Properties";
 const AGENT_PATH: &str = "/org/geekbridge/BluetoothAgent";
+/// bluetoothd gives every agent request 60 s (`REQUEST_TIMEOUT` in BlueZ's src/agent.c) and then
+/// cancels it; the code has to be confirmed within that, whatever GeekBridge waits.
+pub const BLUEZ_AGENT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long one `Pair()` may take: paging the phone, the user comparing the codes (at most
+/// [`BLUEZ_AGENT_TIMEOUT`]) and the service discovery that follows.
+const PAIR_CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// After pairing, how long BlueZ may take to learn the phone's services (its UUIDs).
+const SERVICES_WAIT: Duration = Duration::from_secs(10);
+/// With a name given and no device by that name, when to list the phones that are nearby.
+const HINT_AFTER: Duration = Duration::from_secs(20);
 
 type Ifaces = HashMap<String, HashMap<String, OwnedValue>>;
 type Managed = HashMap<OwnedObjectPath, Ifaces>;
@@ -39,13 +51,17 @@ type Managed = HashMap<OwnedObjectPath, Ifaces>;
 pub struct Bus(pub Option<String>);
 
 impl Bus {
+    fn builder(&self) -> Result<zbus::blocking::connection::Builder<'static>, String> {
+        match &self.0 {
+            Some(a) => {
+                zbus::blocking::connection::Builder::address(a.as_str()).map_err(|e| e.to_string())
+            }
+            None => zbus::blocking::connection::Builder::system().map_err(|e| e.to_string()),
+        }
+    }
     fn connect(&self, timeout: Duration) -> Result<Connection, String> {
-        let b = match &self.0 {
-            Some(a) => zbus::blocking::connection::Builder::address(a.as_str())
-                .map_err(|e| e.to_string())?,
-            None => zbus::blocking::connection::Builder::system().map_err(|e| e.to_string())?,
-        };
-        b.method_timeout(timeout)
+        self.builder()?
+            .method_timeout(timeout)
             .build()
             .map_err(|e| format!("cannot reach BlueZ (is bluetooth.service running?): {e}"))
     }
@@ -55,12 +71,14 @@ impl Bus {
 pub struct Options {
     pub bus: Bus,
     /// The phone's Bluetooth name, or part of it (case-insensitive). `None` = the first phone
-    /// that shows up (or that pairs from its side).
+    /// that shows up (or that pairs from its side). A phone that pairs from its own side during
+    /// the setup is taken whatever its name: the user compared the code, which is what binds it.
     pub phone_name: Option<String>,
     pub discoverable_for: Duration,
     /// Overall limit for finding and pairing.
     pub timeout: Duration,
-    /// How long the user has to confirm the code.
+    /// How long the user has to confirm the code. BlueZ itself gives up after
+    /// [`BLUEZ_AGENT_TIMEOUT`], so this is kept a little below that.
     pub confirm_timeout: Duration,
 }
 
@@ -71,7 +89,7 @@ impl Default for Options {
             phone_name: None,
             discoverable_for: Duration::from_secs(120),
             timeout: Duration::from_secs(150),
-            confirm_timeout: Duration::from_secs(60),
+            confirm_timeout: Duration::from_secs(55),
         }
     }
 }
@@ -82,11 +100,15 @@ pub enum Event {
     /// A step started or finished (one line for the user).
     Step(String),
     /// Show `passkey` and ask the user whether the phone shows the same; answer through `reply`.
+    /// An empty `passkey` is a pairing without a code to compare ("allow this device?").
     Confirm {
         device: String,
         passkey: String,
         reply: mpsc::Sender<bool>,
     },
+    /// The code shown by the last [`Event::Confirm`] is no longer asked for (the phone
+    /// cancelled, BlueZ timed out, or nobody answered): stop showing it.
+    Withdrawn,
 }
 
 /// The phone that was set up; remember it for [`reconnect`].
@@ -126,6 +148,10 @@ fn get_bool(i: &HashMap<String, OwnedValue>, k: &str) -> bool {
         .and_then(|v| bool::try_from(v.try_clone().ok()?).ok())
         .unwrap_or(false)
 }
+fn get_u32(i: &HashMap<String, OwnedValue>, k: &str) -> Option<u32> {
+    i.get(k)
+        .and_then(|v| u32::try_from(v.try_clone().ok()?).ok())
+}
 fn get_uuids(i: &HashMap<String, OwnedValue>) -> Vec<String> {
     i.get("UUIDs")
         .and_then(|v| Vec::<String>::try_from(v.try_clone().ok()?).ok())
@@ -137,11 +163,14 @@ fn get_uuids(i: &HashMap<String, OwnedValue>) -> Vec<String> {
 pub struct DeviceInfo {
     pub path: String,
     pub address: String,
+    /// `public` or `random` (an LE-only advertisement; never the phone's hands-free side).
+    pub address_type: String,
     pub name: String,
     pub icon: String,
     pub paired: bool,
     pub trusted: bool,
     pub connected: bool,
+    pub services_resolved: bool,
     pub hfp_gateway: bool,
 }
 
@@ -152,6 +181,7 @@ impl DeviceInfo {
             address: get_str(d, "Address")
                 .unwrap_or_default()
                 .to_ascii_uppercase(),
+            address_type: get_str(d, "AddressType").unwrap_or_default(),
             name: get_str(d, "Alias")
                 .or_else(|| get_str(d, "Name"))
                 .unwrap_or_default(),
@@ -159,6 +189,7 @@ impl DeviceInfo {
             paired: get_bool(d, "Paired"),
             trusted: get_bool(d, "Trusted"),
             connected: get_bool(d, "Connected"),
+            services_resolved: get_bool(d, "ServicesResolved"),
             hfp_gateway: get_uuids(d)
                 .iter()
                 .any(|u| u.eq_ignore_ascii_case(HFP_AG_UUID)),
@@ -170,9 +201,66 @@ impl DeviceInfo {
             Some(n) if !n.trim().is_empty() => {
                 self.name.to_lowercase().contains(&n.trim().to_lowercase())
             }
-            _ => self.icon == "phone" || self.hfp_gateway,
+            _ => self.phone_like(),
         }
     }
+    fn phone_like(&self) -> bool {
+        self.icon == "phone" || self.hfp_gateway
+    }
+    /// Something GeekBridge may start a pairing with: a Classic (BR/EDR) device. Phones also
+    /// advertise over LE from changing random addresses; those objects never carry hands-free.
+    fn pairable_from_here(&self) -> bool {
+        self.address_type != "random"
+    }
+}
+
+/// The adapter as found at the start, and the modes the setup changes (put back at the end).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdapterInfo {
+    pub path: String,
+    pub address: String,
+    /// The name phones show for this computer.
+    pub alias: String,
+    pub powered: bool,
+    pub pairable: bool,
+    pub discoverable: bool,
+    pub discoverable_timeout: u32,
+}
+
+/// Every adapter, the one to use first: a powered one, then by path (`hci0` before `hci1`).
+fn adapters(m: &Managed) -> Vec<AdapterInfo> {
+    let mut v: Vec<AdapterInfo> = m
+        .iter()
+        .filter_map(|(p, i)| {
+            let a = i.get(ADAPTER)?;
+            Some(AdapterInfo {
+                path: p.to_string(),
+                address: get_str(a, "Address").unwrap_or_default(),
+                alias: get_str(a, "Alias")
+                    .or_else(|| get_str(a, "Name"))
+                    .unwrap_or_default(),
+                powered: get_bool(a, "Powered"),
+                pairable: get_bool(a, "Pairable"),
+                discoverable: get_bool(a, "Discoverable"),
+                discoverable_timeout: get_u32(a, "DiscoverableTimeout").unwrap_or(180),
+            })
+        })
+        .collect();
+    v.sort_by(|a, b| b.powered.cmp(&a.powered).then_with(|| a.path.cmp(&b.path)));
+    v
+}
+
+/// The devices BlueZ knows under `adapter` (a phone seen by another adapter is not reachable
+/// through this one).
+fn devices_on(m: &Managed, adapter: &str) -> Vec<DeviceInfo> {
+    let prefix = format!("{adapter}/");
+    let mut v: Vec<DeviceInfo> = m
+        .iter()
+        .filter(|(p, _)| p.as_str().starts_with(&prefix))
+        .filter_map(|(p, i)| i.get(DEVICE).map(|d| DeviceInfo::from(p.as_str(), d)))
+        .collect();
+    v.sort_by(|a, b| a.path.cmp(&b.path));
+    v
 }
 
 struct Bluez {
@@ -193,22 +281,10 @@ impl Bluez {
             .map_err(|e| format!("BlueZ is not answering: {e}"))?;
         r.body().deserialize::<Managed>().map_err(|e| e.to_string())
     }
-    fn adapter(&self) -> Result<(String, bool), String> {
-        let m = self.managed()?;
-        let mut adapters: Vec<(&OwnedObjectPath, &Ifaces)> =
-            m.iter().filter(|(_, i)| i.contains_key(ADAPTER)).collect();
-        adapters.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-        let (p, i) = adapters.first().ok_or(
-            "no Bluetooth adapter: plug in a USB Bluetooth adapter (geekbridge-ctl calling says what else is missing)",
-        )?;
-        Ok((p.to_string(), get_bool(&i[ADAPTER], "Powered")))
-    }
-    fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
-        Ok(self
-            .managed()?
-            .iter()
-            .filter_map(|(p, i)| i.get(DEVICE).map(|d| DeviceInfo::from(p.as_str(), d)))
-            .collect())
+    fn adapter(&self) -> Result<AdapterInfo, String> {
+        adapters(&self.managed()?).into_iter().next().ok_or_else(|| {
+            "no Bluetooth adapter: plug in a USB Bluetooth adapter (geekbridge-ctl calling says what else is missing)".to_owned()
+        })
     }
     fn set(&self, path: &str, iface: &str, name: &str, v: Value<'_>) -> Result<(), String> {
         self.conn
@@ -228,6 +304,12 @@ impl Bluez {
             .map(|_| ())
             .map_err(|e| e.to_string())
     }
+    fn device(&self, path: &str) -> Result<Option<DeviceInfo>, String> {
+        let m = self.managed()?;
+        Ok(m.iter()
+            .find(|(p, _)| p.as_str() == path)
+            .and_then(|(p, i)| i.get(DEVICE).map(|d| DeviceInfo::from(p.as_str(), d))))
+    }
 }
 
 /// BlueZ's "already done" errors are success for us.
@@ -235,12 +317,65 @@ fn benign(e: &str) -> bool {
     e.contains("AlreadyConnected") || e.contains("AlreadyExists") || e.contains("InProgress")
 }
 
+/// A failed `Pair()` in words, with BlueZ's own error kept for the logs.
+pub fn pair_error(e: &str) -> String {
+    let hint = if e.contains("AuthenticationCanceled") || e.contains("AuthenticationTimeout") {
+        "the code was not confirmed in time on both screens"
+    } else if e.contains("AuthenticationRejected") {
+        "the code was declined"
+    } else if e.contains("AuthenticationFailed") {
+        "the phone refused; if it still lists this computer from an earlier pairing, remove it there (gear icon > Unpair) and try again"
+    } else if e.contains("ConnectionAttemptFailed")
+        || e.contains("page-timeout")
+        || e.contains("Host is down")
+    {
+        "the phone did not answer; keep its Bluetooth screen open and bring it closer"
+    } else {
+        ""
+    };
+    if hint.is_empty() {
+        e.to_owned()
+    } else {
+        format!("{hint} ({e})")
+    }
+}
+
+/// A failed hands-free connection in words.
+pub fn hfp_error(e: &str) -> String {
+    if e.contains("profile-unavailable")
+        || e.contains("NotAvailable")
+        || e.contains("ProfileUnavailable")
+    {
+        format!(
+            "this computer offers no hands-free profile to the phone ({e}): WirePlumber has to run with the hfp_hf role and the native backend; run geekbridge-ctl calling"
+        )
+    } else if e.contains("page-timeout") || e.contains("Host is down") {
+        format!("the phone did not answer ({e}): is its Bluetooth on and is it near?")
+    } else {
+        format!(
+            "the phone did not accept the calls (hands-free) connection ({e}). On the phone: Bluetooth > this computer (gear icon) > turn on Calls / Phone calls"
+        )
+    }
+}
+
 // ------------------------------------------------------------------ the pairing agent
 
+/// What the agent needs from the user, handed to the setup loop.
+enum Ask {
+    Confirm {
+        device: String,
+        passkey: Option<u32>,
+        reply: mpsc::Sender<bool>,
+    },
+    Withdrawn,
+}
+
 struct Agent {
-    confirm: mpsc::Sender<(String, u32, mpsc::Sender<bool>)>,
+    asks: mpsc::Sender<Ask>,
     timeout: Duration,
-    names: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    names: Arc<Mutex<HashMap<String, String>>>,
+    /// Bumped by `Cancel()`; a waiting request sees it change and gives up.
+    cancels: Arc<AtomicU64>,
 }
 
 #[derive(zbus::DBusError, Debug)]
@@ -252,65 +387,160 @@ enum AgentError {
     Canceled(String),
 }
 
+impl Agent {
+    async fn name_of(&self, conn: &zbus::Connection, device: &str) -> String {
+        let known = self
+            .names
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(device)
+            .cloned();
+        if let Some(n) = known.filter(|n| !n.is_empty()) {
+            return n;
+        }
+        // A phone that starts the pairing itself can be new to BlueZ: ask for its name.
+        let r = conn
+            .call_method(Some(BLUEZ), device, Some(PROPS), "Get", &(DEVICE, "Alias"))
+            .await;
+        r.ok()
+            .and_then(|m| m.body().deserialize::<OwnedValue>().ok())
+            .and_then(|v| String::try_from(v).ok())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "a Bluetooth device".into())
+    }
+
+    /// Ask the user and wait for the answer without blocking the connection, so BlueZ's
+    /// `Cancel()` is still delivered while the code is on screen.
+    async fn ask(&self, device: String, passkey: Option<u32>) -> Result<(), AgentError> {
+        let generation = self.cancels.load(Ordering::SeqCst);
+        let (tx, rx) = mpsc::channel();
+        self.asks
+            .send(Ask::Confirm {
+                device,
+                passkey,
+                reply: tx,
+            })
+            .map_err(|_| AgentError::Canceled("setup ended".into()))?;
+        let end = Instant::now() + self.timeout;
+        let r = loop {
+            match rx.try_recv() {
+                Ok(true) => break Ok(()),
+                Ok(false) => break Err(AgentError::Rejected("the codes did not match".into())),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    break Err(AgentError::Canceled("setup ended".into()));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if self.cancels.load(Ordering::SeqCst) != generation {
+                // Cancel() already told the setup.
+                return Err(AgentError::Canceled("cancelled by BlueZ".into()));
+            }
+            if Instant::now() >= end {
+                break Err(AgentError::Canceled(
+                    "nobody confirmed the code in time".into(),
+                ));
+            }
+            async_io::Timer::after(Duration::from_millis(50)).await;
+        };
+        if r.is_err() {
+            let _ = self.asks.send(Ask::Withdrawn);
+        }
+        r
+    }
+}
+
 #[zbus::interface(name = "org.bluez.Agent1")]
 impl Agent {
     fn release(&self) {}
-    fn request_pin_code(&self, _device: ObjectPath<'_>) -> Result<String, AgentError> {
+    fn request_pin_code(&self, _device: OwnedObjectPath) -> Result<String, AgentError> {
         Err(AgentError::Rejected(
             "legacy PIN pairing is not supported".into(),
         ))
     }
-    fn display_pin_code(&self, _device: ObjectPath<'_>, _pin: String) {}
-    fn request_passkey(&self, _device: ObjectPath<'_>) -> Result<u32, AgentError> {
+    fn display_pin_code(&self, _device: OwnedObjectPath, _pin: String) {}
+    fn request_passkey(&self, _device: OwnedObjectPath) -> Result<u32, AgentError> {
         Err(AgentError::Rejected(
             "typing a passkey is not supported".into(),
         ))
     }
-    fn display_passkey(&self, _device: ObjectPath<'_>, _passkey: u32, _entered: u16) {}
-    fn request_confirmation(&self, device: ObjectPath<'_>, passkey: u32) -> Result<(), AgentError> {
-        let name = self
-            .names
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(device.as_str())
-            .cloned()
-            .unwrap_or_else(|| "a Bluetooth device".into());
-        let (tx, rx) = mpsc::channel();
-        self.confirm
-            .send((name, passkey, tx))
-            .map_err(|_| AgentError::Canceled("setup ended".into()))?;
-        match rx.recv_timeout(self.timeout) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(AgentError::Rejected("the codes did not match".into())),
-            Err(_) => Err(AgentError::Canceled(
-                "nobody confirmed the code in time".into(),
-            )),
-        }
+    fn display_passkey(&self, _device: OwnedObjectPath, _passkey: u32, _entered: u16) {}
+    async fn request_confirmation(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        device: OwnedObjectPath,
+        passkey: u32,
+    ) -> Result<(), AgentError> {
+        let name = self.name_of(conn, device.as_str()).await;
+        self.ask(name, Some(passkey)).await
     }
-    fn request_authorization(&self, _device: ObjectPath<'_>) -> Result<(), AgentError> {
-        // Only registered while the user runs setup.
+    /// An incoming pairing without a code to compare ("just works"). Phones compare codes, so
+    /// this is unusual: the user is asked instead of letting anything nearby pair.
+    async fn request_authorization(
+        &self,
+        #[zbus(connection)] conn: &zbus::Connection,
+        device: OwnedObjectPath,
+    ) -> Result<(), AgentError> {
+        let name = self.name_of(conn, device.as_str()).await;
+        self.ask(name, None).await
+    }
+    fn authorize_service(&self, _device: OwnedObjectPath, _uuid: String) -> Result<(), AgentError> {
+        // Only registered while the user runs setup; the phone connects its profiles right after
+        // pairing, before it is trusted.
         Ok(())
     }
-    fn authorize_service(&self, _device: ObjectPath<'_>, _uuid: String) -> Result<(), AgentError> {
-        Ok(())
+    fn cancel(&self) {
+        self.cancels.fetch_add(1, Ordering::SeqCst);
+        let _ = self.asks.send(Ask::Withdrawn);
     }
-    fn cancel(&self) {}
+}
+
+fn forward(ask: Ask, events: &mut impl FnMut(Event)) {
+    match ask {
+        Ask::Confirm {
+            device,
+            passkey,
+            reply,
+        } => events(Event::Confirm {
+            device,
+            passkey: passkey.map(|p| format!("{p:06}")).unwrap_or_default(),
+            reply,
+        }),
+        Ask::Withdrawn => events(Event::Withdrawn),
+    }
+}
+
+/// An already paired phone that offers hands-free and has the wanted name (any phone when no
+/// name is given). A paired phone by another name is not guessed at: the user may be setting up
+/// a second phone. A phone whose Bluetooth name differs from the name GeekBridge knows it by
+/// (Android reports the model number, e.g. "SM-F946B" for a "Galaxy Z Fold5") is found by
+/// what the user does on it during the setup instead: pairing or connecting from the phone.
+fn already_paired<'a>(devices: &'a [DeviceInfo], name: Option<&str>) -> Option<&'a DeviceInfo> {
+    devices
+        .iter()
+        .find(|d| d.paired && d.hfp_gateway && d.matches(name))
 }
 
 // ------------------------------------------------------------------ setup
 
-/// Run the whole setup. `cancel` stops it between steps. Blocking (up to `opts.timeout`).
+/// Run the whole setup. `cancel` stops it between steps (and cancels a pairing in progress).
+/// Blocking (up to `opts.timeout`).
 pub fn run(
     opts: &Options,
     mut events: impl FnMut(Event),
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: &AtomicBool,
 ) -> Result<Remembered, String> {
-    use std::sync::atomic::Ordering;
     let bz = Bluez {
         conn: opts.bus.connect(Duration::from_secs(90))?,
     };
-    let (adapter, powered) = bz.adapter()?;
-    if !powered {
+    let ad = bz.adapter()?;
+    let adapter = ad.path.clone();
+    events(Event::Step(format!(
+        "Using Bluetooth adapter {} ({}); phones list this computer as \"{}\"",
+        adapter.rsplit('/').next().unwrap_or(&adapter),
+        ad.address,
+        ad.alias
+    )));
+    if !ad.powered {
         events(Event::Step("Turning Bluetooth on".into()));
         bz.set(&adapter, ADAPTER, "Powered", Value::from(true))
             .map_err(|e| format!("could not turn Bluetooth on ({e}); try: rfkill unblock bluetooth; bluetoothctl power on"))?;
@@ -328,103 +558,151 @@ pub fn run(
     )?;
     bz.set(&adapter, ADAPTER, "Discoverable", Value::from(true))?;
 
-    // The agent lives on its own connection: it blocks while the user compares the codes.
-    let names = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
+    // The agent lives on its own connection. `Pair()` is sent from that connection too, so
+    // BlueZ uses this agent for it even when another one is the default.
+    let names = Arc::new(Mutex::new(HashMap::new()));
     let (ctx, crx) = mpsc::channel();
-    let agent_conn = {
-        let b = match &opts.bus.0 {
-            Some(a) => zbus::blocking::connection::Builder::address(a.as_str())
-                .map_err(|e| e.to_string())?,
-            None => zbus::blocking::connection::Builder::system().map_err(|e| e.to_string())?,
-        };
-        b.serve_at(
+    let agent_conn = opts
+        .bus
+        .builder()?
+        .method_timeout(PAIR_CALL_TIMEOUT)
+        .serve_at(
             AGENT_PATH,
             Agent {
-                confirm: ctx,
-                timeout: opts.confirm_timeout,
+                asks: ctx,
+                timeout: opts.confirm_timeout.min(BLUEZ_AGENT_TIMEOUT),
                 names: names.clone(),
+                cancels: Arc::new(AtomicU64::new(0)),
             },
         )
         .map_err(|e| e.to_string())?
         .build()
-        .map_err(|e| e.to_string())?
-    };
+        .map_err(|e| e.to_string())?;
     let agent_path = ObjectPath::try_from(AGENT_PATH).map_err(|e| e.to_string())?;
-    agent_conn
-        .call_method(
-            Some(BLUEZ),
-            "/org/bluez",
-            Some("org.bluez.AgentManager1"),
-            "RegisterAgent",
-            &(&agent_path, "DisplayYesNo"),
-        )
-        .map_err(|e| format!("could not register the pairing agent: {e}"))?;
-    let _ = agent_conn.call_method(
-        Some(BLUEZ),
-        "/org/bluez",
-        Some("org.bluez.AgentManager1"),
-        "RequestDefaultAgent",
-        &(&agent_path,),
-    );
-    let cleanup = |bz: &Bluez| {
+    let restore = |bz: &Bluez| {
         let _ = bz.call(&adapter, ADAPTER, "StopDiscovery");
-        let _ = bz.set(&adapter, ADAPTER, "Discoverable", Value::from(false));
+        let _ = bz.set(
+            &adapter,
+            ADAPTER,
+            "Discoverable",
+            Value::from(ad.discoverable),
+        );
+        let _ = bz.set(
+            &adapter,
+            ADAPTER,
+            "DiscoverableTimeout",
+            Value::from(ad.discoverable_timeout),
+        );
+        let _ = bz.set(&adapter, ADAPTER, "Pairable", Value::from(ad.pairable));
         let _ = agent_conn.call_method(
             Some(BLUEZ),
             "/org/bluez",
-            Some("org.bluez.AgentManager1"),
+            Some(AGENT_MANAGER),
             "UnregisterAgent",
             &(&agent_path,),
         );
     };
+    if let Err(e) = agent_conn.call_method(
+        Some(BLUEZ),
+        "/org/bluez",
+        Some(AGENT_MANAGER),
+        "RegisterAgent",
+        &(&agent_path, "DisplayYesNo"),
+    ) {
+        restore(&bz);
+        return Err(format!("could not register the pairing agent: {e}"));
+    }
+    if let Err(e) = agent_conn.call_method(
+        Some(BLUEZ),
+        "/org/bluez",
+        Some(AGENT_MANAGER),
+        "RequestDefaultAgent",
+        &(&agent_path,),
+    ) {
+        events(Event::Step(format!(
+            "Another Bluetooth pairing helper stays in charge ({e}); if the phone starts the pairing, confirm the code in that helper's window"
+        )));
+    }
 
     let result = (|| -> Result<DeviceInfo, String> {
+        let m = bz.managed()?;
+        let devices = devices_on(&m, &adapter);
+        let paired_before: HashSet<String> = devices
+            .iter()
+            .filter(|d| d.paired)
+            .map(|d| d.path.clone())
+            .collect();
+        let connected_before: HashSet<String> = devices
+            .iter()
+            .filter(|d| d.connected)
+            .map(|d| d.path.clone())
+            .collect();
         // Already paired (an earlier setup, or paired by hand): only connect.
-        if let Some(d) = bz
-            .devices()?
-            .into_iter()
-            .find(|d| d.paired && d.hfp_gateway && d.matches(opts.phone_name.as_deref()))
-        {
+        if let Some(d) = already_paired(&devices, opts.phone_name.as_deref()) {
             events(Event::Step(format!("{} is already paired", d.name)));
-            return Ok(d);
+            return Ok(d.clone());
         }
         events(Event::Step(match &opts.phone_name {
             Some(n) => format!(
-                "Looking for \"{n}\". On the phone open Settings > Connections > Bluetooth (Samsung) or Settings > Connected devices > Pair new device, and keep that screen open"
+                "Looking for \"{n}\". On the phone open Settings > Connections > Bluetooth (Samsung) or Settings > Connected devices > Pair new device, keep that screen open and tap \"{}\" when it shows up",
+                ad.alias
             ),
-            None => "Looking for the phone. On the phone open its Bluetooth settings and keep that screen open".into(),
+            None => format!(
+                "Looking for the phone. On the phone open its Bluetooth settings, keep that screen open and tap \"{}\" when it shows up",
+                ad.alias
+            ),
         }));
+        // Hands-free is Classic Bluetooth: do not scan for LE advertisements (a phone's LE
+        // side shows up as extra devices with random addresses).
+        let filter: HashMap<&str, Value<'_>> = HashMap::from([("Transport", Value::from("bredr"))]);
+        let _ = bz.conn.call_method(
+            Some(BLUEZ),
+            adapter.as_str(),
+            Some(ADAPTER),
+            "SetDiscoveryFilter",
+            &(filter,),
+        );
         let _ = bz.call(&adapter, ADAPTER, "StartDiscovery");
-        let end = Instant::now() + opts.timeout;
+        let started = Instant::now();
+        let end = started + opts.timeout;
         let mut tried: Vec<String> = Vec::new();
+        let mut hinted = false;
         loop {
             if cancel.load(Ordering::SeqCst) {
                 return Err("setup cancelled".into());
             }
             // A pairing code from the agent (pairing started by either side).
-            while let Ok((name, passkey, reply)) = crx.try_recv() {
-                events(Event::Confirm {
-                    device: name,
-                    passkey: format!("{passkey:06}"),
-                    reply,
-                });
+            while let Ok(a) = crx.try_recv() {
+                forward(a, &mut events);
             }
-            let devices = bz.devices()?;
+            let m = bz.managed()?;
+            if !m.keys().any(|p| p.as_str() == adapter) {
+                return Err("the Bluetooth adapter went away during the setup (unplugged?); plug it back in and start again".into());
+            }
+            let devices = devices_on(&m, &adapter);
             {
                 let mut n = names.lock().unwrap_or_else(|e| e.into_inner());
                 for d in &devices {
                     n.insert(d.path.clone(), d.name.clone());
                 }
             }
-            // The phone paired from its side.
-            if let Some(d) = devices
-                .iter()
-                .find(|d| d.paired && d.matches(opts.phone_name.as_deref()) && d.hfp_gateway)
-            {
+            // Whatever its name: a phone paired during this setup (the phone started it and the
+            // user compared the code), or an already paired one the user connected from the phone
+            // meanwhile; else a phone by the wanted name that got paired.
+            if let Some(d) = devices.iter().find(|d| {
+                d.paired
+                    && d.hfp_gateway
+                    && (!paired_before.contains(&d.path)
+                        || (d.connected && !connected_before.contains(&d.path))
+                        || d.matches(opts.phone_name.as_deref()))
+            }) {
                 return Ok(d.clone());
             }
             if let Some(d) = devices.iter().find(|d| {
-                !d.paired && !tried.contains(&d.path) && d.matches(opts.phone_name.as_deref())
+                !d.paired
+                    && d.pairable_from_here()
+                    && !tried.contains(&d.path)
+                    && d.matches(opts.phone_name.as_deref())
             }) {
                 tried.push(d.path.clone());
                 events(Event::Step(format!(
@@ -435,44 +713,72 @@ pub fn run(
                 // Pair() returns when BlueZ is done, i.e. after the agent's confirmation. Pump
                 // the confirmation to the caller from a helper thread meanwhile.
                 let path = d.path.clone();
-                let conn = bz.conn.clone();
+                let conn = agent_conn.clone();
                 let pairing = std::thread::spawn(move || {
                     conn.call_method(Some(BLUEZ), path.as_str(), Some(DEVICE), "Pair", &())
                         .map(|_| ())
                         .map_err(|e| e.to_string())
                 });
+                let mut cancel_sent = false;
                 while !pairing.is_finished() {
-                    if let Ok((name, passkey, reply)) = crx.recv_timeout(Duration::from_millis(100))
-                    {
-                        events(Event::Confirm {
-                            device: name,
-                            passkey: format!("{passkey:06}"),
-                            reply,
-                        });
+                    if cancel.load(Ordering::SeqCst) && !cancel_sent {
+                        cancel_sent = true;
+                        let _ = bz.call(&d.path, DEVICE, "CancelPairing");
+                    }
+                    if let Ok(a) = crx.recv_timeout(Duration::from_millis(100)) {
+                        forward(a, &mut events);
                     }
                 }
-                match pairing
+                let r = pairing
                     .join()
-                    .unwrap_or_else(|_| Err("pairing failed".into()))
-                {
+                    .unwrap_or_else(|_| Err("pairing failed".into()));
+                while let Ok(a) = crx.try_recv() {
+                    forward(a, &mut events);
+                }
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("setup cancelled".into());
+                }
+                match r {
                     Ok(()) => {}
                     Err(e) if benign(&e) => {}
                     Err(e) => {
-                        events(Event::Step(format!("Pairing with {} failed: {e}", d.name)));
+                        events(Event::Step(format!(
+                            "Pairing with {} failed: {}",
+                            d.name,
+                            pair_error(&e)
+                        )));
                         let _ = bz.call(&adapter, ADAPTER, "StartDiscovery");
                         continue;
                     }
                 }
-                let fresh = bz.devices()?;
-                if let Some(x) = fresh.into_iter().find(|x| x.path == d.path && x.paired) {
+                if let Some(x) = bz.device(&d.path)?.filter(|x| x.paired) {
                     return Ok(x);
+                }
+            }
+            if !hinted
+                && let Some(n) = &opts.phone_name
+                && started.elapsed() >= HINT_AFTER
+            {
+                let near: Vec<String> = devices
+                    .iter()
+                    .filter(|d| !d.paired && d.phone_like() && !d.name.is_empty())
+                    .map(|d| format!("\"{}\"", d.name))
+                    .collect();
+                if !near.is_empty() {
+                    hinted = true;
+                    events(Event::Step(format!(
+                        "No device called \"{n}\" so far; phones nearby: {}. If one of them is yours, tap \"{}\" in that phone's Bluetooth list to pair from the phone",
+                        near.join(", "),
+                        ad.alias
+                    )));
                 }
             }
             if Instant::now() >= end {
                 return Err(match &opts.phone_name {
                     Some(n) => format!(
-                        "no phone called \"{n}\" showed up or paired within {} s; is its Bluetooth on and its Bluetooth screen open? (try again, or run without a name)",
-                        opts.timeout.as_secs()
+                        "no phone called \"{n}\" showed up or paired within {} s; is its Bluetooth on and its Bluetooth screen open? Tap \"{}\" there to pair from the phone (try again, or run without a name)",
+                        opts.timeout.as_secs(),
+                        ad.alias
                     ),
                     None => format!(
                         "no phone showed up or paired within {} s",
@@ -486,17 +792,40 @@ pub fn run(
     let device = match result {
         Ok(d) => d,
         Err(e) => {
-            cleanup(&bz);
+            restore(&bz);
             return Err(e);
         }
     };
-    cleanup(&bz);
 
+    // Trust it while the agent is still registered: right after pairing the phone connects its
+    // profiles, and BlueZ asks the agent to authorize each one for a device it does not trust.
     events(Event::Step(format!(
-        "Paired with {}; marking it trusted so it reconnects by itself",
-        device.name
+        "Paired with {} ({}); marking it trusted so it reconnects by itself",
+        device.name, device.address
     )));
-    bz.set(&device.path, DEVICE, "Trusted", Value::from(true))?;
+    let trusted = if device.trusted {
+        Ok(())
+    } else {
+        bz.set(&device.path, DEVICE, "Trusted", Value::from(true))
+    };
+    restore(&bz);
+    trusted?;
+
+    // BlueZ may still be reading the phone's services right after pairing.
+    let end = Instant::now() + SERVICES_WAIT;
+    let mut device = device;
+    while !device.hfp_gateway && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(300));
+        if let Some(d) = bz.device(&device.path)? {
+            device = d;
+        }
+    }
+    if !device.hfp_gateway {
+        events(Event::Step(format!(
+            "{} does not list the hands-free (calls) service yet; trying anyway",
+            device.name
+        )));
+    }
     events(Event::Step(
         "Connecting the phone's calls (hands-free) profile".into(),
     ));
@@ -508,19 +837,20 @@ pub fn run(
     })
 }
 
+/// Connect the phone's hands-free profile only (not every profile: `Connect()` would also pull
+/// the phone's media audio here); bring the whole link up only if that is refused.
 fn connect_hfp(bz: &Bluez, path: &str) -> Result<(), String> {
-    match bz.call(path, DEVICE, "Connect") {
-        Ok(()) => {}
-        Err(e) if benign(&e) => {}
-        // Connect() can fail on one profile and still bring up others; HFP is asked for below.
+    match bz.connect_profile(path, HFP_AG_UUID) {
+        Ok(()) => return Ok(()),
+        Err(e) if benign(&e) => return Ok(()),
         Err(_) => {}
     }
+    // Connect() can fail on one profile and still bring up others; HFP is asked for again.
+    let _ = bz.call(path, DEVICE, "Connect");
     match bz.connect_profile(path, HFP_AG_UUID) {
         Ok(()) => Ok(()),
         Err(e) if benign(&e) => Ok(()),
-        Err(e) => Err(format!(
-            "the phone did not accept the calls (hands-free) connection ({e}). On the phone: Bluetooth > this computer (gear icon) > turn on Calls / Phone calls"
-        )),
+        Err(e) => Err(hfp_error(&e)),
     }
 }
 
@@ -531,26 +861,22 @@ pub fn reconnect(bus: &Bus, address: &str) -> Result<bool, String> {
     let bz = Bluez {
         conn: bus.connect(Duration::from_secs(20))?,
     };
-    let (_adapter, powered) = bz.adapter()?;
-    if !powered {
+    let m = bz.managed()?;
+    let Some(ad) = adapters(&m).into_iter().next() else {
+        return Err("no Bluetooth adapter".into());
+    };
+    if !ad.powered {
         return Ok(false);
     }
-    let Some(d) = bz
-        .devices()?
-        .into_iter()
-        .find(|d| d.address.eq_ignore_ascii_case(address))
+    let Some(d) = adapters(&m)
+        .iter()
+        .flat_map(|a| devices_on(&m, &a.path))
+        .find(|d| d.address.eq_ignore_ascii_case(address) && d.paired)
     else {
         return Err(
             "the remembered phone is no longer paired; run the call-audio setup again".into(),
         );
     };
-    if d.connected {
-        // Connected (maybe only for music): make sure the calls profile is up too.
-        return bz
-            .connect_profile(&d.path, HFP_AG_UUID)
-            .map(|()| true)
-            .or_else(|e| if benign(&e) { Ok(true) } else { Err(e) });
-    }
     connect_hfp(&bz, &d.path).map(|()| true)
 }
 
@@ -560,24 +886,25 @@ pub fn forget(bus: &Bus, address: &str) -> Result<(), String> {
     let bz = Bluez {
         conn: bus.connect(Duration::from_secs(20))?,
     };
-    let (adapter, _) = bz.adapter()?;
-    let Some(d) = bz
-        .devices()?
-        .into_iter()
-        .find(|d| d.address.eq_ignore_ascii_case(address))
-    else {
-        return Ok(());
-    };
-    bz.conn
-        .call_method(
-            Some(BLUEZ),
-            adapter.as_str(),
-            Some(ADAPTER),
-            "RemoveDevice",
-            &(ObjectPath::try_from(d.path.as_str()).map_err(|e| e.to_string())?,),
-        )
-        .map(|_| ())
-        .map_err(|e| format!("could not unpair the phone: {e}"))
+    let m = bz.managed()?;
+    for a in adapters(&m) {
+        let Some(d) = devices_on(&m, &a.path)
+            .into_iter()
+            .find(|d| d.address.eq_ignore_ascii_case(address))
+        else {
+            continue;
+        };
+        bz.conn
+            .call_method(
+                Some(BLUEZ),
+                a.path.as_str(),
+                Some(ADAPTER),
+                "RemoveDevice",
+                &(ObjectPath::try_from(d.path.as_str()).map_err(|e| e.to_string())?,),
+            )
+            .map_err(|e| format!("could not unpair the phone: {e}"))?;
+    }
+    Ok(())
 }
 
 /// Delete the remembered phone. Missing file = success.
@@ -604,13 +931,132 @@ mod tests {
         DeviceInfo {
             path: "/x".into(),
             address: "AA:BB:CC:00:11:22".into(),
+            address_type: "public".into(),
             name: name.into(),
             icon: icon.into(),
             paired: false,
             trusted: false,
             connected: false,
+            services_resolved: false,
             hfp_gateway: gw,
         }
+    }
+
+    fn paired(path: &str, name: &str, connected: bool) -> DeviceInfo {
+        DeviceInfo {
+            path: path.into(),
+            paired: true,
+            connected,
+            ..dev(name, "phone", true)
+        }
+    }
+
+    #[test]
+    fn an_already_paired_phone_is_only_taken_by_its_name() {
+        let fold = paired("/org/bluez/hci0/dev_1", "Galaxy Z Fold5", true);
+        let pixel = paired("/org/bluez/hci0/dev_2", "Pixel 6", false);
+        let ds = vec![fold.clone(), pixel.clone()];
+        assert_eq!(already_paired(&ds, Some("fold5")), Some(&fold));
+        assert_eq!(already_paired(&ds, Some("pixel")), Some(&pixel));
+        // GeekBridge's name for the Fold ("SM-F946B", Build.MODEL) matches nothing: no guess,
+        // even with one phone connected (it may be the other phone).
+        assert_eq!(already_paired(&ds, Some("SM-F946B")), None);
+        assert_eq!(
+            already_paired(std::slice::from_ref(&fold), Some("SM-F946B")),
+            None
+        );
+        // Something paired that offers no hands-free is never it.
+        let speaker = DeviceInfo {
+            hfp_gateway: false,
+            ..paired("/org/bluez/hci0/dev_3", "Speaker", true)
+        };
+        assert_eq!(already_paired(&[speaker], None), None);
+    }
+
+    #[test]
+    fn le_advertisements_with_random_addresses_are_never_paired_from_here() {
+        let le = DeviceInfo {
+            address_type: "random".into(),
+            ..dev("Galaxy Z Fold5", "", false)
+        };
+        assert!(!le.pairable_from_here());
+        assert!(dev("Galaxy Z Fold5", "phone", false).pairable_from_here());
+        // BlueZ before AddressType existed: assume Classic.
+        assert!(
+            DeviceInfo {
+                address_type: String::new(),
+                ..le
+            }
+            .pairable_from_here()
+        );
+    }
+
+    #[test]
+    fn a_powered_adapter_is_used_before_an_unpowered_one() {
+        let mut m: Managed = HashMap::new();
+        let ad = |powered: bool| {
+            let mut i: HashMap<String, OwnedValue> = HashMap::new();
+            i.insert("Powered".into(), OwnedValue::from(powered));
+            i.insert(
+                "Alias".into(),
+                OwnedValue::try_from(Value::from("omarchy")).unwrap(),
+            );
+            i.insert("DiscoverableTimeout".into(), OwnedValue::from(180u32));
+            let mut ifs: Ifaces = HashMap::new();
+            ifs.insert(ADAPTER.into(), i);
+            ifs
+        };
+        m.insert(
+            OwnedObjectPath::try_from("/org/bluez/hci0").unwrap(),
+            ad(false),
+        );
+        m.insert(
+            OwnedObjectPath::try_from("/org/bluez/hci1").unwrap(),
+            ad(true),
+        );
+        let v = adapters(&m);
+        assert_eq!(v[0].path, "/org/bluez/hci1");
+        assert_eq!(v[0].alias, "omarchy");
+        assert_eq!(v[0].discoverable_timeout, 180);
+        assert_eq!(v[1].path, "/org/bluez/hci0");
+        // Devices are taken from the chosen adapter only.
+        let mut d: HashMap<String, OwnedValue> = HashMap::new();
+        d.insert(
+            "Address".into(),
+            OwnedValue::try_from(Value::from("aa:bb:cc:00:11:22")).unwrap(),
+        );
+        let mut ifs: Ifaces = HashMap::new();
+        ifs.insert(DEVICE.into(), d);
+        m.insert(
+            OwnedObjectPath::try_from("/org/bluez/hci0/dev_AA_BB_CC_00_11_22").unwrap(),
+            ifs,
+        );
+        assert!(devices_on(&m, "/org/bluez/hci1").is_empty());
+        assert_eq!(
+            devices_on(&m, "/org/bluez/hci0")[0].address,
+            "AA:BB:CC:00:11:22"
+        );
+    }
+
+    #[test]
+    fn bluez_errors_become_sentences_that_keep_the_raw_error() {
+        let e = pair_error("org.bluez.Error.AuthenticationCanceled: Authentication Canceled");
+        assert!(e.starts_with("the code was not confirmed in time"), "{e}");
+        assert!(e.contains("org.bluez.Error.AuthenticationCanceled"), "{e}");
+        assert!(pair_error("org.bluez.Error.AuthenticationFailed").contains("Unpair"));
+        assert!(
+            pair_error("org.bluez.Error.Failed: br-connection-page-timeout")
+                .contains("did not answer")
+        );
+        assert_eq!(
+            pair_error("org.bluez.Error.Failed: odd"),
+            "org.bluez.Error.Failed: odd"
+        );
+        assert!(
+            hfp_error("org.bluez.Error.NotAvailable: br-connection-profile-unavailable")
+                .contains("hfp_hf")
+        );
+        assert!(hfp_error("org.bluez.Error.Failed: Protocol not available").contains("Calls"));
     }
 
     #[test]

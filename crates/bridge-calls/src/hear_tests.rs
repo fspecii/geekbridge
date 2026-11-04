@@ -433,3 +433,164 @@ fn the_phone_set_up_through_geekbridge_is_the_one_checked() {
     assert!(get(&s, "paired").detail.contains("Old phone"));
     assert_eq!(get(&s, "card").state, State::Fail);
 }
+
+#[test]
+fn a_headset_only_role_list_is_not_enough_for_calls() {
+    // PipeWire creates its telephony service only on the HFP hands-free connection.
+    let mut f = ready_facts();
+    f.wp.roles = Some(vec!["a2dp_sink".into(), "hsp_hs".into()]);
+    f.wp.files = vec!["/home/u/.config/wireplumber/wireplumber.conf.d/x.conf".into()];
+    assert_eq!(get(&evaluate(&f), "wireplumber").state, State::Fail);
+    let text = wp_dropin(&f.wp).unwrap();
+    assert!(
+        text.contains("bluez5.roles = [ a2dp_sink hsp_hs hfp_hf ]"),
+        "{text}"
+    );
+}
+
+fn every_fix() -> Vec<WpConfig> {
+    let mut v = Vec::new();
+    for roles in [
+        None,
+        Some(vec![]),
+        Some(vec!["a2dp_sink".to_owned(), "bap_sink".into()]),
+    ] {
+        for backend in [None, Some("ofono".to_owned())] {
+            for telephony in [None, Some(false)] {
+                for auto in [
+                    None,
+                    Some(vec!["a2dp_sink".to_owned(), "a2dp_source".into()]),
+                ] {
+                    v.push(WpConfig {
+                        roles: roles.clone(),
+                        backend: backend.clone(),
+                        auto_connect: auto,
+                        telephony,
+                        ..WpConfig::default()
+                    });
+                }
+            }
+        }
+    }
+    v
+}
+
+#[test]
+fn every_fragment_geekbridge_can_write_parses() {
+    let mut written = 0;
+    for cfg in every_fix() {
+        if let Some(text) = wp_dropin(&cfg) {
+            written += 1;
+            check_spa_json(&text).unwrap_or_else(|e| panic!("{e}:\n{text}"));
+        }
+    }
+    assert!(written > 10);
+    // The checker knows WirePlumber's own syntax: the shipped main file passes it.
+    if let Ok(t) = std::fs::read_to_string("/usr/share/wireplumber/wireplumber.conf") {
+        check_spa_json(&t).unwrap();
+    }
+    check_spa_json("a = { b = [ 1 2 \"x y\" ] c: { d = e } } # note\nf = \"g # not a comment\"\n")
+        .unwrap();
+    for bad in [
+        "monitor.bluez.properties = {\n  bluez5.roles = [ a2dp_sink hfp_hf\n}\n",
+        "a = { b = \"x }\n",
+        "a = { b }\n",
+        "a = [ 1 } ]\n",
+        "a = { b = c\n",
+        "a = ]\n",
+        "a\n",
+    ] {
+        assert!(check_spa_json(bad).is_err(), "accepted: {bad:?}");
+    }
+    assert!(
+        check_spa_json("x = {\n\n  y = [ ]\n  z = \"open\n}")
+            .unwrap_err()
+            .contains("line 4")
+    );
+}
+
+#[test]
+fn a_fragment_wireplumber_does_not_survive_is_taken_back() {
+    let mut cfg = WpConfig {
+        roles: Some(vec!["a2dp_sink".into()]),
+        ..WpConfig::default()
+    };
+    let home = tempfile::tempdir().unwrap();
+    let file = home
+        .path()
+        .join("wireplumber/wireplumber.conf.d")
+        .join(WP_DROPIN);
+    let mut restarts = 0;
+    // WirePlumber keeps running: applied.
+    let r = apply_wp_dropin(
+        home.path(),
+        &cfg,
+        &mut || {
+            restarts += 1;
+            Ok(())
+        },
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(r, WpFix::Applied(file.clone()));
+    assert_eq!(restarts, 1);
+    let first = std::fs::read_to_string(&file).unwrap();
+    // A second fix that WirePlumber does not survive: the first copy comes back.
+    cfg.backend = Some("ofono".into());
+    let r = apply_wp_dropin(
+        home.path(),
+        &cfg,
+        &mut || {
+            restarts += 1;
+            Ok(())
+        },
+        &mut || Err("wireplumber.service is failed".into()),
+    )
+    .unwrap();
+    assert!(
+        matches!(r, WpFix::RolledBack { ref why, .. } if why.contains("failed")),
+        "{r:?}"
+    );
+    assert_eq!(
+        restarts, 3,
+        "restarted again after taking the fragment back"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), first);
+    // No earlier copy: the fragment is removed altogether.
+    let home2 = tempfile::tempdir().unwrap();
+    let r = apply_wp_dropin(home2.path(), &cfg, &mut || Ok(()), &mut || {
+        Err("crashed".into())
+    })
+    .unwrap();
+    assert!(matches!(r, WpFix::RolledBack { .. }));
+    assert!(
+        !home2
+            .path()
+            .join("wireplumber/wireplumber.conf.d")
+            .join(WP_DROPIN)
+            .exists()
+    );
+    assert!(
+        !home2
+            .path()
+            .join("wireplumber/wireplumber.conf.d")
+            .join("zz-geekbridge-call-audio.conf.bak")
+            .exists()
+    );
+    // Not restarted (no user systemd): written, and said so.
+    let r = apply_wp_dropin(
+        home2.path(),
+        &cfg,
+        &mut || Err("no systemd".into()),
+        &mut || Ok(()),
+    )
+    .unwrap();
+    assert!(matches!(r, WpFix::NotRestarted { ref why, .. } if why == "no systemd"));
+    // Nothing temporary is left where WirePlumber reads.
+    let left: Vec<_> = std::fs::read_dir(home2.path().join("wireplumber/wireplumber.conf.d"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(left, vec![WP_DROPIN.to_owned()]);
+}

@@ -21,6 +21,24 @@ Control (same private system bus), object /geekbridge/FakePhone, interface org.g
   AtLog() -> as       every AT command PipeWire sent, in order
   State() -> s        idle | ringing | active | dialing
   Disconnect()        the phone goes out of range (RFCOMM closed, Connected=false)
+  Calls() -> as       BlueZ calls a client made that change state, in order ("Set Adapter1.Discoverable=True",
+                      "RegisterAgent DisplayYesNo", "Pair dev_... agent=own", "CancelPairing", "Set Device1.Trusted=True",
+                      "UnregisterAgent", ...), so tests can check the order of a setup
+
+Behaviour of real bluetoothd 5.8x that the setup depends on (src/agent.c, src/device.c, src/adapter.c):
+  * Pair() uses the agent registered by the *caller's* connection, else the default agent.
+  * CancelPairing() cancels the agent request (Agent1.Cancel) and Pair() fails with AuthenticationCanceled.
+  * Discovery without a Transport=bredr filter also reports the phone's LE side: a second device with a
+    random address (FAKE_SETUP_NAME, no Class/Icon, AddressType "random").
+Scenarios (environment):
+  FAKE_SETUP_NAME=...            the setup phone's Bluetooth name (default "Setup Phone")
+  FAKE_PAIR_FROM_PHONE=1         the setup phone starts the pairing itself 0.7 s after discovery starts
+                                 (Agent1.RequestConfirmation to the default agent), as when the user taps the
+                                 computer in the phone's Bluetooth list
+  FAKE_PHONE_CANCELS=1           1 s after asking for the code the phone cancels (Agent1.Cancel, Pair() fails)
+  FAKE_PAIRED_CONNECTED=0        the already paired sandbox phone is out of range (Connected=false)
+  FAKE_PHONE_CONNECTS=1          0.7 s after discovery starts that paired phone connects from its side
+  FAKE_ADAPTER_PAIRABLE=0        the adapter starts not pairable (the setup has to put that back)
 
 Nothing here touches the real system bus: it refuses to start if DBUS_SYSTEM_BUS_ADDRESS is unset or
 points at the real one.
@@ -41,7 +59,7 @@ ADAPTER = "/org/bluez/hci0"
 DEVICE = ADAPTER + "/dev_" + ADDR.replace(":", "_")
 # A second phone, not paired yet: it shows up when discovery starts (the "Set up call audio" flow).
 SETUP_ADDR = "AA:BB:CC:00:33:44"
-SETUP_NAME = "Setup Phone"
+SETUP_NAME = os.environ.get("FAKE_SETUP_NAME", "Setup Phone")
 SETUP_DEVICE = ADAPTER + "/dev_" + SETUP_ADDR.replace(":", "_")
 PASSKEY = 482910
 HFP_AG = "0000111f-0000-1000-8000-00805f9b34fb"
@@ -76,6 +94,8 @@ class Obj(dbus.service.Object):
 
     @dbus.service.method(PROPS, in_signature="ssv")
     def Set(self, iface, name, value):
+        if self.fake is not None:
+            self.fake.note("Set %s.%s=%s" % (iface.split(".")[-1], name, value))
         self.ifaces[iface][name] = value
         self.PropertiesChanged(iface, {name: value}, [])
 
@@ -105,24 +125,39 @@ class Obj(dbus.service.Object):
     def UnregisterEndpoint(self, path):
         pass
 
+    @dbus.service.method("org.bluez.Adapter1", in_signature="a{sv}")
+    def SetDiscoveryFilter(self, f):
+        self.fake.note("SetDiscoveryFilter Transport=%s" % f.get("Transport", "auto"))
+        self.fake.transport = str(f.get("Transport", "auto"))
+
     @dbus.service.method("org.bluez.Adapter1")
     def StartDiscovery(self):
         log("StartDiscovery")
+        self.fake.note("StartDiscovery")
         self.set("org.bluez.Adapter1", "Discovering", True)
         self.fake.discovered()
 
     @dbus.service.method("org.bluez.Adapter1")
     def StopDiscovery(self):
+        if not self.ifaces["org.bluez.Adapter1"].get("Discovering"):
+            raise dbus.exceptions.DBusException("No discovery started", name="org.bluez.Error.Failed")
+        self.fake.note("StopDiscovery")
         self.set("org.bluez.Adapter1", "Discovering", False)
 
-    @dbus.service.method("org.bluez.Device1", async_callbacks=("ok", "err"))
-    def Pair(self, ok, err):
+    @dbus.service.method("org.bluez.Device1", async_callbacks=("ok", "err"), sender_keyword="sender")
+    def Pair(self, ok, err, sender=None):
         log("Pair", self.path)
-        self.fake.pair(self, ok, err)
+        self.fake.pair(self, ok, err, sender)
+
+    @dbus.service.method("org.bluez.Device1")
+    def CancelPairing(self):
+        self.fake.note("CancelPairing")
+        self.fake.cancel_pairing(self)
 
     @dbus.service.method("org.bluez.Device1")
     def Connect(self):
         log("Connect", self.path)
+        self.fake.note("Connect " + self.path.split("/")[-1])
         self.fake.device_connect(self)
 
     @dbus.service.method("org.bluez.Device1")
@@ -132,6 +167,7 @@ class Obj(dbus.service.Object):
     @dbus.service.method("org.bluez.Device1", in_signature="s")
     def ConnectProfile(self, uuid):
         log("ConnectProfile", self.path, uuid)
+        self.fake.note("ConnectProfile %s %s" % (self.path.split("/")[-1], uuid[:8]))
         if uuid.lower() == HFP_AG:
             self.fake.device_connect(self)
 
@@ -372,6 +408,10 @@ class Control(dbus.service.Object):
     def Disconnect(self):
         self.fake.disconnect()
 
+    @dbus.service.method("org.geekbridge.FakePhone", out_signature="as")
+    def Calls(self):
+        return dbus.Array(self.fake.calls, signature="s")
+
     @dbus.service.method("org.geekbridge.FakePhone")
     def Forget(self):
         """Unpair the setup phone again (so a setup can pair it from scratch)."""
@@ -384,8 +424,13 @@ class Fake:
         self.phone = Phone()
         self.phones = {DEVICE: self.phone}
         self.profiles = {}  # uuid -> (sender, path)
-        self.agent = None  # (sender, path)
+        self.agent = None  # (sender, path) of the default agent
+        self.agents = {}  # sender -> path
         self.setup_device = None
+        self.le_twin = None
+        self.transport = "auto"
+        self.calls = []
+        self.pending = {}  # device path -> (agent proxy, err callback)
         self.adapter = Obj(bus, ADAPTER, {
             "org.bluez.Adapter1": {
                 "Address": "00:1A:7D:DA:71:13",
@@ -396,7 +441,8 @@ class Fake:
                 "Powered": True,
                 "PowerState": "on",
                 "Discoverable": False,
-                "Pairable": True,
+                "DiscoverableTimeout": dbus.UInt32(180),
+                "Pairable": os.environ.get("FAKE_ADAPTER_PAIRABLE", "1") != "0",
                 "Discovering": False,
                 "UUIDs": dbus.Array([HFP_HF], signature="s"),
                 "Modalias": "usb:v1D6Bp0246d0550",
@@ -419,7 +465,7 @@ class Fake:
                 "Trusted": True,
                 "Blocked": False,
                 "LegacyPairing": False,
-                "Connected": True,
+                "Connected": os.environ.get("FAKE_PAIRED_CONNECTED", "1") != "0",
                 "ServicesResolved": True,
                 "UUIDs": dbus.Array([HFP_AG, A2DP_SRC], signature="s"),
                 "Adapter": dbus.ObjectPath(ADAPTER),
@@ -436,9 +482,41 @@ class Fake:
         if uuid == HFP_HF:
             GLib.timeout_add(300, self.connect_hfp)
 
+    def note(self, what):
+        log("call:", what)
+        self.calls.append(what)
+
+    def add(self, obj):
+        self.root.objs.append(obj)
+        self.root.InterfacesAdded(dbus.ObjectPath(obj.path), {
+            k: dbus.Dictionary(v, signature="sv") for k, v in obj.ifaces.items()
+        })
+
     def discovered(self):
+        if self.transport != "bredr" and self.le_twin is None:
+            # The phone's LE advertisement: its own object, random address, no class, no services.
+            path = ADAPTER + "/dev_5A_11_22_33_44_55"
+            self.le_twin = Obj(self.bus, path, {
+                "org.bluez.Device1": {
+                    "Address": "5A:11:22:33:44:55",
+                    "AddressType": "random",
+                    "Name": SETUP_NAME,
+                    "Alias": SETUP_NAME,
+                    "Paired": False, "Bonded": False, "Trusted": False, "Blocked": False,
+                    "LegacyPairing": False, "Connected": False, "ServicesResolved": False,
+                    "RSSI": dbus.Int16(-48),
+                    "UUIDs": dbus.Array([], signature="s"),
+                    "Adapter": dbus.ObjectPath(ADAPTER),
+                },
+            }, self)
+            self.add(self.le_twin)
         if self.setup_device is not None:
             return
+        if os.environ.get("FAKE_PAIR_FROM_PHONE") == "1":
+            GLib.timeout_add(700, self.phone_pairs)
+        if os.environ.get("FAKE_PHONE_CONNECTS") == "1":
+            GLib.timeout_add(700, lambda: (self.note("PhoneConnects"),
+                                           self.device.set("org.bluez.Device1", "Connected", True)) and False)
         self.setup_device = Obj(self.bus, SETUP_DEVICE, {
             "org.bluez.Device1": {
                 "Address": SETUP_ADDR,
@@ -459,19 +537,43 @@ class Fake:
                 "Adapter": dbus.ObjectPath(ADAPTER),
             },
         }, self)
-        self.root.objs.append(self.setup_device)
-        self.root.InterfacesAdded(dbus.ObjectPath(SETUP_DEVICE), {
-            k: dbus.Dictionary(v, signature="sv") for k, v in self.setup_device.ifaces.items()
-        })
+        self.add(self.setup_device)
 
-    def pair(self, dev, ok, err):
-        if self.agent is None:
+    def phone_pairs(self):
+        """The user tapped the computer in the phone's list: an incoming pairing (default agent)."""
+        self.note("IncomingPairing " + SETUP_DEVICE.split("/")[-1])
+        self.pair(self.setup_device, lambda: self.note("IncomingPairing done"),
+                  lambda e: self.note("IncomingPairing failed " + e.get_dbus_name()), None)
+        return False
+
+    def cancel_pairing(self, dev):
+        p = self.pending.pop(dev.path, None)
+        if p is None:
+            raise dbus.exceptions.DBusException("no pairing", name="org.bluez.Error.DoesNotExist")
+        agent, err = p
+        agent.Cancel(dbus_interface="org.bluez.Agent1", reply_handler=lambda: None, error_handler=lambda e: None)
+        err(dbus.exceptions.DBusException("Authentication Canceled", name="org.bluez.Error.AuthenticationCanceled"))
+
+    def pair(self, dev, ok, err, sender):
+        if dev.ifaces["org.bluez.Device1"].get("Paired"):
+            err(dbus.exceptions.DBusException("Already Exists", name="org.bluez.Error.AlreadyExists"))
+            return
+        # bluetoothd: the caller's own agent first, else the default one (src/agent.c agent_get).
+        if sender in self.agents:
+            which, ref = "own", (sender, self.agents[sender])
+        elif self.agent is not None:
+            which, ref = "default", self.agent
+        else:
             err(dbus.exceptions.DBusException("no agent", name="org.bluez.Error.AuthenticationFailed"))
             return
-        sender, path = self.agent
-        agent = self.bus.get_object(sender, path)
+        if sender is not None:
+            self.note("Pair %s agent=%s" % (dev.path.split("/")[-1], which))
+        agent = self.bus.get_object(*ref)
+        self.pending[dev.path] = (agent, err)
 
         def confirmed():
+            if self.pending.pop(dev.path, None) is None:
+                return
             log("agent confirmed the passkey")
             d = dev.ifaces["org.bluez.Device1"]
             dev.set("org.bluez.Device1", "Paired", True)
@@ -483,11 +585,24 @@ class Fake:
 
         def rejected(e):
             log("agent rejected:", e)
+            self.note("agent replied " + e.get_dbus_name())
+            if self.pending.pop(dev.path, None) is None:
+                return
             err(dbus.exceptions.DBusException("rejected", name="org.bluez.Error.AuthenticationRejected"))
+
+        def phone_cancels():
+            if self.pending.pop(dev.path, None) is None:
+                return False
+            self.note("phone cancelled")
+            agent.Cancel(dbus_interface="org.bluez.Agent1", reply_handler=lambda: None, error_handler=lambda e: None)
+            err(dbus.exceptions.DBusException("Authentication Canceled", name="org.bluez.Error.AuthenticationCanceled"))
+            return False
 
         agent.RequestConfirmation(dbus.ObjectPath(dev.path), dbus.UInt32(PASSKEY),
                                   dbus_interface="org.bluez.Agent1", timeout=120,
                                   reply_handler=confirmed, error_handler=rejected)
+        if os.environ.get("FAKE_PHONE_CANCELS") == "1":
+            GLib.timeout_add(1000, phone_cancels)
 
     def device_connect(self, dev):
         d = dev.ifaces["org.bluez.Device1"]
@@ -550,16 +665,22 @@ class BluezRoot(dbus.service.Object):
     @dbus.service.method("org.bluez.AgentManager1", in_signature="os", sender_keyword="sender")
     def RegisterAgent(self, path, cap, sender=None):
         log("RegisterAgent", sender, path, cap)
+        self.fake.note("RegisterAgent " + cap)
+        self.fake.agents[sender] = path
+
+    @dbus.service.method("org.bluez.AgentManager1", in_signature="o", sender_keyword="sender")
+    def RequestDefaultAgent(self, path, sender=None):
+        log("RequestDefaultAgent", path)
+        self.fake.note("RequestDefaultAgent")
         self.fake.agent = (sender, path)
 
-    @dbus.service.method("org.bluez.AgentManager1", in_signature="o")
-    def RequestDefaultAgent(self, path):
-        log("RequestDefaultAgent", path)
-
-    @dbus.service.method("org.bluez.AgentManager1", in_signature="o")
-    def UnregisterAgent(self, path):
+    @dbus.service.method("org.bluez.AgentManager1", in_signature="o", sender_keyword="sender")
+    def UnregisterAgent(self, path, sender=None):
         log("UnregisterAgent", path)
-        self.fake.agent = None
+        self.fake.note("UnregisterAgent")
+        self.fake.agents.pop(sender, None)
+        if self.fake.agent is not None and self.fake.agent[0] == sender:
+            self.fake.agent = None
 
 
 def main():

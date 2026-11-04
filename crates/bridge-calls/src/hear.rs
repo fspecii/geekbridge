@@ -247,10 +247,12 @@ pub fn evaluate(f: &Facts) -> Vec<Step> {
     });
 
     // 5. WirePlumber role and backend
+    // Only HFP carries calls: PipeWire's telephony service is created on the HFP hands-free
+    // service-level connection (spa/plugins/bluez5/backend-native.c); `hsp_hs` alone is not enough.
     let roles_ok =
         f.wp.roles
             .as_ref()
-            .is_none_or(|r| r.iter().any(|x| x == "hfp_hf" || x == "hsp_hs"));
+            .is_none_or(|r| r.iter().any(|x| x == "hfp_hf"));
     let backend = f.wp.backend.as_deref().unwrap_or("native");
     let backend_ok = matches!(backend, "native" | "any");
     let wp_running = f.wireplumber_running != Some(false);
@@ -516,20 +518,253 @@ pub fn wp_dropin(cfg: &WpConfig) -> Option<String> {
 /// Write [`wp_dropin`] into `<config_home>/wireplumber/wireplumber.conf.d/`. An earlier copy of
 /// GeekBridge's own file is kept as `.bak`; user files are never touched. Returns the file
 /// written, or `None` when nothing needed fixing. WirePlumber must be restarted afterwards.
+///
+/// A WirePlumber that cannot parse a fragment does not start, and with it goes all the user's
+/// sound. So the text is checked before it is put in place: by [`check_spa_json`], and by
+/// PipeWire's own parser (`spa-json-dump`, PipeWire 1.x) when it is installed. A text that fails
+/// either is not written (`InvalidData`).
 pub fn write_wp_dropin(config_home: &Path, cfg: &WpConfig) -> std::io::Result<Option<PathBuf>> {
     let Some(text) = wp_dropin(cfg) else {
         return Ok(None);
     };
+    check_spa_json(&text).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "the WirePlumber fragment GeekBridge made does not parse ({e}); nothing was written"
+            ),
+        )
+    })?;
     let dir = config_home.join("wireplumber/wireplumber.conf.d");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(WP_DROPIN);
-    if path.exists() {
-        std::fs::copy(&path, path.with_extension("conf.bak"))?;
-    }
+    // The temporary name does not end in `.conf`, so WirePlumber never reads it.
     let tmp = path.with_extension("conf.tmp");
-    std::fs::write(&tmp, text)?;
+    std::fs::write(&tmp, &text)?;
+    if let Some(Err(e)) = spa_json_dump(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "PipeWire's parser rejects the WirePlumber fragment ({e}); nothing was written"
+            ),
+        ));
+    }
+    let bak = path.with_extension("conf.bak");
+    if path.exists() {
+        std::fs::copy(&path, &bak)?;
+    } else if bak.exists() {
+        // A backup from an older, since deleted copy must not come back on an undo.
+        std::fs::remove_file(&bak)?;
+    }
     std::fs::rename(&tmp, &path)?;
     Ok(Some(path))
+}
+
+/// Take GeekBridge's fragment back: the previous copy if there was one (`.bak`), else none.
+pub fn undo_wp_dropin(config_home: &Path) -> std::io::Result<()> {
+    let path = config_home
+        .join("wireplumber/wireplumber.conf.d")
+        .join(WP_DROPIN);
+    let bak = path.with_extension("conf.bak");
+    if bak.exists() {
+        std::fs::rename(&bak, &path)
+    } else {
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// What [`apply_wp_dropin`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WpFix {
+    /// The configuration needs no change; nothing was written.
+    NotNeeded,
+    /// Written, WirePlumber restarted and still running.
+    Applied(PathBuf),
+    /// Written but WirePlumber was not restarted (`why`); it takes effect at the next restart.
+    NotRestarted { path: PathBuf, why: String },
+    /// WirePlumber did not keep running with it (`why`): the fragment was taken back and
+    /// WirePlumber restarted again with the previous configuration.
+    RolledBack { path: PathBuf, why: String },
+}
+
+/// Write the fragment, restart WirePlumber and make sure it still runs; if it does not, take the
+/// fragment back and restart once more, so a GeekBridge change can never leave the user without
+/// sound. `restart` restarts WirePlumber; `healthy` says whether it runs after the restart.
+pub fn apply_wp_dropin(
+    config_home: &Path,
+    cfg: &WpConfig,
+    restart: &mut dyn FnMut() -> Result<(), String>,
+    healthy: &mut dyn FnMut() -> Result<(), String>,
+) -> std::io::Result<WpFix> {
+    let Some(path) = write_wp_dropin(config_home, cfg)? else {
+        return Ok(WpFix::NotNeeded);
+    };
+    if let Err(why) = restart() {
+        return Ok(WpFix::NotRestarted { path, why });
+    }
+    match healthy() {
+        Ok(()) => Ok(WpFix::Applied(path)),
+        Err(why) => {
+            undo_wp_dropin(config_home)?;
+            let again = restart();
+            Ok(WpFix::RolledBack {
+                path,
+                why: match again {
+                    Ok(()) => why,
+                    Err(e) => format!(
+                        "{why}; restarting it again also failed ({e}): systemctl --user restart wireplumber"
+                    ),
+                },
+            })
+        }
+    }
+}
+
+/// PipeWire's own SPA-JSON parser on `file`, if installed: `None` = not available.
+fn spa_json_dump(file: &Path) -> Option<Result<(), String>> {
+    let out = std::process::Command::new("spa-json-dump")
+        .arg(file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .ok()?;
+    Some(if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_owned())
+    })
+}
+
+/// A strict-enough check of WirePlumber's SPA-JSON (the relaxed JSON of its `.conf` files):
+/// balanced `{}`/`[]`, closed strings, objects made of key/value pairs, `#` comments. It accepts
+/// everything GeekBridge writes and what WirePlumber's own files use; it is a guard against
+/// writing something broken, not a full parser.
+pub fn check_spa_json(text: &str) -> Result<(), String> {
+    struct P<'a> {
+        b: &'a [u8],
+        i: usize,
+    }
+    impl P<'_> {
+        fn line(&self) -> usize {
+            1 + self.b[..self.i.min(self.b.len())]
+                .iter()
+                .filter(|c| **c == b'\n')
+                .count()
+        }
+        fn err(&self, what: &str) -> String {
+            format!("{what} on line {}", self.line())
+        }
+        /// Whitespace, commas, `=`/`:` separators and comments.
+        fn skip(&mut self) {
+            while let Some(&c) = self.b.get(self.i) {
+                match c {
+                    b' ' | b'\t' | b'\r' | b'\n' | b',' | b'=' | b':' => self.i += 1,
+                    b'#' => {
+                        while self.b.get(self.i).is_some_and(|c| *c != b'\n') {
+                            self.i += 1;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+        fn string(&mut self) -> Result<(), String> {
+            self.i += 1;
+            loop {
+                match self.b.get(self.i) {
+                    None | Some(b'\n') => return Err(self.err("unterminated string")),
+                    Some(b'\\') => self.i += 2,
+                    Some(b'"') => {
+                        self.i += 1;
+                        return Ok(());
+                    }
+                    Some(_) => self.i += 1,
+                }
+            }
+        }
+        fn bare(&mut self) {
+            while self
+                .b
+                .get(self.i)
+                .is_some_and(|c| !c.is_ascii_whitespace() && !b"{}[]=:,\"#".contains(c))
+            {
+                self.i += 1;
+            }
+        }
+        fn scalar(&mut self) -> Result<(), String> {
+            match self.b.get(self.i) {
+                Some(b'"') => self.string(),
+                Some(c) if b"{}[]".contains(c) => Err(self.err("a key or value expected")),
+                Some(_) => {
+                    self.bare();
+                    Ok(())
+                }
+                None => Err(self.err("a value expected")),
+            }
+        }
+        fn value(&mut self, depth: usize) -> Result<(), String> {
+            if depth > 64 {
+                return Err(self.err("nested too deeply"));
+            }
+            self.skip();
+            match self.b.get(self.i) {
+                Some(b'{') => {
+                    self.i += 1;
+                    self.members(Some(b'}'), depth + 1)
+                }
+                Some(b'[') => {
+                    self.i += 1;
+                    loop {
+                        self.skip();
+                        match self.b.get(self.i) {
+                            None => return Err(self.err("unclosed [")),
+                            Some(b']') => {
+                                self.i += 1;
+                                return Ok(());
+                            }
+                            Some(b'}') => return Err(self.err("} where ] was expected")),
+                            Some(_) => self.value(depth + 1)?,
+                        }
+                    }
+                }
+                Some(b'}' | b']') => Err(self.err("a value expected")),
+                _ => self.scalar(),
+            }
+        }
+        /// Key/value pairs up to `close` (`None`: the end of the text).
+        fn members(&mut self, close: Option<u8>, depth: usize) -> Result<(), String> {
+            loop {
+                self.skip();
+                match (self.b.get(self.i).copied(), close) {
+                    (None, None) => return Ok(()),
+                    (None, Some(_)) => return Err(self.err("unclosed {")),
+                    (Some(c), Some(x)) if c == x => {
+                        self.i += 1;
+                        return Ok(());
+                    }
+                    (Some(b'}' | b']'), _) => return Err(self.err("unexpected closing bracket")),
+                    _ => {
+                        self.scalar()?;
+                        self.skip();
+                        if self.b.get(self.i).is_none_or(|c| b"}]".contains(c)) {
+                            return Err(self.err("a key without a value"));
+                        }
+                        self.value(depth)?;
+                    }
+                }
+            }
+        }
+    }
+    let mut p = P {
+        b: text.as_bytes(),
+        i: 0,
+    };
+    p.members(None, 0)
 }
 
 /// True when nothing failed (warnings allowed).

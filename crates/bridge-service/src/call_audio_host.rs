@@ -659,13 +659,29 @@ mod host {
                                 *reply.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
                                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                                 s.phase = "confirm".into();
-                                s.message = format!(
-                                    "Does {device} show {passkey}? Confirm on the phone and here."
-                                );
+                                s.message = if passkey.is_empty() {
+                                    format!("Allow {device} to pair with this computer? Accept on the phone and here.")
+                                } else {
+                                    format!(
+                                        "Does {device} show {passkey}? Confirm on the phone and here."
+                                    )
+                                };
                                 let line = s.message.clone();
                                 s.log.push(line);
                                 s.passkey = Some(passkey);
                                 s.device = Some(device);
+                            }
+                            setup::Event::Withdrawn => {
+                                // The phone cancelled or BlueZ timed out: the code on screen is
+                                // stale. Only a code still waiting is taken down.
+                                if reply.lock().unwrap_or_else(|e| e.into_inner()).take().is_some() {
+                                    let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                    s.phase = "working".into();
+                                    s.passkey = None;
+                                    s.message = "The pairing code expired or the phone cancelled it; start the pairing again from the phone, or wait for the next code.".into();
+                                    let line = s.message.clone();
+                                    s.log.push(line);
+                                }
                             }
                         },
                         &cancel,
@@ -743,8 +759,31 @@ mod host {
                     )
                 })?;
             let cfg = hear::read_wp_config(Some(&home), Path::new("/etc"), Path::new("/usr/share"));
-            match hear::write_wp_dropin(&home, &cfg) {
-                Ok(None) => {
+            // GEEKBRIDGE_WP_RESTART=0: write only (the sandbox, tests).
+            let may_restart = std::env::var("GEEKBRIDGE_WP_RESTART").as_deref() != Ok("0");
+            let restarts_before = wp_restarts();
+            let mut restart = || -> Result<(), String> {
+                if !may_restart {
+                    return Err("restarting is switched off (GEEKBRIDGE_WP_RESTART=0)".into());
+                }
+                match std::process::Command::new("systemctl")
+                    .args(["--user", "restart", "wireplumber.service"])
+                    .status()
+                {
+                    Ok(s) if s.success() => Ok(()),
+                    Ok(s) => Err(format!("systemctl --user restart wireplumber: {s}")),
+                    Err(e) => Err(format!("systemctl cannot run: {e}")),
+                }
+            };
+            let mut healthy = || wp_still_running(restarts_before);
+            let undo = |p: &Path| {
+                format!(
+                    "to undo: rm {} && systemctl --user restart wireplumber",
+                    p.display()
+                )
+            };
+            match hear::apply_wp_dropin(&home, &cfg, &mut restart, &mut healthy) {
+                Ok(hear::WpFix::NotNeeded) => {
                     Self::log(
                         &self.state,
                         "done",
@@ -752,33 +791,93 @@ mod host {
                     );
                     Ok(())
                 }
-                Ok(Some(path)) => {
-                    // GEEKBRIDGE_WP_RESTART=0: write only (the sandbox, tests).
-                    let restarted = std::env::var("GEEKBRIDGE_WP_RESTART").as_deref() != Ok("0")
-                        && std::process::Command::new("systemctl")
-                            .args(["--user", "restart", "wireplumber.service"])
-                            .status()
-                            .is_ok_and(|s| s.success());
+                Ok(hear::WpFix::Applied(path)) => {
                     Self::log(
                         &self.state,
                         "done",
                         format!(
-                            "Wrote {} (your own files are unchanged; delete it to undo).{}",
+                            "Wrote {} (checked before use; your own files are unchanged; an earlier GeekBridge copy is kept as .bak). WirePlumber restarted and runs; {}.",
                             path.display(),
-                            if restarted {
-                                " WirePlumber restarted."
-                            } else {
-                                " Restart WirePlumber: systemctl --user restart wireplumber"
-                            }
+                            undo(&path)
                         ),
                     );
                     Ok(())
                 }
+                Ok(hear::WpFix::NotRestarted { path, why }) => {
+                    Self::log(
+                        &self.state,
+                        "done",
+                        format!(
+                            "Wrote {} (checked before use; your own files are unchanged). Not restarted ({why}): systemctl --user restart wireplumber; {}.",
+                            path.display(),
+                            undo(&path)
+                        ),
+                    );
+                    Ok(())
+                }
+                Ok(hear::WpFix::RolledBack { path, why }) => Err(err(
+                    ErrorCode::Failed,
+                    &format!(
+                        "WirePlumber did not keep running with the new {} ({why}), so GeekBridge took it back and restarted WirePlumber with your previous configuration. Send journalctl --user -u wireplumber -n 100 with a report.",
+                        path.display()
+                    ),
+                )),
                 Err(e) => Err(err(
                     ErrorCode::Failed,
                     &format!("could not write the WirePlumber fragment: {e}"),
                 )),
             }
+        }
+    }
+
+    /// How often systemd restarted WirePlumber by itself (it does after a crash).
+    fn wp_restarts() -> Option<u64> {
+        let out = std::process::Command::new("systemctl")
+            .args([
+                "--user",
+                "show",
+                "wireplumber.service",
+                "-p",
+                "NRestarts",
+                "--value",
+            ])
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+    }
+
+    /// WirePlumber runs 3 s after a restart and was not restarted by systemd meanwhile (a
+    /// configuration it cannot load makes it exit at start).
+    fn wp_still_running(restarts_before: Option<u64>) -> Result<(), String> {
+        let end = Instant::now() + Duration::from_secs(3);
+        loop {
+            let state = std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "wireplumber.service"])
+                .stderr(std::process::Stdio::null())
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+                .unwrap_or_default();
+            if state != "active" && state != "activating" && !state.is_empty() {
+                return Err(format!("wireplumber.service is {state}"));
+            }
+            if Instant::now() >= end {
+                if state != "active" {
+                    return Err(format!(
+                        "wireplumber.service is {}",
+                        if state.is_empty() { "unknown" } else { &state }
+                    ));
+                }
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        match (restarts_before, wp_restarts()) {
+            (Some(a), Some(b)) if b > a => Err(format!(
+                "WirePlumber crashed and was restarted {} time(s)",
+                b - a
+            )),
+            _ => Ok(()),
         }
     }
 

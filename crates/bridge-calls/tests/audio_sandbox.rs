@@ -473,7 +473,8 @@ fn silence_from_the_phone_and_a_muted_microphone_are_reported_within_seconds() {
     pulse().set_source_mute("sbx_mic", true).unwrap();
     r.ring_and_answer_here();
     let _voice = voice_link(0.0);
-    r.until(8, "silence and mute named", |r| {
+    // Silence is named from the second level check (8 s after the call went live).
+    r.until(14, "silence and mute named", |r| {
         let l = r.audio.lines();
         l.iter().any(|l| l.contains("digital silence")) && l.iter().any(|l| l.contains("is muted"))
     });
@@ -604,6 +605,7 @@ fn y_setup_pairs_trusts_and_connects_a_new_phone_with_the_code_confirmed() {
                 shown.push((device, passkey));
                 reply.send(true).unwrap();
             }
+            Event::Withdrawn => {}
         },
         &cancel,
     )

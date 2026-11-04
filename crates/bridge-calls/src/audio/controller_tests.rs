@@ -575,3 +575,51 @@ fn a_sound_server_outage_at_the_end_of_a_call_is_replayed_later() {
             .contains(&format!("mute {HEADSET_IN} false"))
     );
 }
+
+#[test]
+fn silence_in_the_first_seconds_of_a_call_is_not_reported_until_it_lasts() {
+    // Dialling: no ringback yet, the phone sends true digital silence at the first check.
+    let mut snap = snapshot("audio-gateway", false);
+    add_call_streams(&mut snap, Some(65), Some(68));
+    let mut r = Rig::new(snap);
+    r.ctl.want(phone(), Want::Computer, None);
+    r.mock.st().peaks.insert("rx".into(), 0.0);
+    r.mock.st().peaks.insert(HEADSET_IN.into(), 0.0);
+    r.ctl.tick(&[input(false, true, false)]);
+    r.advance(3100);
+    r.ctl.tick(&[input(false, true, false)]);
+    assert!(
+        r.mock.log().iter().any(|l| l == "peak rx"),
+        "measured at the first check"
+    );
+    assert_eq!(
+        r.ctl.status(phone()).unwrap().problems,
+        Vec::<String>::new()
+    );
+    // The far end answers and talks: heard at the second check, nothing ever reported.
+    r.mock.st().peaks.insert("rx".into(), 0.3);
+    r.mock.st().peaks.insert(HEADSET_IN.into(), 0.1);
+    r.advance(5000);
+    r.ctl.tick(&[input(false, true, false)]);
+    assert_eq!(
+        r.ctl.status(phone()).unwrap().problems,
+        Vec::<String>::new()
+    );
+    // Still silent at the second check: then it is named, with the dongle hint.
+    let mut snap = snapshot("audio-gateway", false);
+    add_call_streams(&mut snap, Some(65), Some(68));
+    let mut r = Rig::new(snap);
+    r.ctl.want(phone(), Want::Computer, None);
+    r.mock.st().peaks.insert("rx".into(), 0.0);
+    r.mock.st().peaks.insert(HEADSET_IN.into(), 0.1);
+    r.ctl.tick(&[input(false, true, false)]);
+    r.advance(3100);
+    r.ctl.tick(&[input(false, true, false)]);
+    assert!(r.ctl.status(phone()).unwrap().problems.is_empty());
+    r.advance(5000);
+    r.ctl.tick(&[input(false, true, false)]);
+    assert_eq!(
+        r.ctl.status(phone()).unwrap().problems,
+        vec![FlowProblem::RxSilent.message()]
+    );
+}

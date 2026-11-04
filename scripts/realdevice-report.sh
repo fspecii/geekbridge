@@ -6,10 +6,12 @@
 #
 #   scripts/realdevice-report.sh [--state-dir DIR] [--control-port PORT] [--bin-dir DIR] [--service-log FILE]
 #                                [--page URL] [--apk FILE] [--serial SERIAL] [--out DIR] [--no-adb] [--stdout]
+#                                [--bt-trace SECONDS]
 #
 # Sections: versions and SHA-256 of the installed desktop binaries; geekbridge-ctl doctor, status (JSON),
 # events, clipboard status; Bluetooth and call audio (adapter, rfkill, bluetoothctl, PipeWire cards and call
-# streams, WirePlumber bluez settings and log lines, call audio-devices); for every paired phone phone-state and phone-log (debug builds only; others say
+# streams, WirePlumber bluez settings and log lines, call audio-devices; BlueZ objects over D-Bus, the dongle's USB id
+# and driver, PipeWire bluez nodes, bluetooth.service and WirePlumber journals); for every paired phone phone-state and phone-log (debug builds only; others say
 # so); firewall state and listening ports; service log tail; the phone's installed app version and APK hash
 # (adb, when a phone is attached); the APK(s) linked from the page at --page URL, hashed and compared.
 #
@@ -17,6 +19,12 @@
 # private keys, pairing links, content/name/secret JSON values, long hex/base64 runs, e-mail addresses, phone
 # numbers, MACs, the last two IPv4 octets, the user name in paths; certificate fingerprints are shortened.
 # Still read the file before attaching it to a public issue.
+#
+# --bt-trace SECONDS: first records SECONDS of Bluetooth traffic while you reproduce the problem (start the call
+# setup, pair, place or answer a call): the org.pipewire.Telephony session-bus traffic (no root needed), and with
+# passwordless sudo also BlueZ's system-bus traffic (dbus-monitor) and an HCI capture (btmon -w, kept as a separate
+# .snoop file next to the report: it can hold link keys, share it privately only). Without sudo it prints the two
+# commands to run by hand in another terminal.
 #
 # Defaults match scripts/realdevice.sh (state target/realdevice-state, control port 17381, binaries
 # target/release). Environment: GEEKBRIDGE_REALDEVICE_STATE, GEEKBRIDGE_CONTROL_PORT, GEEKBRIDGE_BIN_DIR,
@@ -28,10 +36,10 @@ BIN="${GEEKBRIDGE_BIN_DIR:-$ROOT/target/release}"
 STATE="${GEEKBRIDGE_REALDEVICE_STATE:-$ROOT/target/realdevice-state}"
 CTRL_PORT="${GEEKBRIDGE_CONTROL_PORT:-17381}"
 OUTDIR="${GEEKBRIDGE_REPORT_DIR:-$HOME/.cache/geekbridge-reports}"
-SVC_LOG="" PAGE="" APKFILE="" SERIAL="${ANDROID_SERIAL:-}" USE_ADB=1 TO_STDOUT=0
+SVC_LOG="" PAGE="" APKFILE="" SERIAL="${ANDROID_SERIAL:-}" USE_ADB=1 TO_STDOUT=0 BT_TRACE=0
 PKG=dev.geekbridge.android
 
-usage() { sed -n '3,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 while (($#)); do
   case "$1" in
     --state-dir) shift; STATE="${1:?--state-dir needs a value}" ;;
@@ -44,6 +52,7 @@ while (($#)); do
     --out) shift; OUTDIR="${1:?--out needs a directory}" ;;
     --no-adb) USE_ADB=0 ;;
     --stdout) TO_STDOUT=1 ;;
+    --bt-trace) shift; BT_TRACE="${1:?--bt-trace needs seconds}"; [[ $BT_TRACE =~ ^[0-9]+$ ]] || { echo "error: --bt-trace needs a number of seconds" >&2; exit 1; } ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown argument $1 (try --help)" >&2; exit 1 ;;
   esac
@@ -69,6 +78,87 @@ mkdir -p "$OUTDIR" && chmod 700 "$OUTDIR" 2>/dev/null
 WORK="$(mktemp -d "$OUTDIR/.work-XXXXXX")" || exit 1
 trap 'rm -rf "$WORK"' EXIT
 RAW="$WORK/raw.txt"
+
+# --bt-trace: record while the owner reproduces the problem, before anything else is collected.
+trace() {
+  local secs="$1" sudo=()
+  if [[ $EUID -eq 0 ]]; then sudo=()
+  elif sudo -n true 2>/dev/null; then sudo=(sudo -n)
+  else sudo=(none); fi
+  echo ">>> Recording Bluetooth traffic for $secs s: reproduce the problem NOW (call setup, pairing, a call)." >&2
+  if command -v dbus-monitor >/dev/null; then
+    timeout "$secs" dbus-monitor --session "sender='org.pipewire.Telephony'" "destination='org.pipewire.Telephony'" \
+      >"$WORK/trace-telephony.txt" 2>&1 &
+  fi
+  if [[ ${sudo[0]-} != none ]]; then
+    command -v dbus-monitor >/dev/null && timeout "$secs" "${sudo[@]}" dbus-monitor --system "sender='org.bluez'" \
+      "destination='org.bluez'" >"$WORK/trace-bluez.txt" 2>&1 &
+    command -v btmon >/dev/null && timeout "$secs" "${sudo[@]}" btmon -w "$OUTDIR/btmon-$TS.snoop" >/dev/null 2>&1 &
+  else
+    {
+      echo "no passwordless sudo: BlueZ's own traffic was not recorded. To record it, run these in another terminal"
+      echo "while reproducing, then attach the outputs (privately: the .snoop can hold link keys):"
+      echo "  sudo timeout $secs dbus-monitor --system \"sender='org.bluez'\" \"destination='org.bluez'\" > bluez-trace.txt"
+      echo "  sudo timeout $secs btmon -w btmon.snoop"
+    } >"$WORK/trace-bluez.txt"
+  fi
+  wait
+  echo ">>> Recording done; collecting the rest." >&2
+}
+
+bluetooth_details() {
+  sec "Bluetooth stack details (host)"
+  local c a h
+  printf '$ uname -r\n'; uname -r
+  for c in "bluetoothctl --version" "busctl --system tree org.bluez" "wpctl status" \
+    "journalctl -u bluetooth.service -n 200 --no-pager" "journalctl --user -u wireplumber -n 200 --no-pager"; do
+    command -v "${c%% *}" >/dev/null || continue
+    printf '$ %s\n' "$c"; timeout 10 $c 2>&1 | head -220
+  done
+  [[ -x /usr/lib/bluetooth/bluetoothd ]] && { printf '$ bluetoothd --version\n'; /usr/lib/bluetooth/bluetoothd --version 2>&1; }
+  # The controller: USB id (which dongle), driver, btusb parameters; mSBC needs USB alt setting 1/6 support.
+  for h in /sys/class/bluetooth/hci[0-9]*; do
+    [[ -e $h ]] || continue
+    printf '$ %s: driver %s, usb %s:%s %s %s\n' "${h##*/}" "$(basename "$(readlink -f "$h/device/driver" 2>/dev/null)" 2>/dev/null)" \
+      "$(cat "$h/device/../idVendor" 2>/dev/null)" "$(cat "$h/device/../idProduct" 2>/dev/null)" \
+      "$(cat "$h/device/../manufacturer" 2>/dev/null)" "$(cat "$h/device/../product" 2>/dev/null)"
+  done
+  if [[ -d /sys/module/btusb/parameters ]]; then
+    printf '$ btusb parameters\n'; for c in /sys/module/btusb/parameters/*; do printf '  %s=%s\n' "${c##*/}" "$(cat "$c" 2>/dev/null)"; done
+  fi
+  if command -v busctl >/dev/null; then
+    for a in $(busctl --system tree org.bluez --list 2>/dev/null | grep -E '^/org/bluez/hci[0-9]+$'); do
+      printf '$ busctl --system introspect org.bluez %s org.bluez.Adapter1 (properties)\n' "$a"
+      timeout 5 busctl --system introspect org.bluez "$a" org.bluez.Adapter1 2>&1 | awk '$2=="property"' | head -40
+    done
+    for a in $(busctl --system tree org.bluez --list 2>/dev/null | grep -E '^/org/bluez/hci[0-9]+/dev_[0-9A-F_]+$'); do
+      printf '$ busctl --system introspect org.bluez %s org.bluez.Device1 (properties)\n' "$a"
+      timeout 5 busctl --system introspect org.bluez "$a" org.bluez.Device1 2>&1 | awk '$2=="property"' | grep -v -E 'ManufacturerData|ServiceData|AdvertisingData' | head -30
+    done
+  fi
+  if command -v pw-dump >/dev/null; then
+    printf '$ pw-dump (bluez devices and nodes: name, class, profile, codec, state)\n'
+    timeout 10 pw-dump 2>/dev/null | python3 -I -c 'import json,sys
+try: objs=json.load(sys.stdin)
+except Exception as e: print("pw-dump unreadable:", e); sys.exit()
+for o in objs:
+    i=o.get("info") or {}; p=i.get("props") or {}
+    if not any(str(k).startswith("api.bluez5") for k in p): continue
+    keys=["device.name","node.name","media.class","api.bluez5.profile","api.bluez5.codec","device.profile.name","api.bluez5.connection","bluez5.profile"]
+    print(o.get("type","").split(":")[-1], o.get("id"), i.get("state",""), " ".join("%s=%s"%(k,p[k]) for k in keys if k in p))
+    for prm in (i.get("params") or {}).get("Profile",[]) or []:
+        print("   active profile:", prm.get("name"), prm.get("description",""))'
+  fi
+  if command -v journalctl >/dev/null; then
+    printf '$ WirePlumber/PipeWire SCO and mSBC capability lines (info level; empty unless WIREPLUMBER_DEBUG=spa.bluez5*:4)\n'
+    journalctl --user -u wireplumber -u pipewire -n 5000 --no-pager 2>/dev/null | grep -i -E 'alt6|alt1|msbc|esco|sco|codec|RejectSCO|transport' | tail -40
+  fi
+  for t in "$WORK/trace-telephony.txt" "$WORK/trace-bluez.txt"; do
+    [[ -f $t ]] || continue
+    sec "Trace: ${t##*/} (--bt-trace)"; head -c 400000 "$t"
+  done
+  [[ -f $OUTDIR/btmon-$TS.snoop ]] && { sec "HCI capture"; echo "btmon capture kept (NOT in this report; share privately): $OUTDIR/btmon-$TS.snoop ($(stat -c %s "$OUTDIR/btmon-$TS.snoop") bytes; read with: btmon -r FILE)"; }
+}
 
 collect() {
   echo "# GeekBridge real-device report"
@@ -146,6 +236,8 @@ except Exception: pass')"
     journalctl -k -n 3000 --no-pager 2>/dev/null | grep -i -E 'bluetooth|btusb|hci[0-9]|firmware' | tail -30
   fi
 
+  bluetooth_details
+
   sec "Firewall and listening ports"
   local t
   for t in "ufw status" "firewall-cmd --state" "firewall-cmd --list-all" "nft list ruleset"; do
@@ -206,6 +298,7 @@ except Exception: pass')"
   else echo "no --page URL given (pass the page the phone downloads the APK from to compare it with the installed one)"; fi
 }
 
+((BT_TRACE > 0)) && trace "$BT_TRACE"
 { collect; } >"$RAW" 2>&1
 "${REDACT[@]}" <"$RAW" >"$WORK/report.txt"
 if ((TO_STDOUT)); then cat "$WORK/report.txt"; exit 0; fi

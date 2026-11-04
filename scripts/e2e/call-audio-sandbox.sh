@@ -152,7 +152,7 @@ set -e
 # ---------------------------------------------------------------- stage 2: the real service
 if [[ $rc == 0 && ${GB_SKIP_SERVICE:-0} != 1 ]]; then
   cargo build -q -p bridge-service --bins
-  BIN="$ROOT/target/debug"
+  BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug"
   export GEEKBRIDGE_WP_RESTART=0   # never restart a WirePlumber from here
   export GEEKBRIDGE_STATE_DIR="$SBX/svc" GEEKBRIDGE_CONTROL_PORT=27381 GEEKBRIDGE_NO_UPDATE_CHECK=1 GEEKBRIDGE_NO_TRAY=1
   mkdir -m 700 "$SBX/svc"
