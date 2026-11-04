@@ -257,7 +257,7 @@ fn session_check_on(s: &SessionEnv, x11_or_wayland: bool) -> Check {
 
 fn service_down(err: &str, systemd_unit: bool) -> Check {
     let fix = if systemd_unit {
-        "systemctl --user start geekbridge-service   (then: geekbridge-ctl status)"
+        "systemctl --user start geekbridge-service   (then: geekbridge-ctl status). No systemd user session? Run: geekbridge-service-launch"
     } else {
         "start it: geekbridge-service   (from a source checkout: scripts/run-desktop.sh)"
     };
@@ -426,9 +426,20 @@ pub fn calls_check(c: &CallingStatus) -> Check {
     check(
         level,
         "Calls",
-        crate::diagnose::scrub(&c.verdict),
+        verdict_in_words(&c.verdict),
         call_audio_hint(&c.platform),
     )
+}
+
+/// The probe's verdict codes as a sentence; anything unknown is shown as it is.
+fn verdict_in_words(verdict: &str) -> String {
+    match verdict {
+        "no_telephony_service" => "The Bluetooth hands-free (telephony) service is not running here, so call audio through this computer is off. Answering and declining over the phone link still work; see the next line and geekbridge-ctl calling.".into(),
+        "no_phone" => "No phone is connected to this computer over Bluetooth hands-free yet. Calls still ring and can be answered over the phone link.".into(),
+        "phone_registered" => "A phone is connected over Bluetooth hands-free.".into(),
+        "platform_unavailable" => "Bluetooth call audio is not available on this system. Answering and declining over the phone link still work.".into(),
+        other => crate::diagnose::scrub(other),
+    }
 }
 
 /// The `Calls` line on Windows and macOS, where the system (not GeekBridge) owns Bluetooth
@@ -1611,6 +1622,28 @@ mod tests {
         ));
         assert!(!k.detail.contains("alice"), "{}", k.detail);
         assert_eq!(k.title, "Calls");
+    }
+
+    #[test]
+    fn calls_verdict_codes_are_never_printed_raw() {
+        for code in [
+            "no_telephony_service",
+            "no_phone",
+            "phone_registered",
+            "platform_unavailable",
+        ] {
+            let k = calls_check(&CallingStatus {
+                platform: "linux".into(),
+                backend: "none".into(),
+                verdict: code.into(),
+                telephony_service_present: false,
+                bluetooth_controllers: None,
+                phones: 0,
+                calls: 0,
+                read_only: true,
+            });
+            assert!(!k.detail.contains('_'), "{code}: {}", k.detail);
+        }
     }
 
     #[test]

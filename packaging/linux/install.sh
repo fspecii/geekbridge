@@ -70,6 +70,9 @@ for b in "${bins[@]}"; do
   install -m 0755 "$here/bin/$b" "$bindir/$b"
 done
 for d in "${desktops[@]}"; do install -m 0644 "$here/share/applications/$d.desktop" "$appdir/$d.desktop"; done
+# A per-user install lives in ~/.local/bin, which the desktop's application launcher does not always have on its
+# PATH (a fresh ~/.local/bin only joins PATH at the next login), so the menu entries name the programs absolutely.
+for d in "${desktops[@]}"; do sed -i "s|^Exec=geekbridge|Exec=$bindir/geekbridge|" "$appdir/$d.desktop"; done
 # The licence text and third-party notices, where the About section looks for them (<prefix>/share/doc/geekbridge).
 for doc in LICENSE THIRD_PARTY_NOTICES.md; do [[ -f "$here/$doc" ]] && install -Dm 0644 "$here/$doc" "$docdir/$doc"; done
 for n in "${iconnames[@]}"; do
@@ -103,5 +106,9 @@ command -v xdg-open >/dev/null || add_note "opening links and files: install xdg
 command -v bluetoothctl >/dev/null || add_note "call audio: install bluez (Bluetooth)"
 command -v pipewire >/dev/null && command -v wpctl >/dev/null || add_note "call audio: install pipewire, wireplumber and pipewire-pulse"
 if [[ -n "$missing_note" ]]; then printf 'Optional programs not found (GeekBridge still starts without them):\n%s' "$missing_note"; fi
-case ":$PATH:" in *":$bindir:"*) ;; *) echo "Note: $bindir is not on your PATH." ;; esac
-echo "Installed. Start 'GeekBridge' from your application menu or run: geekbridge"
+run="geekbridge"
+case ":$PATH:" in *":$bindir:"*) ;; *) run="$bindir/geekbridge"
+  echo "Note: $bindir is not on your PATH, so a terminal will not find geekbridge or geekbridge-ctl until you add it"
+  echo "      (or log out and in again, if your system adds ~/.local/bin to PATH once it exists). The application menu entries work now." ;; esac
+echo "Installed. Start 'GeekBridge' from your application menu or run: $run"
+echo "Next: click 'Link a phone' in GeekBridge, and allow TCP and UDP 1716-1764 in your firewall (geekbridge-ctl firewall prints the commands)."

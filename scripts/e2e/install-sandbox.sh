@@ -119,6 +119,8 @@ miss=""; for b in geekbridge geekbridge-service geekbridge-ctl geekbridge-calls 
 check install-binaries $([[ -z $miss ]]; echo $?) "missing:${miss:- none}"
 check install-unit-points-at-home $(grep -qx "ExecStart=$L/bin/geekbridge-service" "$U"; echo $?) "$(grep ExecStart "$U")"
 check install-autostart-absolute $(grep -qx "Exec=$L/bin/geekbridge-service-launch" "$A"; echo $?)
+bad=""; for f in "$L"/share/applications/dev.geekbridge.*.desktop; do grep -q "^Exec=$L/bin/geekbridge" "$f" || bad+=" $(basename "$f")"; done
+check install-menu-entries-absolute $([[ -z $bad ]]; echo $?) "relative Exec:${bad:- none}"
 check install-launcher-absolute $(grep -q "^exec \"$L/bin/geekbridge-service\"" "$L/bin/geekbridge-service-launch"; echo $?)
 check install-service-enabled-via-systemd $(grep -q 'enable --now geekbridge-service.service' "$S/systemctl.log"; echo $?)
 check install-docs-for-about $([[ -s "$L/share/doc/geekbridge/LICENSE" && -s "$L/share/doc/geekbridge/THIRD_PARTY_NOTICES.md" ]]; echo $?)

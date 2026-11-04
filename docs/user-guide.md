@@ -341,8 +341,11 @@ needed. The full guide, with what to buy and the decision table per OS, is [call
 * **Dialing from the computer** works the same way: type a number on the Calls keypad (or
   `geekbridge-ctl call dial +15550100`), confirm it, and the phone places the call. It needs *Allow placing calls from
   my computer* in the phone's Answer calls step. Digits and a leading `+` only.
-* No Bluetooth controller is reported as information, not an error (`geekbridge-ctl doctor`, `geekbridge-ctl call-audio`).
-  Carrying call audio over Wi-Fi is not possible on a stock Android phone. Dialing was tested against a stand-in phone only.
+* No Bluetooth controller is shown as a warning, never a failed check (`geekbridge-ctl doctor` still exits 0; see also
+  `geekbridge-ctl call-audio`): the Calls window says "This computer has no Bluetooth. You can see and answer calls here, but
+  talking needs Bluetooth", and Messages, contacts and the other features work normally.
+  Carrying call audio over Wi-Fi is not possible on a stock Android phone (release builds have no Wi-Fi call audio; debug
+  phone builds carry an experimental, off-by-default, listen-only option). Dialing was tested against a stand-in phone only.
 * Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
   controller (many desktops have none; a USB adapter works), the phone paired as a hands-free device with *Calls*
   allowed, and PipeWire/WirePlumber (the defaults on Arch/Omarchy are right). `geekbridge-ctl calling` walks through

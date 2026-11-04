@@ -223,6 +223,7 @@ pub fn firewall_help_for(os: Os, exe: &Path) -> String {
             "Allow TCP and UDP {PORT_RANGE} from your local network, for example:\n\
              \x20 sudo ufw allow from 192.168.0.0/16 to any port 1716:1764 proto tcp\n\
              \x20 sudo ufw allow from 192.168.0.0/16 to any port 1716:1764 proto udp\n\
+             (192.168.0.0/16 covers home networks of the form 192.168.x.x. If `ip -4 addr` shows 10.x.x.x or 172.16-31.x.x addresses, use 10.0.0.0/8 or 172.16.0.0/12 instead; a rule for the wrong range keeps the phone out.)\n\
              or, with firewalld: sudo firewall-cmd --permanent --add-port=1716-1764/tcp --add-port=1716-1764/udp && sudo firewall-cmd --reload\n\
              (service: {exe})"
         ),
@@ -514,5 +515,6 @@ mod tests {
         }
         let fwd = bridge_core::firewall::commands(bridge_core::firewall::Tool::Firewalld);
         assert!(linux.contains(&fwd.replace('\n', " && ")), "{fwd}");
+        assert!(linux.contains("10.0.0.0/8") && linux.contains("ip -4 addr"));
     }
 }
