@@ -205,7 +205,11 @@ tasks_home() { # theme: screens of the home window; they show the unread count, 
   local t=$1
   echo "geekbridge|$t|home|-|"
   echo "geekbridge|$t|pair|ctrl+2|"
-  echo "geekbridge|$t|settings|ctrl+3|"
+  echo "geekbridge|$t|settings|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"   # the fixture keeps the machine's real Bluetooth out of the picture
+  echo "geekbridge|$t|settings-call-audio|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=connect GEEKBRIDGE_OPEN_CALLAUDIO=1"
+  echo "geekbridge|$t|settings-call-audio-test|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=testing GEEKBRIDGE_OPEN_CALLAUDIO=1"
+  echo "geekbridge|$t|settings-call-audio-nobt|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth GEEKBRIDGE_OPEN_CALLAUDIO=1"
+  echo "geekbridge|$t|settings-call-audio-mac|ctrl+3|GEEKBRIDGE_CALLAUDIO_FIXTURE=mac GEEKBRIDGE_OPEN_CALLAUDIO=1"
   echo "geekbridge|$t|diagnostics|-|GEEKBRIDGE_OPEN_REPORT=1"
   echo "geekbridge|$t|home-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate GEEKBRIDGE_AUTOSTART_FIXTURE=off"   # first-run empty state: no service token to read; the guide leads with the start command
   # First run with the service up and no phone paired: the three-step guide; then with a firewall that blocks phones.
@@ -222,6 +226,7 @@ tasks_rest() { # theme
   echo "geekbridge-share|$t|share-photos-detail|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_SELECT_FIRST=1"
   echo "geekbridge-share|$t|share-photos-off|-|GEEKBRIDGE_SHARE_TAB=photos GEEKBRIDGE_PHOTOS_FIXTURE=offered"
   echo "geekbridge-calls|$t|calls-keypad|-|"
+  echo "geekbridge-calls|$t|calls-audio-setup|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLAUDIO_FIXTURE=connect"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
   echo "geekbridge-calls+overlay|$t|call-overlay|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"

@@ -57,6 +57,10 @@ Commands:
   messages-refresh DEVICE_ID [THREAD] ask for the conversation list, or older history of a thread
   messages-send DEVICE_ID NUMBER TEXT [SUB_ID] send one SMS (SUB_ID: a SIM the phone listed); the send id is not a receipt
   calling                             read-only host calling backend summary
+  call-audio [test | use [--output NAME] [--input NAME]]
+                                      hear and talk through this computer: the checklist (Bluetooth adapter,
+                                      phone paired, hands-free, headphones), a five-second tone and microphone
+                                      test, or choose the headphones and microphone (no name = system default)
   calls [--reveal]                    ringing and live calls, the controls that really exist,
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
@@ -241,6 +245,13 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
     }
     if command == "clipboard" {
         return clipboard_command(&args[1..], port, &state_dir);
+    }
+    if command == "call-audio" {
+        let words: Vec<String> = args
+            .iter()
+            .filter_map(|a| a.to_str().map(str::to_owned))
+            .collect();
+        return bridge_service::call_audio_cli::run(&words, port, &load_token(&state_dir)?);
     }
     if matches!(command.as_str(), "calls" | "call") {
         let words: Vec<String> = args

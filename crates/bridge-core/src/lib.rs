@@ -2,6 +2,7 @@
 //! Shared domain types and a bounded, read-only local discovery API.
 pub mod agenda;
 pub mod battery_link;
+pub mod call_audio;
 pub mod call_overlay;
 pub mod calls;
 pub mod calls_link;

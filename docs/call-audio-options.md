@@ -1,141 +1,72 @@
-# Call audio on a computer without Bluetooth: the realistic options
+# Hear and talk through your computer
 
-Date: 2026-11-02. Scope: what to do when the voice of a phone call should come out of (and go into) this computer, and the computer has **no Bluetooth controller** (the Omarchy test machine: `/sys/class/bluetooth` is absent, no Bluetooth device in `lsusb`, `rfkill list` empty).
+When a call comes in you can answer it from the computer, and the voice can come out of the computer's headphones and into its microphone, like Phone Link on Windows or Continuity on an iPhone and a Mac. The voice does not travel over the GeekBridge link. It goes over **Bluetooth hands-free (HFP)** between the phone and the computer, so the computer needs Bluetooth.
 
-Evidence tags: **[OFFICIAL]** fetched from the vendor's own page on 2026-11-02; **[SRC]** read in a project source or installed package on this machine; **[INF]** inference, not verified; **[UNVERIFIED]** from general knowledge, no source fetched. Nothing in this document was exercised on real call audio: this machine has no controller and the repository has never carried real call audio.
+Date: 2026-11-04. **Nothing on this page has been tried on real call audio.** The signalling (answer, decline, hang up, dial) is tested against an emulator and a stand-in phone; Bluetooth voice, codecs and echo have never been exercised on any computer, because the test machine has no Bluetooth yet. Evidence tags: **[OFFICIAL]** read on the vendor's own page; **[SRC]** read in source or an installed package; **[INF]** inference; **[UNVERIFIED]** general knowledge, no source.
 
-## Short answer
+## What works where
 
-| Goal | Possible? | How |
-| --- | --- | --- |
-| Answer, reject, hang up from the PC; voice stays on the phone (speaker, earpiece or the phone's own Bluetooth headset) | **Yes, works today** | GeekBridge link. No PC Bluetooth needed. |
-| Hear and speak the call on the PC | **Only over Bluetooth hands-free (HFP)** | Add a USB Bluetooth adapter (section 1). |
-| Carry call audio over Wi-Fi/the GeekBridge link | **Not possible on a stock, unrooted Android 10+ phone** | Android withholds call-audio capture and injection from normal apps (section 2). |
-| What other phone-companion apps do | The same thing: Bluetooth HFP. It needs Bluetooth on the PC too (section 3). | |
+| | Answer, decline, hang up, dial from the computer | Voice through the computer's headset | Setup help in GeekBridge | Verified |
+| --- | --- | --- | --- | --- |
+| **Linux** | Yes, over the link, no Bluetooth needed | Yes with a Bluetooth adapter (built in or USB), the phone paired as a hands-free device, PipeWire with the `hfp_hf` role | Live checklist in Settings and in the Calls window, `geekbridge-ctl call-audio`, tone and microphone test | Checklist logic and parsers: tests. Real voice: **not verified** |
+| **Windows 11** | Yes, over the link | Through Windows itself: phone paired in Settings, Bluetooth & devices, Phone calls on; Windows plays call audio on the default communications device | The same checklist, filled from `Get-PnpDevice`; no local test (Windows owns routing); `geekbridge-ctl doctor` | Parsers: tests on canned output. Detection on a real Windows install and the voice: **not verified** |
+| **macOS** | Yes, over the link | **Not available yet** (see below) | The window says so and offers the fallbacks; `geekbridge-ctl doctor` | The decision, not a feature |
+| **Any, no Bluetooth** | Yes | No. Answer here and talk on the phone, or add a USB Bluetooth adapter | The window says so plainly and names what to buy | Yes (the message, not the voice) |
 
-GeekBridge now says which of these applies. `geekbridge-ctl calls` (a `source:` line), `geekbridge-ctl diagnose` (`call audio:`) and the desktop Calls window show one of:
+Always available, on every system: answer on the computer and talk on the phone (its speaker, earpiece, or a Bluetooth headset paired with the phone).
 
-* `no Bluetooth adapter found` – answering still works, the voice stays on the phone; add a USB dongle.
-* `Bluetooth adapter found, but the phone is not paired as a hands-free device` – pair it and allow calls.
-* `phone is paired but not connected as a hands-free device` – connect its Hands-free profile.
-* `ready (phone connected as a hands-free device)`.
+## Linux
 
-Detection lives in `crates/bridge-calls/src/readiness.rs` (sysfs `/sys/class/bluetooth/hci*` plus `bluetoothctl devices Paired` / `bluetoothctl info`, cached 15 s; tested against a fake sysfs tree and canned `bluetoothctl` output).
+The setup window lists six steps, each with a state in words and, when it fails, a one-line fix. A fix that is a command has a **Copy command** button; GeekBridge never runs it for you and never runs `sudo`.
 
-## 1. A USB Bluetooth dongle
+1. **Bluetooth adapter found.** `ls /sys/class/bluetooth` shows `hci0`. No adapter: see "What to buy".
+2. **Bluetooth not blocked.** `rfkill list bluetooth`. Fix for a software block: `rfkill unblock bluetooth`. A hardware block (switch, airplane-mode key) has no command.
+3. **Bluetooth turned on.** `bluetoothctl show` says `Powered: yes`. Fix: `bluetoothctl power on`. If `bluetoothctl` cannot reach the service: `sudo systemctl enable --now bluetooth.service`.
+4. **Phone paired as a hands-free device.** The phone is paired and offers the Handsfree Audio Gateway service (`0000111f`). On the computer add the device and choose the phone; on the phone allow **Phone calls** (One UI: Bluetooth, the gear next to the computer, Call audio on). The GeekBridge Android setup (Answer calls step) has a button that opens the phone's Bluetooth settings and shows whether the phone sees a connected hands-free device.
+5. **Hands-free connected.** The phone is connected and PipeWire's telephony service registered it. Fix: `bluetoothctl connect <address>`.
+6. **Headphones and microphone chosen.** Pick the output and the input in the window (default: the system defaults). The choice is stored in `call-audio.json` in the service state directory.
 
-### 1.1 What the software needs
+**Test call audio** (no call needed): plays a quiet two-note tone (about 1.2 s) through the chosen output, then shows a live level meter from the chosen microphone for 5 s and says whether it heard you. Nothing is recorded or kept. It works before any Bluetooth exists, so you can test the headset first. It needs `paplay` or `pw-play`, and `parec` (PulseAudio tools; `pipewire-pulse` provides the server).
 
-The Linux backend (`crates/bridge-calls`, ) makes **this computer the HFP hands-free unit (HF) and the phone the audio gateway (AG)**. It needs:
+### Software the voice needs
+* `bluetoothd` with a powered adapter.
+* PipeWire's native HFP backend with the `hfp_hf` role. WirePlumber's current defaults for `bluez5.roles` already include `hfp_hf`, and `bluez5.hfphsp-backend` defaults to `native` **[OFFICIAL]** (<https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html>). Only if a phone refuses hands-free, add `hsp_hs` to the roles in a WirePlumber fragment and restart `wireplumber pipewire pipewire-pulse`.
+* PipeWire's `org.pipewire.Telephony` D-Bus service, which GeekBridge drives for answer and hang up. Its API is undocumented, so it is probed live **[SRC]**.
+* `pipewire-pulse` (GeekBridge routes through PulseAudio-protocol modules).
 
-1. `bluetoothd` running with a powered adapter (`org.bluez.Adapter1`).
-2. PipeWire's native HFP backend with the **`hfp_hf`** role. WirePlumber's current Bluetooth page lists `bluez5.roles` values `hsp_hs, hsp_ag, hfp_hf, hfp_ag, a2dp_sink, a2dp_source, bap_sink, bap_source` with default `[ a2dp_sink a2dp_source bap_sink bap_source hfp_hf hfp_ag ]`, and `bluez5.hfphsp-backend` values `any, none, hsphfpd, ofono, native` with default `native` **[OFFICIAL]** (<https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html>). So on current WirePlumber **no configuration is required**; the defaults already include `hfp_hf` and the native backend. Note: `hsp_hs` is *not* in the current default list; the older default (`hsp_hs hsp_ag hfp_hf hfp_ag`) appears in older docs. Add `hsp_hs` only if a phone refuses HFP (rare on Android).
-3. PipeWire's `org.pipewire.Telephony` D-Bus service (what GeekBridge drives for dial/answer/hang-up). It is exposed by the native backend; its API is undocumented, which is why the probe derives capabilities from live introspection **[SRC]** (`spa/plugins/bluez5/telephony.c`, installed `libspa-bluez5.so`, pipewire 1.6.9 on this machine).
-4. `pipewire-pulse` (GeekBridge routes through PulseAudio-protocol `module-loopback` / `module-echo-cancel`).
+## What to buy (no Bluetooth on the computer)
 
-oFono is **not** required: it remains a selectable backend (`bluez5.hfphsp-backend = "ofono"`) **[OFFICIAL]**, and the older Collabora status note describes the native backend as the simple one that implements only a minimal AT-command set (<https://www.collabora.com/news-and-blog/news-and-events/pipewire-bluetooth-support-status-update.html>, 2022, so possibly dated). GeekBridge uses the native backend plus PipeWire Telephony; it does not use oFono, and I found no source saying oFono is deprecated.
+Any USB adapter that uses the kernel's generic **`btusb`** driver and supports **Bluetooth 5.x**, dual mode (Classic plus LE; hands-free is a Classic profile, so not an LE-only adapter). Prefer chips whose firmware is in `linux-firmware` (Intel, Qualcomm/Atheros, MediaTek, most Realtek); some Realtek RTL8761B parts have needed an extra firmware package on Arch **[OFFICIAL-ish: forum thread <https://bbs.archlinux.org/viewtopic.php?id=267891>]**. Avoid unbranded "CSR8510" dongles of unknown origin **[UNVERIFIED]**. Plug it directly into a USB 2.0 port, away from USB 3 devices **[UNVERIFIED]**. Wideband speech (mSBC) depends on the controller and the headset quirks database; narrowband is the worst case **[OFFICIAL]**. **No adapter has been tested by this project.**
 
-Installed here: pipewire 1.6.9, wireplumber 0.5.18, bluez / bluez-utils 5.87 **[SRC]** (`pacman -Q`).
+Check after plugging in: `lsusb | grep -i bluetooth`, `dmesg | grep -i -E 'bluetooth|btusb|firmware'`, `ls /sys/class/bluetooth`, then open the setup window.
 
-### 1.2 Which adapter
+## Windows 11
 
-I could not fetch an authoritative per-chipset list: the ArchWiki Bluetooth page blocked automated fetches and neither BlueZ nor the kernel publishes a recommended-hardware list that I found. So the guidance below is **[INF]/[UNVERIFIED]** and should be confirmed on the actual purchase:
+Windows has its own hands-free stack, so the voice goes to the Windows default communications device without GeekBridge touching audio. Microsoft says calling in its companion app "requires Bluetooth capability on both your PC and on your Android device" **[OFFICIAL]**.
 
-* Any adapter driven by the in-kernel generic `btusb` driver works with BlueZ; the ArchWiki confirms `btusb` is the generic USB Bluetooth driver **[OFFICIAL-ish: search excerpt]**. Prefer chips whose firmware ships in `linux-firmware` (Intel, Qualcomm/Atheros, MediaTek, most Realtek) so no out-of-tree driver is needed. An Arch forum thread shows Realtek RTL8761B(UV) dongles needing an AUR firmware package, and a user advising to avoid parts needing out-of-tree drivers (forum opinion, <https://bbs.archlinux.org/viewtopic.php?id=267891>). Check the package state before buying.
-* Bluetooth 4.0 or newer is plenty; HFP is a classic (BR/EDR) profile, so **buy a dual-mode (Classic + LE) adapter, not an LE-only one**. [UNVERIFIED]
-* Avoid unbranded "CSR8510" dongles of uncertain origin: many are clones with flaky firmware and are a known source of "shows in lsusb, will not power on" reports. [UNVERIFIED]
-* Wideband speech (mSBC, 16 kHz) needs the controller to support transparent SCO data; it is hardware-quirk dependent in WirePlumber ("None of these work on all headsets, so they are enabled based on the hardware quirks database") **[OFFICIAL]**. Expect narrowband (CVSD, 8 kHz) at worst.
-* Plug it into a **USB 2.0 port directly**, not a hub, and not next to a USB 3 device (2.4 GHz interference). [UNVERIFIED]
-* Watch for combined Wi-Fi/Bluetooth cards that conflict (ArchWiki notes Broadcom conflicts) **[OFFICIAL-ish: search excerpt]**; a separate USB dongle sidesteps that.
+1. Settings, Bluetooth & devices: add your phone; on the phone accept the pairing and allow Phone calls.
+2. Settings, System, Sound: check the default communications output and input.
+3. Open GeekBridge's setup window (or run `geekbridge-ctl doctor`).
 
-Nothing recommended here has been tested by this project.
+Detection is `Get-PnpDevice -Class Bluetooth` (adapter present and working; a paired phone's `BTHENUM\{0000111F-...}` Hands-Free AG node, whose `Status` is `OK` while connected) and `-Class AudioEndpoint` (names only). The instance-id shapes come from general Windows knowledge **[UNVERIFIED]**: the parsers are tested on canned output, not on a real PC, and the radio's on/off switch and the default communications device are not read. The window marks those steps "Cannot be checked from here" instead of guessing.
 
-### 1.3 Exact setup (Arch / Omarchy)
+## macOS
 
-```bash
-# 1. Plug the dongle in, then confirm the kernel sees it.
-lsusb | grep -i bluetooth
-dmesg | grep -i -E 'bluetooth|btusb|firmware' | tail
-ls /sys/class/bluetooth            # expect hci0
+* **Continuity calling (iPhone Cellular Calls on a Mac) is Apple-to-Apple.** Nothing found says it works with Android, and GeekBridge does not use it.
+* Apple does publish a hands-free interface (`IOBluetoothHandsFreeDevice`, with `connectSCO` and `transferAudioToComputer`), so "macOS does not expose hands-free to apps" would be too strong. But no source shows a Mac carrying an Android phone's call voice, whether macOS then offers the voice link as a CoreAudio device is undocumented, and the only open-source wrapper found ("claims iPhone and Android") has no hardware test **[verified against the project's macOS research notes, which cite Apple's documentation]**. Until a hardware test passes on two Android phones, GeekBridge keeps Mac call audio off and says so.
+* Best today: answer on the Mac and talk on the phone, or keep a Bluetooth headset paired with the phone.
 
-# 2. Firmware if dmesg says it is missing.
-sudo pacman -S --needed linux-firmware
+## Why not over Wi-Fi?
 
-# 3. Services and radio.
-sudo pacman -S --needed bluez bluez-utils
-sudo systemctl enable --now bluetooth.service
-rfkill list bluetooth && rfkill unblock bluetooth
-bluetoothctl power on
+On stock Android 10+ an installed app cannot capture the other party's voice or inject audio into the call **[OFFICIAL]** (<https://developer.android.com/media/platform/sharing-audio-input>): `CAPTURE_AUDIO_OUTPUT` is for privileged system apps. Accessibility-service and speakerphone workarounds are fragile and against Google Play policy (<https://support.google.com/googleplay/android-developer/answer/10964491>) **[OFFICIAL]**, so GeekBridge does not do them. Bluetooth hands-free is the one route Android offers, and it is what Phone Link uses too.
 
-# 4. Pair the phone (accept the prompt on the phone; allow calls/contacts if asked).
-bluetoothctl
-#   scan on
-#   pair  <PHONE_ADDR>
-#   trust <PHONE_ADDR>
-#   connect <PHONE_ADDR>
-
-# 5. Verify the phone offers HFP audio gateway and PipeWire registered it.
-bluetoothctl info <PHONE_ADDR> | grep -i -E 'Handsfree Audio Gateway|Connected|Paired'
-busctl --user tree org.pipewire.Telephony      # an .../ag0 object per connected phone
-wpctl status | grep -i bluez
-pactl list cards short | grep -i bluez         # card appears; voice profile appears during a call
-
-# 6. GeekBridge's own check.
-geekbridge-ctl diagnose | grep 'call audio'
-geekbridge-call-probe                          # read-only evidence report
-```
-
-Only if a phone will not connect hands-free, force the roles in a WirePlumber fragment (`~/.config/wireplumber/wireplumber.conf.d/51-bluez-hfp.conf`; the exact file name is free):
+## Commands
 
 ```
-monitor.bluez.properties = {
-  bluez5.roles = [ a2dp_sink a2dp_source hsp_hs hfp_hf ]
-  bluez5.hfphsp-backend = "native"
-  bluez5.enable-msbc = true
-}
+geekbridge-ctl call-audio             # the checklist as text
+geekbridge-ctl call-audio test        # tone, then 5 s of microphone level
+geekbridge-ctl call-audio use --output NAME --input NAME   # no name = system default
+geekbridge-ctl calling                # raw backend summary
+geekbridge-ctl doctor                 # includes the call audio line for your OS
+geekbridge-call-probe                 # read-only evidence report
 ```
-
-then `systemctl --user restart wireplumber pipewire pipewire-pulse`. (Property names are from the WirePlumber page **[OFFICIAL]**; the fragment is the usual WirePlumber HFP-role fragment.)
-
-Open items that need real hardware (unchanged from the repo's research): whether WirePlumber switches the card to the voice profile by itself after `Activate()`; audible quality; echo cancellation.
-
-## 2. Without PC Bluetooth: what the phone side can do
-
-### 2.1 Works today
-
-* **PC controls, phone carries the voice.** Answer/reject/hang up through the GeekBridge link (`ANSWER_PHONE_CALLS`, call state reporting). The user talks into the phone, or into whatever the phone is already connected to (its own Bluetooth earbuds or car). The Calls window says this ("Answers on the phone. The voice stays on the phone unless this computer is also its Bluetooth headset.").
-* **Phone speaker / headset.** Android lets the user choose the call route (speaker, earpiece, wired, Bluetooth) on the phone; that is a phone-side choice and the PC does not need to be involved. GeekBridge does not currently switch it from the PC; doing so would need the call-UI/`InCallService` role on the phone, which the app does not hold.
-* I found no stock Android feature that sends *call* audio to another device over Wi-Fi (Cast and Nearby carry media, not telephony) **[UNVERIFIED]**.
-
-### 2.2 A network audio bridge for call audio: what Android blocks
-
-On stock Android 10+ it is **not possible for a normal installed app to capture the other party's voice, nor to inject audio into the call**. Precisely:
-
-* **Capturing the call (downlink/uplink, `VOICE_CALL`, `VOICE_DOWNLINK`, `VOICE_UPLINK`, `AudioDeviceInfo.TYPE_TELEPHONY`)**: Android's audio-sharing rules state "The call always receives audio. The app can capture audio if it is an accessibility service. The app can capture the voice call if it is a privileged (pre-installed) app with permission `CAPTURE_AUDIO_OUTPUT`", and to capture uplink/downlink the app must use those sources/device **[OFFICIAL]** (<https://developer.android.com/media/platform/sharing-audio-input>). `CAPTURE_AUDIO_OUTPUT` is not grantable to a Play/sideloaded app. Open-source call recorders confirm that the system-app permission is what makes recording work, and that many devices do not support the `VOICE_CALL` source at all (BCR README, <https://github.com/c4pt00/BCR-call-recorder>) **[OFFICIAL-ish: search excerpt]**.
-* **Playback capture (`AudioPlaybackCapture`)** is the API normal apps get for "what the phone is playing". The voice-communication usage is gated by a privileged permission in AOSP (`CAPTURE_VOICE_COMMUNICATION_OUTPUT`, per an AOSP framework commit "Fix voice communication audio playback capture", mirrored at <https://gitlab.e.foundation/e/os/android_frameworks_av/-/commit/287d330c85bc67d0b985eb8c927945ffd541d4e2>) **[SRC, mirror]**; telephony audio is not exposed to it **[INF]**.
-* **The microphone during a call**: the same page says the accessibility-service exception exists for *input* capture. That gives, at most, the user's own microphone (and the room sound including the speakerphone), not a clean downlink **[INF]**. Apps using privacy-sensitive sources (`VOICE_COMMUNICATION`, `CAMCORDER`) take priority over others **[OFFICIAL]**. Many OEMs additionally silence the mic for third-party apps during cellular calls **[UNVERIFIED]**.
-* **Injecting audio into the call uplink**: there is no public API. Audio-routing control (`MODIFY_AUDIO_ROUTING`) is privileged/partner-only. The only stock-Android way to put sound into the call is Bluetooth HFP (or the physical microphone).
-* **Accessibility service / Assistant workarounds**: an accessibility service would be a policy and trust problem even where it technically captures the mic. Google Play only exempts apps whose primary purpose is helping people with disabilities (`isAccessibilityTool`) from the prominent-disclosure requirement; other apps need in-app disclosure and affirmative consent, and the API may not be used for autonomous action; voice recordings count as data collected through it, requiring declaration (<https://support.google.com/googleplay/android-developer/answer/10964491>) **[OFFICIAL]**. The default Assistant/Voice Interaction role does not unlock the call stream **[UNVERIFIED]**; and the page above says that with `setPrivacySensitive(true)` even a privileged Assistant cannot capture concurrently **[OFFICIAL]**. A speakerphone-plus-mic trick (phone on speaker, mic picks up both sides acoustically) is the only unprivileged "capture", and it is low quality, echo-prone and fragile; it is **not** something GeekBridge should ship.
-* **Verdict: impossible without root (or a custom/OEM ROM that pre-installs the app as a privileged system app) for a network call-audio bridge on stock Android 10+.** With root, privileged-app tricks (Magisk modules granting `CAPTURE_AUDIO_OUTPUT`, BCR-style) exist for *recording*; injection into the uplink is much harder and I did not investigate it. GeekBridge targets unmodified phones, so **this option is out of scope**.
-
-## 3. What Windows phone-companion apps do
-
-* Calls use **Bluetooth HFP**: Microsoft states "Calling requires Bluetooth capability on both your PC and on your Android device".
-* The PC drives Windows' in-box stack (`PhoneLineTransportDevice` with `PhoneLineTransport.Bluetooth`, `PhoneCall.ChangeAudioDeviceAsync(LocalDevice)`); audio flows over the SCO link to the PC's Hands-Free endpoint, not over the app's own network link.
-* So a PC with no Bluetooth gets **no call audio from such apps either**; it is the same constraint GeekBridge has.
-
-## 4. Recommendation
-
-1. Keep the link path as the default: answering and call control with the voice on the phone. State it plainly (done in the status lines above).
-2. For voice on the PC: buy a dual-mode USB Bluetooth adapter with in-kernel/`linux-firmware` support, follow section 1.3, and run `geekbridge-ctl diagnose` until it prints `call audio: ... ready`.
-3. Do not build a Wi-Fi call-audio bridge or an accessibility workaround; Android blocks it for ordinary apps and Play policy discourages the workaround.
-
-## Sources
-
-* WirePlumber Bluetooth configuration: <https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html>
-* Android, sharing audio input: <https://developer.android.com/media/platform/sharing-audio-input>
-* Google Play, AccessibilityService API policy: <https://support.google.com/googleplay/android-developer/answer/10964491>
-* PipeWire Bluetooth status (Collabora, 2022): <https://www.collabora.com/news-and-blog/news-and-events/pipewire-bluetooth-support-status-update.html>
-* AOSP playback-capture commit (mirror): <https://gitlab.e.foundation/e/os/android_frameworks_av/-/commit/287d330c85bc67d0b985eb8c927945ffd541d4e2>
-* BCR call recorder README: <https://github.com/c4pt00/BCR-call-recorder>
-* Arch forum thread on Realtek dongle firmware: <https://bbs.archlinux.org/viewtopic.php?id=267891>

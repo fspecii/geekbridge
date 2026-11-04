@@ -425,6 +425,20 @@ pub enum Request {
     },
     /// Read-only probe of the host's Bluetooth calling backend (counts only, no numbers).
     CallingStatus,
+    /// The "Call audio on this computer" checklist (adapter, radio, pairing, hands-free, headphones)
+    /// with the devices to choose from and the state of the local test. Read-only; carries no phone
+    /// numbers. Answered with `Response::CallAudioSetup`.
+    CallAudioSetup,
+    /// Remember the headphones and microphone to use for call audio (`None` = the system default).
+    /// Names must be ones the latest `CallAudioSetup` listed. Answered with `Response::CallAudioSetup`.
+    CallAudioChoose {
+        output: Option<String>,
+        input: Option<String>,
+    },
+    /// Start the local test: a short tone on the chosen output, then five seconds of microphone
+    /// level. No call is involved and nothing is recorded or kept. Answered with `Response::CallAudioSetup`
+    /// (poll `CallAudioSetup` for the meter).
+    CallAudioTest,
     /// The merged call view: ringing and live calls with caller, the controls that really exist
     /// and the audio route. Carries phone numbers and names, so it is only served on this
     /// authenticated control channel and the apps must keep it out of logs.
@@ -1072,6 +1086,7 @@ pub enum Response {
     Status(Box<Status>),
     Events(EventPage),
     CallingStatus(CallingStatus),
+    CallAudioSetup(Box<crate::call_audio::Setup>),
     /// The phone's redacted state dump (multi-line text).
     PhoneDebugState {
         text: String,
@@ -1106,6 +1121,7 @@ fn every_response_is_parsed(r: &Response) {
         Response::Status(_)
         | Response::Events(_)
         | Response::CallingStatus(_)
+        | Response::CallAudioSetup(_)
         | Response::PhoneDebugState { .. }
         | Response::Calls(_)
         | Response::Notifications(_)
@@ -1156,6 +1172,7 @@ impl Response {
             "status" => Response::Status(Box::new(p(json)?)),
             "events" => Response::Events(p(json)?),
             "calling_status" => Response::CallingStatus(p(json)?),
+            "call_audio_setup" => Response::CallAudioSetup(Box::new(p(json)?)),
             "phone_debug_state" => Response::PhoneDebugState {
                 text: p::<Text>(json)?.text,
             },
@@ -1611,6 +1628,13 @@ mod tests {
                 "phones": 1, "calls": 0, "read_only": false}),
             ),
             (
+                "call_audio_setup",
+                json!({"kind": "call_audio_setup", "platform": "linux", "verdict": "todo",
+                "steps": [{"id": "adapter", "state": "ok"},
+                          {"id": "hfp", "state": "todo", "fix": {"kind": "connect", "command": "x"}}],
+                "can_test": false}),
+            ),
+            (
                 "phone_debug_state",
                 json!({"kind": "phone_debug_state", "text": "a\nb \u{1F600}"}),
             ),
@@ -1720,7 +1744,7 @@ mod tests {
     #[test]
     fn from_json_covers_every_response_variant_and_round_trips() {
         let all = every_response_json();
-        assert_eq!(all.len(), 19, "one sample per Response variant");
+        assert_eq!(all.len(), 20, "one sample per Response variant");
         let mut seen = std::collections::HashSet::new();
         for (name, j) in &all {
             let bytes = serde_json::to_vec(j).unwrap();
@@ -1740,7 +1764,7 @@ mod tests {
             assert_eq!(serde_json::to_value(&r).unwrap()["kind"], *name);
             seen.insert(std::mem::discriminant(&r));
         }
-        assert_eq!(seen.len(), 19, "every variant was produced");
+        assert_eq!(seen.len(), 20, "every variant was produced");
     }
 
     /// Every way to break one value: drop it, or swap it for each JSON type.

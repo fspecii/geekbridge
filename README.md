@@ -53,7 +53,7 @@ individually confirmed there.**
 | File, link, text sharing | Both directions, Android Share sheet, drag and drop, up to 8 GiB, SHA-256 checked | Emulator, 500 MB each way | not yet |
 | Clipboard | Text, links, HTML, images; computer to phone automatic, phone to computer on demand via hotkey | Scripted + emulator for the transport; hotkey/`wl-clipboard` on Linux | not yet |
 | Calls: answer, decline, hang up | Popup and notification on the computer; opt-in on the phone | Emulator (simulated GSM signalling through the link) and a fake `org.pipewire.Telephony` | not yet |
-| Call audio on the computer | Bluetooth hands-free (HFP) via PipeWire / WinRT / macOS helper | Simulated signalling only; Bluetooth, SCO and codecs **not verified anywhere** | not yet |
+| Call audio on the computer | Voice through the computer's headset over Bluetooth hands-free (HFP): **Linux** via PipeWire, **Windows** via Windows' own stack, **macOS not available** (answer on the Mac, talk on the phone). A guided checklist, a tone and microphone test, and per-OS guidance ([guide](docs/call-audio-options.md)) | Checklist, parsers and test logic: unit and service tests; Android Bluetooth status: JVM tests. Bluetooth voice, codecs and echo **not verified on any OS**; Windows detection never run on a real PC | not yet |
 | Messages (SMS) | Conversations, paging, send, notifications; no MMS, group or RCS | Emulator | not yet |
 | Contacts | Searchable phonebook, call / message / copy, read-only | Emulator | not yet |
 | Calendar | Month, week, day, agenda; Google calendars via the phone's own sync; optional two-way editing | Emulator (provider inserts, desktop create/edit/delete) | not yet |

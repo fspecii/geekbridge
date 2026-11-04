@@ -411,7 +411,26 @@ pub fn calls_check(c: &CallingStatus) -> Check {
     } else {
         Level::Ok
     };
-    check(level, "Calls", crate::diagnose::scrub(&c.verdict), None)
+    check(
+        level,
+        "Calls",
+        crate::diagnose::scrub(&c.verdict),
+        call_audio_hint(&c.platform),
+    )
+}
+
+/// What to do for the voice of a call to come through this computer, per operating system. Only
+/// Windows and macOS need words here; on Linux `geekbridge-ctl call-audio` has the live checklist.
+pub fn call_audio_hint(platform: &str) -> Option<&'static str> {
+    match platform {
+        "windows" => Some(
+            "to hear calls here pair the phone in Windows Settings > Bluetooth & devices and turn on Phone calls; Windows then plays call audio on the default communications device (docs/call-audio-options.md)",
+        ),
+        "macos" => Some(
+            "call audio on a Mac is not available yet (Apple's iPhone calling does not work with Android, and GeekBridge has not verified the Mac hands-free interface): answer on the Mac and talk on the phone, or use a Bluetooth headset paired with the phone (docs/call-audio-options.md)",
+        ),
+        _ => None,
+    }
 }
 
 /// Why Messages is or is not usable for one phone, and the way out.
@@ -1258,6 +1277,31 @@ mod tests {
         );
         i.clipboard = None;
         assert!(find(&run(&i), "Clipboard").is_empty());
+    }
+
+    #[test]
+    fn windows_and_macos_get_their_own_call_audio_guidance() {
+        let on = |platform: &str| CallingStatus {
+            platform: platform.into(),
+            backend: "none".into(),
+            verdict: "platform_unavailable".into(),
+            telephony_service_present: false,
+            bluetooth_controllers: None,
+            phones: 0,
+            calls: 0,
+            read_only: true,
+        };
+        let w = calls_check(&on("windows")).fix.unwrap_or_default();
+        assert!(
+            w.contains("Phone calls") && w.contains("Bluetooth & devices"),
+            "{w}"
+        );
+        let m = calls_check(&on("macos")).fix.unwrap_or_default();
+        assert!(
+            m.contains("not available yet") && m.contains("talk on the phone"),
+            "{m}"
+        );
+        assert!(call_audio_hint("linux").is_none());
     }
 
     #[test]

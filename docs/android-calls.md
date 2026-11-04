@@ -107,3 +107,14 @@ Details, protocol and test matrix: [call-control.md](call-control.md). Summary o
   in that case.
 - **Not verified on a device:** `acceptRingingCall()` / `endCall()`, the number broadcast and the new wizard steps have
   only JVM tests (`CallControlTest.kt`, fake `TelecomPort`); see the list in call-control.md.
+
+## Call audio on the computer: the Bluetooth part of the Answer calls step
+
+Call audio cannot travel through GeekBridge (Android gives apps none), so the step ends with a **Call audio on your computer**
+part: the button **Pair phone with your computer for call audio** opens `Settings.ACTION_BLUETOOTH_SETTINGS`; the text says what to do
+on the computer (add device, choose this phone) and on the phone (allow Phone calls; One UI: Bluetooth, the gear, Call audio on);
+and a status line shows whether the phone currently sees a connected hands-free device
+(`BluetoothAdapter.getProfileProxy(..., BluetoothProfile.HEADSET)`, `getConnectedDevices`). Android 12+ needs `BLUETOOTH_CONNECT` for that;
+it is requested only here, with its reason on screen, through **Allow Bluetooth check**. Before Android 12 the install-time
+`BLUETOOTH` permission (declared up to API 30) covers it. The app never scans, pairs or connects by itself. The state logic is
+`CallAudioModel` (JVM-tested); the proxy read is `CallAudioBluetooth`. Not run on a real phone yet.

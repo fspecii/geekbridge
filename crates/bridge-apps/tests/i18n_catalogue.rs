@@ -277,7 +277,9 @@ fn every_key_used_in_code_is_in_english() {
 
 #[test]
 fn every_english_key_is_used() {
-    let all: String = sources().into_iter().map(|(_, s)| s).collect();
+    let mut all: String = sources().into_iter().map(|(_, s)| s).collect();
+    // The checklist model names its own catalogue keys (`FixKind::key`, `StepId::key`).
+    all.push_str(include_str!("../../bridge-core/src/call_audio.rs"));
     for k in english().keys() {
         let base = base_key(k);
         assert!(

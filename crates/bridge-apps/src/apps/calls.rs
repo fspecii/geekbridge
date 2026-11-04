@@ -3,6 +3,7 @@
 //! placing a call needs the service to offer it (Telephony allowed, the phone permits it, no call going on)
 //! and the user to confirm the number in a sheet; the service re-checks everything before sending.
 use crate::{
+    call_audio_ui::CallAudioPanel,
     call_feed::{CallFeed, FeedState},
     call_ui::{self, CallPanel},
     icons::{self, Icon},
@@ -32,6 +33,8 @@ pub struct Calls {
     sources: FeedState,
     /// The number the user pressed Call for; nothing is dialed until they confirm it.
     confirming: Option<String>,
+    /// "Call audio on this computer" checklist, shown on the Recents tab.
+    audio: CallAudioPanel,
 }
 
 const KEYS: [[(char, &str); 3]; 4] = [
@@ -390,6 +393,11 @@ impl Calls {
         call_ui::audio_note(ui, pal, &sources);
         ui.add_space(8.0);
         call_ui::sources(ui, pal, &sources);
+        ui.add_space(18.0);
+        ui.label(theme::overline(pal, crate::i18n::tr("callaudio.title")));
+        ui.add_space(6.0);
+        self.audio.show(ui, pal, true);
+        ui.add_space(12.0);
     }
 }
 
@@ -444,6 +452,10 @@ impl AppView for Calls {
             self.number = input::sanitize_dial(&n);
         }
         let feed = self.feed.take().unwrap_or_else(|| {
+            // Screenshots: open on the Recents tab, where the call audio checklist is.
+            if std::env::var("GEEKBRIDGE_CALLS_TAB").as_deref() == Ok("recents") {
+                self.tab = Tab::Recents;
+            }
             let wake = ctx.clone();
             match std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() {
                 Ok(kind @ ("ringing" | "active")) => fixture_feed(kind == "ringing", wake),
@@ -465,7 +477,12 @@ impl AppView for Calls {
         self.panel.top(ctx, pal, &feed);
         central(ctx, pal, Margin::symmetric(16, 10), |ui| match self.tab {
             Tab::Keypad => self.keypad(ui, env),
-            Tab::Recents => self.recents(ui, env),
+            Tab::Recents => {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .id_salt("calls-recents")
+                    .show(ui, |ui| self.recents(ui, env));
+            }
         });
         self.panel.popup(ctx, pal, &feed);
         self.confirm_dial(ctx, pal, &feed);

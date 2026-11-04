@@ -66,6 +66,7 @@ class SetupActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        hfp = null // back from Bluetooth settings: look again
         WidgetUpdater.refreshAll(this)
         PhoneDataRuntime.resync() // back from app settings: re-declare what is allowed now
         render()
@@ -119,6 +120,7 @@ class SetupActivity : Activity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         WidgetUpdater.refreshAll(this) // widgets show calendar access and the answer switch
+        hfp = null // the Bluetooth check may have been allowed
         CallControlRuntime.onPermissionsChanged()
         PhoneDataRuntime.resync()
         render()
@@ -255,6 +257,47 @@ class SetupActivity : Activity() {
                 13f, Tone.Muted,
             ).apply { setPadding(0, kit.dp(10), 0, 0) },
         )
+        callAudioPart(panel)
+    }
+
+    private var hfp: HfpView? = null
+
+    /** Bluetooth hands-free for call audio on the computer. Reads nothing until the step is on screen. */
+    private fun callAudioPart(panel: LinearLayout) {
+        panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
+        kit.divider(panel)
+        panel.addView(kit.text(getString(R.string.setup_ca_title), 16f, bold = true).apply { setPadding(0, kit.dp(14), 0, 0) })
+        panel.addView(kit.text(getString(R.string.setup_ca_explain), 13.5f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+        kit.button(panel, getString(R.string.setup_ca_pair), BtnStyle.Primary) {
+            startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+        val status = kit.text(callAudioStatusText(hfp), 14f, bold = true).apply { setPadding(0, kit.dp(12), 0, 0) }
+        panel.addView(status)
+        if (hfp?.phase == HfpPhase.NeedsPermission) {
+            panel.addView(kit.text(getString(R.string.setup_ca_reason), 13f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
+            kit.button(panel, getString(R.string.setup_ca_allow), BtnStyle.Tonal) { request(Manifest.permission.BLUETOOTH_CONNECT) }
+        }
+        if (hfp == null) {
+            CallAudioBluetooth.read(this) { v ->
+                if (!isFinishing && !isDestroyed) {
+                    hfp = v
+                    status.text = callAudioStatusText(v)
+                    if (v.phase == HfpPhase.NeedsPermission) render()
+                }
+            }
+        }
+    }
+
+    private fun callAudioStatusText(v: HfpView?): String = when (v?.phase) {
+        null -> ""
+        HfpPhase.NoBluetooth -> getString(R.string.setup_ca_status_none_bt)
+        HfpPhase.NeedsPermission -> getString(R.string.setup_ca_status_needs_permission)
+        HfpPhase.BluetoothOff -> getString(R.string.setup_ca_status_off)
+        HfpPhase.NoneConnected -> getString(R.string.setup_ca_status_none)
+        HfpPhase.Unknown -> getString(R.string.setup_ca_status_unknown)
+        HfpPhase.Connected -> v.names.filter { it.isNotEmpty() }.joinToString().let {
+            if (it.isEmpty()) getString(R.string.setup_ca_status_connected_unnamed) else getString(R.string.setup_ca_status_connected, it)
+        }
     }
 
     private fun pairStep(panel: LinearLayout) {

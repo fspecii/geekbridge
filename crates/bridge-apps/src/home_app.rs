@@ -104,6 +104,9 @@ pub struct HomeApp {
     notice: Option<String>,
     /// Open "Report a problem" preview, and whether the diagnostics being collected are for it.
     report: Option<ReportPanel>,
+    call_audio: crate::call_audio_ui::CallAudioPanel,
+    /// Screenshots: scroll Settings to the call audio section once (`GEEKBRIDGE_OPEN_CALLAUDIO`).
+    scroll_to_call_audio: bool,
     diagnostics_for_report: bool,
     diagnostics: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     calls: Option<CallFeed>,
@@ -301,6 +304,8 @@ impl HomeApp {
             hotkey_draft: None,
             notice: None,
             report: None,
+            call_audio: crate::call_audio_ui::CallAudioPanel::new(),
+            scroll_to_call_audio: false,
             diagnostics_for_report: false,
             diagnostics: None,
             calls: None,
@@ -311,6 +316,10 @@ impl HomeApp {
             guide_env: GuideEnv::read(),
             copied: None,
         };
+        if std::env::var_os("GEEKBRIDGE_OPEN_CALLAUDIO").is_some() {
+            app.view = View::Settings;
+            app.scroll_to_call_audio = true;
+        }
         // Screenshots and tests: open Settings with the "Report a problem" preview already built.
         if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
             app.view = View::Settings;
@@ -1190,6 +1199,11 @@ impl HomeApp {
         nothing::card(ui, pal, |ui| {
             sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
         });
+        nothing::section(ui, pal, crate::i18n::tr("callaudio.title"));
+        if std::mem::take(&mut self.scroll_to_call_audio) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
+        nothing::card(ui, pal, |ui| self.call_audio.show(ui, pal, false));
         nothing::section(ui, pal, report_ui::section());
         if let Some(panel) = &mut self.report {
             if !panel.show(ui, pal) {

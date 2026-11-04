@@ -63,6 +63,8 @@ const MAX_REJECTED_PACKETS: u64 = 64;
 /// Smallest spacing of `PingReceived` events, so a chatty phone cannot flush the event log.
 const PING_EVENT_SPACING_MS: u64 = 1000;
 const CALLING_DEADLINE: Duration = Duration::from_secs(2);
+/// Reading Bluetooth and audio state runs a few short commands; the whole read is bounded.
+const CALL_AUDIO_DEADLINE: Duration = Duration::from_secs(15);
 /// Largest packet line on a trusted link. Clipboard items carry up to two 64 KiB text fields, which
 /// JSON may expand; everything bigger travels as a payload.
 /// Phone data (a conversation page, a batch of vCards) is far larger than a clipboard item. GeekBridge
@@ -105,6 +107,8 @@ pub struct DaemonOptions {
     pub mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
     /// Where the user-chosen computer name is saved. A saved name wins over `device_name`.
     pub device_name_file: Option<std::path::PathBuf>,
+    /// Setup and test for call audio on this computer. `None` (tests) answers that it is unavailable.
+    pub call_audio: Option<Arc<crate::call_audio::CallAudioService>>,
 }
 
 impl DaemonOptions {
@@ -133,6 +137,7 @@ impl DaemonOptions {
             sms_show_content: false,
             mirror_notifier: None,
             device_name_file: None,
+            call_audio: None,
         }
     }
 }
@@ -869,6 +874,11 @@ impl Daemon {
                 .notification_action(&device_id, &id, &action)
                 .map(|()| Response::Ack),
             Request::CallingStatus => self.calling_status().await.map(Response::CallingStatus),
+            Request::CallAudioSetup => self.call_audio(|s| Ok(s.setup())).await,
+            Request::CallAudioChoose { output, input } => {
+                self.call_audio(move |s| s.choose(output, input)).await
+            }
+            Request::CallAudioTest => self.call_audio(|s| s.start_test()).await,
             Request::Calls => Ok(Response::Calls(Box::new(self.calls.status()))),
             Request::CallAction { target, action } => {
                 let hub = self.calls.clone();
@@ -1873,6 +1883,31 @@ impl Daemon {
         } else {
             "not_bound"
         });
+    }
+
+    /// Run a blocking call-audio job (reads the machine; the test thread is spawned inside).
+    async fn call_audio(
+        &self,
+        job: impl FnOnce(
+            Arc<crate::call_audio::CallAudioService>,
+        ) -> Result<bridge_core::call_audio::Setup, String>
+        + Send
+        + 'static,
+    ) -> Result<Response, ErrorBody> {
+        let Some(svc) = self.options.call_audio.clone() else {
+            return Err(err(ErrorCode::Failed, "call audio setup is not available"));
+        };
+        match timeout(
+            CALL_AUDIO_DEADLINE,
+            tokio::task::spawn_blocking(move || job(svc)),
+        )
+        .await
+        {
+            Ok(Ok(Ok(s))) => Ok(Response::CallAudioSetup(Box::new(s))),
+            Ok(Ok(Err(why))) => Err(err(ErrorCode::Failed, &why)),
+            Ok(Err(_)) => Err(err(ErrorCode::Failed, "call audio check failed")),
+            Err(_) => Err(err(ErrorCode::Failed, "call audio check timed out")),
+        }
     }
 
     async fn calling_status(&self) -> Result<CallingStatus, ErrorBody> {

@@ -6,6 +6,8 @@
 //!   explicitly chosen phones, backed by `bridge-kde`. See `docs/service-integration.md`.
 pub mod autostart;
 pub mod calendar_edit;
+pub mod call_audio;
+pub mod call_audio_cli;
 pub mod call_cli;
 pub mod call_control;
 pub mod call_overlay;
@@ -511,6 +513,10 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     let mut options = daemon::DaemonOptions::new(&config.device_name, calling);
     options.dev_loopback = config.dev_loopback;
     options.device_name_file = Some(config.state_dir.join(daemon::DEVICE_NAME_FILE));
+    options.call_audio = Some(call_audio::CallAudioService::new(
+        Box::new(call_audio::SystemHost),
+        Some(config.state_dir.join(call_audio::SELECTION_FILE)),
+    ));
     options.clipboard = clipboard::detect_backend();
     options.clipboard_settings = Some(config.state_dir.join(clipboard::SETTINGS_FILE));
     options.hotkey_binder = hotkey_bind::detect();

@@ -60,6 +60,11 @@
          READ_CALL_LOG is the only way Android hands this app the caller's number (never the log itself). -->
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
     <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Optional, asked only in the "Call audio on your computer" part of the Answer calls step: lets the phone
+         list which Bluetooth hands-free devices are connected right now (BluetoothProfile.HEADSET), so the setup
+         can say whether the computer is linked for call audio. Never scans or pairs; Android 12+ asks at runtime. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <!-- Optional: CALL_PHONE lets a paired computer you allowed ask this phone to place a call
          (TelecomManager.placeCall) for a plain number, after you confirmed it on the computer. -->
     <uses-permission android:name="android.permission.CALL_PHONE" />

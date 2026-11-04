@@ -308,21 +308,29 @@ to a bug report).
 * Switching Wi-Fi/VPN or the phone sleeping interrupts a transfer; resend it. At most 3 transfers run at once (the rest
   queue); the limit is 8 GiB per file. Received files go to `~/Downloads/GeekBridge` (phone: `Download/GeekBridge`).
 
-### No call audio / no Bluetooth
+### Hear and talk through your computer (call audio)
+Open **Settings > Call audio on this computer** (or the Recents tab of Calls). It lists what is in place and what is not, each
+failing step with a one-line fix and a **Copy command** button (GeekBridge never runs the command and never uses `sudo`).
+**Test call audio** plays a short tone through the chosen headphones and shows the microphone level for 5 seconds, no call
+needed. The full guide, with what to buy and the decision table per OS, is [call-audio-options.md](call-audio-options.md).
+
+| Your computer | What you get |
+| --- | --- |
+| Linux with Bluetooth, phone paired as hands-free | Voice through the computer's headset (not yet verified on real hardware) |
+| Windows 11 with Bluetooth | Same, through Windows' own hands-free (phone paired in Settings, Phone calls on; not yet verified) |
+| macOS | Answer here, talk on the phone, or use a Bluetooth headset paired with the phone. Call audio on the Mac is off until it is verified |
+| No Bluetooth | Answer here, talk on the phone. To talk through the computer add a USB Bluetooth adapter (any using the kernel `btusb` driver, Bluetooth 5.x) |
+
 * Answering, declining and hanging up work **over the GeekBridge link without Bluetooth**: switch **Answer from
   computer** on in the phone's Home and allow *Calls* for the phone on the computer. The voice then stays on the phone.
+* On the phone, the **Answer calls** setup step has a **Pair phone with your computer for call audio** button that opens
+  Android's Bluetooth settings and shows whether the phone sees a connected hands-free device. Android asks for the
+  Bluetooth permission only there, and GeekBridge never scans.
 * **Dialing from the computer** works the same way: type a number on the Calls keypad (or
   `geekbridge-ctl call dial +15550100`), confirm it, and the phone places the call. It needs *Allow placing calls from
   my computer* in the phone's Answer calls step. Digits and a leading `+` only.
-* If the computer has **no Bluetooth controller**, `geekbridge-ctl doctor` and the Calls window say so: control works,
-  the audio stays on the phone (use the phone's speaker, earpiece or its own headset). This is reported as information,
-  not an error. Carrying call audio over Wi-Fi is not possible on a stock Android phone; see
-  [call-audio-options.md](call-audio-options.md) for why and for choosing a USB Bluetooth adapter. Dialing was tested
-  against a stand-in phone only.
-* Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
-  controller (`bluetoothctl show` must list one; many desktops have none; a USB adapter works), the phone paired over
-  Bluetooth with "Phone calls" enabled, and an HFP-capable PipeWire/WirePlumber stack. `geekbridge-ctl calling` shows
-  the verdict; try `geekbridge-ctl call audio` to move audio. Call audio has not been verified on real hardware.
+* No Bluetooth controller is reported as information, not an error (`geekbridge-ctl doctor`, `geekbridge-ctl call-audio`).
+  Carrying call audio over Wi-Fi is not possible on a stock Android phone. Dialing was tested against a stand-in phone only.
 * No incoming-call popup on Hyprland/mako: see [omarchy.md](omarchy.md) (notification buttons, floating window rule).
 
 ### Battery optimisation kills the Android service
