@@ -156,7 +156,12 @@ fn firewall_check(fw: &Firewall) -> Check {
                     ufw_allows_from(rules, "udp", &fw.lan_v4),
                 );
                 if !(tcp && udp) && ufw_allows(rules, "tcp") && ufw_allows(rules, "udp") {
-                    let own = fw.lan_v4.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                    let own = fw
+                        .lan_v4
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     return check(
                         Level::Fail,
                         title,
@@ -1168,7 +1173,11 @@ mod tests {
 
     #[test]
     fn a_ufw_rule_for_another_network_is_not_green() {
-        let rule = |p: &str| format!("-A ufw-user-input -p {p} -m multiport --dports 1716:1764 -s 192.168.0.0/16 -j ACCEPT\n");
+        let rule = |p: &str| {
+            format!(
+                "-A ufw-user-input -p {p} -m multiport --dports 1716:1764 -s 192.168.0.0/16 -j ACCEPT\n"
+            )
+        };
         let rules = format!("{}{}", rule("tcp"), rule("udp"));
         let mut fw = Firewall {
             ufw_enabled: Some(true),
@@ -1178,7 +1187,10 @@ mod tests {
         };
         let c = firewall_check(&fw);
         assert_eq!(c.level, Level::Fail);
-        assert!(c.detail.contains("10.0.0.8") && c.fix.as_deref().is_some_and(|f| f.contains("10.0.0.0/8")));
+        assert!(
+            c.detail.contains("10.0.0.8")
+                && c.fix.as_deref().is_some_and(|f| f.contains("10.0.0.0/8"))
+        );
         assert!(firewall_blocks(&fw));
         fw.lan_v4 = vec!["192.168.1.9".parse().unwrap()];
         assert_eq!(firewall_check(&fw).level, Level::Ok);

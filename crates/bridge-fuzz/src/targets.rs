@@ -1325,6 +1325,7 @@ fn doctor_ufw(input: &[u8]) {
             ufw_enabled: enabled,
             ufw_rules: Some(s.clone()),
             firewalld_active: false,
+            lan_v4: vec![],
             windows: None,
             mac: None,
         };

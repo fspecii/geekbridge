@@ -794,7 +794,11 @@ fn clipboard_command(
                     "note:     KDE Connect is also running here; if both sync the clipboard to the same phone, text can echo. Turn one off."
                 );
             }
-            println!("hotkey:   {} {}", s.hotkey, hotkey_binding_text(&s.hotkey_binding));
+            println!(
+                "hotkey:   {} {}",
+                s.hotkey,
+                hotkey_binding_text(&s.hotkey_binding)
+            );
             println!("images:   up to {} MiB", s.max_image_bytes / (1024 * 1024));
             if let Some(p) = &s.last_pull {
                 println!("last pull: {}", describe_pull(p));
@@ -1091,7 +1095,8 @@ fn waybar_line(port: u16, state_dir: &std::path::Path) -> String {
 }
 
 /// What a first-time user sees when nothing has run yet (the phrase "no control token yet" is matched by `doctor`).
-const NO_SERVICE_YET: &str = "no control token yet: the background service is not running; run `geekbridge-ctl doctor`";
+const NO_SERVICE_YET: &str =
+    "no control token yet: the background service is not running; run `geekbridge-ctl doctor`";
 
 /// Plain words for the hotkey binding state; the raw word `unsupported` meant "this desktop cannot grab keys".
 fn hotkey_binding_text(binding: &str) -> String {

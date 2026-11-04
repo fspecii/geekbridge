@@ -252,7 +252,11 @@ fn source_covers(src: &str, addr: std::net::Ipv4Addr) -> bool {
     if bits > 32 {
         return false;
     }
-    let mask = if bits == 0 { 0 } else { u32::MAX << (32 - bits) };
+    let mask = if bits == 0 {
+        0
+    } else {
+        u32::MAX << (32 - bits)
+    };
     u32::from(net) & mask == u32::from(addr) & mask
 }
 
@@ -364,12 +368,9 @@ pub fn firewall_blocks(fw: &Firewall) -> bool {
         return matches!(verdict(fw), Verdict::Blocking(_));
     }
     fw.ufw_enabled == Some(true)
-        && fw
-            .ufw_rules
-            .as_ref()
-            .is_some_and(|r| {
-                !(ufw_allows_from(r, "tcp", &fw.lan_v4) && ufw_allows_from(r, "udp", &fw.lan_v4))
-            })
+        && fw.ufw_rules.as_ref().is_some_and(|r| {
+            !(ufw_allows_from(r, "tcp", &fw.lan_v4) && ufw_allows_from(r, "udp", &fw.lan_v4))
+        })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -509,29 +510,65 @@ mod tests {
     fn a_source_range_must_contain_this_computers_lan_address() {
         let ip = |s: &str| s.parse::<std::net::Ipv4Addr>().unwrap();
         let rule = |src: &str, proto: &str| {
-            format!("-A ufw-user-input -p {proto} -m multiport --dports 1716:1764 -s {src} -j ACCEPT\n")
+            format!(
+                "-A ufw-user-input -p {proto} -m multiport --dports 1716:1764 -s {src} -j ACCEPT\n"
+            )
         };
         let r = rule("192.168.0.0/16", "tcp");
         assert!(ufw_allows_from(&r, "tcp", &[ip("192.168.1.20")]));
         assert!(!ufw_allows_from(&r, "tcp", &[ip("10.0.0.7")]));
         assert!(!ufw_allows_from(&r, "tcp", &[ip("172.20.1.5")]));
-        assert!(ufw_allows_from(&r, "tcp", &[]), "unknown address: any source counts");
-        assert!(ufw_allows_from(&rule("10.0.0.0/8", "tcp"), "tcp", &[ip("10.4.5.6")]));
-        assert!(ufw_allows_from(&rule("172.16.0.0/12", "tcp"), "tcp", &[ip("172.31.9.9")]));
-        assert!(ufw_allows_from(&rule("10.0.0.7", "tcp"), "tcp", &[ip("10.0.0.7")]));
-        assert!(!ufw_allows_from(&rule("10.0.0.7", "tcp"), "tcp", &[ip("10.0.0.8")]));
-        assert!(ufw_allows_from(&rule("0.0.0.0/0", "tcp"), "tcp", &[ip("10.0.0.8")]));
-        assert!(!ufw_allows_from(&rule("junk", "tcp"), "tcp", &[ip("10.0.0.8")]));
+        assert!(
+            ufw_allows_from(&r, "tcp", &[]),
+            "unknown address: any source counts"
+        );
+        assert!(ufw_allows_from(
+            &rule("10.0.0.0/8", "tcp"),
+            "tcp",
+            &[ip("10.4.5.6")]
+        ));
+        assert!(ufw_allows_from(
+            &rule("172.16.0.0/12", "tcp"),
+            "tcp",
+            &[ip("172.31.9.9")]
+        ));
+        assert!(ufw_allows_from(
+            &rule("10.0.0.7", "tcp"),
+            "tcp",
+            &[ip("10.0.0.7")]
+        ));
+        assert!(!ufw_allows_from(
+            &rule("10.0.0.7", "tcp"),
+            "tcp",
+            &[ip("10.0.0.8")]
+        ));
+        assert!(ufw_allows_from(
+            &rule("0.0.0.0/0", "tcp"),
+            "tcp",
+            &[ip("10.0.0.8")]
+        ));
+        assert!(!ufw_allows_from(
+            &rule("junk", "tcp"),
+            "tcp",
+            &[ip("10.0.0.8")]
+        ));
         // A rule without -s (any source) always counts.
         assert!(ufw_allows_from(BOTH_ANY, "udp", &[ip("10.0.0.8")]));
         let fw = Firewall {
             ufw_enabled: Some(true),
-            ufw_rules: Some(format!("{}{}", rule("192.168.0.0/16", "tcp"), rule("192.168.0.0/16", "udp"))),
+            ufw_rules: Some(format!(
+                "{}{}",
+                rule("192.168.0.0/16", "tcp"),
+                rule("192.168.0.0/16", "udp")
+            )),
             lan_v4: vec![ip("10.0.0.8")],
             ..Default::default()
         };
         assert!(firewall_blocks(&fw));
-        assert!(!firewall_blocks(&Firewall { lan_v4: vec![ip("192.168.4.4")], ..fw }));
+        assert!(!firewall_blocks(&Firewall {
+            lan_v4: vec![ip("192.168.4.4")],
+            ..fw
+        }));
     }
 
     const BOTH_ANY: &str = "-A ufw-user-input -p tcp --dport 1716:1764 -j ACCEPT\n-A ufw-user-input -p udp --dport 1716:1764 -j ACCEPT\n";

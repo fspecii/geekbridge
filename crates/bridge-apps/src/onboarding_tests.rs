@@ -133,7 +133,11 @@ fn a_stopped_service_leads_with_the_command_that_starts_it() {
     assert!(t.has_name_starting("The background service is not running"));
     assert!(has(&t, "Copy start command"), "{}", t.outline());
     if cfg!(target_os = "linux") {
-        assert!(t.has_name_starting("No systemd user session here"), "{}", t.outline());
+        assert!(
+            t.has_name_starting("No systemd user session here"),
+            "{}",
+            t.outline()
+        );
         assert_eq!(no_systemd_command(), Some("geekbridge-service-launch"));
     }
     assert!(
