@@ -90,14 +90,7 @@ mod linux {
             std::fs::read_to_string(format!("/proc/{}/status", self.0))
                 .unwrap_or_default()
                 .lines()
-                .find_map(|l| {
-                    l.strip_prefix(key)?
-                        .trim()
-                        .split_whitespace()
-                        .next()?
-                        .parse()
-                        .ok()
-                })
+                .find_map(|l| l.strip_prefix(key)?.split_whitespace().next()?.parse().ok())
                 .unwrap_or(0)
         }
         fn ticks(&self) -> u64 {

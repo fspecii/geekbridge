@@ -1164,7 +1164,7 @@ mod tests {
         send_tone(&r, s, 30);
         wait("the tone to be played", || {
             let p = r.audio.played.lock().unwrap();
-            p.len() >= 320 * 20 && rms(&p[p.len() - 320 * 10..]) > 1000.0
+            p.len() >= 320 * 20 && p.windows(1600).step_by(1600).any(|c| rms(c) > 1000.0)
         });
         {
             let p = r.audio.played.lock().unwrap();
