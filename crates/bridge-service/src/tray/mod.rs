@@ -152,6 +152,32 @@ fn paused_ids(state_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Cheap, file-only: is there a Bluetooth adapter, and is a phone set up for call audio.
+#[cfg(target_os = "linux")]
+fn call_audio_hint(state_dir: &Path) -> model::CallAudioHint {
+    use bridge_calls::{hear, setup};
+    hint_from(
+        !hear::adapters_in(&hear::bt_sysfs()).is_empty(),
+        setup::load_remembered(state_dir).is_some(),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn call_audio_hint(_: &Path) -> model::CallAudioHint {
+    model::CallAudioHint::Unknown
+}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn hint_from(adapter: bool, phone_set_up: bool) -> model::CallAudioHint {
+    use model::CallAudioHint as H;
+    match (adapter, phone_set_up) {
+        (false, _) => H::NoBluetooth,
+        (true, true) => H::Ready,
+        // An adapter but nothing set up yet: the window offers the setup, the tooltip stays quiet.
+        (true, false) => H::Unknown,
+    }
+}
+
 /// Read the service's own state into the tray's input. Only counts and flags leave this function.
 pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
     let mut input = TrayInput {
@@ -191,6 +217,7 @@ pub async fn collect(daemon: &Arc<Daemon>, state_dir: &Path) -> TrayInput {
             input.why = s.disconnected.first().cloned();
         }
     }
+    input.call_audio = call_audio_hint(state_dir);
     if let Response::Calls(c) = daemon.handle(Request::Calls).await
         && let Some(row) = c.view.ringing()
     {
@@ -372,6 +399,19 @@ async fn toggle_pause(daemon: &Arc<Daemon>, state_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_call_audio_hint_follows_adapter_then_phone() {
+        use model::CallAudioHint as H;
+        assert_eq!(hint_from(false, false), H::NoBluetooth);
+        assert_eq!(
+            hint_from(false, true),
+            H::NoBluetooth,
+            "a remembered phone does not help without an adapter"
+        );
+        assert_eq!(hint_from(true, true), H::Ready);
+        assert_eq!(hint_from(true, false), H::Unknown);
+    }
 
     #[test]
     fn the_disable_setting_round_trips_and_is_enabled_by_default() {

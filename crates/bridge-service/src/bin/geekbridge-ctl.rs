@@ -1028,7 +1028,17 @@ fn calling_command(port: u16, state_dir: &std::path::Path) -> Result<(), String>
             println!("calling: the service is not reachable ({e}); checking this computer anyway")
         }
     }
-    match hear_calls(port, state_dir) {
+    let hear = hear_calls(port, state_dir);
+    if cfg!(target_os = "linux") {
+        match &hear {
+            Some(h) => println!("{}", h.banner()),
+            None => println!(
+                "{}",
+                bridge_core::ipc::banner_line(bluetooth_controllers() == 0, false, None)
+            ),
+        }
+    }
+    match hear {
         Some(h) => print!("{}", h.render()),
         None if cfg!(target_os = "linux") => {
             println!("Hear calls on this computer:");

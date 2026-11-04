@@ -18,7 +18,8 @@ use bridge_core::{
     call_audio::{
         self, Device, FixKind, Setup, Step, StepId, StepState, TestPhase, TestProgress, Verdict,
     },
-    ipc::{Request, Response},
+    call_audio_flow::{Act, Backend, Failure, FixHint, Flow, Observation, STEP_COUNT, Stage},
+    ipc::{CallAudioSetupAction, HearCalls, Request, Response},
     report,
 };
 use eframe::egui::{self, Color32, RichText, Sense, vec2};
@@ -35,6 +36,8 @@ use std::{
 const POLL: Duration = Duration::from_secs(3);
 /// Faster while the test runs, for a smooth meter.
 const POLL_TEST: Duration = Duration::from_millis(150);
+/// While the one-button setup runs, so each step follows the last within a second.
+const POLL_FLOW: Duration = Duration::from_millis(800);
 /// The worker idles when the panel has not been drawn for this long.
 const IDLE_AFTER: Duration = Duration::from_secs(6);
 
@@ -125,19 +128,130 @@ pub fn guide_url() -> String {
     )
 }
 
+pub fn failure_title(f: &Failure) -> &'static str {
+    match f {
+        Failure::Service(_) => tr("callaudio.flow.fail.service"),
+        Failure::NoAnswer => tr("callaudio.flow.fail.no_answer"),
+        Failure::HandsFree => tr("callaudio.flow.fail.hands_free"),
+        Failure::NoTone => tr("callaudio.flow.fail.no_tone"),
+        Failure::NoMicrophone => tr("callaudio.flow.fail.no_mic"),
+        Failure::Silent => tr("callaudio.flow.fail.silent"),
+        Failure::TestStuck => tr("callaudio.flow.fail.stuck"),
+        Failure::NoDevices => tr("callaudio.flow.fail.no_devices"),
+        Failure::Unsupported(_) => tr("callaudio.flow.fail.unsupported"),
+    }
+}
+
+pub fn hint_text(h: FixHint) -> &'static str {
+    match h {
+        FixHint::StartService => tr("callaudio.flow.hint.start_service"),
+        FixHint::Unblock => tr("callaudio.flow.hint.unblock"),
+        FixHint::PhoneBluetooth => tr("callaudio.flow.hint.phone_bluetooth"),
+        FixHint::PhoneCalls => tr("callaudio.flow.hint.phone_calls"),
+        FixHint::TryAgain => tr("callaudio.flow.hint.try_again"),
+        FixHint::Devices => tr("callaudio.flow.hint.devices"),
+        FixHint::Microphone => tr("callaudio.flow.hint.microphone"),
+        FixHint::Update => tr("callaudio.flow.hint.update"),
+    }
+}
+
+/// What the one-button setup is doing, in one sentence (no step number).
+pub fn stage_text(s: &Stage) -> &'static str {
+    match s {
+        Stage::Idle => tr("callaudio.flow.intro"),
+        Stage::NoAdapter => tr("callaudio.flow.noadapter"),
+        Stage::PowerOn => tr("callaudio.flow.power"),
+        Stage::Visible => tr("callaudio.flow.visible"),
+        Stage::Confirm { .. } => tr("callaudio.flow.confirm"),
+        Stage::Connecting => tr("callaudio.flow.connecting"),
+        Stage::Devices => tr("callaudio.flow.devices"),
+        Stage::Testing => tr("callaudio.flow.testing"),
+        Stage::Done => tr("callaudio.flow.done"),
+        Stage::Failed(f) => failure_title(f),
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub setup: Option<Setup>,
+    /// The service's step-level view and the guided setup's state; `None` from a service that
+    /// predates it (the one-button setup is then not offered).
+    pub hear: Option<HearCalls>,
+    /// Where the one-button setup is.
+    pub stage: Stage,
     /// Why the service could not be asked, or refused the last choice; plain words.
     pub problem: Option<String>,
 }
 
-enum Command {
-    Choose {
-        output: Option<String>,
-        input: Option<String>,
-    },
-    Test,
+/// What the window asks the worker to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Command {
+    Act(Act),
+    Flow(FlowEvent),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlowEvent {
+    Start,
+    Cancel,
+    Confirm(bool),
+    UseDevices,
+    Retest,
+}
+
+/// The real service: the checklist, the step-level view and one request at a time.
+pub struct ServiceBackend {
+    cfg: Config,
+}
+
+impl ServiceBackend {
+    pub fn new() -> Self {
+        Self {
+            cfg: Config::from_environment(),
+        }
+    }
+}
+
+impl Default for ServiceBackend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Backend for ServiceBackend {
+    fn observe(&mut self) -> Result<Observation, String> {
+        let setup = match self.cfg.request(&Request::CallAudioSetup)? {
+            Response::CallAudioSetup(s) => *s,
+            Response::Error(e) => return Err(e.message),
+            _ => return Err(tr("feed.unexpected").into()),
+        };
+        // A service that predates the step-level view answers with an error: no one-button setup.
+        let hear = match self.cfg.request(&Request::HearCalls) {
+            Ok(Response::HearCalls(h)) => Some(*h),
+            _ => None,
+        };
+        Ok(Observation {
+            hear,
+            setup: Some(setup),
+        })
+    }
+
+    fn act(&mut self, act: &Act) -> Result<Observation, String> {
+        let req = match act {
+            Act::Pair(action) => Request::CallAudioPair {
+                action: action.clone(),
+            },
+            Act::Choose { output, input } => Request::CallAudioChoose {
+                output: output.clone(),
+                input: input.clone(),
+            },
+            Act::Test => Request::CallAudioTest,
+        };
+        match self.cfg.request(&req)? {
+            Response::Error(e) => Err(e.message),
+            _ => self.observe(),
+        }
+    }
 }
 
 pub struct Feed {
@@ -149,36 +263,11 @@ pub struct Feed {
 
 impl Feed {
     pub fn spawn(wake: impl Fn() + Send + 'static) -> Self {
-        let fetch_cfg = Config::from_environment();
-        let send_cfg = Config::from_environment();
-        let ask = |cfg: &Config, req: &Request| match cfg.request(req)? {
-            Response::CallAudioSetup(s) => Ok(*s),
-            Response::Error(e) => Err(e.message),
-            _ => Err(tr("feed.unexpected").into()),
-        };
-        Self::spawn_with(
-            move || ask(&fetch_cfg, &Request::CallAudioSetup),
-            move |c| {
-                let req = match c {
-                    Command::Choose { output, input } => Request::CallAudioChoose {
-                        output: output.clone(),
-                        input: input.clone(),
-                    },
-                    Command::Test => Request::CallAudioTest,
-                };
-                match send_cfg.request(&req)? {
-                    Response::CallAudioSetup(s) => Ok(*s),
-                    Response::Error(e) => Err(e.message),
-                    _ => Err(tr("feed.unexpected").into()),
-                }
-            },
-            wake,
-        )
+        Self::spawn_with(ServiceBackend::new(), wake)
     }
 
-    fn spawn_with(
-        mut fetch: impl FnMut() -> Result<Setup, String> + Send + 'static,
-        mut send: impl FnMut(&Command) -> Result<Setup, String> + Send + 'static,
+    pub fn spawn_with(
+        mut backend: impl Backend + 'static,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         let state = Arc::new(Mutex::new(Snapshot::default()));
@@ -189,9 +278,18 @@ impl Feed {
         std::thread::Builder::new()
             .name("geekbridge-call-audio".into())
             .spawn(move || {
+                let t0 = Instant::now();
+                let now = || t0.elapsed().as_millis() as u64;
+                let mut flow = Flow::new();
+                let mut last = Observation::default();
                 let mut problem: Option<String> = None;
-                let publish = |setup: Option<Setup>, problem: Option<String>| {
-                    let next = Snapshot { setup, problem };
+                let publish = |last: &Observation, flow: &Flow, problem: Option<String>| {
+                    let next = Snapshot {
+                        setup: last.setup.clone(),
+                        hear: last.hear.clone(),
+                        stage: flow.stage().clone(),
+                        problem,
+                    };
                     let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
                     if *g != next {
                         *g = next;
@@ -199,29 +297,67 @@ impl Feed {
                         wake();
                     }
                 };
+                // Sends what the flow decided; a refusal is shown, the next poll shows the truth.
+                let run = |backend: &mut dyn Backend,
+                           acts: Vec<Act>,
+                           last: &mut Observation,
+                           problem: &mut Option<String>| {
+                    for a in acts {
+                        match backend.act(&a) {
+                            Ok(o) => *last = o,
+                            Err(why) => *problem = Some(why),
+                        }
+                    }
+                };
                 loop {
                     if halt.load(Ordering::Relaxed) {
                         return;
                     }
-                    let idle = saw.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > IDLE_AFTER;
-                    let mut wait = POLL;
+                    let busy = flow.stage().active();
+                    let idle = !busy
+                        && saw.lock().unwrap_or_else(|e| e.into_inner()).elapsed() > IDLE_AFTER;
+                    let mut wait = if busy { POLL_FLOW } else { POLL };
                     if !idle {
-                        match fetch() {
-                            Ok(s) => {
-                                if matches!(s.test.phase, TestPhase::Tone | TestPhase::Listening) {
+                        match backend.observe() {
+                            Ok(o) => {
+                                let acts = flow.advance(&o, now());
+                                last = o;
+                                run(&mut backend, acts, &mut last, &mut problem);
+                                if let Some(s) = &last.setup
+                                    && matches!(
+                                        s.test.phase,
+                                        TestPhase::Tone | TestPhase::Listening
+                                    )
+                                {
                                     wait = POLL_TEST;
                                 }
-                                publish(Some(s), problem.take());
+                                publish(&last, &flow, problem.take());
                             }
-                            Err(why) => publish(None, Some(why)),
+                            Err(why) => {
+                                last = Observation::default();
+                                publish(&last, &flow, Some(why));
+                            }
                         }
                     }
                     match rx.recv_timeout(if idle { IDLE_AFTER } else { wait }) {
-                        Ok(c) => match send(&c) {
-                            Ok(s) => publish(Some(s), None),
-                            // A refusal is shown with the checklist the next poll returns.
-                            Err(why) => problem = Some(why),
-                        },
+                        Ok(c) => {
+                            let acts = match c {
+                                Command::Act(a) => vec![a],
+                                Command::Flow(FlowEvent::Start) => flow.start(&last, now()),
+                                Command::Flow(FlowEvent::Cancel) => flow.cancel(),
+                                Command::Flow(FlowEvent::Confirm(yes)) => flow.confirm(yes),
+                                Command::Flow(FlowEvent::UseDevices) => {
+                                    flow.use_devices();
+                                    Vec::new()
+                                }
+                                Command::Flow(FlowEvent::Retest) => {
+                                    flow.retest();
+                                    Vec::new()
+                                }
+                            };
+                            run(&mut backend, acts, &mut last, &mut problem);
+                            publish(&last, &flow, problem.take());
+                        }
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
                         Err(mpsc::RecvTimeoutError::Disconnected) => return,
                     }
@@ -236,15 +372,23 @@ impl Feed {
         }
     }
 
-    /// A feed that answers with a fixed checklist, for screenshots (`GEEKBRIDGE_CALLAUDIO_FIXTURE`).
+    /// A feed that always shows the given view, for screenshots (`GEEKBRIDGE_CALLAUDIO_FIXTURE`).
+    /// No worker runs.
     pub fn fixed(setup: Setup) -> Self {
-        let s = setup.clone();
-        let f = Self::spawn_with(move || Ok(s.clone()), |_| Err(String::new()), || {});
-        *f.state.lock().unwrap_or_else(|e| e.into_inner()) = Snapshot {
+        Self::frozen(Snapshot {
             setup: Some(setup),
-            problem: None,
-        };
-        f
+            ..Snapshot::default()
+        })
+    }
+
+    pub fn frozen(snapshot: Snapshot) -> Self {
+        let (commands, _rx) = mpsc::channel();
+        Self {
+            state: Arc::new(Mutex::new(snapshot)),
+            commands,
+            seen: Arc::new(Mutex::new(Instant::now())),
+            stop: Arc::new(AtomicBool::new(true)),
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -333,6 +477,96 @@ pub fn fixture(name: &str) -> Option<Setup> {
     })
 }
 
+/// The step-level view a fixture pretends the service gave.
+fn hear_fixture(no_bluetooth: bool, phone: Option<&str>, phase: &str) -> HearCalls {
+    HearCalls {
+        ready: phone.is_some(),
+        no_bluetooth,
+        setup: bridge_core::ipc::CallAudioSetupState {
+            phase: phase.into(),
+            phone: phone.map(str::to_owned),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// Canned whole views for screenshots: the checklist fixtures plus the one-button setup's stages
+/// (`flow-idle`, `flow-noadapter`, `flow-visible`, `flow-confirm`, `flow-devices`, `flow-testing`,
+/// `flow-done`, `flow-failed`).
+pub fn fixture_snapshot(name: &str) -> Option<Snapshot> {
+    let snap = |setup: Setup, hear: HearCalls, stage: Stage| Snapshot {
+        setup: Some(setup),
+        hear: Some(hear),
+        stage,
+        problem: None,
+    };
+    let connect = || fixture("connect").expect("known");
+    let ready = || fixture("ready").expect("known");
+    Some(match name {
+        "connect" => snap(connect(), hear_fixture(false, None, "idle"), Stage::Idle),
+        "ready" | "testing" => snap(
+            fixture(name)?,
+            hear_fixture(false, Some("Galaxy Z Fold5"), "idle"), // i18n-ok: screenshot fixture
+            Stage::Idle,
+        ),
+        "no-bluetooth" | "mac" | "windows" => snap(
+            fixture(name)?,
+            hear_fixture(name == "no-bluetooth", None, "idle"),
+            Stage::Idle,
+        ),
+        "flow-idle" => snap(connect(), hear_fixture(false, None, "idle"), Stage::Idle),
+        "flow-noadapter" => {
+            let mut s = fixture("no-bluetooth")?;
+            s.verdict = Verdict::Todo;
+            snap(s, hear_fixture(true, None, "idle"), Stage::NoAdapter)
+        }
+        "flow-visible" => snap(
+            connect(),
+            hear_fixture(false, None, "working"),
+            Stage::Visible,
+        ),
+        "flow-confirm" => snap(
+            connect(),
+            hear_fixture(false, None, "confirm"),
+            Stage::Confirm {
+                passkey: "482913".into(),
+                device: Some("Galaxy Z Fold5".into()), // i18n-ok: screenshot fixture
+            },
+        ),
+        "flow-connecting" => snap(
+            connect(),
+            hear_fixture(false, None, "working"),
+            Stage::Connecting,
+        ),
+        "flow-devices" => snap(
+            ready(),
+            hear_fixture(false, Some("Galaxy Z Fold5"), "done"), // i18n-ok: screenshot fixture
+            Stage::Devices,
+        ),
+        "flow-testing" => {
+            let mut s = fixture("testing")?;
+            s.test.levels.truncate(9);
+            snap(
+                s,
+                hear_fixture(false, Some("Galaxy Z Fold5"), "done"), // i18n-ok: screenshot fixture
+                Stage::Testing,
+            )
+        }
+        "flow-done" => snap(
+            ready(),
+            hear_fixture(false, Some("Galaxy Z Fold5"), "done"), // i18n-ok: screenshot fixture
+            Stage::Done,
+        ),
+        "flow-failed" => snap(
+            connect(),
+            hear_fixture(false, None, "failed"),
+            Stage::Failed(Failure::HandsFree),
+        ),
+        _ => return None,
+    })
+}
+
 pub struct CallAudioPanel {
     feed: Option<Feed>,
     /// The last time the checklist said "no adapter"; an adapter showing up afterwards is a hotplug.
@@ -340,6 +574,8 @@ pub struct CallAudioPanel {
     adapter_found: bool,
     copied: Option<(StepId, Instant)>,
     opened_note: Option<String>,
+    /// "Forget Bluetooth phone" was pressed once; the second press does it.
+    confirm_forget: bool,
 }
 
 impl Default for CallAudioPanel {
@@ -356,6 +592,7 @@ impl CallAudioPanel {
             adapter_found: false,
             copied: None,
             opened_note: None,
+            confirm_forget: false,
         }
     }
 
@@ -370,9 +607,9 @@ impl CallAudioPanel {
         self.feed.get_or_insert_with(|| {
             match std::env::var("GEEKBRIDGE_CALLAUDIO_FIXTURE")
                 .ok()
-                .and_then(|n| fixture(&n))
+                .and_then(|n| fixture_snapshot(&n))
             {
-                Some(s) => Feed::fixed(s),
+                Some(s) => Feed::frozen(s),
                 None => {
                     let wake = ctx.clone();
                     Feed::spawn(move || wake.request_repaint())
@@ -461,9 +698,10 @@ impl CallAudioPanel {
             ui.add(egui::Label::new(theme::caption(pal, tr("callaudio.intro"))).wrap());
             ui.add_space(S2);
         }
-        let Some(setup) = snap.setup else {
+        let Some(setup) = snap.setup.clone() else {
             let text = snap
                 .problem
+                .as_ref()
                 .map(|_| tr("callaudio.unreachable").to_owned())
                 .unwrap_or_else(|| tr("callaudio.checking").to_owned());
             ui.add(egui::Label::new(theme::caption(pal, text)).wrap());
@@ -475,21 +713,294 @@ impl CallAudioPanel {
             Verdict::Unsupported => {}
             _ => {
                 ui.add_space(S2);
-                for step in &setup.steps {
-                    self.step_row(ui, pal, step);
+                let offered = snap.stage != Stage::Idle
+                    || (snap.hear.is_some() && setup.verdict != Verdict::NoBluetooth);
+                if offered {
+                    self.flow_card(ui, pal, &snap, &setup);
+                    ui.add_space(S3);
                 }
-                if setup.verdict == Verdict::NoBluetooth {
-                    self.buy(ui, pal);
+                // While the guided setup runs, it is the only thing on screen.
+                if !snap.stage.active() {
+                    for step in &setup.steps {
+                        self.step_row(ui, pal, step);
+                    }
+                    if setup.verdict == Verdict::NoBluetooth {
+                        self.buy(ui, pal);
+                    }
+                    ui.add_space(S3);
+                    self.devices(ui, pal, &setup);
+                    ui.add_space(S2);
+                    self.test(ui, pal, &setup);
                 }
-                ui.add_space(S3);
-                self.devices(ui, pal, &setup);
-                ui.add_space(S2);
-                self.test(ui, pal, &setup);
             }
         }
         if let Some(p) = &snap.problem {
             ui.add_space(S1);
             theme::blocked_note(ui, pal, p);
+        }
+    }
+
+    fn flow(&self, e: FlowEvent) {
+        if let Some(feed) = &self.feed {
+            feed.send(Command::Flow(e));
+        }
+    }
+
+    fn button(
+        &self,
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        label: &str,
+        kind: ButtonKind,
+        name: &str,
+    ) -> bool {
+        let r = theme::pill_button(ui, pal, label, kind, true);
+        a11y::named(r, name).clicked()
+    }
+
+    /// The single guided setup: one primary button, the step it is on, and what to do next.
+    fn flow_card(&mut self, ui: &mut egui::Ui, pal: &Palette, snap: &Snapshot, setup: &Setup) {
+        let stage = &snap.stage;
+        let phone = snap.hear.as_ref().and_then(|h| h.setup.phone.clone());
+        if let Some(n) = stage.position() {
+            let text = tr_args("callaudio.flow.step", &[("n", &n), ("total", &STEP_COUNT)]);
+            progress_bar(ui, pal, n, &text);
+            ui.add_space(S1);
+        }
+        // The sentence for this stage; a polite live region so a screen reader follows the steps.
+        let line =
+            ui.add(egui::Label::new(RichText::new(stage_text(stage)).color(pal.text)).wrap());
+        a11y::live_region(ui.ctx(), line.id, a11y::Live::Polite);
+        a11y::describe(
+            ui.ctx(),
+            line.id,
+            &tr_args("callaudio.a11y.flow", &[("state", &stage_text(stage))]),
+            None,
+        );
+        ui.add_space(S1);
+        match stage {
+            Stage::Idle | Stage::Done => {
+                if let Some(name) = &phone {
+                    ui.add(
+                        egui::Label::new(theme::caption(
+                            pal,
+                            tr_args("callaudio.flow.phone", &[("phone", name)]),
+                        ))
+                        .wrap(),
+                    );
+                    ui.add_space(S1);
+                }
+                ui.horizontal_wrapped(|ui| {
+                    if *stage == Stage::Done
+                        && self.button(
+                            ui,
+                            pal,
+                            tr("callaudio.flow.retest"),
+                            ButtonKind::Primary,
+                            tr("callaudio.a11y.retest"),
+                        )
+                    {
+                        self.flow(FlowEvent::Retest);
+                    }
+                    let (label, kind) = if phone.is_some() || *stage == Stage::Done {
+                        (tr("callaudio.flow.again"), ButtonKind::Plain)
+                    } else {
+                        (tr("callaudio.flow.start"), ButtonKind::Primary)
+                    };
+                    if self.button(ui, pal, label, kind, tr("callaudio.a11y.start")) {
+                        self.confirm_forget = false;
+                        self.flow(FlowEvent::Start);
+                    }
+                    if phone.is_some()
+                        && !self.confirm_forget
+                        && self.button(
+                            ui,
+                            pal,
+                            tr("callaudio.flow.forget"),
+                            ButtonKind::Plain,
+                            tr("callaudio.a11y.forget"),
+                        )
+                    {
+                        self.confirm_forget = true;
+                    }
+                });
+                if phone.is_some() && self.confirm_forget {
+                    ui.add_space(S1);
+                    let who = phone.clone().unwrap_or_default();
+                    ui.add(
+                        egui::Label::new(theme::secondary(
+                            pal,
+                            tr_args("callaudio.flow.forget.ask", &[("phone", &who)]),
+                        ))
+                        .wrap(),
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if self.button(
+                            ui,
+                            pal,
+                            tr("callaudio.flow.forget.yes"),
+                            ButtonKind::Primary,
+                            tr("callaudio.a11y.forget_yes"),
+                        ) {
+                            self.confirm_forget = false;
+                            if let Some(feed) = &self.feed {
+                                feed.send(Command::Act(Act::Pair(CallAudioSetupAction::Forget)));
+                            }
+                        }
+                        if self.button(
+                            ui,
+                            pal,
+                            tr("callaudio.flow.forget.keep"),
+                            ButtonKind::Plain,
+                            tr("callaudio.a11y.forget_keep"),
+                        ) {
+                            self.confirm_forget = false;
+                        }
+                    });
+                }
+            }
+            Stage::Confirm { passkey, device } => {
+                if let Some(d) = device {
+                    ui.add(egui::Label::new(theme::caption(pal, d.as_str())).wrap());
+                }
+                let code = ui.add(egui::Label::new(
+                    RichText::new(passkey.as_str())
+                        .monospace()
+                        .size(28.0)
+                        .color(pal.text),
+                ));
+                a11y::describe(
+                    ui.ctx(),
+                    code.id,
+                    &tr_args("callaudio.a11y.code", &[("code", passkey)]),
+                    Some(passkey),
+                );
+                ui.add(
+                    egui::Label::new(theme::caption(pal, tr("callaudio.flow.confirm.hint"))).wrap(),
+                );
+                ui.add_space(S1);
+                ui.horizontal_wrapped(|ui| {
+                    if self.button(
+                        ui,
+                        pal,
+                        tr("callaudio.flow.confirm.yes"),
+                        ButtonKind::Primary,
+                        tr("callaudio.a11y.code_yes"),
+                    ) {
+                        self.flow(FlowEvent::Confirm(true));
+                    }
+                    if self.button(
+                        ui,
+                        pal,
+                        tr("callaudio.flow.confirm.no"),
+                        ButtonKind::Plain,
+                        tr("callaudio.a11y.code_no"),
+                    ) {
+                        self.flow(FlowEvent::Confirm(false));
+                    }
+                });
+                self.cancel_button(ui, pal);
+            }
+            Stage::Devices => {
+                if setup.outputs.is_empty() {
+                    ui.add(
+                        egui::Label::new(theme::secondary(pal, tr("callaudio.flow.devices.none")))
+                            .wrap(),
+                    );
+                } else {
+                    self.devices(ui, pal, setup);
+                }
+                ui.add_space(S1);
+                ui.horizontal_wrapped(|ui| {
+                    let r = theme::pill_button(
+                        ui,
+                        pal,
+                        tr("callaudio.flow.devices.use"),
+                        ButtonKind::Primary,
+                        !setup.outputs.is_empty(),
+                    );
+                    if a11y::named(r, tr("callaudio.a11y.use_devices")).clicked() {
+                        self.flow(FlowEvent::UseDevices);
+                    }
+                    if theme::pill_button(
+                        ui,
+                        pal,
+                        tr("callaudio.flow.cancel"),
+                        ButtonKind::Plain,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.flow(FlowEvent::Cancel);
+                    }
+                });
+            }
+            Stage::Testing => {
+                if let Some(t) = test_text(&setup.test) {
+                    ui.add(egui::Label::new(theme::caption(pal, t)).wrap());
+                }
+                if setup.test.phase != TestPhase::Idle && setup.test.mic_opened != Some(false) {
+                    ui.add_space(S1);
+                    meter(ui, pal, &setup.test);
+                }
+                self.cancel_button(ui, pal);
+            }
+            Stage::Failed(f) => {
+                if let Failure::Service(m) = f
+                    && !m.is_empty()
+                {
+                    ui.add(egui::Label::new(theme::caption(pal, m.as_str())).wrap());
+                }
+                ui.add(egui::Label::new(theme::secondary(pal, hint_text(f.hint()))).wrap());
+                ui.add_space(S1);
+                ui.horizontal_wrapped(|ui| {
+                    let testing_only =
+                        matches!(f, Failure::Silent | Failure::NoTone | Failure::NoMicrophone);
+                    if testing_only
+                        && self.button(
+                            ui,
+                            pal,
+                            tr("callaudio.flow.retest"),
+                            ButtonKind::Primary,
+                            tr("callaudio.a11y.retest"),
+                        )
+                    {
+                        self.flow(FlowEvent::Retest);
+                    }
+                    if self.button(
+                        ui,
+                        pal,
+                        tr("callaudio.flow.retry"),
+                        if testing_only {
+                            ButtonKind::Plain
+                        } else {
+                            ButtonKind::Primary
+                        },
+                        tr("callaudio.a11y.start"),
+                    ) {
+                        self.flow(FlowEvent::Start);
+                    }
+                });
+            }
+            Stage::NoAdapter | Stage::PowerOn | Stage::Visible | Stage::Connecting => {
+                if *stage == Stage::NoAdapter {
+                    self.buy(ui, pal);
+                }
+                self.cancel_button(ui, pal);
+            }
+        }
+    }
+
+    fn cancel_button(&mut self, ui: &mut egui::Ui, pal: &Palette) {
+        ui.add_space(S1);
+        if self.button(
+            ui,
+            pal,
+            tr("callaudio.flow.cancel"),
+            ButtonKind::Plain,
+            tr("callaudio.a11y.cancel"),
+        ) {
+            self.flow(FlowEvent::Cancel);
         }
     }
 
@@ -673,10 +1184,10 @@ impl CallAudioPanel {
         if (out != s.chosen_output || inp != s.chosen_input)
             && let Some(feed) = &self.feed
         {
-            feed.send(Command::Choose {
+            feed.send(Command::Act(Act::Choose {
                 output: out,
                 input: inp,
-            });
+            }));
         }
     }
 
@@ -692,7 +1203,7 @@ impl CallAudioPanel {
         if r.clicked()
             && let Some(feed) = &self.feed
         {
-            feed.send(Command::Test);
+            feed.send(Command::Act(Act::Test));
         }
         ui.add_space(S1);
         let hint = if s.can_test {
@@ -718,6 +1229,23 @@ impl CallAudioPanel {
             meter(ui, pal, &s.test);
         }
     }
+}
+
+/// Seven segments, the ones reached filled; the words next to it carry the same information.
+fn progress_bar(ui: &mut egui::Ui, pal: &Palette, at: usize, text: &str) {
+    ui.horizontal(|ui| {
+        let w = 18.0;
+        let (rect, resp) =
+            ui.allocate_exact_size(vec2((w + 3.0) * STEP_COUNT as f32, 6.0), Sense::hover());
+        for i in 0..STEP_COUNT {
+            let x = rect.left() + (w + 3.0) * i as f32;
+            let r = egui::Rect::from_min_size(egui::pos2(x, rect.top()), vec2(w, 6.0));
+            ui.painter()
+                .rect_filled(r, 3.0, if i < at { pal.ok } else { pal.control });
+        }
+        a11y::describe(ui.ctx(), resp.id, text, None);
+        ui.label(theme::caption(pal, text));
+    });
 }
 
 /// The level meter: one thin bar per reading, newest on the right, the last second brighter.
@@ -756,6 +1284,7 @@ fn meter(ui: &mut egui::Ui, pal: &Palette, t: &TestProgress) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bridge_core::call_audio_flow::FakeBackend;
     use call_audio::mac_fallback;
 
     fn ready() -> Setup {
@@ -869,52 +1398,149 @@ mod tests {
         }
     }
 
+    /// A service that is not there.
+    struct Down;
+    impl Backend for Down {
+        fn observe(&mut self) -> Result<Observation, String> {
+            Err("down".into())
+        }
+        fn act(&mut self, _: &Act) -> Result<Observation, String> {
+            Err("down".into())
+        }
+    }
+
+    fn wait_for(feed: &Feed, f: impl Fn(&Snapshot) -> bool) -> Snapshot {
+        for _ in 0..600 {
+            let s = feed.snapshot();
+            if f(&s) {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("timed out; last {:?}", feed.snapshot().stage);
+    }
+
     #[test]
     fn panel_without_an_answer_says_it_is_checking() {
-        let feed = Feed::spawn_with(|| Err("down".into()), |_| Err(String::new()), || {});
+        let feed = Feed::spawn_with(Down, || {});
         let mut p = CallAudioPanel::with_feed(feed);
         draw(&mut p);
     }
 
     #[test]
     fn feed_polls_runs_choices_and_idles_when_unseen() {
-        let polls = Arc::new(Mutex::new(0u32));
-        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let (p2, s2) = (polls.clone(), sent.clone());
-        let feed = Feed::spawn_with(
-            move || {
-                *p2.lock().unwrap() += 1;
-                Ok(ready())
-            },
-            move |c| {
-                s2.lock().unwrap().push(match c {
-                    Command::Choose { output, .. } => format!("choose {output:?}"),
-                    Command::Test => "test".into(),
-                });
-                Ok(ready())
-            },
-            || {},
-        );
-        for _ in 0..100 {
-            if feed.snapshot().setup.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(feed.snapshot().setup.is_some());
-        feed.send(Command::Test);
-        feed.send(Command::Choose {
+        let mut be = FakeBackend::new(true, ready(), vec![]);
+        be.hear.steps.clear();
+        let feed = Feed::spawn_with(be, || {});
+        wait_for(&feed, |s| s.setup.is_some());
+        feed.send(Command::Act(Act::Choose {
             output: Some("o2".into()),
             input: None,
+        }));
+        let s = wait_for(&feed, |s| {
+            s.setup
+                .as_ref()
+                .is_some_and(|s| s.chosen_output.as_deref() == Some("o2"))
         });
-        for _ in 0..100 {
-            if sent.lock().unwrap().len() == 2 {
-                break;
+        assert!(s.hear.is_some());
+        assert_eq!(s.stage, Stage::Idle);
+    }
+
+    #[test]
+    fn the_primary_button_runs_the_whole_flow_against_the_fake_service() {
+        use bridge_core::call_audio_flow::Beat;
+        let be = FakeBackend::new(
+            true,
+            ready(),
+            vec![
+                Beat::Working,
+                Beat::Confirm("246810".into()),
+                Beat::Working,
+                Beat::Done,
+                Beat::Heard(true),
+            ],
+        );
+        let feed = Feed::spawn_with(be, || {});
+        wait_for(&feed, |s| s.hear.is_some());
+        feed.send(Command::Flow(FlowEvent::Start));
+        let s = wait_for(&feed, |s| matches!(s.stage, Stage::Confirm { .. }));
+        assert_eq!(
+            s.stage,
+            Stage::Confirm {
+                passkey: "246810".into(),
+                device: Some("Phone".into())
             }
-            std::thread::sleep(Duration::from_millis(10));
+        );
+        feed.send(Command::Flow(FlowEvent::Confirm(true)));
+        wait_for(&feed, |s| s.stage == Stage::Devices);
+        feed.send(Command::Flow(FlowEvent::UseDevices));
+        wait_for(&feed, |s| s.stage == Stage::Done);
+    }
+
+    #[test]
+    fn cancel_during_the_flow_returns_to_the_start() {
+        use bridge_core::call_audio_flow::Beat;
+        let be = FakeBackend::new(true, ready(), vec![Beat::Working]);
+        let feed = Feed::spawn_with(be, || {});
+        wait_for(&feed, |s| s.hear.is_some());
+        feed.send(Command::Flow(FlowEvent::Start));
+        wait_for(&feed, |s| s.stage.active());
+        feed.send(Command::Flow(FlowEvent::Cancel));
+        wait_for(&feed, |s| s.stage == Stage::Idle);
+    }
+
+    #[test]
+    fn every_flow_fixture_draws_and_has_words() {
+        for n in [
+            "flow-idle",
+            "flow-noadapter",
+            "flow-visible",
+            "flow-confirm",
+            "flow-connecting",
+            "flow-devices",
+            "flow-testing",
+            "flow-done",
+            "flow-failed",
+            "ready",
+            "no-bluetooth",
+            "connect",
+        ] {
+            let snap = fixture_snapshot(n).unwrap_or_else(|| panic!("{n}"));
+            assert!(!stage_text(&snap.stage).starts_with("callaudio."), "{n}");
+            let mut p = CallAudioPanel::with_feed(Feed::frozen(snap));
+            draw(&mut p);
         }
-        assert_eq!(*sent.lock().unwrap(), ["test", "choose Some(\"o2\")"]);
-        assert!(*polls.lock().unwrap() >= 1);
+        assert!(fixture_snapshot("nope").is_none());
+    }
+
+    #[test]
+    fn every_failure_and_hint_has_words() {
+        for f in [
+            Failure::Service("x".into()),
+            Failure::NoAnswer,
+            Failure::HandsFree,
+            Failure::NoTone,
+            Failure::NoMicrophone,
+            Failure::Silent,
+            Failure::TestStuck,
+            Failure::NoDevices,
+            Failure::Unsupported(String::new()),
+        ] {
+            assert!(!failure_title(&f).starts_with("callaudio."), "{f:?}");
+            assert!(!hint_text(f.hint()).starts_with("callaudio."), "{f:?}");
+        }
+    }
+
+    #[test]
+    fn the_start_button_is_offered_with_an_adapter_and_not_without() {
+        // The words on the screen are the button labels the user will see.
+        assert_eq!(tr("callaudio.flow.start"), "Set up call audio");
+        assert_eq!(tr("callaudio.flow.again"), "Set up again");
+        assert_eq!(tr("callaudio.flow.forget"), "Forget Bluetooth phone");
+        let with = fixture_snapshot("flow-idle").unwrap();
+        let without = fixture_snapshot("no-bluetooth").unwrap();
+        assert!(with.hear.is_some_and(|h| !h.no_bluetooth));
+        assert!(without.hear.is_some_and(|h| h.no_bluetooth));
     }
 
     #[test]
@@ -938,7 +1564,7 @@ mod tests {
         p.current_verdict(&ctx);
         *p.feed.as_ref().unwrap().state.lock().unwrap() = Snapshot {
             setup: fixture("connect"),
-            problem: None,
+            ..Snapshot::default()
         };
         p.current_verdict(&ctx);
         assert!(p.adapter_found);

@@ -39,6 +39,18 @@ impl IconState {
     }
 }
 
+/// What the tooltip says about hearing calls through this computer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CallAudioHint {
+    /// Not known or not applicable on this system: no line.
+    #[default]
+    Unknown,
+    /// This computer has no Bluetooth adapter.
+    NoBluetooth,
+    /// An adapter exists and a phone is set up for call audio.
+    Ready,
+}
+
 /// What the service reports, reduced to what the tray shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrayInput {
@@ -68,6 +80,8 @@ pub struct TrayInput {
     pub mirror_on: bool,
     /// A connected phone offers recent photos (the Share window's Photos page exists).
     pub photos_available: bool,
+    /// One extra tooltip line about call audio.
+    pub call_audio: CallAudioHint,
 }
 
 impl TrayInput {
@@ -141,6 +155,15 @@ impl TrayInput {
         {
             body.push('\n');
             body.push_str(&tr_args("tray.try", &[("fix", &w.fix)]));
+        }
+        let call_audio = match self.call_audio {
+            CallAudioHint::Unknown => None,
+            CallAudioHint::NoBluetooth => Some(tr("tray.call_audio_none")),
+            CallAudioHint::Ready => Some(tr("tray.call_audio_ready")),
+        };
+        if let Some(line) = call_audio {
+            body.push('\n');
+            body.push_str(line);
         }
         (self.headline(), body)
     }
@@ -346,6 +369,21 @@ mod tests {
         assert_eq!(i.tooltip().1, i.status_line());
         i.connected.clear();
         assert_eq!(i.status_line(), "No phone connected");
+    }
+
+    #[test]
+    fn the_tooltip_says_whether_calls_can_carry_voice() {
+        let mut i = phone();
+        assert_eq!(i.tooltip().1, i.status_line(), "no line when unknown");
+        i.call_audio = CallAudioHint::NoBluetooth;
+        assert_eq!(
+            i.tooltip().1,
+            format!("{}\nNo Bluetooth: calls can't carry voice", i.status_line())
+        );
+        i.call_audio = CallAudioHint::Ready;
+        assert!(i.tooltip().1.ends_with("\nCall audio ready"));
+        // The menu line stays about the phone.
+        assert!(!i.status_line().contains("Call audio"));
     }
 
     #[test]

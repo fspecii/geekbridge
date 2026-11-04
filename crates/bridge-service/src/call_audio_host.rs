@@ -499,6 +499,7 @@ mod host {
                     Ok(())
                 }
                 CallAudioSetupAction::FixConfig => self.fix_config(),
+                CallAudioSetupAction::Forget => self.forget(),
             }
         }
 
@@ -582,6 +583,35 @@ mod host {
             if spawned.is_err() {
                 self.running.store(false, Ordering::SeqCst);
                 return Err(err(ErrorCode::Failed, "could not start the setup"));
+            }
+            Ok(())
+        }
+
+        /// Unpair the remembered phone and forget it. Refused while a setup is running.
+        fn forget(&self) -> Result<(), ErrorBody> {
+            if self.running.load(Ordering::SeqCst) {
+                return Err(err(
+                    ErrorCode::Busy,
+                    "the call-audio setup is running; cancel it first",
+                ));
+            }
+            if let Some(r) = setup::load_remembered(&self.state_dir) {
+                // Not being able to reach BlueZ must not keep the phone remembered forever.
+                let unpaired = setup::forget(&setup::Bus::default(), &r.address);
+                setup::clear_remembered(&self.state_dir).map_err(|e| {
+                    err(
+                        ErrorCode::Failed,
+                        &format!("could not forget the phone: {e}"),
+                    )
+                })?;
+                *self.state.lock().unwrap_or_else(|e| e.into_inner()) = CallAudioSetupState {
+                    phase: "idle".into(),
+                    message: match unpaired {
+                        Ok(()) => "The phone is forgotten for call audio.".into(),
+                        Err(e) => format!("Forgotten for call audio, but not unpaired: {e}"),
+                    },
+                    ..CallAudioSetupState::default()
+                };
             }
             Ok(())
         }

@@ -554,6 +554,40 @@ pub fn reconnect(bus: &Bus, address: &str) -> Result<bool, String> {
     connect_hfp(&bz, &d.path).map(|()| true)
 }
 
+/// Unpair `address` from this computer (BlueZ `RemoveDevice`). A phone that is already gone is
+/// success. Blocking.
+pub fn forget(bus: &Bus, address: &str) -> Result<(), String> {
+    let bz = Bluez {
+        conn: bus.connect(Duration::from_secs(20))?,
+    };
+    let (adapter, _) = bz.adapter()?;
+    let Some(d) = bz
+        .devices()?
+        .into_iter()
+        .find(|d| d.address.eq_ignore_ascii_case(address))
+    else {
+        return Ok(());
+    };
+    bz.conn
+        .call_method(
+            Some(BLUEZ),
+            adapter.as_str(),
+            Some(ADAPTER),
+            "RemoveDevice",
+            &(ObjectPath::try_from(d.path.as_str()).map_err(|e| e.to_string())?,),
+        )
+        .map(|_| ())
+        .map_err(|e| format!("could not unpair the phone: {e}"))
+}
+
+/// Delete the remembered phone. Missing file = success.
+pub fn clear_remembered(dir: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(dir.join(REMEMBERED_FILE)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Is any Bluetooth adapter known to BlueZ? (`Ok(false)` = BlueZ runs, no adapter.)
 pub fn adapter_present(bus: &Bus) -> Result<bool, String> {
     let bz = Bluez {
@@ -611,5 +645,8 @@ mod tests {
         };
         save_remembered(d.path(), &r).unwrap();
         assert_eq!(load_remembered(d.path()), Some(r));
+        clear_remembered(d.path()).unwrap();
+        assert_eq!(load_remembered(d.path()), None);
+        clear_remembered(d.path()).unwrap();
     }
 }

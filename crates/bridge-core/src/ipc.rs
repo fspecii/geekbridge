@@ -895,6 +895,23 @@ pub struct CallsStatus {
     pub audio_note: Option<String>,
 }
 
+/// The opening line of `geekbridge-ctl calling` (see [`HearCalls::banner`]); also used when the
+/// service is not running and only the adapter count is known.
+pub fn banner_line(no_bluetooth: bool, ready: bool, phone: Option<&str>) -> String {
+    if no_bluetooth {
+        "Call audio: NO BLUETOOTH. Calls can't carry voice on this computer; add a USB Bluetooth adapter (you can still see and answer calls).".into()
+    } else if ready {
+        match phone {
+            Some(p) => format!("Call audio: ready (phone: {p})."),
+            None => "Call audio: ready.".into(),
+        }
+    } else if phone.is_some() {
+        "Call audio: set up, but not working yet. The first FAIL below says what to fix; geekbridge-ctl call setup pairs again.".into()
+    } else {
+        "Call audio: not set up. One step: press \"Set up call audio\" in Settings, or run geekbridge-ctl call setup.".into()
+    }
+}
+
 /// What every place that shows calls says when this computer has no Bluetooth adapter.
 pub const NO_BLUETOOTH_WARNING: &str = "This computer has no Bluetooth. You can see and answer calls here, but talking needs Bluetooth (add a USB adapter). Messages, contacts and the other features work normally.";
 
@@ -914,6 +931,9 @@ pub enum CallAudioSetupAction {
     Cancel,
     /// Write GeekBridge's WirePlumber fragment (no sudo) and restart WirePlumber.
     FixConfig,
+    /// Unpair the remembered phone from this computer's Bluetooth and forget it for call audio
+    /// (the phone's own Bluetooth entry is the user's to remove).
+    Forget,
 }
 
 /// One step of the "Hear calls on this computer" checklist.
@@ -963,6 +983,12 @@ pub struct HearCalls {
 }
 
 impl HearCalls {
+    /// One line that opens `geekbridge-ctl calling`: can a call's voice come through this
+    /// computer, and the one thing to do next.
+    pub fn banner(&self) -> String {
+        banner_line(self.no_bluetooth, self.ready, self.setup.phone.as_deref())
+    }
+
     /// The first failing step, else the first warning.
     pub fn first_problem(&self) -> Option<&HearCallsStep> {
         self.steps
@@ -2226,5 +2252,26 @@ mod port_note_tests {
             Some("Using port 1739 because 1716 is in use by another program: this is fine")
         );
         assert!(listen_port_note(at(1764), true).is_some());
+    }
+}
+
+#[cfg(test)]
+mod hear_banner_tests {
+    use super::*;
+
+    #[test]
+    fn the_calling_banner_names_the_one_next_step() {
+        let mut h = HearCalls {
+            no_bluetooth: true,
+            ..Default::default()
+        };
+        assert!(h.banner().starts_with("Call audio: NO BLUETOOTH"));
+        h.no_bluetooth = false;
+        assert!(h.banner().contains("not set up"));
+        assert!(h.banner().contains("Set up call audio"));
+        h.setup.phone = Some("Fold".into());
+        assert!(h.banner().contains("not working yet"));
+        h.ready = true;
+        assert_eq!(h.banner(), "Call audio: ready (phone: Fold).");
     }
 }

@@ -227,6 +227,8 @@ fn setup(args: &[String], port: u16, token: &Token) -> Result<(), String> {
     let has = |name: &str| args.iter().any(|a| a == name);
     let action = if has("--fix-config") {
         A::FixConfig
+    } else if has("--forget") {
+        A::Forget
     } else if has("--cancel") {
         A::Cancel
     } else if let Some(c) = flag("--confirm") {

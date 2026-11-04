@@ -80,11 +80,19 @@ geekbridge-call-probe                 # read-only evidence report
 ## Quickstart: the day the USB Bluetooth adapter arrives
 
 1. Plug the adapter into a USB 2.0 port. Within a few seconds the Calls window shows "Bluetooth adapter found. Set up call audio." (and the warning "This computer has no Bluetooth..." disappears).
-2. Open Settings, Call audio on this computer (or press the card's button). Work down the list; each failing step shows a fix, and a **Copy command** button where there is a command.
-3. On the phone: GeekBridge, Answer calls, **Pair phone with your computer for call audio**. Pair in Android's Bluetooth settings and allow Phone calls (One UI: Bluetooth, the gear, Call audio on). Back in GeekBridge the step shows whether the phone sees the computer as connected.
-4. Press **Test call audio**: you should hear a two-note tone in the chosen headphones and see the meter move when you speak.
+2. Open Settings, Call audio on this computer, and press **Set up call audio**. That is the whole setup; each step moves on by itself and the window says which of the 7 it is on:
+   1. an adapter is there (if not, it waits and continues when you plug one in);
+   2. Bluetooth is switched on;
+   3. this computer is visible to phones for 2 minutes: **on the phone open Bluetooth settings, tap this computer's name and accept the pairing request**;
+   4. compare the six-digit code on both screens and press **Yes, same code** (and accept on the phone);
+   5. GeekBridge pairs, trusts and connects the hands-free profile (and writes a small user-level WirePlumber file if the sound server needs one; nothing is changed with sudo);
+   6. choose the headphones and microphone, then **Use these devices**;
+   7. a test tone plays and the meter shows the microphone; then "Call audio is ready".
+   **Cancel** is on every step. A failed step says what went wrong and one thing to do, and **Try again** starts over. **Set up again** and **Forget Bluetooth phone** (it unpairs the phone from this computer) are in the same place. On the phone, allow Phone calls (One UI: Bluetooth, the gear, Call audio on) if the window asks for it.
+3. The list of steps below the button is the detailed checklist; it is what to read when something fails. The tray icon's tooltip says "Call audio ready" once a phone is set up, or "No Bluetooth: calls can't carry voice" without an adapter; `geekbridge-ctl calling` starts with the same one-line answer.
+4. Press **Test call audio** (any time): you should hear a two-note tone in the chosen headphones and see the meter move when you speak.
 5. Call the phone from another number, answer on the computer, and talk. Write down what happened (voice both ways? echo? delay?) and run `geekbridge-ctl call-audio` and `geekbridge-ctl doctor` for the report.
-6. To pair from the computer instead: `geekbridge-ctl call setup` (powers the adapter on, makes it visible for two minutes, pairs with the phone after you compare the six-digit code on both screens, trusts it and connects hands-free; it reconnects by itself afterwards). `geekbridge-ctl call setup --fix-config` fixes the WirePlumber settings without sudo, e.g. a `bluez5.auto-connect` rule without `hfp_ag`.
+6. Without the window: `geekbridge-ctl call setup` does the same steps in the terminal (`--confirm yes|no`, `--cancel`, `--forget`, `--fix-config`).
 
 Open items that need real hardware: audible quality, whether the adapter carries wideband (mSBC) over USB, and echo with open speakers (the phone's own echo cancellation, NREC, stays on). There is no profile to switch for a call on PipeWire: `audio-gateway` carries both music and calls.
 
