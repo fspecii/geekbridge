@@ -581,12 +581,26 @@ fn keys_for(
 pub fn audio_note(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
     if let Some(note) = state.status.as_ref().and_then(|s| s.audio_note.as_deref()) {
         ui.add_space(4.0);
-        theme::blocked_note(ui, pal, note);
+        theme::blocked_note(ui, pal, &plain_line(note));
     }
 }
 
+/// A service line for people: the pointer to a file in the repository (" (docs/….md)") is for the
+/// terminal and the logs, not for a window.
+pub fn plain_line(line: &str) -> String {
+    if let Some(i) = line.find(" (docs/")
+        && let Some(j) = line[i..].find(')')
+    {
+        let mut out = String::from(&line[..i]);
+        out.push_str(&line[i + j + 1..]);
+        return out;
+    }
+    line.to_owned()
+}
+
 /// Why calls can or cannot be answered from this computer, one line per source, for the Recents tab.
-pub fn sources(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
+/// `banner_shown`: the no-Bluetooth warning is already on screen; lines the note above already says are not repeated.
+pub fn sources(ui: &mut egui::Ui, pal: &Palette, state: &FeedState, banner_shown: bool) {
     ui.label(theme::overline(pal, "ANSWERING FROM THIS COMPUTER"));
     match &state.status {
         None => {
@@ -598,7 +612,16 @@ pub fn sources(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
         }
         Some(status) => {
             for line in &status.sources {
-                ui.add(egui::Label::new(theme::secondary(pal, line)).wrap());
+                let said_above = status
+                    .audio_note
+                    .as_deref()
+                    .is_some_and(|n| plain_line(n) == plain_line(line));
+                if said_above
+                    || (banner_shown && line.starts_with(bridge_core::ipc::NO_BLUETOOTH_WARNING))
+                {
+                    continue;
+                }
+                ui.add(egui::Label::new(theme::secondary(pal, plain_line(line))).wrap());
             }
         }
     }
@@ -607,6 +630,18 @@ pub fn sources(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_line_drops_the_repository_path_only() {
+        assert_eq!(
+            plain_line("Add an adapter (docs/call-audio-options.md)."),
+            "Add an adapter."
+        );
+        assert_eq!(
+            plain_line("Nothing to strip (here)."),
+            "Nothing to strip (here)."
+        );
+    }
     use bridge_core::calls::{
         AudioCodec, CallCapabilities, CallDirection, CallEvent, CallId, CallParty, CallState,
         LinkState, Sensitive,

@@ -107,6 +107,8 @@ pub struct HomeApp {
     call_audio: crate::call_audio_ui::CallAudioPanel,
     /// Screenshots: scroll Settings to the call audio section once (`GEEKBRIDGE_OPEN_CALLAUDIO`).
     scroll_to_call_audio: bool,
+    /// Screenshots: the window size the scroll above was last applied for (a resize re-applies it).
+    shot_size: Option<egui::Vec2>,
     diagnostics_for_report: bool,
     diagnostics: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
     calls: Option<CallFeed>,
@@ -306,6 +308,7 @@ impl HomeApp {
             report: None,
             call_audio: crate::call_audio_ui::CallAudioPanel::new(),
             scroll_to_call_audio: false,
+            shot_size: None,
             diagnostics_for_report: false,
             diagnostics: None,
             calls: None,
@@ -687,12 +690,16 @@ impl HomeApp {
                 }
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.add_space(S1);
+                    // "Running" only when the control check agrees: the card above must not say the service is off.
+                    let running = self.model.service_reachable()
+                        && !(self.connections.state.status.is_none()
+                            && self.connections.state.error.is_some());
                     nothing::status_dot(
                         ui,
                         pal,
-                        self.model.service_reachable(),
+                        running,
                         false,
-                        if self.model.service_reachable() {
+                        if running {
                             crate::i18n::tr("home.service.running")
                         } else {
                             crate::i18n::tr("home.service.not_running")
@@ -1183,7 +1190,7 @@ impl HomeApp {
     }
 
     fn pair_view(&mut self, ui: &mut egui::Ui, pal: &Palette) {
-        self.header(ui, pal, "PAIR");
+        self.header(ui, pal, "LINK");
         nothing::card(ui, pal, |ui| {
             match self.connections.pair_card(ui, pal, &self.model) {
                 Some(NextStep::Clipboard) => {
@@ -1207,6 +1214,14 @@ impl HomeApp {
             sync_body(ui, pal, &mut self.clip, &mut self.hotkey_draft)
         });
         nothing::section(ui, pal, crate::i18n::tr("callaudio.title"));
+        if std::env::var_os("GEEKBRIDGE_OPEN_CALLAUDIO").is_some() {
+            // Screenshots: stay on the call audio section when the window is resized to its minimum.
+            let size = ctx.screen_rect().size();
+            if self.shot_size.is_some_and(|s| s != size) {
+                self.scroll_to_call_audio = true;
+            }
+            self.shot_size = Some(size);
+        }
         if std::mem::take(&mut self.scroll_to_call_audio) {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
         }
@@ -1413,6 +1428,31 @@ pub fn run(api_port: u16, theme_choice: ThemeChoice) -> eframe::Result {
 
 #[cfg(test)]
 mod tests {
+    /// Settings at the smallest window: nothing may reach past the right edge (it would be clipped).
+    #[cfg(feature = "accesskit")]
+    #[test]
+    fn settings_fit_the_minimum_window_width() {
+        let ctx = egui::Context::default();
+        let mut home = HomeApp::new(1, &ctx);
+        home.view = View::Settings;
+        let mut first = true;
+        let tree = crate::a11y_tests::capture(egui::vec2(560.0, 520.0), move |ctx| {
+            if first {
+                crate::theme::apply(ctx, AppKind::Calls);
+                first = false;
+            }
+            home.frame(ctx);
+        });
+        let wide: Vec<String> = tree
+            .nodes
+            .values()
+            .filter_map(|n| n.bounds().map(|b| (n, b)))
+            .filter(|(_, b)| b.x1 > 561.0)
+            .map(|(n, b)| format!("{:?} {:?} x1={}", n.role(), n.label(), b.x1))
+            .collect();
+        assert!(wide.is_empty(), "{}", wide.join("\n"));
+    }
+
     use super::*;
 
     #[test]

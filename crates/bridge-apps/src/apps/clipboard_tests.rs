@@ -219,3 +219,39 @@ fn the_paste_shortcut_asks_the_phone_and_a_busy_link_says_so() {
     assert!(!shortcut_pressed(&rig.ctx, ""));
     let _ = Event::Text(String::new());
 }
+
+/// The Settings copy of the clipboard card must fit a narrow column (the smallest Home window).
+#[test]
+fn the_sync_body_fits_a_narrow_column() {
+    let ctx = egui::Context::default();
+    crate::theme::apply(&ctx, AppKind::Clipboard);
+    let pal = crate::theme::palette(AppKind::Clipboard, false);
+    let (mut link, _rx) = ClipLink::detached(ClipState {
+        status: Some(status()),
+        error: None,
+        notice: None,
+    });
+    let mut draft = None;
+    let mut widest = 0.0_f32;
+    for _ in 0..3 {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(290.0, 900.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    super::sync_body(ui, &pal, &mut link, &mut draft);
+                    widest = ui.min_rect().width();
+                });
+            },
+        );
+    }
+    assert!(
+        widest <= 290.0,
+        "the card is {widest} points wide in a 290 point column"
+    );
+}

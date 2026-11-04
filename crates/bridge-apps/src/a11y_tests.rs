@@ -39,7 +39,7 @@ fn is_control(node: &Node) -> bool {
 
 /// What a screen reader says first. Plain text nodes carry it as their value; controls must have
 /// a label (a text field's value is what the user typed, which is empty at first).
-fn name(node: &Node) -> &str {
+pub(crate) fn name(node: &Node) -> &str {
     if is_control(node) {
         node.label().unwrap_or("").trim()
     } else {
@@ -496,7 +496,10 @@ fn target_size_in_points_does_not_shrink_with_scale() {
 
 /// A focused control must be drawn with an outline: the shared 2 pt ink ring, or the accent stroke
 /// egui puts around a focused text field.
-fn has_focus_indicator(shapes: &[egui::epaint::ClippedShape], pal: &theme::Palette) -> bool {
+pub(crate) fn has_focus_indicator(
+    shapes: &[egui::epaint::ClippedShape],
+    pal: &theme::Palette,
+) -> bool {
     use egui::epaint::Shape;
     fn walk(s: &Shape, pal: &theme::Palette, hit: &mut bool) {
         match s {

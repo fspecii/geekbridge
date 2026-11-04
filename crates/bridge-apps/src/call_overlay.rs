@@ -170,7 +170,7 @@ impl Card {
                     if let Some(problem) = &state.problem {
                         let key = match p.choice {
                             Choice::Answer => "overlay.failed.answer",
-                            Choice::Reject => "overlay.failed.reject",
+                            Choice::Reject => "overlay.failed.decline",
                         };
                         self.outcome = Some(Outcome {
                             text: tr_args(key, &[("reason", &problem.as_str())]),
@@ -204,7 +204,7 @@ impl Card {
                             .to_owned(),
                             true,
                         ),
-                        (Choice::Reject, _) => (tr("overlay.rejected").to_owned(), true),
+                        (Choice::Reject, _) => (tr("overlay.declined").to_owned(), true),
                         (Choice::Answer, false) => (tr("overlay.ended").to_owned(), true),
                     };
                     self.outcome = Some(Outcome {
@@ -257,7 +257,7 @@ impl Card {
             (Some(p), _) => Some((
                 match p.choice {
                     Choice::Answer => tr("overlay.answering"),
-                    Choice::Reject => tr("overlay.rejecting"),
+                    Choice::Reject => tr("overlay.declining"),
                 }
                 .to_owned(),
                 true,
@@ -925,7 +925,7 @@ mod tests {
         assert_eq!(
             c.body(&idle),
             Some(Body::Done {
-                text: "Call rejected".into(),
+                text: "Call declined".into(),
                 ok: true
             })
         );

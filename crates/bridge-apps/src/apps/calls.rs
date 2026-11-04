@@ -138,6 +138,11 @@ impl Calls {
         let blocker = env
             .blocked_line("call")
             .or_else(|| call_ui::dial_blocker(self.sources.status.as_ref(), &self.number));
+        // The no-Bluetooth warning sits above the keys so it is on screen at the smallest window too.
+        let banner_shown = self.audio.banner(ui, pal);
+        if banner_shown {
+            ui.add_space(4.0);
+        }
         let avail = ui.available_size();
         let note_h = 26.0;
         let display_h = 62.0;
@@ -246,9 +251,7 @@ impl Calls {
         if let Some(reason) = blocker {
             ui.vertical_centered(|ui| theme::blocked_note(ui, pal, &reason));
         }
-        if self.audio.banner(ui, pal) {
-            ui.add_space(4.0);
-        } else {
+        if !banner_shown {
             ui.vertical_centered(|ui| call_ui::audio_note(ui, pal, &self.sources));
         }
         if self.audio.found_card(ui, pal) {
@@ -398,11 +401,12 @@ impl Calls {
             );
         });
         ui.add_space(24.0);
-        if !self.audio.banner(ui, pal) {
+        let banner_shown = self.audio.banner(ui, pal);
+        if !banner_shown {
             call_ui::audio_note(ui, pal, &sources);
         }
         ui.add_space(8.0);
-        call_ui::sources(ui, pal, &sources);
+        call_ui::sources(ui, pal, &sources, banner_shown);
         ui.add_space(18.0);
         ui.label(theme::overline(pal, crate::i18n::tr("callaudio.title")));
         ui.add_space(6.0);

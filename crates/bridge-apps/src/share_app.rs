@@ -1013,11 +1013,15 @@ impl ShareApp {
                 }
                 ui.add_space(4.0);
             }
-            ui.horizontal(|ui| {
-                ui.label(theme::caption(
-                    pal,
-                    format!("Files are saved to {}", share.save_dir),
-                ));
+            // Stacked, not side by side: a long folder path would push the button out of the window.
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::Label::new(theme::caption(
+                        pal,
+                        format!("Files are saved to {}", share.save_dir),
+                    ))
+                    .wrap(),
+                );
                 if theme::tool_button(
                     ui,
                     pal,

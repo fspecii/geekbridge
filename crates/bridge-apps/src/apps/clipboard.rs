@@ -287,6 +287,8 @@ pub(crate) fn sync_body(
             .wrap(),
         );
         let mut secs = (status.window_ms / 1000) as f32;
+        // Track + value box + "Time window" must fit the card at the smallest window.
+        ui.spacing_mut().slider_width = (ui.available_width() - 160.0).clamp(60.0, 200.0);
         let slider = ui.add(
             egui::Slider::new(&mut secs, 5.0..=600.0)
                 .logarithmic(true)
@@ -300,7 +302,10 @@ pub(crate) fn sync_body(
             ui.label(theme::caption(pal, "Shortcut"));
             let text = draft.get_or_insert_with(|| status.hotkey.clone());
             let edit = crate::a11y::named(
-                ui.add(egui::TextEdit::singleline(text).desired_width(150.0)),
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .desired_width((ui.available_width() - 110.0).clamp(60.0, 150.0)),
+                ),
                 "Shortcut",
             );
             if (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))

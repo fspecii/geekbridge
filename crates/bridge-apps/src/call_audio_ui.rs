@@ -1016,9 +1016,11 @@ impl CallAudioPanel {
         let line = if s.steps.is_empty() {
             verdict_text(s.verdict).to_owned()
         } else {
+            let v = verdict_text(s.verdict);
             format!(
-                "{}. {}",
-                verdict_text(s.verdict),
+                "{}{} {}",
+                v,
+                if v.ends_with('.') { "" } else { "." },
                 tr_args(
                     "callaudio.progress",
                     &[("done", &s.done_count()), ("total", &s.steps.len())]
@@ -1490,6 +1492,112 @@ mod tests {
         wait_for(&feed, |s| s.stage.active());
         feed.send(Command::Flow(FlowEvent::Cancel));
         wait_for(&feed, |s| s.stage == Stage::Idle);
+    }
+
+    /// Tab walks the call audio buttons of every step in order, each stop has a name and draws a ring
+    /// (both themes), and no stop is a raw key such as `callaudio.*`.
+    #[cfg(feature = "accesskit")]
+    #[test]
+    fn every_flow_step_is_reachable_by_tab_named_and_ringed() {
+        use crate::a11y_tests::{has_focus_indicator, name};
+        let mut problems = Vec::new();
+        let mut total = 0;
+        for n in [
+            "flow-idle",
+            "flow-noadapter",
+            "flow-visible",
+            "flow-confirm",
+            "flow-devices",
+            "flow-testing",
+            "flow-done",
+            "flow-failed",
+            "no-bluetooth",
+            "connect",
+            "mac",
+        ] {
+            for dark in [false, true] {
+                let ctx = egui::Context::default();
+                theme::install_fonts(&ctx);
+                ctx.enable_accesskit();
+                theme::apply(&ctx, bridge_core::AppKind::Calls);
+                ctx.set_theme(if dark {
+                    egui::Theme::Dark
+                } else {
+                    egui::Theme::Light
+                });
+                let pal = theme::current(&ctx, bridge_core::AppKind::Calls);
+                let mut p = CallAudioPanel::with_feed(Feed::frozen(fixture_snapshot(n).unwrap()));
+                let mut seen: Vec<egui::Id> = Vec::new();
+                for step in 0..40 {
+                    let mut events = Vec::new();
+                    if step >= 2 {
+                        events.push(egui::Event::Key {
+                            key: egui::Key::Tab,
+                            physical_key: None,
+                            pressed: true,
+                            repeat: false,
+                            modifiers: egui::Modifiers::NONE,
+                        });
+                    }
+                    let input = egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(480.0, 1600.0),
+                        )),
+                        events,
+                        ..Default::default()
+                    };
+                    let out = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| p.show(ui, &pal, false));
+                    });
+                    let Some(id) = ctx.memory(|m| m.focused()) else {
+                        continue;
+                    };
+                    if step < 2 || seen.last() == Some(&id) {
+                        continue;
+                    }
+                    if seen.contains(&id) {
+                        break;
+                    }
+                    seen.push(id);
+                    total += 1;
+                    let label = out
+                        .platform_output
+                        .accesskit_update
+                        .as_ref()
+                        .and_then(|u| u.nodes.iter().find(|(i, _)| *i == u.focus))
+                        .map(|(_, node)| name(node).to_owned())
+                        .unwrap_or_default();
+                    if label.is_empty() || label.starts_with("callaudio.") {
+                        problems.push(format!(
+                            "{n} dark={dark}: stop {} has name {label:?}",
+                            seen.len()
+                        ));
+                    }
+                    // The ring is painted on the frame after focus moved.
+                    let out = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(480.0, 1600.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| p.show(ui, &pal, false));
+                        },
+                    );
+                    if !has_focus_indicator(&out.shapes, &pal) {
+                        problems.push(format!(
+                            "{n} dark={dark}: stop {} ({label}) has no ring",
+                            seen.len()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(total >= 20, "Tab reached only {total} stops");
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
     }
 
     #[test]

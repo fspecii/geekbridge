@@ -58,7 +58,7 @@ section, README feature row, `privacy.md` permission row and `android-calls.md` 
 * No-adapter **warning banner** (non-blocking, a11y name "Warning: no Bluetooth on this computer") with the owner's text: "This
   computer has no Bluetooth. You can see and answer calls here, but talking needs Bluetooth (add a USB adapter). Messages,
   contacts and the other features work normally." Shown in the Calls window (keypad and Recents), on the Home Calls tile
-  (short form "No Bluetooth: talking needs an adapter") and in `geekbridge-ctl doctor`. Goldens `calls-keypad-no-bluetooth` and
+  (short form "No Bluetooth: add an adapter") and in `geekbridge-ctl doctor`. Goldens `calls-keypad-no-bluetooth` and
   `home-no-bluetooth` (light/dark, std/min). The Calls keypad tab now scrolls so the banner is never clipped.
 * **Hotplug card**: when the checklist goes from "no adapter" to "adapter found" while a window is open, the Calls window shows
   "Bluetooth adapter found. Set up call audio." with a button to the checklist (polling is 3 s; no udev watcher).
