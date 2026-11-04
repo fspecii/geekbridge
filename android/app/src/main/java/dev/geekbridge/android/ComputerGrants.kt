@@ -21,6 +21,8 @@ enum class GrantFeature(val key: String) {
     Notifications("notifications"),
     /** Recent photos (`geekbridge.photos.*`): a short list and small previews on request. Off for every computer until allowed here. */
     Photos("photos"),
+    /** EXPERIMENTAL call audio over Wi-Fi (debug builds only show it): listen to a call on this computer. */
+    CallAudio("callaudio"),
 }
 
 /**

@@ -17,11 +17,6 @@
 //! Privacy: audio is never written to disk or logged; analysis keeps numbers only (level, frequency, counts).
 #![forbid(unsafe_code)]
 
-pub mod codec;
-pub mod gate;
-pub mod helper;
-pub mod jitter;
+pub use bridge_callwifi::{codec, gate, helper, jitter, selftest, tone, wire};
 pub mod lab;
 pub mod pcm;
-pub mod tone;
-pub mod wire;

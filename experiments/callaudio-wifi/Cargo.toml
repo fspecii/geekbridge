@@ -19,6 +19,7 @@ path = "src/bin/lab.rs"
 
 [dependencies]
 bridge-kde = { path = "../../crates/bridge-kde" }
+bridge-callwifi = { path = "../../crates/bridge-callwifi" }
 bridge-chaos = { path = "../../crates/bridge-chaos" }
 serde_json = "1"
 base64 = "0.22"

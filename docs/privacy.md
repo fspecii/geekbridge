@@ -49,6 +49,7 @@ Desktop consents (`consent.json`, `geekbridge-ctl consent DEVICE FEATURE on|off`
 | `debug` | debug-build phone log and state dump (default **on** for a debug build only) |
 | `battery` | battery level and charging state |
 | `photos` | recent photo list, previews and picture requests |
+| `call_audio_wifi` | EXPERIMENTAL: the far party of a live phone call, played on this computer over Wi-Fi (debug phone builds only) |
 <!-- /guard -->
 
 Phone per-computer grants (`geekbridge_grants` preferences), from `FEATURES` in
@@ -66,6 +67,7 @@ Phone per-computer grants (`geekbridge_grants` preferences), from `FEATURES` in
 | `battery` | `battery` |
 | `notifications` | `notifications` |
 | `photos` | `photos` |
+| `callaudio` | `call_audio_wifi` |
 <!-- /guard -->
 
 Not in either list: **clipboard** has a phone switch and a desktop consent but no per-computer phone grant, so its phone
@@ -94,6 +96,7 @@ the packet kinds it has code for, and a stock KDE Connect peer is never offered 
 | Battery | off | "Share battery level" switch + grant `battery` | consent `battery` |
 | Notifications | off | switch + Android Notification access + an app list that starts empty + grant `notifications` | consent `notifications` |
 | Photos | off | "Show recent photos on the computer" switch + `READ_MEDIA_IMAGES` or, on Android 14, only the photos you pick (`READ_MEDIA_VISUAL_USER_SELECTED`) + grant `photos` | consent `photos` |
+| Call audio over Wi-Fi (EXPERIMENTAL, debug phone builds only) | off | Settings, Experimental switch + the user starts an ADB helper over Wireless debugging + grant `callaudio` for that computer; each call needs a press (on the computer card or on the phone); speaking back is a further separate switch; a notification shows while audio is shared | consent `call_audio_wifi`; each call needs the press of "Listen here"; the indicator shows while audio plays |
 | Clipboard | off | clipboard-sync switch | consent `clipboard` |
 | Files, links, text | receiving off | sending is always an explicit Share-sheet action; receiving a file asks unless `auto_accept` is on for that computer | `receive` per phone (default off); `auto_accept` per phone (default off) |
 | Device name | on, no switch | the name you set | the name you set; part of pairing |
@@ -181,6 +184,16 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   you chose to show message content.
 * Threat note: mirrored notifications can contain one-time codes. The banner text is hidden by default for that reason,
   but the in-app list on the computer shows them while they are held.
+
+### Call audio over Wi-Fi (EXPERIMENTAL, off by default)
+
+* Debug phone builds only; a release build has no helper and never advertises the packets. Bluetooth stays the supported way.
+* Travels: `geekbridge.callaudio.*` (GeekBridge-only, inside the pinned TLS link): the far party's voice as Opus, and, only
+  when you turn "Speak (experimental)" on, the computer's microphone. Nothing is recorded, stored or logged; logs carry
+  counts and levels only. The phone shows a notification and the computer an indicator while audio flows; revoking a
+  consent, ending the call or losing the link stops it ([code] `crates/bridge-callwifi/src/gate.rs`).
+* The helper runs as Android's `shell` user, started over Wireless debugging; that user can do far more than call audio.
+  The design note lists the risks and what Samsung may block (`docs/design/call-audio-over-wifi.md`).
 
 ### Photos: previews and full pictures
 

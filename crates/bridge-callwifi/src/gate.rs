@@ -12,7 +12,7 @@
 //! A session ends on: either side's stop, the call ending, the link dropping, either consent turning off, or five
 //! seconds without a frame. Frames outside the live session, in the wrong direction, or above the rate cap are
 //! dropped and counted, never buffered.
-use crate::wire::{Answer, Dir, Msg, Offer, Uplink};
+use crate::wire::{Answer, Dir, Msg, Offer, Ready, Uplink};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -44,6 +44,10 @@ pub enum Action {
     /// Feed this frame to the jitter buffer.
     Accept(crate::wire::Frame),
     Drop(&'static str),
+    /// Computer: the phone reported its helper state (shown as the "Listen here" button's availability).
+    PeerReady(Ready),
+    /// "Speak back" is now on (true) or off (false) for the live session: start or stop the uplink path.
+    SpeakState(bool),
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +56,12 @@ pub struct Gate {
     pub computer_allows: bool,
     pub phone_switch: bool,
     pub call_active: bool,
+    /// Phone: the user's separate "Speak (experimental)" opt-in AND a self-test that found an uplink route.
+    pub speak_allowed: bool,
+    /// Phone: the uplink route the helper reported (what `speak` would use). `Uplink::None` = none.
+    pub uplink_route: Uplink,
+    /// Computer: a `speak` request is in flight for this session.
+    speak_asked: Option<(u64, bool)>,
     session: Option<Session>,
     /// Computer: the session id of the request it sent, so a phone offer can be matched to a press here.
     requested: Option<u64>,
@@ -67,6 +77,9 @@ impl Gate {
             computer_allows: false,
             phone_switch: false,
             call_active: false,
+            speak_allowed: false,
+            uplink_route: Uplink::None,
+            speak_asked: None,
             session: None,
             requested: None,
             bucket_start_ms: 0,
@@ -91,6 +104,7 @@ impl Gate {
             out.push(Action::IndicatorOff);
         }
         self.requested = None;
+        self.speak_asked = None;
         out
     }
 
@@ -103,6 +117,18 @@ impl Gate {
         vec![Action::Send(Msg::Request { session })]
     }
 
+    /// The computer user pressed "Speak (experimental)" (or turned it off) during a live session.
+    pub fn ask_speak(&mut self, on: bool) -> Vec<Action> {
+        match (&self.session, self.side) {
+            (Some(s), Side::Computer) if s.live && s.down && self.speak_asked.is_none() => {
+                let id = s.id;
+                self.speak_asked = Some((id, on));
+                vec![Action::Send(Msg::Speak { session: id, on })]
+            }
+            _ => vec![Action::Drop("speak not allowed now")],
+        }
+    }
+
     /// The phone user pressed start, or a request arrived (phone side). `uplink` is what the helper reported.
     pub fn start(&mut self, session: u64, uplink: Uplink) -> Vec<Action> {
         if self.side != Side::Phone
@@ -112,11 +138,11 @@ impl Gate {
         {
             return vec![Action::Drop("start not allowed now")];
         }
-        let up = uplink != Uplink::None;
+        // Listening only: speaking back is a separate, later step (`speak`).
         self.session = Some(Session {
             id: session,
             down: true,
-            up,
+            up: false,
             uplink,
             live: false,
             last_frame_ms: 0,
@@ -124,7 +150,7 @@ impl Gate {
         vec![Action::Send(Msg::Offer(Offer {
             session,
             down: true,
-            up,
+            up: false,
             uplink,
         }))]
     }
@@ -149,6 +175,28 @@ impl Gate {
             Vec::new()
         } else {
             self.end("consent_off", true)
+        }
+    }
+
+    /// Phone: the user's "Speak (experimental)" opt-in changed, or the self-test result did. Turning it off ends
+    /// speaking back at once; listening goes on.
+    pub fn set_speak_allowed(&mut self, on: bool) -> Vec<Action> {
+        self.speak_allowed = on;
+        if on {
+            return Vec::new();
+        }
+        match self.session.as_mut() {
+            Some(s) if s.up => {
+                s.up = false;
+                vec![
+                    Action::Send(Msg::Speak {
+                        session: s.id,
+                        on: false,
+                    }),
+                    Action::SpeakState(false),
+                ]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -205,7 +253,8 @@ impl Gate {
         match (self.side, msg) {
             (Side::Phone, Msg::Request { session }) => {
                 // The computer user's press is the per-call start; it still needs the phone switch and a call.
-                let mut out = self.start(session, Uplink::None);
+                let route = self.uplink_route;
+                let mut out = self.start(session, route);
                 if matches!(out.first(), Some(Action::Drop(_))) {
                     out = vec![Action::Send(Msg::Stop {
                         session,
@@ -298,6 +347,39 @@ impl Gate {
                     Vec::new()
                 }
             }
+            (Side::Phone, Msg::Speak { session, on }) => {
+                let allowed = self.speak_allowed;
+                match self.session.as_mut() {
+                    Some(s) if s.live && s.id == session => {
+                        s.up = on && allowed && s.uplink != Uplink::None;
+                        let granted = s.up;
+                        vec![
+                            Action::Send(Msg::Speak {
+                                session,
+                                on: granted,
+                            }),
+                            Action::SpeakState(granted),
+                        ]
+                    }
+                    _ => self.drop("speak outside the session"),
+                }
+            }
+            (Side::Computer, Msg::Speak { session, on }) => {
+                match (self.session.as_mut(), self.speak_asked) {
+                    (Some(s), Some((id, _))) if s.live && s.id == session && id == session => {
+                        s.up = on;
+                        self.speak_asked = None;
+                        vec![Action::SpeakState(on)]
+                    }
+                    // The phone may always switch speaking off by itself (its opt-in went off); never on.
+                    (Some(s), _) if s.live && s.id == session && !on => {
+                        s.up = false;
+                        vec![Action::SpeakState(false)]
+                    }
+                    _ => self.drop("unasked speak answer"),
+                }
+            }
+            (Side::Computer, Msg::Ready(r)) => vec![Action::PeerReady(r)],
             (_, Msg::Stats(_)) => Vec::new(),
             _ => self.drop("not for this side"),
         }
@@ -329,21 +411,103 @@ mod tests {
             .collect()
     }
 
-    /// Phone and computer gates wired to each other; returns them with a live session 7.
-    fn live_pair() -> (Gate, Gate) {
+    /// Phone and computer gates wired to each other; returns them with a live, listen-only session 7.
+    fn listen_pair() -> (Gate, Gate) {
         let mut p = Gate::new(Side::Phone);
         let mut c = Gate::new(Side::Computer);
         p.set_consent(false, true);
         c.set_consent(true, false);
         p.set_call_active(true);
-        let offer = sent(&p.start(7, Uplink::TelephonyTx)).remove(0);
+        p.uplink_route = Uplink::TelephonyTx;
+        let offer = sent(&p.on_msg(Msg::Request { session: 7 }, 0)).remove(0);
+        assert!(matches!(&offer, Msg::Offer(o) if o.down && !o.up));
         let ans = c.on_msg(offer, 0);
         assert!(ans.contains(&Action::IndicatorOn));
         let a = sent(&ans).remove(0);
         assert_eq!(p.on_msg(a, 0), vec![Action::IndicatorOn]);
         assert!(p.may_send(Dir::Down) && !p.may_send(Dir::Up));
+        assert!(!c.may_send(Dir::Up) && !c.may_send(Dir::Down));
+        (p, c)
+    }
+
+    /// The same, with speaking back switched on through the `speak` handshake.
+    fn live_pair() -> (Gate, Gate) {
+        let (mut p, mut c) = listen_pair();
+        p.set_speak_allowed(true);
+        let ask = sent(&c.ask_speak(true)).remove(0);
+        let reply = p.on_msg(ask, 1);
+        assert!(reply.contains(&Action::SpeakState(true)));
+        let back = sent(&reply).remove(0);
+        assert_eq!(c.on_msg(back, 1), vec![Action::SpeakState(true)]);
+        assert!(p.may_send(Dir::Down) && !p.may_send(Dir::Up));
         assert!(c.may_send(Dir::Up) && !c.may_send(Dir::Down));
         (p, c)
+    }
+
+    #[test]
+    fn listening_never_carries_the_computers_voice() {
+        let (mut p, mut c) = listen_pair();
+        // The phone drops mic frames in a listen-only session; the computer may not send them.
+        assert!(matches!(
+            p.on_msg(frame(7, Dir::Up, 1), 10)[0],
+            Action::Drop(_)
+        ));
+        assert!(!c.may_send(Dir::Up));
+        // Speak is refused unless the phone's own opt-in is on, however the computer asks.
+        let ask = sent(&c.ask_speak(true)).remove(0);
+        let reply = p.on_msg(ask, 2);
+        assert!(reply.contains(&Action::SpeakState(false)));
+        let back = sent(&reply).remove(0);
+        assert!(matches!(back, Msg::Speak { on: false, .. }));
+        c.on_msg(back, 2);
+        assert!(!c.may_send(Dir::Up) && !p.may_send(Dir::Up));
+        // An unasked or foreign speak answer changes nothing.
+        assert!(matches!(
+            c.on_msg(
+                Msg::Speak {
+                    session: 7,
+                    on: true
+                },
+                3
+            )[0],
+            Action::Drop(_)
+        ));
+        assert!(!c.may_send(Dir::Up));
+    }
+
+    #[test]
+    fn speak_stops_when_the_phone_opt_in_goes_off() {
+        let (mut p, mut c) = live_pair();
+        let out = p.set_speak_allowed(false);
+        assert!(out.contains(&Action::SpeakState(false)));
+        assert!(!p.may_send(Dir::Up));
+        // The phone's frame handling now drops mic frames at once.
+        assert!(matches!(
+            p.on_msg(frame(7, Dir::Up, 9), 20)[0],
+            Action::Drop(_)
+        ));
+        let back = sent(&out).remove(0);
+        // The computer follows the phone's "off" without having asked, but never an unasked "on".
+        assert_eq!(c.on_msg(back, 21), vec![Action::SpeakState(false)]);
+        assert!(!c.may_send(Dir::Up));
+    }
+
+    #[test]
+    fn ready_reaches_only_the_computer() {
+        use crate::selftest::Verdict;
+        let r = crate::wire::Ready {
+            ready: true,
+            listen: true,
+            speak: false,
+            test: Verdict::Works,
+        };
+        let mut c = Gate::new(Side::Computer);
+        assert_eq!(
+            c.on_msg(Msg::Ready(r.clone()), 0),
+            vec![Action::PeerReady(r.clone())]
+        );
+        let mut p = Gate::new(Side::Phone);
+        assert!(matches!(p.on_msg(Msg::Ready(r), 0)[0], Action::Drop(_)));
     }
 
     #[test]

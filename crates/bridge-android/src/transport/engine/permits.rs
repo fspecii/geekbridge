@@ -10,7 +10,7 @@ use std::sync::{Mutex, PoisonError};
 
 use super::{Core, Ctl, Phase};
 
-pub(in crate::transport) const FEATURES: [&str; 8] = [
+pub(in crate::transport) const FEATURES: [&str; 9] = [
     "calls",
     "contacts",
     "calendar",
@@ -19,6 +19,8 @@ pub(in crate::transport) const FEATURES: [&str; 8] = [
     "battery",
     "notifications",
     "photos",
+    // EXPERIMENTAL call audio over Wi-Fi; only a debug build with the `callwifi` feature ever acts on it.
+    "callaudio",
 ];
 
 /// feature -> device ids allowed to use it.

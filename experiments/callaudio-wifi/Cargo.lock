@@ -132,8 +132,19 @@ name = "bridge-callaudio"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "bridge-callwifi",
  "bridge-chaos",
  "bridge-kde",
+ "opus-pure",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "bridge-callwifi"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
  "opus-pure",
  "serde_json",
  "tokio",
@@ -151,7 +162,7 @@ dependencies = [
 name = "bridge-core"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "sha2",
@@ -161,7 +172,7 @@ dependencies = [
 name = "bridge-kde"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "bridge-core",
  "clap",
  "libc",

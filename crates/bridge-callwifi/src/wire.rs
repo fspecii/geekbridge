@@ -10,6 +10,8 @@
 //! | [`FRAME`] | both | `session`, `dir`, `seq`, `ts`, `cap`, `opus` (base64, one 20 ms Opus packet) |
 //! | [`STATS`] | both | `session`, `dir`, `got`, `lost`, `late`, `depthMs` (receiver report, once a second) |
 //! | [`STOP`] | both | `session`, `reason` |
+//! | [`READY`] | phone to computer | `ready` (helper running and self-test done), `listen`, `speak`, `test` (verdict name) |
+//! | [`SPEAK`] | both | `session`, `on` (computer asks for "speak back"; the phone answers with what it granted) |
 //!
 //! Parsing is strict about every field the receiver acts on and lenient about extra keys (ignored), the same
 //! rule as the rest of the `geekbridge.*` family. Nothing in a packet is ever logged or written to disk.
@@ -23,12 +25,17 @@ pub const ANSWER: &str = "geekbridge.callaudio.answer";
 pub const FRAME: &str = "geekbridge.callaudio.frame";
 pub const STATS: &str = "geekbridge.callaudio.stats";
 pub const STOP: &str = "geekbridge.callaudio.stop";
-pub const ALL: [&str; 6] = [REQUEST, OFFER, ANSWER, FRAME, STATS, STOP];
+/// Phone to computer, no session: the helper is up and what the self-test found. Sent whenever it changes.
+pub const READY: &str = "geekbridge.callaudio.ready";
+/// Both ways, inside a live session: the computer asks to turn "speak back" on or off; the phone answers with the
+/// state it granted (it needs the phone's own speak opt-in and a self-test that found an uplink route).
+pub const SPEAK: &str = "geekbridge.callaudio.speak";
+pub const ALL: [&str; 8] = [REQUEST, OFFER, ANSWER, FRAME, STATS, STOP, READY, SPEAK];
 
 /// What the phone declares as incoming (computer declares the mirror image). Kept out of the plaintext identity
 /// like every `geekbridge.*` name.
-pub const PHONE_INCOMING: [&str; 5] = [REQUEST, ANSWER, FRAME, STATS, STOP];
-pub const COMPUTER_INCOMING: [&str; 4] = [OFFER, FRAME, STATS, STOP];
+pub const PHONE_INCOMING: [&str; 6] = [REQUEST, ANSWER, FRAME, STATS, STOP, SPEAK];
+pub const COMPUTER_INCOMING: [&str; 6] = [OFFER, FRAME, STATS, STOP, READY, SPEAK];
 
 pub const CODEC: &str = "opus";
 pub const RATE: u32 = 16_000;
@@ -152,12 +159,31 @@ pub enum Msg {
         session: u64,
         reason: Option<String>,
     },
+    /// Phone to computer: not tied to a call.
+    Ready(Ready),
+    Speak {
+        session: u64,
+        on: bool,
+    },
+}
+
+/// What the phone tells the computer about its helper. `listen`/`speak` come from the self-test; the computer shows
+/// "Listen here" only when `ready && listen`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ready {
+    pub ready: bool,
+    pub listen: bool,
+    pub speak: bool,
+    pub test: crate::selftest::Verdict,
 }
 
 impl Msg {
     pub fn session(&self) -> u64 {
         match self {
-            Self::Request { session } | Self::Stop { session, .. } => *session,
+            Self::Request { session }
+            | Self::Stop { session, .. }
+            | Self::Speak { session, .. } => *session,
+            Self::Ready(_) => 0,
             Self::Offer(o) => o.session,
             Self::Answer(a) => a.session,
             Self::Frame(f) => f.session,
@@ -172,6 +198,8 @@ impl Msg {
             Self::Frame(_) => FRAME,
             Self::Stats(_) => STATS,
             Self::Stop { .. } => STOP,
+            Self::Ready(_) => READY,
+            Self::Speak { .. } => SPEAK,
         }
     }
 }
@@ -203,8 +231,19 @@ fn dirs_value(down: bool, up: bool) -> Value {
 /// Body of a packet (the `type` is [`Msg::kind`]).
 pub fn body(msg: &Msg) -> Map<String, Value> {
     let mut m = Map::new();
-    m.insert("session".into(), Value::from(msg.session()));
+    if !matches!(msg, Msg::Ready(_)) {
+        m.insert("session".into(), Value::from(msg.session()));
+    }
     match msg {
+        Msg::Ready(r) => {
+            m.insert("ready".into(), Value::from(r.ready));
+            m.insert("listen".into(), Value::from(r.listen));
+            m.insert("speak".into(), Value::from(r.speak));
+            m.insert("test".into(), Value::from(r.test.as_str()));
+        }
+        Msg::Speak { on, .. } => {
+            m.insert("on".into(), Value::from(*on));
+        }
         Msg::Request { .. } => {}
         Msg::Offer(o) => {
             m.insert("dirs".into(), dirs_value(o.down, o.up));
@@ -302,8 +341,38 @@ pub fn parse(kind: &str, body: &Map<String, Value>) -> Result<Msg, WireError> {
     if !is_callaudio_kind(kind) {
         return Err(WireError::UnknownKind);
     }
+    if kind == READY {
+        let flag = |k: &'static str| {
+            body.get(k)
+                .and_then(Value::as_bool)
+                .ok_or(WireError::Malformed(k))
+        };
+        let test = body
+            .get("test")
+            .and_then(Value::as_str)
+            .and_then(crate::selftest::Verdict::from_name)
+            .ok_or(WireError::Malformed("test"))?;
+        let (ready, listen, speak) = (flag("ready")?, flag("listen")?, flag("speak")?);
+        // Nothing is ready unless the helper is up; speaking back needs listening.
+        if (!ready && (listen || speak)) || (speak && !listen) {
+            return Err(WireError::Malformed("ready flags"));
+        }
+        return Ok(Msg::Ready(Ready {
+            ready,
+            listen,
+            speak,
+            test,
+        }));
+    }
     let session = id(body, "session")?;
     Ok(match kind {
+        SPEAK => Msg::Speak {
+            session,
+            on: body
+                .get("on")
+                .and_then(Value::as_bool)
+                .ok_or(WireError::Malformed("on"))?,
+        },
         REQUEST => Msg::Request { session },
         OFFER => {
             let (down, up) = dirs(body)?;

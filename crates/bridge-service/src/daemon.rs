@@ -921,6 +921,8 @@ impl Daemon {
                 let hub = self.calls.clone();
                 blocking(move || hub.audio_to_phone(&source)).await
             }
+            // Wired in by the call-audio-over-Wi-Fi hub (docs/design/call-audio-over-wifi.md).
+            Request::CallWifi { .. } => Ok(Response::CallWifi(Box::default())),
             Request::HearCalls => self.hear_calls(None).await,
             Request::CallAudioPair { action } => self.hear_calls(Some(action)).await,
             Request::CallAudioDevices { set, output, input } => {

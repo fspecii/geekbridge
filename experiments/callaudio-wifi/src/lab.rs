@@ -470,6 +470,9 @@ pub async fn run(cfg: LabConfig) -> Result<LabReport, String> {
     pg.set_consent(false, true);
     cg.set_consent(true, false);
     pg.set_call_active(true);
+    // The lab exercises both directions: the phone allows speaking and the computer asks once the session is live.
+    pg.uplink_route = cfg.uplink;
+    pg.set_speak_allowed(cfg.uplink != Uplink::None);
 
     let mut down_enc = Encoder::new().map_err(|e| e.to_string())?;
     let mut up_enc = Encoder::new().map_err(|e| e.to_string())?;
@@ -486,11 +489,15 @@ pub async fn run(cfg: LabConfig) -> Result<LabReport, String> {
                 }
                 Action::Accept(f) => rx.push(f, epoch),
                 Action::Drop(_) => rx.rep.gate_dropped += 1,
-                Action::IndicatorOn | Action::IndicatorOff => {}
+                Action::IndicatorOn
+                | Action::IndicatorOff
+                | Action::PeerReady(_)
+                | Action::SpeakState(_) => {}
             }
         }
     };
     do_actions(pg.start(session, cfg.uplink), &p_out_tx, &mut up_rx_side);
+    let mut asked_speak = false;
 
     let mut report = LabReport {
         tls,
@@ -508,7 +515,12 @@ pub async fn run(cfg: LabConfig) -> Result<LabReport, String> {
             }
             Some(m) = c_in.recv() => {
                 let a = cg.on_msg(m, epoch.elapsed().as_millis() as u64);
+                let live = a.contains(&Action::IndicatorOn);
                 do_actions(a, &c_out_tx, &mut down_rx_side);
+                if live && !asked_speak && cfg.uplink != Uplink::None {
+                    asked_speak = true;
+                    do_actions(cg.ask_speak(true), &c_out_tx, &mut down_rx_side);
+                }
             }
             Some((cap, pcm)) = down_rx.recv() => {
                 if pg.may_send(Dir::Down) {

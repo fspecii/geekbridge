@@ -29,7 +29,7 @@ Commands:
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
   consent DEVICE_ID FEATURE on|off    sms, contacts, calendar, calendar_edit, calendar_alerts,
-                                      clipboard, notifications, telephony, debug, battery, photos
+                                      clipboard, notifications, telephony, debug, battery, photos, call_audio_wifi
   notifications [DEVICE_ID] [--json]  phone notifications mirrored here (needs `consent ID notifications on`; prints
                                       personal data; memory only, newest first)
   notifications dismiss DEVICE_ID ID  dismiss one here and on the phone

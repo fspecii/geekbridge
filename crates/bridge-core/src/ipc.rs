@@ -283,10 +283,13 @@ pub enum Feature {
     /// A short list of the phone's recent photos with small thumbnails, on request (`geekbridge.photos.*`).
     /// Off by default; never a background upload, nothing is read unless this computer asked.
     Photos,
+    /// EXPERIMENTAL: listening to a phone call on this computer over Wi-Fi through the phone's ADB helper
+    /// (`geekbridge.callaudio.*`). Off by default; the first of three consents (see `bridge-callwifi`).
+    CallAudioWifi,
 }
 
 impl Feature {
-    pub const ALL: [Feature; 11] = [
+    pub const ALL: [Feature; 12] = [
         Feature::Sms,
         Feature::Contacts,
         Feature::Calendar,
@@ -298,6 +301,7 @@ impl Feature {
         Feature::Debug,
         Feature::Battery,
         Feature::Photos,
+        Feature::CallAudioWifi,
     ];
 }
 
@@ -487,6 +491,10 @@ pub enum Request {
         output: Option<String>,
         #[serde(default)]
         input: Option<String>,
+    },
+    /// EXPERIMENTAL call audio over Wi-Fi: state, start/stop listening, speak back. Answers with `CallWifi`.
+    CallWifi {
+        action: crate::call_wifi_view::CallWifiAction,
     },
     /// Update-check state (never contacts the network by itself).
     UpdateStatus,
@@ -1315,6 +1323,7 @@ pub enum Response {
     Calls(Box<CallsStatus>),
     CallAudioDevices(Box<CallAudioDevices>),
     HearCalls(Box<HearCalls>),
+    CallWifi(Box<crate::call_wifi_view::CallWifiView>),
     Notifications(Box<NotificationsView>),
     Photos(Box<crate::photos_view::PhotosView>),
     PhotoThumb(Box<crate::photos_view::PhotoThumbView>),
@@ -1349,6 +1358,7 @@ fn every_response_is_parsed(r: &Response) {
         | Response::Calls(_)
         | Response::CallAudioDevices(_)
         | Response::HearCalls(_)
+        | Response::CallWifi(_)
         | Response::Notifications(_)
         | Response::Photos(_)
         | Response::PhotoThumb(_)
@@ -1404,6 +1414,7 @@ impl Response {
             "calls" => Response::Calls(Box::new(p(json)?)),
             "call_audio_devices" => Response::CallAudioDevices(Box::new(p(json)?)),
             "hear_calls" => Response::HearCalls(Box::new(p(json)?)),
+            "call_wifi" => Response::CallWifi(Box::new(p(json)?)),
             "notifications" => Response::Notifications(Box::new(p(json)?)),
             "photos" => Response::Photos(Box::new(p(json)?)),
             "photo_thumb" => Response::PhotoThumb(Box::new(p(json)?)),
