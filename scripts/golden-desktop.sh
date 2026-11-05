@@ -243,9 +243,11 @@ tasks_rest() { # theme
   echo "geekbridge-calls|$t|calls-recents|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLS_FIXTURE=recents"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
+  echo "geekbridge-calls|$t|call-active-keypad|-|GEEKBRIDGE_CALLS_FIXTURE=keypad"
   grep -v '^#' "$ROOT/scripts/golden/tasks-call-wifi.txt" | sed "s/@THEME@/$t/"   # Wi-Fi call audio states
   echo "geekbridge-calls+overlay|$t|call-overlay|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls+overlay|$t|call-overlay-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
+  echo "geekbridge-calls+overlay|$t|call-overlay-keypad|-|GEEKBRIDGE_CALLS_FIXTURE=keypad"
   echo "geekbridge-calls+overlay|$t|call-overlay-ended|-|GEEKBRIDGE_CALLS_FIXTURE=ended"
   echo "geekbridge-contacts|$t|contacts|-|"
   echo "geekbridge-contacts|$t|contacts-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"
