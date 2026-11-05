@@ -52,6 +52,12 @@ use tokio::{
 
 const SHARE: &str = "kdeconnect.share.request";
 
+/// `GEEKBRIDGE_SOAK_SKIP=a,b`: leave out parts of the load to see which one a trend belongs to (bursts, clip, files,
+/// faults, pairs, sms, data, rings, wifi). `GEEKBRIDGE_SOAK_FAST=1` shortens the pause between rounds.
+fn skip(name: &str) -> bool {
+    std::env::var("GEEKBRIDGE_SOAK_SKIP").is_ok_and(|v| v.split(',').any(|w| w == name))
+}
+
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
@@ -953,7 +959,7 @@ async fn ring_round(
         _ => {}
     }
     // In a call: sometimes listen over Wi-Fi for a while.
-    if matches!(kind, 0 | 2) && rng.below(10) < 7 {
+    if matches!(kind, 0 | 2) && !skip("wifi") && rng.below(10) < 7 {
         if f.wait_calls(Duration::from_secs(6), |c| c.view.live().is_some()).await {
             f.send(Cmd::Call("offhook")).await; // the phone's own state after an answer from here
             let _ = f.wifi(W::Listen { device_id: p0.id() }).await;
@@ -1091,11 +1097,11 @@ async fn feature_round(
     p0: &Arc<Phone>,
     ev: &mut std::fs::File,
 ) {
-    if round % 30 == 29 {
+    if !skip("repair") && round % 30 == 29 {
         repair_p0(f, server, p0, ev).await;
         return;
     }
-    if round.is_multiple_of(5) {
+    if !skip("sms") && round.is_multiple_of(5) {
         // Notification and SMS bursts.
         for i in 0..6 {
             if let Some(p) = f.current.lock().await.as_ref() {
@@ -1105,10 +1111,10 @@ async fn feature_round(
             }
         }
     }
-    if round % 5 == 1 {
+    if !skip("data") && round % 5 == 1 {
         data_requests(f, rng, p0).await;
     }
-    if round % 3 == 0 {
+    if !skip("rings") && round % 3 == 0 {
         ring_round(f, rng, server, p0, ev, round % 9 == 0).await;
     }
 }
@@ -1337,18 +1343,22 @@ async fn soak_real_service() {
             break;
         }
         // 1. packets from the phone
-        if let Some(p) = current.lock().await.as_ref() {
+        if !skip("bursts")
+            && let Some(p) = current.lock().await.as_ref()
+        {
             for pkt in burst(&mut rng, round) {
                 let _ = p.tx.send(Cmd::Send(pkt));
             }
         }
         // 2. desktop-side clipboard traffic
-        let _ = ctl.call(Request::ClipboardPush { device_id: None }).await;
-        if round.is_multiple_of(3) {
+        if !skip("clip") {
+            let _ = ctl.call(Request::ClipboardPush { device_id: None }).await;
+        }
+        if !skip("clip") && round.is_multiple_of(3) {
             let _ = ctl.call(Request::ClipboardPull { device_id: None }).await;
         }
         // 3. files both ways
-        if round.is_multiple_of(4) {
+        if !skip("files") && round.is_multiple_of(4) {
             let size = 50_000 + rng.below(3_000_000) as u64;
             if let Some(p) = current.lock().await.as_ref() {
                 let _ = p.tx.send(Cmd::Offer {
@@ -1357,7 +1367,7 @@ async fn soak_real_service() {
                 });
             }
         }
-        if round.is_multiple_of(5) {
+        if !skip("files") && round.is_multiple_of(5) {
             let f = scratch.join(format!("down-{round}.bin"));
             std::fs::write(&f, vec![0xa5u8; 20_000 + rng.below(2_000_000)]).unwrap();
             let r = ctl
@@ -1373,7 +1383,7 @@ async fn soak_real_service() {
             let _ = std::fs::remove_file(&f);
         }
         // 4. fault + reconnect
-        if round % 4 == 2 {
+        if !skip("faults") && round % 4 == 2 {
             let (faults, what) = random_faults(&mut rng);
             let t = Instant::now();
             server.proxy.set(faults);
@@ -1428,7 +1438,7 @@ async fn soak_real_service() {
             );
         }
         // 5. pair / unpair a fresh identity
-        if round.is_multiple_of(7) {
+        if !skip("pairs") && round.is_multiple_of(7) {
             let t = Instant::now();
             let phone = soak_phone();
             let faulty = rng.below(3) == 0;
@@ -1573,7 +1583,13 @@ async fn soak_real_service() {
                 }
             }
         }
-        sleep(Duration::from_millis(1500 + rng.below(2500) as u64)).await;
+        if skip("slow") {
+            sleep(Duration::from_millis(1500 + rng.below(2500) as u64)).await;
+        } else if std::env::var("GEEKBRIDGE_SOAK_FAST").is_ok() {
+            sleep(Duration::from_millis(100 + rng.below(150) as u64)).await;
+        } else {
+            sleep(Duration::from_millis(1500 + rng.below(2500) as u64)).await;
+        }
     }
 
     // Quiesce: stop the driver, keep P0 connected and idle, sample the settled state.
@@ -1588,6 +1604,21 @@ async fn soak_real_service() {
     for _ in 0..4 {
         sampler.lock().await.sample(&ctl, &stats, "idle").await;
         sleep(sample_every).await;
+    }
+    // Which threads are still there after the quiesce (names, state, what each waits in).
+    {
+        let mut dump = String::new();
+        if let Ok(rd) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+            for t in rd.flatten() {
+                let base = t.path();
+                let comm = read_trim(&format!("{}/comm", base.display()));
+                let wchan = read_trim(&format!("{}/wchan", base.display()));
+                let stat = std::fs::read_to_string(base.join("stat")).unwrap_or_default();
+                let state = stat.rsplit(") ").next().and_then(|r| r.split_whitespace().next()).unwrap_or("?");
+                let _ = writeln!(dump, "{} {comm} state {state} wchan {wchan}", t.file_name().to_string_lossy());
+            }
+        }
+        let _ = std::fs::write(out.join("threads-idle.txt"), dump);
     }
     samp.abort();
     let alive = child.try_wait().unwrap().is_none() && !died;

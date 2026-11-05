@@ -200,8 +200,12 @@ def main(argv):
           f"links {i1['links']}, paired {i1['paired']}")
         if end_fd > base_fd + 8:
             fail.append(f"fds after quiesce {end_fd:.0f} vs {base_fd:.0f} at start (leak)")
-        if end_th > base_th + 4:
-            fail.append(f"threads after quiesce {end_th:.0f} vs {base_th:.0f} at start (leak)")
+        # Idle blocking-pool threads of the async runtime stay parked after a burst of work (10 after thousands of
+        # data requests, see docs/reports/soak-3.md): that is the steady state of the run, not growth. A leak is
+        # more threads at the end than the run's own median, or than the start plus 4 when the run never had more.
+        run_median_th = statistics.median(num(r["threads"]) for r in run)
+        if end_th > max(base_th + 4, run_median_th):
+            fail.append(f"threads after quiesce {end_th:.0f} vs {base_th:.0f} at start, median {run_median_th:.0f} (leak)")
         left = num(i1["paired"]) - 1
         if left > num(run[-1]["pair_fail"]):
             fail.append(f"paired devices at the end: {i1['paired']} (expected 1 plus at most one per failed pairing)")

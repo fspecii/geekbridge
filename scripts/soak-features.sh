@@ -77,7 +77,7 @@ GEEKBRIDGE_SOAK_FEATURES=1 GEEKBRIDGE_SOAK_AUDIO_RUN="$SBX/xdg" GEEKBRIDGE_SOAK_
   XDG_RUNTIME_DIR= bash -c 'mkdir -p "$GEEKBRIDGE_SOAK_OUT" && exec cargo test --release --locked -p bridge-service --test soak_real -- --ignored --nocapture'
 rc=$?
 R="$OUT/run"
-cp "$R"/samples.csv "$R"/events.tsv "$R"/service.log "$R"/poll-errors.log "$R"/poll-diag.log "$DIST"/ 2>/dev/null
+cp "$R"/samples.csv "$R"/events.tsv "$R"/threads-idle.txt "$R"/service.log "$R"/poll-errors.log "$R"/poll-diag.log "$DIST"/ 2>/dev/null
 cp "$SBX/log"/*.log "$DIST"/ 2>/dev/null
 python3 -I scripts/soak-fit.py "$DIST/samples.csv" --events "$DIST/events.tsv" --poll-errors "$DIST/poll-errors.log" | tee "$DIST/verdict.md"
 fit=${PIPESTATUS[0]}
