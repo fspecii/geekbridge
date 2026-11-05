@@ -1399,12 +1399,28 @@ async fn keypad_tones_use_bluetooth_when_it_is_there_and_the_call_is_live() {
     let w = world(Some(("Fold", Duration::ZERO))).await;
     let phone = w.phone("Fold").await;
     phone.ring_all(PhoneState::Ringing);
-    let c = until(&w.rig, "the ring", ringing).await;
-    w.act(
-        c.view.ringing().unwrap().answer.clone().unwrap(),
-        CallAction::Answer,
-    )
-    .await;
+    // The ring first shows over the link and the Bluetooth side takes it over a moment later, which
+    // changes the answer target: answer what is offered now, again if it changed under us.
+    let mut tries = 0;
+    loop {
+        let c = until(&w.rig, "the ring", ringing).await;
+        let target = c.view.ringing().unwrap().answer.clone().unwrap();
+        match w
+            .rig
+            .call(Request::CallAction {
+                target,
+                action: CallAction::Answer,
+            })
+            .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                tries += 1;
+                assert!(tries < 40, "answer kept being refused: {e:?}");
+                sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
     // The live call shows first over the link; the keypad moves to Bluetooth when the HFP side has
     // reported the call (slow runners see both orders), so wait for that, not for the first live view.
     let c = until(&w.rig, "the keypad over Bluetooth", |c| {
