@@ -139,6 +139,17 @@ class UiKit(private val ctx: Context, val ui: Ui) {
         return v
     }
 
+    /**
+     * A button that shows or hides more of the screen ("Other ways to link", "More call options"). The label
+     * says what a tap does; TalkBack also reads the current state ("Collapsed" / "Expanded") from API 30.
+     */
+    fun disclosure(parent: LinearLayout, label: String, expanded: Boolean, onClick: () -> Unit): TextView =
+        button(parent, label, BtnStyle.Plain, onClick = onClick).also {
+            if (Build.VERSION.SDK_INT >= 30) {
+                it.stateDescription = ctx.getString(if (expanded) R.string.state_expanded else R.string.state_collapsed)
+            }
+        }
+
     fun pill(label: String, style: BtnStyle, enabled: Boolean = true, onClick: () -> Unit): TextView = TextView(ctx).apply {
         text = label
         gravity = Gravity.CENTER

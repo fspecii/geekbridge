@@ -3,6 +3,7 @@ package dev.geekbridge.android
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class A11yLabelsTest {
@@ -33,5 +34,18 @@ class A11yLabelsTest {
     @Test fun tileNamesTheStateAndSaysWhenItNeedsYou() {
         assertEquals("Contacts, Ready", A11yLabels.tile("Contacts", "Ready", false, "Needs attention"))
         assertEquals("Calls, Allow. Needs attention", A11yLabels.tile("Calls", "Allow", true, "Needs attention"))
+    }
+
+    /** "Other ways to link" and "More call options" show or hide more of the screen: they must say their state. */
+    @Test fun showHideButtonsGoThroughTheDisclosureHelper() {
+        val dir = java.io.File("src/main/java/dev/geekbridge/android")
+        for (file in listOf("PairPanel.kt", "SetupActivity.kt")) {
+            val src = java.io.File(dir, file).readText()
+            assertTrue("$file builds its show/hide button with kit.disclosure", src.contains("kit.disclosure("))
+            val plain = Regex("""kit\.button\([^\n]*(pair_other_ways|setup_calls_more)""")
+            assertFalse("$file: a show/hide button without a state", plain.containsMatchIn(src))
+        }
+        val ui = java.io.File(dir, "UiKit.kt").readText()
+        assertTrue(ui.contains("R.string.state_expanded") && ui.contains("R.string.state_collapsed"))
     }
 }

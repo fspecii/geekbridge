@@ -141,6 +141,7 @@ class SetupActivity : Activity() {
     private fun render() {
         // A switch or a dialog answer re-renders the same page: keep the reading position instead of jumping to the top.
         val keepY = if (renderedPage == page) screen.scroll.scrollY else 0
+        val renderedPageBefore = renderedPage
         renderedPage = page
         refresh()
         // Re-render keeps the pairing panel alive while it stays on the pair page.
@@ -148,6 +149,8 @@ class SetupActivity : Activity() {
         if (!onPair) { pairPanel?.detach(stopLink = false); pairPanel = null; pairBox = null }
 
         val root = screen.root
+        // Same page again (a switch, a dialog answer, "More call options"): TalkBack stays on the control it was on.
+        val focus = if (renderedPageBefore == page) A11yLabels.focusPath(root) else null
         root.removeAllViews()
         root.addView(header())
         if (page >= steps.size) overview(root) else stepPage(root, steps[page])
@@ -160,6 +163,7 @@ class SetupActivity : Activity() {
         screen.requestInsets()
         screen.scroll.scrollTo(0, 0)
         if (keepY > 0) screen.scroll.post { screen.scroll.scrollTo(0, keepY) }
+        A11yLabels.restoreFocus(root, focus)
     }
 
     private fun header(): View {
@@ -242,7 +246,7 @@ class SetupActivity : Activity() {
         )
         if (CallControlRuntime.settings.enabled) GrantsUi.add(this, kit, panel, GrantFeature.Calls) { render() }
         // A first-timer sees the permission and the switch; placing calls and call audio are one tap away.
-        kit.button(panel, getString(if (moreCalls) R.string.setup_calls_less else R.string.setup_calls_more), BtnStyle.Plain) {
+        kit.disclosure(panel, getString(if (moreCalls) R.string.setup_calls_less else R.string.setup_calls_more), moreCalls) {
             moreCalls = !moreCalls
             render()
         }

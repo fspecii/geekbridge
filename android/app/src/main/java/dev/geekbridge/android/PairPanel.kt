@@ -114,8 +114,11 @@ class PairPanel(
         ).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
+        // The panel is rebuilt in place: give TalkBack focus back to the control it was on.
+        val focus = A11yLabels.focusPath(container)
         container.removeAllViews()
         build(phase, s)
+        A11yLabels.restoreFocus(container, focus)
     }
 
     private fun build(phase: LinkPhase, s: TransportSnapshot?) {
@@ -147,7 +150,7 @@ class PairPanel(
         // once a search is under way so that its progress is never hidden.
         val expanded = otherOpen || phase != LinkPhase.Stopped
         if (phase == LinkPhase.Stopped) {
-            kit.button(container, activity.getString(if (otherOpen) R.string.pair_other_hide else R.string.pair_other_ways), BtnStyle.Plain) {
+            kit.disclosure(container, activity.getString(if (otherOpen) R.string.pair_other_hide else R.string.pair_other_ways), otherOpen) {
                 otherOpen = !otherOpen
                 render()
             }
