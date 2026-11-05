@@ -538,9 +538,9 @@ const GSM_BASIC: &str = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæ
 const GSM_EXTENDED: &str = "^{}\\[~]|€\u{c}";
 
 fn gsm_cost(c: char) -> Option<usize> {
-    if GSM_BASIC.contains(c) {
+    if GSM_BASIC.chars().any(|b| b == c) {
         Some(1)
-    } else if GSM_EXTENDED.contains(c) {
+    } else if GSM_EXTENDED.chars().any(|b| b == c) {
         Some(2)
     } else {
         None

@@ -1940,7 +1940,7 @@ fn number_like(s: &str) -> bool {
     let t = s.trim();
     t.chars().any(|c| c.is_ascii_digit())
         && t.chars()
-            .all(|c| c.is_ascii_digit() || " -.()+/".contains(c))
+            .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '-' | '.' | '(' | ')' | '+' | '/'))
 }
 
 /// Who a text is from, for "one banner per sender": the number's last ten digits; a sender with no real
@@ -2015,10 +2015,13 @@ fn rank_prefix_first(found: &mut [&Record<Contact>], query: &str) {
     if q.is_empty() {
         return;
     }
-    found.sort_by_cached_key(|r| {
-        !r.item()
+    // A stable partition, not a sort: a keyed sort instantiates a whole quicksort for this one call (~9 kB).
+    let (mut first, rest): (Vec<_>, Vec<_>) = found.iter().partition(|r| {
+        r.item()
             .is_some_and(|c| bridge_core::collate::fold(&c.display_name).starts_with(&q))
     });
+    first.extend(rest);
+    found.copy_from_slice(&first);
 }
 
 fn person(device: &str, rec: &Record<Contact>, c: &Contact) -> Person {
