@@ -208,7 +208,8 @@ batt_is() { [[ "$(batt)" == "$1 $2 "* ]]; }
 batt_low() { [[ "$(batt)" == "9 False True" ]]; }
 batt_none() { [[ "$(batt)" == none ]]; }
 stay_none() { # seconds -> it never appears
-  local i; for ((i = 0; i < $1; i++)); do batt_none || return 1; sleep 1; done
+  # A momentary "nolink" (the emulator destroying the socket and the desktop redialing) is not a reading appearing.
+  local i; for ((i = 0; i < $1; i++)); do batt_none || [[ "$(batt)" == nolink ]] || return 1; sleep 1; done
 }
 stage_battery() {
   [[ "$STOPPING" == 1 ]] && return 0
