@@ -1986,7 +1986,7 @@ mod tests {
     }
 
     async fn settle() {
-        tokio::time::sleep(Duration::from_millis(120)).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
     }
 
     fn drain(rx: &mut mpsc::Receiver<ClipOut>) -> Vec<(String, String)> {

@@ -802,11 +802,13 @@ mod tests {
 
     // ---- the token cache
 
+    #[cfg(unix)]
     fn token_of(byte: u8) -> Token {
         Token::from_bytes([byte; 32])
     }
 
     /// A config whose state folder holds `file` (or nothing), with `cached` already in memory.
+    #[cfg(unix)]
     fn config(dir: &tempfile::TempDir, file: Option<&Token>, cached: Option<Token>) -> Config {
         let state = dir.path().join("state");
         bridge_kde::fsutil::ensure_private_dir(&state).unwrap();
