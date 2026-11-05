@@ -181,15 +181,19 @@ fn the_in_call_keypad_sends_one_tone_per_key_and_only_while_the_service_offers_i
     // Keys typed on the keyboard while the panel is open (digits, * and #) go out one by one; letters do not.
     rig.frame(&mut c, vec![Event::Text("5*#a".into())]);
     rig.settle(&mut c, 3);
-    let tones: Vec<String> = sent
-        .lock()
-        .unwrap()
-        .iter()
-        .filter_map(|r| match r {
-            Request::CallTone { tone, .. } => Some(tone.expose().to_owned()),
-            _ => None,
-        })
-        .collect();
+    // The feed's worker sends on its own thread: wait for the three tones (a slow runner takes a while).
+    let tones = || -> Vec<String> {
+        sent.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|r| match r {
+                Request::CallTone { tone, .. } => Some(tone.expose().to_owned()),
+                _ => None,
+            })
+            .collect()
+    };
+    wait_until("three tones sent", || tones().len() >= 3);
+    let tones = tones();
     assert_eq!(tones, ["5", "*", "#"]);
     // Narrow windows draw it too.
     for (w, h) in [(300.0, 420.0), (900.0, 700.0)] {
