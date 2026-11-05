@@ -319,6 +319,13 @@ stage_popup() {
   else rec callui_popup_buttons FAIL "no red/off-white buttons where expected: decline rgb=$dec answer rgb=$ans"; fi
   # --- Answer
   click_at "$POPUP_ANSWER_X" "$POPUP_BUTTON_Y"
+  # Same emulator modem stall as the card's Answer (run 42058656797: answer ok, ringing -> idle 50 ms later,
+  # off-hook 16 s later, link up throughout): clear the call and ring once more.
+  if ! wait_modem 2 12; then
+    log "popup answer: modem $(modem_state) after clicking Answer; clearing and retrying"
+    hang_up_all; sleep 3; hang_up_all
+    ring "$NUMBER_C" && wait_for 15 popup_visible && { sleep 1.5; click_at "$POPUP_ANSWER_X" "$POPUP_BUTTON_Y"; }
+  fi
   if wait_modem 2 12; then rec callui_popup_answer PASS "click on Answer -> modem off-hook"; else rec callui_popup_answer FAIL "modem $(modem_state) after clicking Answer"; fi
   sleep 2; app_shot call-popup-answered.png
   local ocr_live; ocr_live="$(ocr call-popup-answered.png)"
