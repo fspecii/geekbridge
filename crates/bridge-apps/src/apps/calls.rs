@@ -8,11 +8,17 @@ use crate::{
     call_feed::{CallFeed, FeedState},
     call_ui::{self, CallPanel},
     icons::{self, Icon},
-    input,
+    input, localtime,
+    phone_feed::{self, Feed},
+    recipient_pick::{self, PickKey, Step},
     shell::{AppView, Env, central},
     theme::{self, Palette},
 };
-use bridge_core::calls_view::{RecentCall, RecentKind};
+use bridge_core::{
+    calls_view::{RecentCall, RecentKind},
+    ipc::Request,
+    phone_view::AgendaView,
+};
 use eframe::egui::{self, Align2, FontFamily, FontId, Margin, Sense, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -37,7 +43,18 @@ pub struct Calls {
     confirming: Option<String>,
     /// "Call audio on this computer" checklist, shown on the Recents tab.
     audio: CallAudioPanel,
+    /// Contacts the phone shared, asked only while a name or a stored-looking number is typed.
+    people: Option<Feed<AgendaView>>,
+    picker: recipient_pick::Picker,
+    /// The contact and number last picked from the list; forgotten when the number is edited.
+    picked: Option<(String, String)>,
+    /// Escape closed the list for this text.
+    list_closed: bool,
+    display_had_focus: bool,
 }
+
+/// Suggestions shown at once (the keypad below must stay in reach).
+const SUGGESTIONS: usize = 4;
 
 const KEYS: [[(char, &str); 3]; 4] = [
     [('1', ""), ('2', "ABC"), ('3', "DEF")],
@@ -154,6 +171,35 @@ impl Calls {
         let grid_w = 3.0 * d + 2.0 * gap;
         let left = ((avail.x - grid_w) / 2.0).max(0.0);
 
+        // --- contact suggestions for what is typed (a name, or digits that match a stored number)
+        let lookup = recipient_pick::is_name_query(&self.number)
+            || recipient_pick::is_number_query(&self.number);
+        self.follow_people(ui.ctx(), lookup);
+        let cands = self.suggestions(lookup);
+        if self.picked.as_ref().is_some_and(|(_, n)| *n != self.number) {
+            self.picked = None;
+        }
+        let list_open = lookup && !self.list_closed && self.picked.is_none();
+        let mut step = Step::Ignored;
+        let mut escaped = false;
+        if list_open && self.display_had_focus && !cands.is_empty() {
+            for (key, pick) in [
+                (egui::Key::ArrowDown, PickKey::Down),
+                (egui::Key::ArrowUp, PickKey::Up),
+                (egui::Key::Enter, PickKey::Enter),
+                (egui::Key::Escape, PickKey::Escape),
+            ] {
+                if !ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key)) {
+                    continue;
+                }
+                escaped |= pick == PickKey::Escape;
+                step = match self.picker.key(pick, &cands) {
+                    Step::Ignored if pick == PickKey::Escape => Step::Dismissed,
+                    other => other,
+                };
+            }
+        }
+
         // --- number display: a real text field, so typing and pasting work too
         let len = self.number.chars().count();
         let size = match len {
@@ -177,7 +223,52 @@ impl Calls {
         );
         theme::ring_when_focused(ui, pal, &edit);
         if edit.changed() {
-            self.number = input::sanitize_dial(&self.number);
+            self.number = if recipient_pick::is_name_query(&self.number) {
+                input::clean_name_query(&self.number, recipient_pick::MAX_NAME_CHARS)
+            } else {
+                input::sanitize_dial(&self.number)
+            };
+            self.picker.reset();
+            self.picked = None;
+            self.list_closed = false;
+        }
+        if escaped {
+            edit.request_focus();
+        }
+        self.display_had_focus = edit.has_focus() || escaped;
+        if let Some((name, _)) = &self.picked {
+            ui.vertical_centered(|ui| {
+                ui.label(theme::caption(
+                    pal,
+                    crate::i18n::tr_args("call.dial.picked", &[("name", name)]),
+                ));
+            });
+        }
+        if list_open {
+            let answered = self
+                .people
+                .as_ref()
+                .is_some_and(|f| f.state().view.is_some());
+            // A number with no stored match says nothing; a name with none says so.
+            let clicked = if cands.is_empty() && !recipient_pick::is_name_query(&self.number) {
+                Step::Ignored
+            } else {
+                recipient_pick::show_list(ui, pal, &mut self.picker, &cands, answered)
+            };
+            if !matches!(clicked, Step::Ignored) {
+                step = clicked;
+            }
+        }
+        match step {
+            Step::Picked { name, number } => {
+                // Only the field is filled: Call still opens the confirmation sheet.
+                self.number = input::sanitize_dial(&number);
+                self.picked = Some((name, self.number.clone()));
+                self.picker.reset();
+                self.focus_display = true;
+            }
+            Step::Dismissed => self.list_closed = true,
+            Step::Moved | Step::Ignored => {}
         }
         if self.focus_display {
             edit.request_focus();
@@ -196,7 +287,7 @@ impl Calls {
                     if key == '0' {
                         self.handle_zero(ui, &response);
                     } else if response.clicked() {
-                        input::push_dial_char(&mut self.number, key);
+                        self.push_key(key);
                         // Only a mouse click returns to the display; keyboard activation keeps focus
                         // on the key so Tab/Enter can keep typing digits.
                         self.focus_display = response.hovered();
@@ -249,7 +340,8 @@ impl Calls {
         });
 
         ui.add_space(2.0);
-        if let Some(reason) = blocker {
+        // While a name is typed the list explains itself; "digits only" would be beside the point.
+        if let Some(reason) = blocker.filter(|_| !recipient_pick::is_name_query(&self.number)) {
             ui.vertical_centered(|ui| theme::blocked_note(ui, pal, &reason));
         }
         if !banner_shown {
@@ -258,6 +350,56 @@ impl Calls {
         if self.audio.found_card(ui, pal) {
             self.tab = Tab::Recents;
         }
+    }
+
+    /// A key of the pad: a digit or symbol, appended to the number (or to a name being searched).
+    fn push_key(&mut self, c: char) {
+        if recipient_pick::is_name_query(&self.number) {
+            self.number.push(c);
+            input::limit_chars(&mut self.number, recipient_pick::MAX_NAME_CHARS);
+        } else {
+            input::push_dial_char(&mut self.number, c);
+        }
+    }
+
+    /// Keep the contact search in step with the text; the feed starts on the first lookup only.
+    fn follow_people(&mut self, ctx: &egui::Context, lookup: bool) {
+        if !lookup {
+            return;
+        }
+        let request = Request::AgendaView {
+            query: self.number.trim().to_owned(),
+            day: {
+                let d = localtime::now().date;
+                format!("{:04}-{:02}-{:02}", d.year, d.month, d.day)
+            },
+            utc_offset_minutes: 0,
+            days: 1,
+            people_limit: 12,
+        };
+        match &self.people {
+            Some(feed) => feed.set_params(request),
+            None => {
+                let repaint = ctx.clone();
+                self.people = Some(phone_feed::agenda_feed(
+                    move || repaint.request_repaint(),
+                    request,
+                ));
+            }
+        }
+    }
+
+    fn suggestions(&self, lookup: bool) -> Vec<recipient_pick::Candidate> {
+        let (Some(feed), true) = (&self.people, lookup) else {
+            return Vec::new();
+        };
+        let mut found = feed
+            .state()
+            .view
+            .map(|v| recipient_pick::dial_candidates(&v.people, &self.number))
+            .unwrap_or_default();
+        found.truncate(SUGGESTIONS);
+        found
     }
 
     /// "Call +49...?" sheet. Esc or Cancel drops it; only the Call button sends the request.
@@ -336,6 +478,7 @@ impl Calls {
                 {
                     feed.send(request);
                     self.number.clear();
+                    self.picked = None;
                 }
                 self.confirming = None;
             }
@@ -366,7 +509,7 @@ impl Calls {
         }
         if response.clicked() {
             if !self.zero_long_press_done {
-                input::push_dial_char(&mut self.number, '0');
+                self.push_key('0');
                 self.focus_display = response.hovered();
             }
             self.zero_long_press_done = false;

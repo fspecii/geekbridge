@@ -11,6 +11,7 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 - Calls: **Decline with message.** The incoming-call card and the Linux banner can decline a call and send one of three short texts ("Can't talk now, I'll call you back", "I'm in a meeting", "Call me in a few minutes", editable under Settings > Decline with message, stored on this computer) to the caller through the phone's Messages. Offered only when Messages is allowed for the phone on both sides and the caller's number is known; shares Messages' send limit. Nothing is ever sent automatically.
 - Calls: a missed-call notification with Call back and Message, and a Recents list in the Calls window (calls since the service started, kept in memory only) with Call back and Message per row. Call back still asks for confirmation before dialling.
 - Calls: an opt-in **Respect Do Not Disturb for incoming calls** switch (Settings -> Privacy, off by default). When the desktop is in Do Not Disturb (mako, dunst, SwayNotificationCenter, KDE, GNOME) a ringing call shows no card or banner, but the tray and Recents still record it. Not supported on Windows and macOS, where Settings says so.
+- Calls: the dialer suggests contacts the phone shared while you type a name, or digits that match a stored number (Up/Down/Enter/Esc; one-number contacts are picked directly, several ask which). Dialing still goes through the confirmation sheet.
 
 ## [0.1.0] - 2026-11-03
 

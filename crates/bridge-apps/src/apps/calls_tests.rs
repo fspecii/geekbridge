@@ -98,9 +98,16 @@ fn typing_digits_and_symbols_goes_through_the_sanitiser() {
         "dial string is bounded: {}",
         c.number.len()
     );
+    // Letters are a contact search now; they are bounded, and nothing with letters can be dialed.
+    assert!(c.number.chars().count() <= 64);
     assert!(
-        !c.number.contains('a'),
-        "letters never reach the dialler: {}",
+        !c.number.contains('\u{202e}'),
+        "direction marks are dropped"
+    );
+    let view = c.sources.status.as_ref().expect("status").clone();
+    assert!(
+        call_ui::dial_request(&view.view, &c.number).is_none(),
+        "a name is never dialed: {}",
         c.number
     );
     for key in [Key::Backspace, Key::Delete, Key::Enter, Key::Escape] {
@@ -223,4 +230,121 @@ fn an_active_call_without_tones_shows_no_keypad_and_sends_none() {
     rig.frame(&mut c, vec![Event::Text("123".into())]);
     rig.settle(&mut c, 3);
     assert!(sent.lock().unwrap().is_empty());
+}
+
+fn person(name: &str, phones: &[&str]) -> bridge_core::phone_view::Person {
+    bridge_core::phone_view::Person {
+        device_id: "d".into(),
+        id: name.into(),
+        name: name.into(),
+        phones: phones.iter().map(|s| (*s).to_owned()).collect(),
+        emails: vec![],
+        organization: None,
+    }
+}
+
+fn dialer_with_contacts() -> (Calls, Rig) {
+    let mut rig = Rig::new(AppKind::Calls, 420.0, 760.0);
+    let mut c = calls_with_fixture(false, &rig);
+    settle_with_state(&mut c, &mut rig);
+    let people = vec![
+        person("Ann Lee", &["+44 20 7946 0001"]),
+        person("Joanna Smith", &["+1 555 0100", "+1 555 0101"]),
+    ];
+    c.people = Some(Feed::spawn_with(
+        std::time::Duration::from_millis(10),
+        Request::Status,
+        move |_| {
+            Ok(AgendaView {
+                people: people.clone(),
+                ..AgendaView::default()
+            })
+        },
+        |_| Ok(None),
+        || {},
+    ));
+    c.focus_display = true;
+    rig.settle(&mut c, 2);
+    (c, rig)
+}
+
+fn type_and_wait(c: &mut Calls, rig: &mut Rig, text: &str) {
+    rig.type_text(c, text);
+    wait_until("contacts", || {
+        c.people.as_ref().unwrap().state().view.is_some()
+    });
+    rig.settle(c, 3);
+}
+
+#[test]
+fn a_name_suggests_contacts_and_a_one_number_contact_is_picked_without_dialing() {
+    let (mut c, mut rig) = dialer_with_contacts();
+    type_and_wait(&mut c, &mut rig, "lee");
+    assert_eq!(c.suggestions(true).len(), 1);
+    rig.key(&mut c, Key::Enter);
+    assert_eq!(c.number, "+442079460001");
+    assert_eq!(c.picked.as_ref().unwrap().0, "Ann Lee");
+    assert!(c.confirming.is_none(), "picking never starts the dial");
+    // The list is gone; editing the number forgets the contact.
+    rig.type_text(&mut c, "9");
+    assert!(c.picked.is_none());
+}
+
+#[test]
+fn a_contact_with_several_numbers_asks_which_and_escape_goes_back_then_closes() {
+    let (mut c, mut rig) = dialer_with_contacts();
+    type_and_wait(&mut c, &mut rig, "joanna");
+    rig.key(&mut c, Key::Enter);
+    assert!(c.picker.asking.is_some(), "asks which number");
+    assert!(c.number == "joanna" && c.picked.is_none());
+    rig.key(&mut c, Key::Escape);
+    assert!(c.picker.asking.is_none() && !c.list_closed);
+    rig.key(&mut c, Key::Escape);
+    assert!(c.list_closed);
+    rig.key(&mut c, Key::Backspace);
+    assert!(!c.list_closed, "typing opens the list again");
+    rig.key(&mut c, Key::Enter);
+    rig.key(&mut c, Key::ArrowDown);
+    rig.key(&mut c, Key::Enter);
+    assert_eq!(c.number, "+15550101");
+    assert_eq!(c.picked.as_ref().unwrap().0, "Joanna Smith");
+    assert!(c.confirming.is_none());
+}
+
+#[test]
+fn digits_look_up_contacts_only_from_three_digits_and_only_stored_numbers_match() {
+    let (mut c, mut rig) = dialer_with_contacts();
+    assert!(
+        !recipient_pick::is_number_query("44"),
+        "two digits ask nobody"
+    );
+    rig.type_text(&mut c, "4420");
+    rig.settle(&mut c, 2);
+    wait_until("contacts", || {
+        c.people.as_ref().unwrap().state().view.is_some()
+    });
+    rig.settle(&mut c, 3);
+    assert_eq!(c.suggestions(true).len(), 1);
+    c.number = "99999".into();
+    rig.settle(&mut c, 2);
+    assert!(
+        c.suggestions(true).is_empty(),
+        "an unknown number finds nobody"
+    );
+    c.number = "*21*7946#".into();
+    assert!(
+        !recipient_pick::is_number_query(&c.number),
+        "codes are not looked up"
+    );
+}
+
+#[test]
+fn the_pad_keys_extend_a_name_search_instead_of_wiping_it() {
+    let (mut c, _rig) = dialer_with_contacts();
+    c.number = "ann".into();
+    c.push_key('2');
+    assert_eq!(c.number, "ann2");
+    c.number = "+44".into();
+    c.push_key('5');
+    assert_eq!(c.number, "+445");
 }

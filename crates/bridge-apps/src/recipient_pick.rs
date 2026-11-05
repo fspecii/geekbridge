@@ -41,12 +41,59 @@ pub fn candidates(people: &[Person], query: &str) -> Vec<Candidate> {
         return Vec::new();
     }
     let whole = collate::fold(query.trim());
+    gather(people, |p| {
+        let folded = collate::fold(&p.name);
+        words
+            .iter()
+            .all(|w| folded.contains(w.as_str()))
+            .then(|| folded.starts_with(&whole))
+    })
+}
+
+/// Fewest digits that count as "a number being typed" for a contact lookup. Fewer would match nearly
+/// everyone and ask the contacts about every first keystroke.
+pub const MIN_NUMBER_DIGITS: usize = 3;
+
+/// Digits (with an optional leading `+`, spaces, dashes, dots and brackets) and nothing else, at least
+/// [`MIN_NUMBER_DIGITS`] of them. Codes with `*` or `#` are never looked up.
+pub fn is_number_query(text: &str) -> bool {
+    let t = text.trim();
+    t.chars().filter(char::is_ascii_digit).count() >= MIN_NUMBER_DIGITS
+        && t.chars()
+            .enumerate()
+            .all(|(i, c)| c.is_ascii_digit() || " -.()".contains(c) || (i == 0 && c == '+'))
+}
+
+/// Suggestions for the dialer's field: a name is searched like in Messages; digits only suggest a contact
+/// whose stored number contains them (so a number nobody stored finds nobody); anything else finds nobody.
+pub fn dial_candidates(people: &[Person], query: &str) -> Vec<Candidate> {
+    if is_name_query(query) {
+        return candidates(people, query);
+    }
+    if !is_number_query(query) {
+        return Vec::new();
+    }
+    let typed = digits(query);
+    gather(people, |p| {
+        let mut found = None;
+        for n in &p.phones {
+            let d = digits(n);
+            if d.contains(&typed) {
+                found = Some(found.unwrap_or(false) || d.starts_with(&typed));
+            }
+        }
+        found
+    })
+}
+
+/// People for whom `hit` answers `Some(starts)`, merged by name and number, best first.
+fn gather(people: &[Person], hit: impl Fn(&Person) -> Option<bool>) -> Vec<Candidate> {
     let mut out: Vec<(bool, String, Candidate)> = Vec::new();
     for p in people {
-        let folded = collate::fold(&p.name);
-        if p.name.trim().is_empty() || !words.iter().all(|w| folded.contains(w.as_str())) {
+        if p.name.trim().is_empty() {
             continue;
         }
+        let Some(starts) = hit(p) else { continue };
         let mut numbers: Vec<String> = Vec::new();
         for n in &p.phones {
             let d = digits(n);
@@ -66,7 +113,7 @@ pub fn candidates(people: &[Person], query: &str) -> Vec<Candidate> {
                 }
             }
             None => out.push((
-                folded.starts_with(&whole),
+                starts,
                 collate::key(&p.name),
                 Candidate {
                     name: p.name.clone(),
@@ -223,6 +270,42 @@ impl Picker {
     }
 }
 
+/// The list under a recipient field (Messages' To, the dialer's number). `answered`: the contacts have
+/// been heard from, so "no contact" may be said. Returns a click as a step.
+pub fn show_list(
+    ui: &mut eframe::egui::Ui,
+    pal: &crate::theme::Palette,
+    picker: &mut Picker,
+    cands: &[Candidate],
+    answered: bool,
+) -> Step {
+    use crate::theme;
+    use eframe::egui::{self, RichText};
+    let mut step = Step::Ignored;
+    if cands.is_empty() {
+        if answered {
+            ui.add(egui::Label::new(theme::caption(pal, none_found())).wrap());
+        }
+        return step;
+    }
+    if let Some(h) = picker.heading() {
+        ui.add(egui::Label::new(theme::secondary(pal, h)).wrap());
+    }
+    let rows = picker.rows(cands);
+    let highlight = picker.highlight.min(rows.len().saturating_sub(1));
+    for (i, row) in rows.iter().enumerate() {
+        let r = ui.add_sized(
+            [ui.available_width(), 26.0],
+            egui::SelectableLabel::new(i == highlight, RichText::new(row.text.as_str())),
+        );
+        if crate::a11y::named(r, &row.spoken).clicked() {
+            step = picker.choose(i, cands);
+        }
+    }
+    ui.add(egui::Label::new(theme::caption(pal, tr("compose.to.keys"))).wrap());
+    step
+}
+
 /// The line under the field when a name matches nobody.
 pub fn none_found() -> String {
     tr("compose.to.none").to_owned()
@@ -366,5 +449,39 @@ mod tests {
         assert!(several.spoken.contains("2 numbers"));
         let emile = Picker::default().rows(&candidates(&people(), "emile"));
         assert!(emile[0].text.contains("+33") && emile[0].spoken.contains("+33"));
+    }
+
+    #[test]
+    fn digits_suggest_only_a_contact_whose_stored_number_contains_them() {
+        let p = people();
+        let names = |q: &str| {
+            dial_candidates(&p, q)
+                .into_iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names("7946"), ["Ann Lee"]);
+        assert_eq!(names("+44 20 79"), ["Ann Lee"]);
+        assert_eq!(names("0100"), ["Joanna Smith"]);
+        assert!(
+            names("999999").is_empty(),
+            "a number nobody stored finds nobody"
+        );
+        assert!(names("79").is_empty(), "two digits are not looked up");
+        assert!(names("*21*79#").is_empty(), "codes are never looked up");
+        assert!(names("123 abc").is_empty());
+        assert_eq!(names("zola"), ["Émile Zola"], "names still work");
+        assert!(names("").is_empty());
+    }
+
+    #[test]
+    fn a_number_that_starts_the_stored_number_comes_before_one_that_only_contains_it() {
+        let p = vec![
+            person("Amy", &["+1 202 5551"]),
+            person("Zed", &["555 0100"]),
+        ];
+        let found = dial_candidates(&p, "555");
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "Zed", "starts the number, so first");
     }
 }

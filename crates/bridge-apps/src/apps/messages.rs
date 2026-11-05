@@ -941,33 +941,11 @@ impl Messages {
         pal: &Palette,
         cands: &[recipient_pick::Candidate],
     ) -> Step {
-        let mut step = Step::Ignored;
-        if cands.is_empty() {
-            let answered = self
-                .people
-                .as_ref()
-                .is_some_and(|f| f.state().view.is_some());
-            if answered {
-                ui.add(egui::Label::new(theme::caption(pal, recipient_pick::none_found())).wrap());
-            }
-            return step;
-        }
-        if let Some(h) = self.picker.heading() {
-            ui.add(egui::Label::new(theme::secondary(pal, h)).wrap());
-        }
-        let rows = self.picker.rows(cands);
-        let highlight = self.picker.highlight.min(rows.len().saturating_sub(1));
-        for (i, row) in rows.iter().enumerate() {
-            let r = ui.add_sized(
-                [ui.available_width(), 26.0],
-                egui::SelectableLabel::new(i == highlight, RichText::new(row.text.as_str())),
-            );
-            if crate::a11y::named(r, &row.spoken).clicked() {
-                step = self.picker.choose(i, cands);
-            }
-        }
-        ui.add(egui::Label::new(theme::caption(pal, crate::i18n::tr("compose.to.keys"))).wrap());
-        step
+        let answered = self
+            .people
+            .as_ref()
+            .is_some_and(|f| f.state().view.is_some());
+        recipient_pick::show_list(ui, pal, &mut self.picker, cands, answered)
     }
 
     fn compose(&mut self, ui: &mut egui::Ui, env: &Env) {

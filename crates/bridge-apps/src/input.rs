@@ -23,6 +23,16 @@ pub fn push_dial_char(number: &mut String, c: char) {
     *number = sanitize_dial(&candidate);
 }
 
+/// A contact search typed into the dialer: letters, digits, spaces and a few name marks; no control or
+/// direction characters; bounded. It is only ever a search, never dialed.
+pub fn clean_name_query(input: &str, max: usize) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_alphanumeric() || " -.'’+".contains(*c))
+        .take(max)
+        .collect()
+}
+
 /// Truncate in place to at most `max` characters, on a character boundary.
 pub fn limit_chars(text: &mut String, max: usize) {
     if let Some((index, _)) = text.char_indices().nth(max) {

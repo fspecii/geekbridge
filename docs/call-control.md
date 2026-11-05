@@ -172,6 +172,16 @@ earlier ring cannot decline or text a later one. `Request::CallRepliesSet { text
 unit tests; goldens `call-overlay-reply*`. Not available on the Windows and macOS banners (they have no extra buttons);
 the card has it on every desktop.
 
+## Contact suggestions in the dialer
+
+The Calls window's number field also takes a name. A letter makes the text a contact search (letters, digits, spaces and
+`-.'+` only, 64 characters, never dialed: Call stays off). Plain digits look contacts up only from three digits on
+(`*` and `#` codes never), and suggest only a contact whose stored number contains them, so a number nobody stored shows
+nothing. The search reuses the Messages contact code (`recipient_pick::dial_candidates`, the same `AgendaView` request
+to the service, nothing leaves the computer; the contacts consent applies as in Messages). Up/Down choose, Enter picks,
+Escape goes back and then closes the list; a contact with one number is picked directly, with several asks which.
+Picking only fills the field. Call still opens the confirmation sheet, which names the number and the phone.
+
 ## Do Not Disturb (opt-in)
 
 Settings -> Privacy -> **Respect Do Not Disturb for incoming calls** (`geekbridge-ctl privacy set respect_dnd on`,
