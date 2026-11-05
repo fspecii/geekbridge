@@ -145,6 +145,7 @@ mod tests {
             sources: vec![],
             audio_note: None,
             wifi: None,
+            replies: Default::default(),
         }
     }
 

@@ -20,12 +20,15 @@ use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
+use bridge_core::call_replies::MAX_REPLIES;
 #[cfg(target_os = "linux")]
 use bridge_core::calls::Support;
 use bridge_core::calls::{CallCommand, CallState, Sensitive};
 use bridge_core::calls_link::{self as link, LinkAction, LinkCallReport, LinkFailure};
-use bridge_core::calls_view::{self as view, ActionTarget, CallsView, ControlPath, SourceSnapshot};
-use bridge_core::ipc::{CallAction, CallsStatus, ErrorBody, ErrorCode};
+use bridge_core::calls_view::{
+    self as view, ActionTarget, CallsView, ControlPath, SourceSnapshot, callback_number,
+};
+use bridge_core::ipc::{CallAction, CallsStatus, DeclineReplies, ErrorBody, ErrorCode};
 use tokio::sync::mpsc;
 
 const LINK_PREFIX: &str = "link:";
@@ -150,6 +153,8 @@ impl Drop for HostHandle {
 pub enum RingChoice {
     Answer,
     Decline,
+    /// Decline and send the saved text with this index ([`DeclineReplies::texts`]).
+    DeclineWith(u8),
 }
 
 /// What the desktop shows when a call rings while no Calls window is open.
@@ -162,6 +167,20 @@ pub trait CallNotifier: Send + Sync {
         can_decline: bool,
         reply: Box<dyn FnOnce(RingChoice) + Send>,
     );
+    /// Like [`Self::ringing`], with the short texts the banner may offer as "Decline with message"
+    /// (empty when the action is not available for this call). A banner without such buttons
+    /// ignores them.
+    fn ringing_with_replies(
+        &self,
+        caller: &str,
+        can_answer: bool,
+        can_decline: bool,
+        replies: &[String],
+        reply: Box<dyn FnOnce(RingChoice) + Send>,
+    ) {
+        let _ = replies;
+        self.ringing(caller, can_answer, can_decline, reply);
+    }
     /// A ring ended with nobody answering. `number` is a plain, dialable number when the caller
     /// is known by one, so the banner may offer "Call back" and "Message". Default: say nothing.
     fn missed(&self, caller: &str, number: Option<&str>) {
@@ -175,6 +194,18 @@ pub trait CallNotifier: Send + Sync {
 pub struct NotifySendCalls;
 impl NotifySendCalls {
     pub fn args(caller: &str, can_answer: bool, can_decline: bool) -> Vec<String> {
+        Self::args_with_replies(caller, can_answer, can_decline, &[])
+    }
+
+    /// As [`Self::args`], plus one "Decline + text" button per saved reply (only when Decline is
+    /// on offer). The texts are the person's own words, never a number, and are cleaned like the
+    /// caller name; the action names are fixed (`reply0`..).
+    pub fn args_with_replies(
+        caller: &str,
+        can_answer: bool,
+        can_decline: bool,
+        replies: &[String],
+    ) -> Vec<String> {
         let clean = crate::notify_text::plain(caller, 80);
         let mut args = vec![
             "--app-name=GeekBridge".to_owned(),
@@ -191,6 +222,10 @@ impl NotifySendCalls {
         }
         if can_decline {
             args.push("--action=decline=Decline".into());
+            for (i, text) in replies.iter().take(MAX_REPLIES).enumerate() {
+                let text = crate::notify_text::plain(text, 60);
+                args.push(format!("--action=reply{i}=Decline + text: {text}"));
+            }
         }
         if can_answer || can_decline {
             // A click on the body (mako draws no buttons) opens the Calls window; it never answers.
@@ -264,7 +299,19 @@ impl CallNotifier for NotifySendCalls {
         can_decline: bool,
         reply: Box<dyn FnOnce(RingChoice) + Send>,
     ) {
-        let args = Self::args(caller, can_answer, can_decline);
+        self.ringing_with_replies(caller, can_answer, can_decline, &[], reply);
+    }
+
+    fn ringing_with_replies(
+        &self,
+        caller: &str,
+        can_answer: bool,
+        can_decline: bool,
+        replies: &[String],
+        reply: Box<dyn FnOnce(RingChoice) + Send>,
+    ) {
+        let replies: Vec<String> = replies.iter().take(MAX_REPLIES).cloned().collect();
+        let args = Self::args_with_replies(caller, can_answer, can_decline, &replies);
         // The top-right card with Answer / Reject is started by the hub (call_overlay::Supervisor);
         // this banner stays as the additional signal and the fallback.
         std::thread::spawn(move || {
@@ -277,12 +324,54 @@ impl CallNotifier for NotifySendCalls {
                 match String::from_utf8_lossy(&out.stdout).trim() {
                     "answer" if can_answer => reply(RingChoice::Answer),
                     "decline" if can_decline => reply(RingChoice::Decline),
+                    other if can_decline && other.starts_with("reply") => {
+                        if let Some(i) = other["reply".len()..]
+                            .parse::<u8>()
+                            .ok()
+                            .filter(|i| usize::from(*i) < replies.len())
+                        {
+                            reply(RingChoice::DeclineWith(i));
+                        }
+                    }
                     "default" => crate::desktop_notify::open_app("geekbridge-calls"),
                     _ => {}
                 }
             }
         });
     }
+}
+
+// ------------------------------------------------------------------ decline with a message
+
+/// What "Decline with message" needs from the rest of the service: the saved texts and the
+/// Messages path. The hub decides which call it is about; this decides whether a text may go.
+pub trait ReplyTexts: Send + Sync {
+    /// The saved texts, else the defaults (at most [`MAX_REPLIES`]).
+    fn texts(&self) -> Vec<String>;
+    /// Messages is allowed for `device_id` on both sides, the phone is connected and takes texts,
+    /// and the send limit has room.
+    fn can_send(&self, device_id: &str) -> bool;
+    /// Send `text` to `number` through the phone `device_id`; `submission` makes a repeat harmless.
+    fn send(
+        &self,
+        device_id: &str,
+        number: &str,
+        text: &str,
+        submission: &str,
+    ) -> Result<(), ErrorBody>;
+}
+
+/// The phone a link call row belongs to (`link:<device>|<call>` in its parts or key).
+fn link_device(row: &view::CallRow) -> Option<&str> {
+    let keys: Vec<&String> = if row.parts.is_empty() {
+        vec![&row.key]
+    } else {
+        row.parts.iter().collect()
+    };
+    keys.into_iter().find_map(|k| {
+        let rest = k.strip_prefix(LINK_PREFIX)?;
+        Some(rest.split('|').next().unwrap_or(rest))
+    })
 }
 
 // ------------------------------------------------------------------ the hub
@@ -344,6 +433,8 @@ struct Inner {
     trace: crate::call_trace::ViewMemo,
     /// Calls that ended since the service started (memory only).
     history: crate::call_history::History,
+    /// Rings already declined with a text, so a second click cannot send a second one.
+    replied: BTreeSet<u64>,
     /// `notice` is the phone's "no such call" for an answer or decline that raced the phone (the
     /// user picked up by hand, the caller gave up); the next report that shows the call moved on
     /// explains it, so it is cleared then.
@@ -369,6 +460,8 @@ pub struct CallHub {
     /// grace re-check all call it, and a view built before another caller's update must not undo
     /// that update (a ring forgotten for a moment comes back as a new ring with a second banner).
     announcing: Mutex<()>,
+    /// "Decline with message": the texts and the Messages path (see [`ReplyTexts`]).
+    replies: Mutex<Option<Arc<dyn ReplyTexts>>>,
     /// Wakes the parked watchdog: it runs only while there is something to watch (a ring, a call
     /// on a link, a card, a dropped link's rings), so an idle service gains no wake-ups.
     wake: Arc<(Mutex<bool>, std::sync::Condvar)>,
@@ -387,6 +480,7 @@ impl CallHub {
             host: Mutex::new(None),
             notifier: Mutex::new(None),
             overlay: Mutex::new(None),
+            replies: Mutex::new(None),
             announcing: Mutex::new(()),
             wake: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
             timings,
@@ -449,6 +543,38 @@ impl CallHub {
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn set_replies(&self, replies: Arc<dyn ReplyTexts>) {
+        *self.replies.lock().unwrap_or_else(|e| e.into_inner()) = Some(replies);
+    }
+
+    fn reply_source(&self) -> Option<Arc<dyn ReplyTexts>> {
+        self.replies
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The texts on offer for `row` (empty unless the call can be declined, came over the phone
+    /// link with a plain number, and the Messages path would take a text now).
+    fn replies_for(&self, row: &view::CallRow) -> Vec<String> {
+        let Some(src) = self.reply_source() else {
+            return Vec::new();
+        };
+        let ok = row.reject.is_some()
+            && row
+                .number
+                .as_ref()
+                .and_then(|n| callback_number(n.expose()))
+                .is_some()
+            && link_device(row).is_some_and(|d| src.can_send(d));
+        if !ok {
+            return Vec::new();
+        }
+        let mut t = src.texts();
+        t.truncate(MAX_REPLIES);
+        t
     }
 
     pub fn set_notifier(&self, notifier: Arc<dyn CallNotifier>) {
@@ -911,7 +1037,19 @@ impl CallHub {
             .into_iter()
             .find(|l| !l.starts_with("Call audio:"));
         let mut view = view::build(&snaps);
+        let texts = self.reply_source().map(|r| r.texts()).unwrap_or_default();
+        let offered = view
+            .ringing()
+            .is_some_and(|r| !self.replies_for(r).is_empty());
         let inner = self.inner();
+        let offered = offered
+            && view.ringing().is_some_and(|r| {
+                !r.parts
+                    .iter()
+                    .chain(std::iter::once(&r.key))
+                    .filter_map(|p| inner.rings.get(p))
+                    .any(|n| inner.replied.contains(n))
+            });
         view.recent = inner.history.recent(Instant::now());
         CallsStatus {
             view,
@@ -919,6 +1057,7 @@ impl CallHub {
             sources,
             audio_note: audio_problem.or_else(|| Self::audio_note(&snaps)),
             wifi: None,
+            replies: DeclineReplies { texts, offered },
         }
     }
 
@@ -1064,6 +1203,108 @@ impl CallHub {
             }
         }
         result
+    }
+
+    /// Decline the ringing call `target` offers and send it saved text number `index` through the
+    /// phone's Messages path. Everything is checked before the call is touched, so a refusal
+    /// leaves it ringing. The decline is the point: once it is done it stays done, and a text the
+    /// phone then refuses is reported in the notice, not as a failed decline. A second request for
+    /// the same ring does nothing.
+    pub fn decline_with_reply(
+        self: &Arc<Self>,
+        target: &ActionTarget,
+        index: usize,
+    ) -> Result<(), ErrorBody> {
+        let result = self.decline_with_reply_inner(target, index);
+        crate::call_trace::record(
+            "request",
+            &format!("decline-with-text reply={index}: {}", outcome(&result)),
+        );
+        result
+    }
+
+    fn decline_with_reply_inner(
+        self: &Arc<Self>,
+        target: &ActionTarget,
+        index: usize,
+    ) -> Result<(), ErrorBody> {
+        let src = self.reply_source().ok_or_else(|| {
+            err(
+                ErrorCode::Unsupported,
+                "declining with a message is not available",
+            )
+        })?;
+        let view = self.view();
+        let row = view
+            .rows
+            .iter()
+            .find(|r| r.ringing() && r.reject.as_ref() == Some(target))
+            .ok_or_else(|| err(ErrorCode::NotFound, "that call changed; nothing was sent"))?;
+        let texts = self.replies_for(row);
+        if texts.is_empty() {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "a text cannot be sent for this call; nothing was sent",
+            ));
+        }
+        let text = texts
+            .get(index)
+            .cloned()
+            .ok_or_else(|| err(ErrorCode::BadRequest, "no such reply"))?;
+        let (Some(device), Some(number)) = (
+            link_device(row).map(str::to_owned),
+            row.number
+                .as_ref()
+                .and_then(|n| callback_number(n.expose())),
+        ) else {
+            return Err(err(
+                ErrorCode::Unsupported,
+                "this call has no number to text",
+            ));
+        };
+        let ring = {
+            let inner = self.inner();
+            row.parts
+                .iter()
+                .chain(std::iter::once(&row.key))
+                .find_map(|p| inner.rings.get(p).copied())
+        };
+        if let Some(ring) = ring {
+            if !self.inner().replied.insert(ring) {
+                return Ok(());
+            }
+        }
+        if let Err(e) = self.act(target, CallAction::Reject) {
+            if let Some(ring) = ring {
+                self.inner().replied.remove(&ring);
+            }
+            return Err(e);
+        }
+        let submission = format!(
+            "dr{}-{}",
+            ring.unwrap_or(0),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis())
+        );
+        let sent = src.send(&device, &number, &text, &submission);
+        crate::call_trace::record(
+            "reply",
+            &format!(
+                "text after decline: {}",
+                match &sent {
+                    Ok(()) => "handed to the phone".to_owned(),
+                    Err(e) => format!("not sent ({:?})", e.code),
+                }
+            ),
+        );
+        if let Err(e) = sent {
+            self.inner().notice = Some(format!(
+                "Declined, but the text was not sent: {}",
+                e.message
+            ));
+        }
+        Ok(())
     }
 
     pub fn mute(&self, source: &str, muted: bool) -> Result<(), ErrorBody> {
@@ -1518,14 +1759,22 @@ impl CallHub {
             let answer = row.answer.clone();
             let reject = row.reject.clone();
             let (can_answer, can_decline) = (answer.is_some(), reject.is_some());
-            notifier.ringing(
+            let replies = self.replies_for(&row);
+            notifier.ringing_with_replies(
                 &row.caller_label(),
                 can_answer,
                 can_decline,
+                &replies,
                 Box::new(move |choice| {
                     let target = match (choice, answer, reject) {
                         (RingChoice::Answer, Some(t), _) => (t, CallAction::Answer),
                         (RingChoice::Decline, _, Some(t)) => (t, CallAction::Reject),
+                        (RingChoice::DeclineWith(i), _, Some(t)) => {
+                            if hub.still_ringing(ring) {
+                                let _ = hub.decline_with_reply(&t, usize::from(i));
+                            }
+                            return;
+                        }
                         _ => return,
                     };
                     // A banner outlives its ring (it waits up to 30 s). A click on it must not

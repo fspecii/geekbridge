@@ -593,6 +593,7 @@ pub(crate) fn fixture_feed_sending(
         sources: Vec::new(),
         audio_note: None,
         wifi: wifi_fixture(kind),
+        replies: Default::default(),
     };
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),

@@ -122,11 +122,24 @@ type Reply = Box<dyn FnOnce(RingChoice) + Send>;
 #[derive(Default)]
 struct Banners {
     shown: Mutex<Vec<(String, bool, bool)>>,
+    /// The "Decline with message" texts each banner offered (empty = no such buttons).
+    texts: Mutex<Vec<Vec<String>>>,
     replies: Mutex<Vec<Option<Reply>>>,
 }
 struct FakeNotifier(Arc<Banners>);
 impl CallNotifier for FakeNotifier {
     fn ringing(&self, caller: &str, can_answer: bool, can_decline: bool, reply: Reply) {
+        self.ringing_with_replies(caller, can_answer, can_decline, &[], reply);
+    }
+    fn ringing_with_replies(
+        &self,
+        caller: &str,
+        can_answer: bool,
+        can_decline: bool,
+        texts: &[String],
+        reply: Reply,
+    ) {
+        self.0.texts.lock().unwrap().push(texts.to_vec());
         self.0
             .shown
             .lock()
@@ -177,6 +190,10 @@ struct Model {
     /// The core's last report (greeted to new connections, resent on `report`).
     last: Option<Map<String, Value>>,
     name: Option<&'static str>,
+    /// The caller's number in the ring report (the phone shares it when READ_CALL_LOG is granted).
+    number: Option<&'static str>,
+    /// Texts the phone was asked to send: (address, body).
+    texts: Vec<(String, String)>,
     can_dial: bool,
     /// The phone says it can play keypad tones (an older app does not).
     can_tones: bool,
@@ -195,7 +212,9 @@ impl Model {
     fn report(&self, state: PhoneState) -> Map<String, Value> {
         LinkCallReport {
             state,
-            number: None,
+            number: (state != PhoneState::Idle)
+                .then_some(())
+                .and(self.number.map(Sensitive::new)),
             name: (state != PhoneState::Idle)
                 .then_some(())
                 .and(self.name.map(Sensitive::new)),
@@ -297,7 +316,7 @@ struct SimPhone {
     stop: Option<oneshot::Sender<()>>,
 }
 
-fn calls_phone(name: &str) -> Arc<Phone> {
+fn calls_phone(name: &str, takes_texts: bool) -> Arc<Phone> {
     let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
     let mut config = kde::TransportConfig::default();
     config.address_policy.loopback = true;
@@ -305,7 +324,11 @@ fn calls_phone(name: &str) -> Arc<Phone> {
         creds.clone(),
         name,
         kde::DeviceType::Phone,
-        vec!["kdeconnect.ping".into(), link::REQUEST.into()],
+        ["kdeconnect.ping", link::REQUEST]
+            .into_iter()
+            .chain(takes_texts.then_some(bridge_kde::sms::REQUEST))
+            .map(String::from)
+            .collect(),
         vec![
             "kdeconnect.ping".into(),
             link::STATE.into(),
@@ -354,6 +377,15 @@ async fn run_phone(
                     // reply never overtakes a state change queued before it.
                     let _ = tx.send(out);
                 }
+                Ok(kde::LinkEvent::Packet(p)) if p.kind == bridge_kde::sms::REQUEST => {
+                    let address = p.body["addresses"][0]["address"].as_str().unwrap_or("");
+                    let body = p.body["messageBody"].as_str().unwrap_or("");
+                    model
+                        .lock()
+                        .unwrap()
+                        .texts
+                        .push((address.to_owned(), body.to_owned()));
+                }
                 Ok(_) => {}
                 Err(_) => return,
             },
@@ -364,8 +396,15 @@ async fn run_phone(
 
 impl SimPhone {
     /// Pair `name` with the service, switch Telephony on for it and start its loop.
-    async fn pair(rig: &Rig, name: &str) -> Self {
-        let phone = calls_phone(name);
+    /// `phone_takes_texts`: the phone's Messages switch is on (it accepts text
+    /// send requests); `allowed_here`: Messages is allowed for it on the computer.
+    async fn pair_with_texts(
+        rig: &Rig,
+        name: &str,
+        phone_takes_texts: bool,
+        allowed_here: bool,
+    ) -> Self {
+        let phone = calls_phone(name, phone_takes_texts);
         let link = pair_phone(rig, &phone).await;
         rig.ok(Request::SetConsent {
             device_id: phone.id(),
@@ -373,12 +412,22 @@ impl SimPhone {
             enabled: true,
         })
         .await;
+        if allowed_here {
+            rig.ok(Request::SetConsent {
+                device_id: phone.id(),
+                feature: Feature::Sms,
+                enabled: true,
+            })
+            .await;
+        }
         let (tx, rx) = mpsc::unbounded_channel();
         let model = Arc::new(Mutex::new(Model {
             sources: BTreeMap::new(),
             merged: None,
             last: None,
             name: Some("Ada"),
+            number: None,
+            texts: Vec::new(),
             can_dial: false,
             can_tones: true,
             tones: Vec::new(),
@@ -461,6 +510,9 @@ impl SimPhone {
         self.start(link);
     }
 
+    fn texts(&self) -> Vec<(String, String)> {
+        self.model.lock().unwrap().texts.clone()
+    }
     fn requests(&self) -> Vec<LinkAction> {
         self.model.lock().unwrap().requests.clone()
     }
@@ -658,7 +710,10 @@ async fn world(hfp: Option<(&str, Duration)>) -> World {
 
 impl World {
     async fn phone(&self, name: &str) -> SimPhone {
-        let p = SimPhone::pair(&self.rig, name).await;
+        self.phone_with_texts(name, false, false).await
+    }
+    async fn phone_with_texts(&self, name: &str, takes: bool, allowed: bool) -> SimPhone {
+        let p = SimPhone::pair_with_texts(&self.rig, name, takes, allowed).await;
         if let Some(h) = &self.hfp
             && h.lock().unwrap().phone.is_none()
         {
@@ -1359,5 +1414,174 @@ async fn keypad_tones_use_bluetooth_when_it_is_there_and_the_call_is_live() {
     assert!(
         phone.model.lock().unwrap().tones.is_empty(),
         "the link was not used"
+    );
+}
+
+// ---------------------------------------------------------------- decline with a message
+
+/// A phone whose Messages switch is on, allowed here, ringing with a plain number.
+async fn texting_phone(w: &World) -> SimPhone {
+    let phone = w.phone_with_texts("Fold", true, true).await;
+    phone.model.lock().unwrap().number = Some("+1 (555) 010-0100");
+    phone
+}
+
+#[tokio::test]
+async fn decline_with_message_declines_once_and_sends_one_text_to_the_caller() {
+    let w = world(None).await;
+    let phone = texting_phone(&w).await;
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert!(c.replies.offered, "{c:?}");
+    assert_eq!(c.replies.texts, bridge_core::call_replies::defaults());
+    // The banner offered the same three texts.
+    eventually("the banner", || w.banners.count() == 1).await;
+    assert_eq!(
+        w.banners.texts.lock().unwrap()[0],
+        bridge_core::call_replies::defaults()
+    );
+    let target = c.view.ringing().unwrap().reject.clone().unwrap();
+    let ask = Request::CallDeclineReply { target, reply: 1 };
+    // Double click: one decline, one text.
+    w.rig.ok(ask.clone()).await;
+    let _ = w.rig.call(ask).await;
+    until(&w.rig, "declined", idle).await;
+    eventually("the text", || !phone.texts().is_empty()).await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(phone.controls(), [LinkAction::Reject]);
+    assert_eq!(
+        phone.texts(),
+        [("+15550100100".to_owned(), "I'm in a meeting".to_owned())]
+    );
+    // The call is listed as declined here, not missed, and no missed-call notice was raised.
+    let c = calls(&w.rig).await;
+    assert_eq!(c.notice, None, "{c:?}");
+    assert!(!c.replies.offered);
+}
+
+#[tokio::test]
+async fn decline_with_message_needs_messages_allowed_on_both_sides_and_a_number() {
+    let w = world(None).await;
+    // Allowed here, but the phone's Messages switch is off (it does not accept texts to send).
+    let phone_off = w.phone_with_texts("Off", false, true).await;
+    phone_off.model.lock().unwrap().number = Some("+15550100");
+    phone_off.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert!(!c.replies.offered, "{c:?}");
+    let target = c.view.ringing().unwrap().reject.clone().unwrap();
+    assert_eq!(
+        w.rig
+            .refused(Request::CallDeclineReply {
+                target: target.clone(),
+                reply: 0
+            })
+            .await,
+        bridge_core::ipc::ErrorCode::Unsupported
+    );
+    // Refused before anything happened: the call still rings, nothing went to the phone.
+    sleep(Duration::from_millis(200)).await;
+    assert_eq!(phone_off.controls(), []);
+    assert!(ringing(&w.calls().await));
+    assert!(w.banners.texts.lock().unwrap()[0].is_empty());
+    phone_off.ring_all(PhoneState::Idle);
+    until(&w.rig, "idle", idle).await;
+}
+
+#[tokio::test]
+async fn decline_with_message_is_hidden_when_this_computer_does_not_allow_messages_or_no_number() {
+    let w = world(None).await;
+    let phone = w.phone_with_texts("Quiet", true, false).await;
+    phone.model.lock().unwrap().number = Some("+15550100");
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert!(!c.replies.offered, "no Messages consent here: {c:?}");
+    phone.ring_all(PhoneState::Idle);
+    until(&w.rig, "idle", idle).await;
+    // Now allowed, but the caller is hidden: nothing to text.
+    w.rig
+        .ok(Request::SetConsent {
+            device_id: phone.phone.id(),
+            feature: Feature::Sms,
+            enabled: true,
+        })
+        .await;
+    phone.model.lock().unwrap().number = None;
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert!(!c.replies.offered, "no number: {c:?}");
+    phone.ring_all(PhoneState::Idle);
+    until(&w.rig, "idle", idle).await;
+    // A number that is not plain digits is never texted.
+    phone.model.lock().unwrap().number = Some("*123#");
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert!(!c.replies.offered, "{c:?}");
+}
+
+#[tokio::test]
+async fn the_banner_declines_with_a_text_and_an_old_banner_cannot_text_a_later_ring() {
+    let w = world(None).await;
+    let phone = texting_phone(&w).await;
+    phone.ring_all(PhoneState::Ringing);
+    until(&w.rig, "ringing", ringing).await;
+    eventually("banner 1", || w.banners.count() == 1).await;
+    phone.ring_all(PhoneState::Idle);
+    until(&w.rig, "the caller gave up", idle).await;
+    phone.ring_all(PhoneState::Ringing);
+    until(&w.rig, "ringing again", ringing).await;
+    eventually("banner 2", || w.banners.count() == 2).await;
+    // The first banner belongs to the ring that ended: nothing is declined or sent.
+    w.banners.press(0, RingChoice::DeclineWith(0)).await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!((phone.controls(), phone.texts()), (vec![], vec![]));
+    // The second one declines and texts the third reply.
+    w.banners.press(1, RingChoice::DeclineWith(2)).await;
+    until(&w.rig, "declined", idle).await;
+    eventually("the text", || !phone.texts().is_empty()).await;
+    assert_eq!(phone.controls(), [LinkAction::Reject]);
+    assert_eq!(phone.texts()[0].1, "Call me in a few minutes");
+}
+
+#[tokio::test]
+async fn saved_replies_replace_the_defaults_and_a_bad_list_is_refused() {
+    let w = world(None).await;
+    let phone = texting_phone(&w).await;
+    w.rig
+        .ok(Request::CallRepliesSet {
+            texts: vec!["  Driving, text you later ".into(), String::new()],
+        })
+        .await;
+    assert_eq!(
+        w.rig
+            .refused(Request::CallRepliesSet {
+                texts: vec!["two\nlines".into()]
+            })
+            .await,
+        bridge_core::ipc::ErrorCode::BadRequest
+    );
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "ringing", ringing).await;
+    assert_eq!(c.replies.texts, ["Driving, text you later"]);
+    let target = c.view.ringing().unwrap().reject.clone().unwrap();
+    // Only one reply exists now.
+    assert_eq!(
+        w.rig
+            .refused(Request::CallDeclineReply {
+                target: target.clone(),
+                reply: 1
+            })
+            .await,
+        bridge_core::ipc::ErrorCode::BadRequest
+    );
+    w.rig
+        .ok(Request::CallDeclineReply { target, reply: 0 })
+        .await;
+    eventually("the text", || !phone.texts().is_empty()).await;
+    assert_eq!(phone.texts()[0].1, "Driving, text you later");
+    // An empty list restores the defaults.
+    w.rig.ok(Request::CallRepliesSet { texts: vec![] }).await;
+    assert_eq!(
+        calls(&w.rig).await.replies.texts,
+        bridge_core::call_replies::defaults()
     );
 }

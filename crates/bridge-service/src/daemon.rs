@@ -231,6 +231,8 @@ pub struct Daemon {
     mirror_notifier: Option<Arc<dyn crate::mirror::MirrorNotifier>>,
     /// Display-privacy choices (message text, caller number, phone notification text).
     privacy: crate::privacy::Privacy,
+    /// The short texts of "Decline with message" (`call-replies` in the state folder).
+    call_replies: Arc<crate::call_replies::Replies>,
     /// Recent phone photos: a list and thumbnails, asked for, memory only (`photos`).
     photos: crate::photos::Photos,
     /// Log lines and state dumps from a debug-build phone (`phone_debug`).
@@ -373,6 +375,13 @@ impl Daemon {
         if let Some(n) = options.sms_notifier.take() {
             data.set_notifier(n);
         }
+        let call_replies = Arc::new(crate::call_replies::Replies::new(
+            options.privacy_dir.clone(),
+        ));
+        calls.set_replies(Arc::new(crate::call_replies::HubReplies {
+            store: call_replies.clone(),
+            data: data.clone(),
+        }));
         let callwifi = {
             let (send_to, calls_of) = (data.clone(), calls.clone());
             crate::callwifi::CallWifi::new(
@@ -411,6 +420,7 @@ impl Daemon {
             mirror,
             mirror_notifier,
             privacy,
+            call_replies,
             photos: crate::photos::Photos::default(),
             debug,
             callwifi,
@@ -978,6 +988,19 @@ impl Daemon {
             Request::CallAction { target, action } => {
                 let hub = self.calls.clone();
                 blocking(move || hub.act(&target, action)).await
+            }
+            Request::CallDeclineReply { target, reply } => {
+                let hub = self.calls.clone();
+                blocking(move || hub.decline_with_reply(&target, usize::from(reply))).await
+            }
+            Request::CallRepliesSet { texts } => {
+                let store = self.call_replies.clone();
+                blocking(move || {
+                    store
+                        .set(&texts)
+                        .map_err(|e| err(ErrorCode::BadRequest, e.message()))
+                })
+                .await
             }
             Request::CallDial { source, number } => {
                 let hub = self.calls.clone();

@@ -52,6 +52,7 @@ fn clicked_actions_reach_the_callbacks_and_everything_else_is_ignored() {
                 tx.send(match c {
                     RingChoice::Answer => "answer",
                     RingChoice::Decline => "decline",
+                    RingChoice::DeclineWith(_) => "reply",
                 })
                 .unwrap()
             }),
@@ -60,6 +61,45 @@ fn clicked_actions_reach_the_callbacks_and_everything_else_is_ignored() {
         let argv = fs::read_to_string(&log).unwrap();
         assert!(argv.contains("--action=answer=Answer") && argv.contains("-- Incoming call"));
     }
+    // "Decline + text": the button names are fixed, the text is cleaned, and an index the banner did
+    // not offer is not honoured.
+    let replies = ["Busy now".to_owned(), "Later\nx".to_owned()];
+    for (printed, expect) in [("reply1", Some(1u8)), ("reply0", Some(0)), ("reply2", None)] {
+        install(
+            tmp.path(),
+            &format!("echo \"$@\" > '{}'; echo '{printed}'", log.display()),
+        );
+        let (tx, rx) = mpsc::channel();
+        NotifySendCalls.ringing_with_replies(
+            "Alice",
+            true,
+            true,
+            &replies,
+            Box::new(move |c| {
+                if let RingChoice::DeclineWith(i) = c {
+                    tx.send(i).unwrap()
+                }
+            }),
+        );
+        assert_eq!(rx.recv_timeout(wait).ok(), expect, "{printed:?}");
+        let argv = fs::read_to_string(&log).unwrap();
+        assert!(
+            argv.contains("--action=reply0=Decline + text: Busy now"),
+            "{argv}"
+        );
+        assert!(
+            argv.contains("--action=reply1=Decline + text: Later"),
+            "{argv}"
+        );
+        assert!(!argv.contains("\nx"), "{argv}");
+    }
+    // Without Decline on offer there are no text buttons either.
+    assert!(
+        !NotifySendCalls::args_with_replies("A", true, false, &replies)
+            .iter()
+            .any(|a| a.contains("reply0"))
+    );
+
     // A choice the notification did not offer is not honoured even if the tool prints it.
     install(tmp.path(), "echo answer");
     let (tx, rx) = mpsc::channel();

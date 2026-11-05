@@ -1132,6 +1132,7 @@ mod tests {
                 sources: vec![],
                 audio_note: None,
                 wifi: None,
+                replies: Default::default(),
             }),
             problem: problem.map(str::to_owned),
         }
@@ -1266,6 +1267,7 @@ mod tests {
                 sources: vec![],
                 audio_note: None,
                 wifi: None,
+                replies: Default::default(),
             }),
             problem: None,
         }
@@ -1433,6 +1435,7 @@ mod tests {
                 sources: vec![],
                 audio_note: None,
                 wifi: None,
+                replies: Default::default(),
             }),
             problem: None,
         };
@@ -1501,6 +1504,7 @@ mod tests {
                 sources: vec![],
                 audio_note: None,
                 wifi: None,
+                replies: Default::default(),
             }),
             problem: None,
         };

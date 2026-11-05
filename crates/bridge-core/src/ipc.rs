@@ -461,6 +461,19 @@ pub enum Request {
         target: crate::calls_view::ActionTarget,
         action: CallAction,
     },
+    /// Decline a ringing call and send it one of the saved short texts through the phone's
+    /// Messages path. `target` must be the `reject` the latest `Calls` view offered, and
+    /// `reply_offered` must have been true; `reply` indexes `CallsStatus::reply_texts`. The text
+    /// itself never travels here, so the number and the words stay with the service.
+    CallDeclineReply {
+        target: crate::calls_view::ActionTarget,
+        reply: u8,
+    },
+    /// Save the short texts "Decline with message" offers (at most three, blanks dropped; an empty
+    /// list restores the defaults). Answered with `Ack`.
+    CallRepliesSet {
+        texts: Vec<String>,
+    },
     /// Place a call to `number` through `source` (the `dial` the latest `Calls` view offered). The
     /// service re-checks that it is still offered and that the number is plain digits. The apps
     /// must have asked the user to confirm first; nothing here dials without that.
@@ -938,6 +951,29 @@ pub struct CallsStatus {
     /// EXPERIMENTAL Wi-Fi call audio, for the call card's buttons. Absent from a service without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi: Option<crate::call_wifi_view::CallWifiView>,
+    /// "Decline with message": the texts, and whether the ringing call can use them right now.
+    #[serde(default, skip_serializing_if = "DeclineReplies::is_empty")]
+    pub replies: DeclineReplies,
+}
+
+/// The short texts "Decline with message" would send, and whether they are on offer for the call
+/// that rings now.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeclineReplies {
+    /// The saved texts, else the defaults. Always set by a service that has the feature, so Settings
+    /// can show them; empty from an older service.
+    #[serde(default)]
+    pub texts: Vec<String>,
+    /// The ringing call can be declined with one of `texts` now: Messages is allowed for its phone
+    /// on both sides, the phone takes texts, the link is up, the number is a plain one and the send
+    /// limit has room. When false the action is not shown.
+    #[serde(default)]
+    pub offered: bool,
+}
+impl DeclineReplies {
+    pub fn is_empty(&self) -> bool {
+        self.texts.is_empty() && !self.offered
+    }
 }
 
 /// The opening line of `geekbridge-ctl calling` (see [`HearCalls::banner`]); also used when the

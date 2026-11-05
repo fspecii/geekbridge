@@ -1239,6 +1239,15 @@ impl PhoneData {
         Ok(id.0)
     }
 
+    /// Whether a text could be sent to `device` right now: Messages is allowed for it on this
+    /// computer, the phone is connected and takes texts to send (its own switch is on), and the
+    /// per-minute limit has room. The same checks `send_text` makes, without sending anything.
+    pub fn can_send_text(&self, device: &str) -> bool {
+        let now = now_ms();
+        let mut g = self.lock();
+        Self::target(&mut g, device).is_ok_and(|d| d.check_can_send(now).is_ok())
+    }
+
     pub fn resend(&self, device: &str, send_id: u64, submission: &str) -> Result<u64, ErrorBody> {
         let submission =
             SubmissionId::new(submission).map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
@@ -2537,6 +2546,32 @@ mod tests {
                 .code,
             ErrorCode::NotConnected
         );
+    }
+
+    #[test]
+    fn can_send_text_follows_the_same_gates_as_sending() {
+        let h = PhoneData::new();
+        assert!(!h.can_send_text(ID), "unknown phone");
+        let (mut rx, g) = h.link_up(ID, "Pixel", caps_all(), (false, false, false));
+        drain(&mut rx);
+        assert!(!h.can_send_text(ID), "Messages not allowed here");
+        h.set_enabled(ID, Feature::Sms, true);
+        drain(&mut rx);
+        assert!(h.can_send_text(ID));
+        for i in 0..SENDS_PER_MINUTE {
+            h.send_text(ID, "5551230000", "x", &format!("s{i}"), None)
+                .unwrap();
+        }
+        assert!(!h.can_send_text(ID), "send limit reached");
+        h.link_down(ID, g);
+        assert!(!h.can_send_text(ID), "phone gone");
+        // A phone whose Messages switch is off offers no send request.
+        let h = PhoneData::new();
+        let mut caps = caps_all();
+        caps.sms_send = false;
+        let (mut rx, _g) = h.link_up(ID, "Pixel", caps, (false, false, true));
+        drain(&mut rx);
+        assert!(!h.can_send_text(ID), "phone does not take texts");
     }
 
     #[test]

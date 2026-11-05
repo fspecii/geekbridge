@@ -13,6 +13,7 @@ pub mod call_cli;
 pub mod call_control;
 pub mod call_history;
 pub mod call_overlay;
+pub mod call_replies;
 pub mod call_trace;
 pub mod calling;
 pub mod callwifi;
