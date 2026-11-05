@@ -403,9 +403,14 @@ stage_dial() {
   local question="$ADB shell dumpsys notification --noredact 2>/dev/null | grep -q 'Place this call?'"
   # The restart above renegotiates the link; a dial sent before the phone's call capability is back is refused on the computer
   # ("not available right now") and never reaches the phone, so no question is ever asked. Wait for ready, as step 3 does.
-  wait_for 120 dial_ready || echo "[e2e] dialing not ready before the confirm step: $(phone_link_line)" >&2
+  if ! wait_for 120 dial_ready; then
+    # Renegotiate once: consent off and on again makes the computer ask the phone for its calls capability anew.
+    echo "[e2e] dialing not ready before the confirm step, renegotiating: $(phone_link_line)" >&2
+    desk_dial >/dev/null 2>&1; ctl consent "$PHONE_ID" telephony off >/dev/null; sleep 2; ctl consent "$PHONE_ID" telephony on >/dev/null
+    wait_for 120 dial_ready || echo "[e2e] dialing still not ready: $(phone_link_line)" >&2
+  fi
   dial "$TEST_NUMBER" --yes >/dev/null
-  if wait_for 15 bash -c "$question"; then
+  if wait_for 40 bash -c "$question"; then
     wake; shot 30-dial-question
     wake; $ADB shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
     ui tap Deny >/dev/null 2>&1 || ui tap Deny --contains >/dev/null 2>&1
@@ -415,7 +420,7 @@ stage_dial() {
   $ADB shell cmd statusbar collapse >/dev/null 2>&1
   wait_for 60 dial_ready
   dial "$TEST_NUMBER" --yes >/dev/null
-  if wait_for 15 bash -c "$question"; then
+  if wait_for 40 bash -c "$question"; then
     wake; $ADB shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
     ui tap Call --exact >/dev/null 2>&1
     if wait_modem 2 15 || [[ "$(modem_state)" != 0 ]]; then rec feat_dial_confirm_allow PASS "question shown, Call: the phone placed it (modem call state $(modem_state))"
