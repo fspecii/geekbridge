@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The three display-privacy choices and how they are resolved. Pure: no I/O, so the service, the
+//! The display-privacy choices and how they are resolved. Pure: no I/O, so the service, the
 //! `geekbridge-ctl privacy` command and the Settings page agree on names, defaults and the rules for
 //! "forced" values.
 //!
@@ -7,6 +7,8 @@
 //! * `caller_number`: the caller's number on the incoming-call card (default on; off shows the
 //!   contact name only and "Unknown caller" otherwise).
 //! * `phone_notification_text`: text of a mirrored phone notification (default off).
+//! * `respect_dnd`: a ringing call does not pop the card or sound a banner while the desktop is in Do Not
+//!   Disturb (default off; the ring is still recorded in Recents and shown by the tray).
 //!
 //! The older switches (the `sms-notify-content` marker file or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show`
 //! for the two text choices, `GEEKBRIDGE_CALL_OVERLAY` or the `call-overlay` file for the caller
@@ -19,13 +21,15 @@ pub enum PrivacyKey {
     MessageText,
     CallerNumber,
     PhoneNotificationText,
+    RespectDnd,
 }
 
 impl PrivacyKey {
-    pub const ALL: [PrivacyKey; 3] = [
+    pub const ALL: [PrivacyKey; 4] = [
         PrivacyKey::MessageText,
         PrivacyKey::CallerNumber,
         PrivacyKey::PhoneNotificationText,
+        PrivacyKey::RespectDnd,
     ];
 
     /// The name used on the command line, in the file and on the wire.
@@ -34,6 +38,7 @@ impl PrivacyKey {
             Self::MessageText => "message_text",
             Self::CallerNumber => "caller_number",
             Self::PhoneNotificationText => "phone_notification_text",
+            Self::RespectDnd => "respect_dnd",
         }
     }
 

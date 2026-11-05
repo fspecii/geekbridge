@@ -61,7 +61,7 @@ Commands:
   messages-resend DEVICE_ID SEND_ID   send a failed or unconfirmed text again as a NEW message (it may arrive twice)
   messages-read DEVICE_ID THREAD_ID   mark a conversation read on this computer only (the phone keeps its own unread state)
   privacy [show|set KEY on|off]       what a banner or the call card may show: message_text (default off),
-                                      caller_number (default on), phone_notification_text (default off);
+                                      caller_number (default on), phone_notification_text, respect_dnd (default off);
                                       live, no restart; the sms-notify-content file and the older
                                       environment variables still force a value
   calling                             Bluetooth calling summary and the 'Hear calls on this computer' checklist (fix per step)

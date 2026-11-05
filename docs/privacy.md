@@ -241,17 +241,34 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 
 ### Display privacy: what a banner or the call card shows
 
-Three choices control what is drawn on screen where someone else may read it. They are switches in **Settings ->
-Privacy** and `geekbridge-ctl privacy [show|set KEY on|off]`; the service holds them (control requests `PrivacyStatus`
+Four choices control what is drawn on screen where someone else may read it, or whether a call may be shown at all.
+They are switches in **Settings -> Privacy** and `geekbridge-ctl privacy [show|set KEY on|off]`; the service holds them (control requests `PrivacyStatus`
 and `PrivacySet`) and a change applies at once.
 
+The table is checked against `bridge_core::privacy::PrivacyKey::ALL` by `crates/bridge-core/tests/privacy_doc.rs`.
+
+<!-- guard:privacy-choices -->
 | Choice | Default | When off |
 | --- | --- | --- |
 | `message_text` (Show message text in notifications) | off | a new-message banner names the sender only |
 | `caller_number` (Show caller number on the call card) | on | the card shows the contact name or "Unknown caller", never the number |
 | `phone_notification_text` (Show phone notification text) | off | a mirrored notification banner shows app and title, not the text |
+| `respect_dnd` (Respect Do Not Disturb for incoming calls) | off | a ringing call always shows the card and the banner |
+<!-- /guard -->
 
-* Stored in `<state dir>/privacy` (`name=on|off` lines, owner-only, atomic write). It holds three booleans, no content.
+* Stored in `<state dir>/privacy` (`name=on|off` lines, owner-only, atomic write). It holds four booleans, no content.
+* **Respect Do Not Disturb** (opt-in, stored only on this computer, never sent to the phone). When it is on and a call
+  rings, the service asks the desktop once whether Do Not Disturb is active (cached 3 s; only while a call rings, never
+  otherwise). If it is, the top-right card and the ringing banner are not shown for that ring; the tray icon still shows
+  "Incoming call" (no caller) and the ring is listed in Recents as usual, and the call trace notes "kept quiet". The
+  decision is made once per ring. A missed-call banner afterwards is left to the notification daemon's own Do Not
+  Disturb rules. The answer is read with `makoctl mode` (a mode named `do-not-disturb` or `dnd`), `dunstctl is-paused`,
+  `swaync-client --get-dnd`, the freedesktop `Inhibited` property of the notification service (KDE Plasma) or the GNOME
+  `show-banners` setting; nothing is stored or logged from them. **Not supported on Windows (Focus Assist) and macOS
+  (Focus):** neither exposes the state through a documented API that needs no special permission, so there the switch
+  has no effect and Settings says so. Risk to weigh: with it on, a call that rings while you are in a meeting is
+  silent on this computer; the phone itself still rings ([code] `crates/bridge-service/src/dnd.rs`; [test] its unit
+  tests and `call_control` tests `a_ring_in_do_not_disturb_*`).
 * Backward compatible: `sms-notify-content` or `GEEKBRIDGE_SMS_NOTIFY_CONTENT=show` force `message_text` and
   `phone_notification_text` on; `GEEKBRIDGE_CALL_OVERLAY=on|name` or the `call-overlay` file force `caller_number`.
   A forced value is shown as such and a change made in the UI is stored but does not override it ([test]

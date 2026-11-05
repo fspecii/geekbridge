@@ -109,7 +109,7 @@ Later ops (see `bridge_core::ipc::Request` for the exact shapes): `pair_qr` / `p
 `clipboard_status|pull|push|settings` ([clipboard-sync.md](clipboard-sync.md)); `share_status|send_file|send_text|decide|
 cancel|dismiss|settings` ([sharing.md](sharing.md)); `agenda_view`, `agenda_refresh`, `calendar_edit`, `calendar_edit_retry` and
 `messages_view|refresh|send|mark_read|resend` ([phone-data-link.md](phone-data-link.md)); `privacy_status` and
-`privacy_set {key: message_text|caller_number|phone_notification_text, on}` (display privacy, live, persisted in the
+`privacy_set {key: message_text|caller_number|phone_notification_text|respect_dnd, on}` (display privacy, live, persisted in the
 `privacy` file; [privacy.md](privacy.md#display-privacy-what-a-banner-or-the-call-card-shows)).
 `geekbridge-ctl doctor`, `diagnose`, `report`, `autostart`, `tray`, `firewall`, `hotkey` and `whats-new` mostly run
 in the client process and need no service request.

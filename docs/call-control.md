@@ -172,6 +172,19 @@ earlier ring cannot decline or text a later one. `Request::CallRepliesSet { text
 unit tests; goldens `call-overlay-reply*`. Not available on the Windows and macOS banners (they have no extra buttons);
 the card has it on every desktop.
 
+## Do Not Disturb (opt-in)
+
+Settings -> Privacy -> **Respect Do Not Disturb for incoming calls** (`geekbridge-ctl privacy set respect_dnd on`,
+default off, stored in the `privacy` file). While it is on and the desktop is in Do Not Disturb when a call starts
+ringing, the hub neither starts the top-right card nor sends the ringing banner for that ring (decided once per ring,
+so DND ending mid-ring does not pop a card). The merged view, the tray ("Incoming call", no caller), Recents and the
+call trace (`ring: kept quiet: Do Not Disturb`) are unchanged, and the phone still rings. A call you answer on the phone
+or in the Calls window still works. The state is read by `crates/bridge-service/src/dnd.rs` only while a call rings
+(cached 3 s): `makoctl mode`, `dunstctl is-paused`, `swaync-client --get-dnd`, the `Inhibited` property of
+`org.freedesktop.Notifications` (KDE), the GNOME `show-banners` setting; the first that answers decides. Windows Focus
+Assist and macOS Focus are not read (no documented API without special permission): there the setting says it is
+not supported and calls always show. The missed-call banner is a normal notification and follows the daemon's own rules.
+
 ## Android side (`CallControl.kt`, `CallControlAndroid.kt`)
 
 | Permission | Why | Needed for |

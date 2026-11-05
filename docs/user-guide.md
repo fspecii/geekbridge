@@ -214,8 +214,10 @@ output) and sends nothing itself.
 
 ## Privacy switches
 
-Settings -> Privacy has three switches: **Show message text in notifications** (off), **Show caller number on the call
-card** (on) and **Show phone notification text** (off). They apply at once, with no restart. The same choices from a
+Settings -> Privacy has four switches: **Show message text in notifications** (off), **Show caller number on the call
+card** (on), **Show phone notification text** (off) and **Respect Do Not Disturb for incoming calls** (off; Linux
+only: with mako, dunst, SwayNotificationCenter, KDE or GNOME in Do Not Disturb a ringing call shows no card or banner,
+but the tray icon and Recents still record it; Windows and macOS cannot be read, so it does nothing there). They apply at once, with no restart. The same choices from a
 terminal: `geekbridge-ctl privacy` shows them, `geekbridge-ctl privacy set message_text on` changes one. The older
 `sms-notify-content` file and the `GEEKBRIDGE_SMS_NOTIFY_CONTENT` / `GEEKBRIDGE_CALL_OVERLAY` variables still win; the
 page says when one of them fixes a value. The tray tooltip and the waybar module show how many messages are unread

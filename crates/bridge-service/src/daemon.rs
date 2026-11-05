@@ -356,6 +356,14 @@ impl Daemon {
         if let Some(l) = options.call_overlay.take() {
             calls.set_overlay(l);
         }
+        if let Some(dir) = options.privacy_dir.clone() {
+            // Only read when a call rings: the stored choice, then (if on) the desktop's state.
+            let dnd = crate::dnd::Detector::default();
+            calls.set_quiet(Arc::new(move || {
+                crate::privacy::stored_choice(&dir, PrivacyKey::RespectDnd) == Some(true)
+                    && dnd.active()
+            }));
+        }
         if let Some(host) = options
             .call_host
             .get_mut()

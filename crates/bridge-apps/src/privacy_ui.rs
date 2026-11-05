@@ -51,6 +51,7 @@ fn title_key(key: PrivacyKey) -> &'static str {
         PrivacyKey::MessageText => "privacy.message_text",
         PrivacyKey::CallerNumber => "privacy.caller_number",
         PrivacyKey::PhoneNotificationText => "privacy.phone_notification_text",
+        PrivacyKey::RespectDnd => "privacy.respect_dnd",
     }
 }
 
@@ -59,6 +60,8 @@ fn detail_key(key: PrivacyKey) -> &'static str {
         PrivacyKey::MessageText => "privacy.message_text.detail",
         PrivacyKey::CallerNumber => "privacy.caller_number.detail",
         PrivacyKey::PhoneNotificationText => "privacy.phone_notification_text.detail",
+        PrivacyKey::RespectDnd if cfg!(target_os = "linux") => "privacy.respect_dnd.detail",
+        PrivacyKey::RespectDnd => "privacy.respect_dnd.detail_other",
     }
 }
 

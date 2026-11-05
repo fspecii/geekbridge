@@ -444,6 +444,9 @@ struct Inner {
     /// Tones sent to the live call so far: which call (its row key) and how many. Only the count is ever written to
     /// the call trace.
     tone_count: Option<(String, u64)>,
+    /// Rings held quiet because the desktop is in Do Not Disturb and the person asked for that. Decided once,
+    /// when the ring is first seen, so one ring does not pop a card halfway through.
+    quiet: BTreeMap<u64, bool>,
 }
 
 /// The phone often reports "ringing" a moment before the caller's number follows. A notification
@@ -456,6 +459,8 @@ pub struct CallHub {
     host: Mutex<Option<HostHandle>>,
     notifier: Mutex<Option<Arc<dyn CallNotifier>>>,
     overlay: Mutex<Option<crate::call_overlay::Supervisor>>,
+    /// Asked when a call rings: should the card and the banner stay away (Do Not Disturb, if respected)?
+    quiet: Mutex<Option<Arc<dyn Fn() -> bool + Send + Sync>>>,
     /// Held for a whole [`Self::announce_new_calls`]: the host thread, packets, the watchdog and the
     /// grace re-check all call it, and a view built before another caller's update must not undo
     /// that update (a ring forgotten for a moment comes back as a new ring with a second banner).
@@ -481,6 +486,7 @@ impl CallHub {
             notifier: Mutex::new(None),
             overlay: Mutex::new(None),
             replies: Mutex::new(None),
+            quiet: Mutex::new(None),
             announcing: Mutex::new(()),
             wake: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
             timings,
@@ -530,6 +536,12 @@ impl CallHub {
         *self.overlay.lock().unwrap_or_else(|e| e.into_inner()) = Some(
             crate::call_overlay::Supervisor::with_linger(launcher, self.timings.overlay_linger),
         );
+    }
+
+    /// Keep the card and the ringing banner away while `quiet` says so. The ring is still recorded in
+    /// Recents and shown by the tray; a missed-call banner is left to the desktop's own rules.
+    pub fn set_quiet(&self, quiet: Arc<dyn Fn() -> bool + Send + Sync>) {
+        *self.quiet.lock().unwrap_or_else(|e| e.into_inner()) = Some(quiet);
     }
 
     /// Whether the incoming-call card process is up.
@@ -1642,7 +1654,14 @@ impl CallHub {
         let now = Instant::now();
         let flap = self.timings.flap_memory;
         let live_now = view.live().is_some();
-        let (fresh, ringing_now, missed) = {
+        let quiet_now = view.rows.iter().any(|r| r.ringing())
+            && self
+                .quiet
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+                .is_some_and(|q| q());
+        let (fresh, ringing_now, loud, missed) = {
             let mut guard = self.inner();
             let inner = &mut *guard;
             inner.trace.observe(&view);
@@ -1690,10 +1709,17 @@ impl CallHub {
                     rings.insert(p, id);
                 }
                 if ringing_now.insert(id) {
+                    if let std::collections::btree_map::Entry::Vacant(e) = inner.quiet.entry(id) {
+                        e.insert(quiet_now);
+                        if quiet_now {
+                            crate::call_trace::record("ring", "kept quiet: Do Not Disturb");
+                        }
+                    }
                     rows.push((id, r));
                 }
             }
             inner.rings = rings;
+            inner.quiet.retain(|n, _| ringing_now.contains(n));
             let before = inner.announced.len();
             inner.announced.retain(|n| ringing_now.contains(n));
             if inner.announced.len() != before {
@@ -1715,7 +1741,9 @@ impl CallHub {
                 }
                 inner.announced.insert(id);
                 crate::tray::poke(); // a call started ringing
-                fresh.push((id, r.clone()));
+                if !inner.quiet.get(&id).copied().unwrap_or(false) {
+                    fresh.push((id, r.clone()));
+                }
             }
             if recheck {
                 let hub = Arc::downgrade(self);
@@ -1726,7 +1754,13 @@ impl CallHub {
                     }
                 });
             }
-            (fresh, ringing_now, missed)
+            // The card is for the rings that are not held quiet.
+            let loud: BTreeSet<u64> = ringing_now
+                .iter()
+                .copied()
+                .filter(|n| !inner.quiet.get(n).copied().unwrap_or(false))
+                .collect();
+            (fresh, ringing_now, loud, missed)
         };
         // The card does not wait for the caller's name: it shows it when it comes.
         if let Some(o) = self
@@ -1735,7 +1769,7 @@ impl CallHub {
             .unwrap_or_else(|e| e.into_inner())
             .as_mut()
         {
-            o.update(&ringing_now, live_now, now);
+            o.update(&loud, live_now, now);
             if o.card_running() {
                 self.poke_watchdog();
             }
@@ -2960,5 +2994,75 @@ mod tests {
         );
         fresh(RingChoice::Answer);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_ring_in_do_not_disturb_shows_no_card_and_no_banner_but_is_still_recorded() {
+        struct Count(Arc<Mutex<u32>>);
+        impl crate::call_overlay::Launcher for Count {
+            fn launch(
+                &self,
+            ) -> Result<Box<dyn crate::call_overlay::Card>, crate::call_overlay::Cannot>
+            {
+                *self.0.lock().unwrap() += 1;
+                struct Up;
+                impl crate::call_overlay::Card for Up {
+                    fn running(&mut self) -> bool {
+                        true
+                    }
+                    fn kill(&mut self) {}
+                }
+                Ok(Box::new(Up))
+            }
+        }
+        for (dnd, cards, banners) in [(true, 0, 0), (false, 1, 1)] {
+            let (launched, rings) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(Vec::new())));
+            let hub = CallHub::new();
+            hub.set_notifier(Arc::new(Rings(rings.clone())));
+            hub.set_overlay(Arc::new(Count(launched.clone())));
+            hub.set_quiet(Arc::new(move || dnd));
+            let _rx = hub.link_up("dev", "Pixel", true);
+            let state = |v: serde_json::Value| hub.on_packet("dev", link::STATE, &body(v));
+            state(
+                json!({"state":"ringing","name":"Ada","number":"+1 555 0142","canAnswer":true,"canEnd":true}),
+            );
+            assert_eq!(*launched.lock().unwrap(), cards, "card, dnd={dnd}");
+            assert_eq!(rings.lock().unwrap().len(), banners, "banner, dnd={dnd}");
+            assert_eq!(hub.view().rows.len(), 1, "the ring is still in the view");
+            state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+            let recent = hub.status().view.recent;
+            assert_eq!(recent.len(), 1, "Recents records the ring, dnd={dnd}");
+            assert_eq!(recent[0].kind, bridge_core::calls_view::RecentKind::Missed);
+        }
+    }
+
+    #[test]
+    fn a_quiet_ring_stays_quiet_if_do_not_disturb_ends_while_it_rings() {
+        let rings = Arc::new(Mutex::new(Vec::new()));
+        let on = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Rings(rings.clone())));
+        let flag = on.clone();
+        hub.set_quiet(Arc::new(move || {
+            flag.load(std::sync::atomic::Ordering::SeqCst)
+        }));
+        let _rx = hub.link_up("dev", "Pixel", true);
+        let ring = json!({"state":"ringing","name":"Ada","canAnswer":true,"canEnd":true});
+        hub.on_packet("dev", link::STATE, &body(ring.clone()));
+        on.store(false, std::sync::atomic::Ordering::SeqCst);
+        hub.on_packet("dev", link::STATE, &body(ring));
+        assert!(rings.lock().unwrap().is_empty());
+        // The next ring, with Do Not Disturb off, is announced.
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        hub.on_packet(
+            "dev",
+            link::STATE,
+            &body(json!({"state":"ringing","name":"Bob","canAnswer":true,"canEnd":true})),
+        );
+        assert_eq!(rings.lock().unwrap().len(), 1);
     }
 }

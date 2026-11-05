@@ -204,6 +204,43 @@ fn privacy_doc_describes_the_call_trace_as_in_code() {
 }
 
 #[test]
+fn privacy_doc_lists_every_display_privacy_choice_and_describes_do_not_disturb() {
+    use bridge_core::privacy::PrivacyKey;
+    let in_code: BTreeSet<String> = PrivacyKey::ALL
+        .iter()
+        .map(|k| k.name().to_owned())
+        .collect();
+    assert_eq!(
+        guarded(&doc(), "privacy-choices"),
+        in_code,
+        "docs/privacy.md display-privacy table differs from PrivacyKey::ALL"
+    );
+    // Do Not Disturb is opt-in, local, and honest about the systems it cannot read.
+    assert!(
+        !PrivacyKey::RespectDnd.default_on(),
+        "Do Not Disturb must be opt-in"
+    );
+    let doc = doc();
+    for needle in [
+        "Respect Do Not Disturb",
+        "Not supported on Windows (Focus Assist) and macOS",
+        "never sent to the phone",
+        "makoctl mode",
+        "the phone itself still rings",
+    ] {
+        assert!(
+            doc.contains(needle),
+            "docs/privacy.md lost its Do Not Disturb entry ({needle})"
+        );
+    }
+    let src = std::fs::read_to_string(root().join("crates/bridge-service/src/dnd.rs")).unwrap();
+    assert!(
+        src.contains("pub const SUPPORTED: bool = cfg!(target_os = \"linux\")"),
+        "Windows and macOS must stay documented as unsupported until dnd.rs reads them"
+    );
+}
+
+#[test]
 fn readme_and_user_guide_link_the_privacy_review() {
     assert!(
         std::fs::read_to_string(root().join("README.md"))

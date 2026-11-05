@@ -67,6 +67,7 @@ impl Privacy {
                     None
                 }
             }
+            PrivacyKey::RespectDnd => None,
             PrivacyKey::CallerNumber => {
                 let word = |t: Option<String>| t.filter(|t| !t.trim().is_empty());
                 let by_env = word((self.env)(ENV_OVERLAY)).and_then(|w| Mode::parse(&w));
@@ -206,6 +207,10 @@ mod tests {
         assert!(!v.get(PrivacyKey::MessageText).unwrap().on);
         assert!(!v.get(PrivacyKey::PhoneNotificationText).unwrap().on);
         assert!(v.get(PrivacyKey::CallerNumber).unwrap().on);
+        assert!(
+            !v.get(PrivacyKey::RespectDnd).unwrap().on,
+            "Do Not Disturb is opt-in"
+        );
         p.set(PrivacyKey::MessageText, true).unwrap();
         p.set(PrivacyKey::CallerNumber, false).unwrap();
         assert!(p.on(PrivacyKey::MessageText) && !p.on(PrivacyKey::CallerNumber));
@@ -216,6 +221,8 @@ mod tests {
             "keys are independent"
         );
         assert_eq!(stored_choice(&state, PrivacyKey::CallerNumber), Some(false));
+        p.set(PrivacyKey::RespectDnd, true).unwrap();
+        assert_eq!(stored_choice(&state, PrivacyKey::RespectDnd), Some(true));
     }
 
     #[test]

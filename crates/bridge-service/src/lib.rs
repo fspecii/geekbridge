@@ -33,6 +33,7 @@ pub mod daemon;
 pub mod desktop_notify;
 pub mod diagnose;
 pub mod discovery;
+pub mod dnd;
 pub mod doctor;
 pub mod gate;
 pub mod hotkey_bind;
