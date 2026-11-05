@@ -240,6 +240,7 @@ mod tests {
             started() - before <= 200
         });
         std::thread::sleep(Duration::from_millis(400));
+        #[cfg(target_os = "linux")]
         assert!(
             live_children() <= MAX_IN_FLIGHT,
             "{} children",
@@ -257,6 +258,7 @@ mod tests {
         wait_until("drained", || in_flight() == 0 && !reaper_alive());
     }
 
+    #[cfg(target_os = "linux")]
     fn live_children() -> usize {
         // `sleep 30` children of this process.
         let me = std::process::id().to_string();

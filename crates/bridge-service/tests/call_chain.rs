@@ -1405,9 +1405,17 @@ async fn keypad_tones_use_bluetooth_when_it_is_there_and_the_call_is_live() {
         CallAction::Answer,
     )
     .await;
-    let c = until(&w.rig, "the live call", live).await;
+    // The live call shows first over the link; the keypad moves to Bluetooth when the HFP side has
+    // reported the call (slow runners see both orders), so wait for that, not for the first live view.
+    let c = until(&w.rig, "the keypad over Bluetooth", |c| {
+        live(c)
+            && c.view
+                .tones
+                .as_ref()
+                .is_some_and(|t| t.path == ControlPath::Hfp)
+    })
+    .await;
     let t = c.view.tones.expect("keypad");
-    assert_eq!(t.path, ControlPath::Hfp);
     w.rig.ok(tone(&t.source, "7")).await;
     w.rig.ok(tone(&t.source, "#")).await;
     assert_eq!(w.hfp().tones, ["7", "#"]);
