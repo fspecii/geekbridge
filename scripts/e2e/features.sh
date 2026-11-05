@@ -400,6 +400,9 @@ stage_dial() {
   ui tap "Clear all" >/dev/null 2>&1 || ui tap "Clear all" --contains >/dev/null 2>&1
   sleep 1; $ADB shell cmd statusbar collapse >/dev/null 2>&1
   local question="$ADB shell dumpsys notification --noredact 2>/dev/null | grep -q 'Place this call?'"
+  # The restart above renegotiates the link; a dial sent before the phone's call capability is back is refused on the computer
+  # ("not available right now") and never reaches the phone, so no question is ever asked. Wait for ready, as step 3 does.
+  wait_for 120 dial_ready || echo "[e2e] dialing not ready before the confirm step: $(phone_link_line)" >&2
   dial "$TEST_NUMBER" --yes >/dev/null
   if wait_for 15 bash -c "$question"; then
     wake; shot 30-dial-question
@@ -407,15 +410,16 @@ stage_dial() {
     ui tap Deny >/dev/null 2>&1 || ui tap Deny --contains >/dev/null 2>&1
     if wait_for 15 notice_has "did not confirm" && [[ "$(modem_state)" == 0 ]]; then rec feat_dial_confirm_deny PASS "question 'Place this call?' shown on the phone, Deny: '$(dial_notice)'; modem idle"
     else rec feat_dial_confirm_deny FAIL "after Deny: notice='$(dial_notice)' modem $(modem_state); screen: $(ui dump | cut -f1 | head -12 | tr '\n' '|')"; fi
-  else rec feat_dial_confirm_deny FAIL "no 'Place this call?' notification on the phone"; fi
+  else rec feat_dial_confirm_deny FAIL "no 'Place this call?' notification on the phone (dial said: $(dial_notice | head -c 120); link: $(phone_link_line | head -c 120))"; fi
   $ADB shell cmd statusbar collapse >/dev/null 2>&1
+  wait_for 60 dial_ready
   dial "$TEST_NUMBER" --yes >/dev/null
   if wait_for 15 bash -c "$question"; then
     wake; $ADB shell cmd statusbar expand-notifications >/dev/null 2>&1; sleep 2
     ui tap Call --exact >/dev/null 2>&1
     if wait_modem 2 15 || [[ "$(modem_state)" != 0 ]]; then rec feat_dial_confirm_allow PASS "question shown, Call: the phone placed it (modem call state $(modem_state))"
     else rec feat_dial_confirm_allow FAIL "after Call: notice='$(dial_notice)' modem $(modem_state); screen: $(ui dump | cut -f1 | head -12 | tr '\n' '|')"; fi
-  else rec feat_dial_confirm_allow FAIL "no question on the phone"; fi
+  else rec feat_dial_confirm_allow FAIL "no question on the phone (notice: $(dial_notice | head -c 120); link: $(phone_link_line | head -c 120))"; fi
   $ADB shell cmd statusbar collapse >/dev/null 2>&1
   end_call
   ctl consent "$PHONE_ID" telephony off >/dev/null

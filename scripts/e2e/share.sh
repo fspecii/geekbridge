@@ -513,7 +513,13 @@ step_survives_background_off() {
   allow_receive; set_keep_connected false; phone_restart >/dev/null 2>&1; fresh; reset_save
   local size=$((48 * 1024 * 1024)) seed=65
   sender_send "$(gen_uri "survive-off.bin" $size $seed "rate=6144")"
-  local k; for ((k = 0; k < 40; k++)); do [[ "$(tx_state survive-off.bin)" == Active ]] && break; sleep 1; done
+  # With the background connection off the phone's link is down until the share starts it, and there is no LAN discovery in the
+  # emulator topology: the computer has to be pointed at the phone again, as link_up does for every other step.
+  local k; for ((k = 0; k < 40; k++)); do
+    [[ "$(tx_state survive-off.bin)" == Active ]] && break
+    ((k % 4 == 1)) && ! is_connected && desk_dial >/dev/null 2>&1
+    sleep 1
+  done
   [[ "$(tx_state survive-off.bin)" == Active ]] || { rec share_survives_no_service FAIL "never active: $(tx_state survive-off.bin) $(share_screen 1)"; set_keep_connected true; return 1; }
   $ADB shell input keyevent KEYCODE_HOME; sleep 3
   local fgs; fgs="$($ADB shell dumpsys activity services $PKG 2>/dev/null | tr -d '\r' | grep -c 'isForeground=true')"

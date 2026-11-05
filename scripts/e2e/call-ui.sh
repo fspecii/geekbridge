@@ -55,6 +55,10 @@ set -- --no-build
 source scripts/e2e-android.sh
 set --
 
+# `ctl status` appends plain-words hints after the JSON while a paired phone is not connected (during the redial after a consent
+# change, for instance): read only the JSON, as features.sh does, or every status read in that window comes back empty.
+jget() { python3 -c "import json,sys;d=json.JSONDecoder().raw_decode(sys.stdin.read())[0];print($1)" 2>/dev/null; }
+
 DESK_SHOTS="$ROOT/dist/screenshots/desktop"; mkdir -p "$DESK_SHOTS"
 # Private XDG tree: nothing is read from or written to the real ~/.config, ~/.local or the user's runtime dir.
 PRIV="$RUN/priv"; mkdir -p "$PRIV"/{config,data,state,cache}
@@ -200,7 +204,8 @@ stage_pair() {
   ctl consent "$PHONE_ID" telephony on >/dev/null; sleep 3
   # Turning the consent on renegotiates the link; the calls capability shows up a moment later.
   calls_negotiated() { ctl status | jget '",".join(d["links"][0]["negotiated"])' | grep -q geekbridge.calls; }
-  wait_for 30 calls_negotiated \
+  # 90 s: a CI runner's emulator needed more than 30 s here (the same link negotiates calls within seconds on a fast host).
+  wait_for 90 calls_negotiated \
     || { rec callui_pair FAIL "calls not negotiated: $(ctl status | jget '",".join(d["links"][0]["negotiated"])')"; return 1; }
   rec callui_pair PASS "paired $PHONE_ID, connected, telephony consent on, 'Answer from computer' on, calls negotiated"
 }
@@ -335,11 +340,16 @@ overlay_visible_wid() { DISPLAY=$XDISP xdotool search --onlyvisible --class dev.
 overlay_gone() { [[ -z "$(overlay_wid)" ]]; }
 overlay_up() { APPWID="$(overlay_visible_wid)"; [[ -n "$APPWID" ]]; }
 stage_overlay() {
-  pkill -f "^$CALLS_BIN" 2>/dev/null; sleep 0.5
+  # The service starts a card for every ring, also during the popup stage, and lets it linger. Stop them all and WAIT until they
+  # are gone: a card still dying when the next ring arrives counts as the card for that ring and is not started again, which a
+  # slow CI runner showed as "no incoming-call card after the ring".
+  pkill -f "^$CALLS_BIN" 2>/dev/null
+  wait_for 15 bash -c "! pgrep -f '^$CALLS_BIN' >/dev/null" || pkill -9 -f "^$CALLS_BIN" 2>/dev/null
+  sleep 1
   hang_up_all; sway_env makoctl dismiss -a >/dev/null 2>&1
   # --- ring: the card must come up on its own, with no Calls window open
   ring "$NUMBER_E" || { rec callui_overlay_ring FAIL "desktop never saw the call ringing"; return 1; }
-  wait_for 20 overlay_up || { rec callui_overlay_ring FAIL "no incoming-call card after the ring (service log: $(grep -i overlay "$SERVICE_LOG" | tail -2 | tr '\n' '|'); status: $(cat "$RUN/state/call-overlay-status" 2>/dev/null))"; return 1; }
+  wait_for 20 overlay_up || { rec callui_overlay_ring FAIL "no incoming-call card after the ring (service log: $(grep -i overlay "$SERVICE_LOG" | tail -2 | tr '\n' '|'); status: $(cat "$RUN/state/call-overlay-status" 2>/dev/null); card processes: $(pgrep -fc "^$CALLS_BIN"); trace: $(ctl calls --trace 2>/dev/null | grep -i card | tail -4 | tr '\t\n' ' |' | head -c 400))"; return 1; }
   rec callui_overlay_ring PASS "the service started the card by itself on RINGING (window $APPWID)"
   sleep 1.5
   eval "$(win_geometry)"
