@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! `RestartIfIdle`: the service decides, under the call hub's lock, whether it may leave for an update.
 //! Sandbox services on private ports only; the supervisor check is replaced so nothing here can touch systemd.
+#![cfg(target_os = "linux")]
 
 mod support;
 
