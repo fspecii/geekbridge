@@ -49,7 +49,7 @@ d="$S/deb"; mkdir -p "$d/ctl" "$d/data"
 want=(usr/bin/geekbridge usr/bin/geekbridge-service usr/bin/geekbridge-ctl usr/bin/geekbridge-service-launch
   usr/lib/systemd/user/geekbridge-service.service etc/xdg/autostart/geekbridge-service.desktop
   usr/share/applications/dev.geekbridge.GeekBridge.desktop usr/share/applications/dev.geekbridge.PasteFromPhone.desktop
-  usr/share/doc/geekbridge/copyright usr/share/doc/geekbridge/LICENSE)
+  usr/share/doc/geekbridge/copyright usr/share/doc/geekbridge/LICENSE usr/share/geekbridge/package-managed)
 miss=""; for f in "${want[@]}"; do [[ -e "$d/data/$f" ]] || miss+=" $f"; done
 check deb-expected-files $([[ -z $miss ]]; echo $?) "missing:${miss:- none}"
 miss=""; for n in GeekBridge Calls Messages Agenda Contacts Clipboard Share PasteFromPhone; do

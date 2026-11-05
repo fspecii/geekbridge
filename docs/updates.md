@@ -1,7 +1,9 @@
 # Update checks
 
 Both the desktop apps and the Android app can tell you when a newer GeekBridge release exists on GitHub
-(`fspecii/geekbridge`). Nothing is ever installed or replaced automatically; there is no telemetry.
+(`fspecii/geekbridge`). Nothing is ever installed or replaced automatically; there is no telemetry. On the Linux
+per-user install you can also click **Install update** (or run `geekbridge-ctl update install`) to have the verified
+download unpacked, checked and switched in for you, with the old version kept ([below](#installing-with-install-update-linux-per-user-install)).
 
 ## What is contacted, and what is sent
 
@@ -176,10 +178,60 @@ Single version source: see [builds.md](builds.md#releases-and-versioning).
   *and* a `SHA256SUMS` line for it.
 * The download goes into a fresh `geekbridge-update-<random>` directory (mode 0700 on Unix) under the per-user state
   directory (`$XDG_STATE_HOME/geekbridge/updates`, never the shared temp dir), is hashed while written, and is deleted if the size or SHA-256 differs from the published value.
-  On success the file is made read-only and the app offers **Show file**. You then open/extract it yourself.
-  No installer is executed, no files are replaced, no privileges are requested.
+  On success the file is made read-only and the app offers **Show file**. Downloading alone executes nothing and replaces
+  nothing. Installing is a separate, explicit step ([below](#installing-with-install-update-linux-per-user-install)),
+  available only for the Linux per-user install; no privileges are ever requested.
 * TLS is rustls with the bundled Mozilla root set (`webpki-roots`); the operating system trust store and proxy
   settings are not used.
+
+### Installing with "Install update" (Linux per-user install)
+
+For a copy installed with `install.sh` into `~/.local`, **Install update** in the Settings update card, or
+`geekbridge-ctl update install`, does what the by-hand steps below do, safely. Full design, threat model and failure
+analysis: [design/desktop-self-update.md](design/desktop-self-update.md).
+
+```
+geekbridge-ctl update install [--yes] [--dry-run] [--no-restart] [--prefix DIR]
+geekbridge-ctl update rollback [--yes] [--no-restart]
+geekbridge-ctl update restart
+geekbridge-ctl update support
+```
+
+What happens, in order, and what stops it:
+
+1. The downloaded archive is copied into a private staging directory under `<prefix>/lib/geekbridge/` and checked again
+   against the published size and SHA-256 (the archives carry no signature of their own; see the trust notes above).
+   Only the **stable** channel installs; a pre-release is never taken, and a version that is not newer than the running
+   one (a downgrade or the same version) is refused. The **dev** channel stays download only.
+2. It is unpacked by a strict reader that accepts only regular files directly inside one top directory: no links of
+   any kind, no `..` or absolute names, no duplicates, at most 64 entries, 192 MiB per file, 512 MiB in total
+   (decompression stops at the cap).
+3. The staged tree is validated: all nine executables present and marked executable, real ELF files for this CPU, and
+   `geekbridge-service --version` of the *staged* binary must print the release tag's version.
+4. Switch: the staging directory is renamed to `lib/geekbridge/versions/<version>`, `previous` is pointed at the old
+   version, then `current` is replaced by one atomic `rename`. `bin/<name>` are symbolic links to
+   `../lib/geekbridge/current/bin/<name>` (the first self-update turns the files `install.sh` wrote into this layout; a
+   `bin/` entry that is a link you made yourself stops it before anything changes). The previous version is kept;
+   older ones are deleted.
+5. The service is **not** restarted unless you say so (`--yes`, the prompt, or the card's **Restart service now**), and
+   never while a call is in progress or when that cannot be determined (it asks the running service). If the restarted
+   service does not report the new version within 20 s, GeekBridge goes back to the previous version and restarts it.
+6. The outcome (`installed`, `failed`, `rolled_back`, `recovered`, with version and time) is recorded as
+   `last_install` in `update-state.json`; `geekbridge-ctl update status` prints it.
+
+`--dry-run` runs steps 1-3 and removes the staging directory; nothing else changes. `geekbridge-ctl update rollback`
+swaps `current` and `previous` (run it twice to go forward again). If the process dies at any point, `bin/` still
+resolves to a complete version; the next service start (or the next install) removes the leftovers.
+
+**Who may update itself.** Only a copy whose `bin/` directory lies inside your home directory, is writable by you, and
+is not marked by a package. The `.deb` and the Arch package ship `/usr/share/geekbridge/package-managed`; `install.sh
+--system` puts files in `/usr/local`, outside the home directory. Those copies, and anything run from a build folder,
+never modify themselves: the card and `update status` say **Update with your package manager**. **Windows and macOS** keep
+the download-and-verify behaviour and say **Download only**; you install the archive yourself (the `SHA256SUMS` check is
+the same).
+
+Not covered by Install update: the systemd unit, desktop entries and icons (the archive has none). If a release changes
+them, run its `install.sh` again; that also removes the kept versions and returns `bin/` to plain files.
 
 ### Installing a downloaded archive by hand
 

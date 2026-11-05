@@ -85,6 +85,8 @@ install -m 0644 "$pk/geekbridge-service.desktop" "$root/etc/xdg/autostart/"
 install -m 0644 "$t/README.md" "$root/usr/share/doc/geekbridge/README.md"
 install -m 0644 "$pk/copyright" "$root/usr/share/doc/geekbridge/copyright"
 install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"   # the About section opens these
+# Tells geekbridge-ctl / the Settings card that the package manager owns these files (no self-update).
+install -Dm 0644 /dev/stdin "$root/usr/share/geekbridge/package-managed" <<< "deb"
 
 size_kb=$(du -sk --apparent-size "$root" | cut -f1)
 ctl="$work/control"; mkdir -p "$ctl"

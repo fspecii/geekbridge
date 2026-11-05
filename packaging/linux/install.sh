@@ -48,6 +48,8 @@ user_systemd() { [[ $mode == user ]] && command -v systemctl >/dev/null && syste
 if [[ $uninstall -eq 1 ]]; then
   if user_systemd; then systemctl --user disable --now geekbridge-service.service 2>/dev/null || true; fi
   for b in "${bins[@]}"; do rm -f "$bindir/$b"; done
+  # Versions kept by `geekbridge-ctl update install` (docs/design/desktop-self-update.md).
+  if [[ "$prefix" == /* && "$prefix" != / && -d "$prefix/lib/geekbridge" ]]; then rm -rf -- "$prefix/lib/geekbridge"; rmdir "$prefix/lib" 2>/dev/null || true; fi
   for d in "${desktops[@]}"; do rm -f "$appdir/$d.desktop"; done
   for n in "${iconnames[@]}"; do
     rm -f "$icondir/scalable/apps/$n.svg"
@@ -72,6 +74,8 @@ for b in "${bins[@]}"; do
   [[ -f "$here/bin/$b" ]] || { echo "missing $here/bin/$b" >&2; exit 66; }
   install -m 0755 "$here/bin/$b" "$bindir/$b"
 done
+# These files are now the truth: drop the versions `geekbridge-ctl update install` kept (its bin/ links were just replaced).
+if [[ "$prefix" == /* && "$prefix" != / && -d "$prefix/lib/geekbridge/versions" ]]; then rm -rf -- "$prefix/lib/geekbridge"; fi
 for d in "${desktops[@]}"; do install -m 0644 "$here/share/applications/$d.desktop" "$appdir/$d.desktop"; done
 # A per-user install lives in ~/.local/bin, which the desktop's application launcher does not always have on its
 # PATH (a fresh ~/.local/bin only joins PATH at the next login), so the menu entries name the programs absolutely.

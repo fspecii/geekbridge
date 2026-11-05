@@ -49,6 +49,8 @@ on the same volume, (3) stops the service, (4) renames old -> `.old`, new -> fin
 `MoveFileEx` with delayed replace or a small updater exe), (5) starts the service, (6) keeps `.old` for rollback.
 Linux user-level install via `~/.local/bin` is the easy first target (rename is atomic and a running binary can be
 replaced). Package-installed copies (`.deb`, Inno, dmg) should keep going through their installers.
+**Status 2026-11-05:** the Linux per-user step is built (`geekbridge-ctl update install`, the Settings card button;
+[design/desktop-self-update.md](../design/desktop-self-update.md)). Windows and macOS remain download only.
 
 **A1. Android only learns about an update when "Diagnostics & about" is opened.** `UpdateSection.onStart` is the only
 trigger and the card lives in `MainActivity`, which Home does not show. A user who never opens it never hears of a

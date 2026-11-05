@@ -73,5 +73,7 @@ package() {
   install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/doc/$pkgname/THIRD_PARTY_NOTICES.md"
   install -Dm644 CHANGELOG.md "$pkgdir/usr/share/doc/$pkgname/CHANGELOG.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  # The package manager owns these files: GeekBridge must not update itself (docs/design/desktop-self-update.md).
+  echo pacman | install -Dm644 /dev/stdin "$pkgdir/usr/share/geekbridge/package-managed"
   install -Dm644 THIRD_PARTY_NOTICES.md "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY_NOTICES.md"
 }

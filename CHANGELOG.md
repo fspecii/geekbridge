@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Added
+- Linux per-user install: **Install update** in the Settings update card and `geekbridge-ctl update install [--yes] [--dry-run]`
+  unpack the verified download beside the current version, check it (contents, executables, `geekbridge-service --version`),
+  switch atomically and keep the old version for `geekbridge-ctl update rollback`. The service is restarted only when you
+  confirm and never during a call. Package installs and Windows/macOS stay download only
+  ([design](docs/design/desktop-self-update.md)).
+
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android
