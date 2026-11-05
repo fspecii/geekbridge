@@ -9,7 +9,7 @@ Both the desktop apps and the Android app can tell you when a newer GeekBridge r
 | --- | --- |
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases/latest` | the newest published, non-prerelease release |
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases?per_page=30` | only when `releases/latest` answered 404/403: tells "no stable release yet" from "private repository" |
-| `GET <SHA256SUMS asset URL>` (`github.com` / `*.githubusercontent.com`, https only) | published digests, fetched only when a newer release has an installer for this system |
+| `GET <SHA256SUMS asset URL>` (GitHub's release hosts, https only; see the allow-list below) | published digests, fetched only when a newer release has an installer for this system |
 | `GET <installer asset URL>` | only after you click Download (desktop) or "Download and verify" (Android) |
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases/tags/dev`, then `dev-manifest.json` | **instead of** `releases/latest`, only on the dev channel ([below](#dev-channel)) |
 
@@ -17,10 +17,15 @@ Each request carries a `User-Agent` of `geekbridge-updater/<version>` (Android:
 `geekbridge-android-updater/<version>`), `Accept`, and, after the first answer, `If-None-Match` with GitHub's
 ETag (a `304` does not count against GitHub's unauthenticated rate limit). No account, device id, install id,
 IP-derived value or version history is sent beyond what any HTTPS request reveals. Redirects are followed only
-to the same allow-list (https `github.com`, `api.github.com`, `*.githubusercontent.com`); responses are capped
-(1 MiB for release JSON, 64 KiB for checksums, 512 MiB / 200 MiB for installers) and every request has a
-deadline. A rate-limit answer (403/429) pauses automatic checks for the time GitHub names (at least a minute,
-at most a day).
+to the same allow-list: https on port 443 to exactly `github.com`, `api.github.com`, `objects.githubusercontent.com`,
+`release-assets.githubusercontent.com` and `github-releases.githubusercontent.com` (not other `*.githubusercontent.com`
+hosts); responses are capped (1 MiB for release JSON, 64 KiB for checksums, 512 MiB / 200 MiB for installers) and every
+request has an overall deadline (desktop: 30 s per check, 30 min per download; Android: 60 s per small response,
+15 min per APK). On the desktop a rate-limit answer (403/429, also on the checksum file) pauses automatic checks
+for the time GitHub names (at least a minute, at most a day); the pause and the time of the last failed check are
+saved in `update-state.json`, so restarting the service does not skip them. On Android, after any failed automatic
+check the next one waits 15 minutes (a screen visit does not retry at once); GitHub's rate limit is reported to the
+user, not remembered beyond that.
 
 ## Choosing the release source
 
@@ -135,8 +140,11 @@ where:
 
 **Protecting the dev key.** `dev-release.yml` signs only on `main`, builds with no secret in the environment, and
 decodes the keystore only in the signing step. A manual run on another branch still runs that branch's copy of the
-workflow, so also store `DEV_KEYSTORE_B64`, `DEV_KEYSTORE_PASSWORD` and `DEV_KEY_ALIAS` as secrets of an *environment*
-(Settings, Environments) that allows deployments from `main` only, and set the repository variable `DEV_SIGNER_SHA256`.
+workflow, so also store `DEV_KEYSTORE_B64`, `DEV_KEYSTORE_PASSWORD` and `DEV_KEY_ALIAS` as secrets of the *environment*
+`dev-signing` (Settings, Environments; the `android` job names it, which is the only way it can read them) that allows
+deployments from `main` only, and set the repository variable `DEV_SIGNER_SHA256`
+(commands: [release-owner-steps.md](release-owner-steps.md), step 3a). The `publish` job runs in its own queue
+(`dev-release-publish`) that a newer push never cancels, so a half-uploaded release cannot be left behind.
 `release-dev.sh --publish --yes` refuses to publish an APK without a pinned signer (`--allow-unpinned` overrides, for
 tests and a first publish from a new machine). `scripts/tests/workflow-secrets-test.sh` checks these rules.
 
@@ -217,7 +225,8 @@ exactly these names.
   settings page (`REQUEST_INSTALL_PACKAGES`); the system then asks you to confirm.
 * An update installs only over an app signed with the same key (or a v3 rotation lineage that contains it). The
   pipeline signs with the release keystore ([builds.md](builds.md#first-release-android-signing-key)); stable tags fail
-  without it. The Android app compares the downloaded APK's signer certificate (SHA-256, via `PackageManager`
+  without it, and `release.yml` also refuses to publish unless the repository variable `ANDROID_SIGNER_SHA256` pins that
+  key. The Android app compares the downloaded APK's signer certificate (SHA-256, via `PackageManager`
   `GET_SIGNING_CERTIFICATES`) with its own **before** showing Install; on a mismatch the file is deleted and the app
   explains it (a debug build never updates to a release build: uninstall once, then install the release APK). On the
   Dev channel the dev APK (`geekbridge-debug.apk`) is checked the same way, with its own explanation.

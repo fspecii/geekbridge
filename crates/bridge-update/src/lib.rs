@@ -267,7 +267,17 @@ struct Persisted {
     /// The last check got 404/403: no public release is reachable (not "up to date").
     #[serde(default)]
     no_public_release: bool,
+    /// Rate-limit pause (unix seconds). Persisted so a restart loop of the service cannot ignore it.
+    #[serde(default)]
+    backoff_until: Option<u64>,
+    /// When the scheduler last gave up on a check. Persisted for the same reason: without it every
+    /// restart after a failed check would ask GitHub again 15 s after start.
+    #[serde(default)]
+    last_attempt_unix: Option<u64>,
 }
+
+/// A stored pause further ahead than this is a clock that was set forward and back: ignored.
+const MAX_BACKOFF_SECS: u64 = 24 * 3600;
 
 fn yes() -> bool {
     true
@@ -284,6 +294,8 @@ impl Default for Persisted {
             last_checked_unix: None,
             release: None,
             no_public_release: false,
+            backoff_until: None,
+            last_attempt_unix: None,
         }
     }
 }
@@ -303,9 +315,6 @@ struct Runtime {
     error: Option<String>,
     downloaded: Option<Downloaded>,
     progress: (u64, u64),
-    backoff_until: Option<u64>,
-    /// When the scheduler last gave up on a check (not persisted; see `scheduler_tick`).
-    last_attempt_unix: Option<u64>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -580,7 +589,11 @@ impl Updater {
             return Err(Error::Disabled);
         }
         let now = now_unix();
-        if let Some(until) = rt.backoff_until.filter(|u| *u > now) {
+        if let Some(until) = rt
+            .persisted
+            .backoff_until
+            .filter(|u| *u > now && *u - now <= MAX_BACKOFF_SECS)
+        {
             let err = Error::RateLimited {
                 retry_after_secs: until - now,
             };
@@ -655,7 +668,8 @@ impl Updater {
             }
             Err(e) => {
                 if let Error::RateLimited { retry_after_secs } = &e {
-                    rt.backoff_until = Some(now + (*retry_after_secs).clamp(60, 24 * 3600));
+                    rt.persisted.backoff_until =
+                        Some(now + (*retry_after_secs).clamp(60, MAX_BACKOFF_SECS));
                 }
                 rt.error = Some(e.to_string());
                 self.persist(&rt);
@@ -770,6 +784,12 @@ impl Updater {
                 MAX_SUMS_BYTES,
                 None,
             )?;
+            if f.rate_limited {
+                // Back off like any other rate-limited answer instead of silently offering nothing.
+                return Err(Error::RateLimited {
+                    retry_after_secs: f.retry_after.unwrap_or(3600),
+                });
+            }
             if f.status == 200 {
                 cached.sha256 = std::str::from_utf8(&text)
                     .ok()
@@ -1067,7 +1087,7 @@ impl Updater {
             .persisted
             .last_checked_unix
             .into_iter()
-            .chain(rt.last_attempt_unix)
+            .chain(rt.persisted.last_attempt_unix)
             .filter(|t| *t <= now) // a time ahead of the clock (clock set back) is ignored
             .max();
         rt.persisted.enabled && last.is_none_or(|t| now - t >= gap.as_secs())
@@ -1086,7 +1106,8 @@ impl Updater {
             // failure would make the status read "up to date".
             let mut rt = self.lock();
             if rt.error.is_some() {
-                rt.last_attempt_unix = Some(now_unix());
+                rt.persisted.last_attempt_unix = Some(now_unix());
+                self.persist(&rt);
             }
         }
     }
@@ -1394,11 +1415,37 @@ mod tests {
         assert!(matches!(up.begin_check(true), Ok(Some(_))));
         up.lock().checking = false;
         // After a failed attempt the retry is spaced by the interval, not made on every tick.
-        up.lock().last_attempt_unix = Some(now_unix());
+        up.lock().persisted.last_attempt_unix = Some(now_unix());
         assert!(
             !up.check_due(false),
             "a failed attempt must not be retried every tick"
         );
+    }
+
+    #[test]
+    fn a_rate_limit_pause_is_persisted_and_a_wild_one_is_ignored() {
+        // The pause and the last failed attempt are saved fields, so a restarted service honours them.
+        let saved = Persisted {
+            backoff_until: Some(123),
+            last_attempt_unix: Some(45),
+            ..Persisted::default()
+        };
+        let back: Persisted =
+            serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
+        assert_eq!((back.backoff_until, back.last_attempt_unix), (Some(123), Some(45)));
+        // An older state file has neither field.
+        let old: Persisted = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert_eq!((old.backoff_until, old.last_attempt_unix), (None, None));
+
+        let up = Updater::new(Config::github("0.1.0")).unwrap();
+        up.lock().persisted.backoff_until = Some(now_unix() + 600);
+        assert!(matches!(
+            up.begin_check(true),
+            Err(Error::RateLimited { .. })
+        ));
+        // A stored pause more than a day ahead (clock set forward, then back) must not freeze checks.
+        up.lock().persisted.backoff_until = Some(now_unix() + 3 * MAX_BACKOFF_SECS);
+        assert!(matches!(up.begin_check(true), Ok(Some(_))));
     }
 
     #[test]

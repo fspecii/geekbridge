@@ -32,6 +32,15 @@ class UpdateModelTest {
     }
 
     @Test
+    fun aFailedAutomaticCheckIsNotRetriedOnEveryVisit() {
+        val now = 1_000_000_000L
+        assertTrue(UpdateModel.attemptDue(0, now))
+        assertFalse(UpdateModel.attemptDue(now - 60_000, now))
+        assertTrue(UpdateModel.attemptDue(now - UpdateModel.RETRY_GAP_MS, now))
+        assertTrue("clock moved back", UpdateModel.attemptDue(now + 60_000, now))
+    }
+
+    @Test
     fun versionCodeFormula() {
         val expected = listOf(
             "0.1.0" to 10_099, "0.1.1" to 10_199, "0.2.0-rc.1" to 20_051, "0.2.0" to 20_099,

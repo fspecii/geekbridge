@@ -79,7 +79,10 @@ class UpdateSection(
 
     fun onStart() {
         cancelled = false
-        if (autoCheck.isChecked && !busy && UpdateModel.autoCheckDue(prefs.getLong(KEY_LAST_CHECK, 0), System.currentTimeMillis())) {
+        val now = System.currentTimeMillis()
+        if (autoCheck.isChecked && !busy && UpdateModel.autoCheckDue(prefs.getLong(KEY_LAST_CHECK, 0), now) &&
+            UpdateModel.attemptDue(prefs.getLong(KEY_LAST_ATTEMPT, 0), now)
+        ) {
             startCheck(manual = false)
         }
     }
@@ -168,6 +171,7 @@ class UpdateSection(
         }
         val checking = checker
         worker.execute {
+            prefs.edit().putLong(KEY_LAST_ATTEMPT, System.currentTimeMillis()).apply()
             val result = checking.check(cache) { fresh ->
                 prefs.edit().putString(KEY_ETAG + sfx, fresh.etag).putString(KEY_BODY + sfx, fresh.body.takeIf { it.length <= 128 * 1024 })
                     .putString(KEY_EXTRA + sfx, fresh.extra?.takeIf { it.length <= 16 * 1024 }).apply()
@@ -331,6 +335,7 @@ class UpdateSection(
 
         private const val KEY_AUTO = "auto_check"
         private const val KEY_LAST_CHECK = "last_check_ms"
+        private const val KEY_LAST_ATTEMPT = "last_attempt_ms"
         private const val KEY_ETAG = "etag"
         private const val KEY_BODY = "body"
         private const val KEY_EXTRA = "extra"

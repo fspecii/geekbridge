@@ -166,6 +166,13 @@ object UpdateModel {
     fun autoCheckDue(lastCheckMs: Long, nowMs: Long): Boolean =
         lastCheckMs <= 0 || nowMs < lastCheckMs || nowMs - lastCheckMs >= CHECK_INTERVAL_MS
 
+    /** After a check that failed (offline, rate limit) the next automatic one waits this long: no request per screen visit. */
+    const val RETRY_GAP_MS = 15L * 60 * 1000
+
+    /** True when no automatic check was *attempted* within [RETRY_GAP_MS] (a clock moved backwards counts as due). */
+    fun attemptDue(lastAttemptMs: Long, nowMs: Long): Boolean =
+        lastAttemptMs <= 0 || nowMs < lastAttemptMs || nowMs - lastAttemptMs >= RETRY_GAP_MS
+
     /** `owner/name` as GitHub spells it; anything else never reaches an API URL. */
     fun validRepo(repo: String?): Boolean {
         val parts = repo?.split('/') ?: return false

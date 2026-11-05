@@ -174,7 +174,7 @@ class UpdateChecker(
         try {
             file.outputStream().use { sink ->
                 val head = request(offer.apkUrl, "application/octet-stream", null, offer.apkSize) { stream ->
-                    readBounded(stream, offer.apkSize) { b, off, len ->
+                    readBounded(stream, offer.apkSize, TOTAL_MS_DOWNLOAD) { b, off, len ->
                         digest.update(b, off, len)
                         sink.write(b, off, len)
                         written += len
@@ -248,10 +248,16 @@ class UpdateChecker(
         throw UpdateException(R.string.upd_err_redirects)
     }
 
-    private fun readBounded(input: InputStream, max: Long, sink: (ByteArray, Int, Int) -> Unit) {
+    /**
+     * Reads at most [max] bytes within [totalMs] overall. The socket read timeout only bounds each single read, so a
+     * server that trickles one byte every few seconds would otherwise hold the update card in "busy" for hours.
+     */
+    private fun readBounded(input: InputStream, max: Long, totalMs: Long = TOTAL_MS_SMALL, sink: (ByteArray, Int, Int) -> Unit) {
         val buf = ByteArray(32 * 1024)
+        val deadline = System.nanoTime() + totalMs * 1_000_000L
         var total = 0L
         while (true) {
+            if (System.nanoTime() - deadline > 0) throw UpdateException(R.string.upd_err_interrupted)
             val n = input.read(buf)
             if (n < 0) return
             total += n
@@ -264,6 +270,9 @@ class UpdateChecker(
         const val MAX_API_BYTES = 1024 * 1024
         const val MAX_SUMS_BYTES = 64 * 1024
         const val MAX_REDIRECTS = 5
+        /** Overall time for one small response (release JSON, manifest, checksums) and for the APK download. */
+        const val TOTAL_MS_SMALL = 60_000L
+        const val TOTAL_MS_DOWNLOAD = 15L * 60 * 1000
         /** Set at build time with `-Pgb.releaseRepo=owner/name` (default `fspecii/geekbridge`). */
         val DEFAULT_REPO: String = BuildConfig.RELEASE_REPO
         const val UPDATE_FILE_NAME = "geekbridge-update.apk"
