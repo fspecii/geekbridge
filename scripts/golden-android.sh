@@ -155,7 +155,7 @@ PAGES=1; shoot setup-notifications $G/.SetupActivity --es step Notifications
 $ADB shell pm revoke $G android.permission.ANSWER_PHONE_CALLS >/dev/null 2>&1; $ADB shell pm revoke $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
 PAGES=5; shoot setup-answer $G/.SetupActivity --es step AnswerCalls
 $ADB shell pm grant $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
-PAGES=5; shoot setup-answer-bt $G/.SetupActivity --es step AnswerCalls
+PAGES=5; shoot setup-answer-bt $G/.SetupActivity --es step AnswerCalls --ez more true
 $ADB shell pm revoke $G android.permission.BLUETOOTH_CONNECT >/dev/null 2>&1
 PAGES=3; shoot setup-battery $G/.SetupActivity --es step Battery
 PAGES=6; shoot setup-sms $G/.SetupActivity --es step Sms

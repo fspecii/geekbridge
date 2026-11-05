@@ -91,6 +91,8 @@
     <string name="setup_dial_allow">Allow placing calls from my computer</string>
     <string name="setup_dial_done">Allowed. A linked computer you allowed “Calls” for can ask this phone to dial a number. Switch “Ask me before placing a call” on to approve each call here too.</string>
     <string name="setup_calls_audio_note">Call audio does not travel through GeekBridge. It stays on the phone unless your computer is also paired with this phone over Bluetooth as a hands-free device. Needs the Phone state step; declining and ending a call needs Android 9 or newer.</string>
+    <string name="setup_calls_more">More call options</string>
+    <string name="setup_calls_less">Hide call options</string>
     <string name="setup_ca_title">Call audio on your computer</string>
     <string name="setup_ca_explain">To talk through your computer’s headphones and microphone, pair this phone with the computer over Bluetooth. On the computer: add device, then choose this phone. On this phone, allow Phone calls access (One UI: Bluetooth, the gear next to the computer, Call audio on). Android gives apps no call audio, so this is the only way.</string>
     <string name="setup_ca_pair">Pair phone with your computer for call audio</string>
@@ -148,9 +150,11 @@
     <!-- Pairing panel and prompt -->
     <string name="pair_paired_and_trusted">Linked and trusted</string>
     <string name="pair_chip_paired">Linked</string>
-    <string name="pair_intro_first">Open GeekBridge or KDE Connect on your computer, on the same Wi-Fi network as this phone, then look for it.</string>
+    <string name="pair_intro_first">Open GeekBridge on your computer, on the same Wi-Fi network as this phone, then look for it.</string>
     <string name="pair_manage_hint">To stop trusting a computer, tap Unlink next to it.</string>
     <string name="pair_intro_more">To add another computer, open GeekBridge on it, on the same Wi-Fi network, then look for it.</string>
+    <string name="pair_other_ways">Other ways to link</string>
+    <string name="pair_other_hide">Hide other ways</string>
     <string name="pair_look">Look for computers</string>
     <string name="pair_working">Working…</string>
     <string name="pair_looking">Looking for computers on this network… keep GeekBridge open on the computer. Nothing showing up? Check that both devices use the same Wi-Fi and that a guest or VPN network is not in the way.</string>

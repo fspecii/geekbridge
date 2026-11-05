@@ -100,6 +100,45 @@ class QrPairActivity : Activity() {
         super.onStop()
     }
 
+    // Back while "Connecting..." is Cancel: drop the attempt (its steps stop, nothing more is dialled or sent, a half-open
+    // connection to that computer is closed) and show the page the user came from. Elsewhere Back closes the page.
+    // Android 13+ delivers Back through the callback, which is registered only while connecting (so the system's own
+    // back animation still plays on the other pages); older versions use onBackPressed.
+    private val backCallback = android.window.OnBackInvokedCallback { cancelAttempt() }
+    private var backRegistered = false
+
+    private fun syncBackCallback() {
+        if (Build.VERSION.SDK_INT < 33) return
+        val want = mode is Mode.Connecting
+        if (want == backRegistered) return
+        backRegistered = want
+        if (want) onBackInvokedDispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback)
+        else onBackInvokedDispatcher.unregisterOnBackInvokedCallback(backCallback)
+    }
+
+    @android.annotation.SuppressLint("GestureBackNavigation")
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (mode is Mode.Connecting) cancelAttempt() else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
+    private fun cancelAttempt() {
+        val m = mode
+        gate.supersede()
+        plan = null
+        prompt.dismiss()
+        if (m is Mode.Connecting) {
+            controller.snapshot?.connections.orEmpty()
+                .filter { it.peer.deviceId == m.target.deviceId && !it.trusted }
+                .forEach { controller.disconnect(it.id) }
+        }
+        mode = Mode.Entry
+        render()
+    }
+
     private fun handleIntent(i: Intent?) {
         val text = QrProtocol.linkText(i?.dataString) ?: return
         linkPending = true
@@ -264,6 +303,7 @@ class QrPairActivity : Activity() {
             is Mode.Connecting -> connecting(root, m.target)
             is Mode.Failed -> failedView(root, m)
         }
+        syncBackCallback()
         screen.requestInsets()
     }
 
@@ -307,10 +347,7 @@ class QrPairActivity : Activity() {
         card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
         card.addView(kit.text(getString(R.string.qr_connecting_hint), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) {
-            gate.supersede()
-            plan = null
-            mode = Mode.Entry
-            render()
+            cancelAttempt()
         }
     }
 

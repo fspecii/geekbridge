@@ -35,6 +35,7 @@ class SetupActivity : Activity() {
         kit = UiKit(this, Ui(this))
         screen = Screen(this, kit).also { it.install() }
         screen.footer.visibility = View.VISIBLE
+        moreCalls = savedInstanceState?.getBoolean(KEY_MORE, false) ?: intent.getBooleanExtra(EXTRA_MORE, false)
         steps = SetupModel.steps(strings, inputs())
         page = when {
             savedInstanceState != null -> savedInstanceState.getInt(KEY_PAGE, 0)
@@ -62,6 +63,7 @@ class SetupActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_PAGE, page)
+        outState.putBoolean(KEY_MORE, moreCalls)
     }
 
     override fun onResume() {
@@ -239,6 +241,12 @@ class SetupActivity : Activity() {
             },
         )
         if (CallControlRuntime.settings.enabled) GrantsUi.add(this, kit, panel, GrantFeature.Calls) { render() }
+        // A first-timer sees the permission and the switch; placing calls and call audio are one tap away.
+        kit.button(panel, getString(if (moreCalls) R.string.setup_calls_less else R.string.setup_calls_more), BtnStyle.Plain) {
+            moreCalls = !moreCalls
+            render()
+        }
+        if (!moreCalls) return
         panel.addView(View(this), LinearLayout.LayoutParams(Ui.MATCH, kit.dp(10)))
         kit.divider(panel)
         panel.addView(kit.cardTitle(getString(R.string.setup_dial_title), 16f).apply { setPadding(0, kit.dp(14), 0, 0) })
@@ -263,6 +271,7 @@ class SetupActivity : Activity() {
     }
 
     private var hfp: HfpView? = null
+    private var moreCalls = false
 
     /** Bluetooth hands-free for call audio on the computer. Reads nothing until the step is on screen. */
     private fun callAudioPart(panel: LinearLayout) {
@@ -430,6 +439,9 @@ class SetupActivity : Activity() {
 
     companion object {
         private const val KEY_PAGE = "page"
+        private const val KEY_MORE = "more_calls"
+        /** Debug/golden aid: open the "Answer calls" page with its optional sections showing. */
+        const val EXTRA_MORE = "more"
         const val EXTRA_REVIEW = "review"
         const val EXTRA_STEP = "step"
 

@@ -36,6 +36,8 @@ class PairPanel(
     private var testing = false
     private val observer: () -> Unit = { render() }
     private var attached = false
+    /** "Other ways to link" is open. */
+    private var otherOpen = false
 
     private val poller = object : Runnable {
         override fun run() {
@@ -108,7 +110,7 @@ class PairPanel(
             phase, s?.discovered?.joinToString { "${it.deviceId}${it.ip}${it.paired}" },
             s?.connections?.joinToString { "${it.id}${it.phase}${it.trusted}" },
             s?.paired?.joinToString { "${it.deviceId}${it.name}" }, controller.notice?.text, pendingDevice, AppState.pairedNames,
-            showNext, testing, netReport?.headline,
+            showNext, testing, netReport?.headline, otherOpen,
         ).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
@@ -141,6 +143,16 @@ class PairPanel(
         kit.button(container, activity.getString(R.string.pair_scan_qr), if (names.isEmpty()) BtnStyle.Primary else BtnStyle.Tonal) {
             activity.startActivity(QrPairActivity.scanIntent(activity))
         }
+        // Scanning is the one visible way. Everything else sits behind "Other ways to link", which opens by itself
+        // once a search is under way so that its progress is never hidden.
+        val expanded = otherOpen || phase != LinkPhase.Stopped
+        if (phase == LinkPhase.Stopped) {
+            kit.button(container, activity.getString(if (otherOpen) R.string.pair_other_hide else R.string.pair_other_ways), BtnStyle.Plain) {
+                otherOpen = !otherOpen
+                render()
+            }
+        }
+        if (!expanded) return notice(phase, s)
         // No computer app yet: get the download page to the computer.
         kit.button(container, activity.getString(R.string.pair_dont_have_computer_app), BtnStyle.Plain) {
             activity.startActivity(Intent(activity, ComputerLinkActivity::class.java))
@@ -200,6 +212,11 @@ class PairPanel(
                 kit.button(container, activity.getString(R.string.pair_stop_looking), BtnStyle.Plain) { AppState.endPairingGrace(); controller.stop(); LinkService.sync(activity) }
             }
         }
+        notice(phase, s)
+    }
+
+    private fun notice(phase: LinkPhase, s: TransportSnapshot?) {
+        val names = AppState.pairedNames
         val n = controller.notice
         // A "waiting for the other device" note is only true while a pairing is actually in progress.
         val inProgress = pendingDevice != null || s?.connections.orEmpty().any { !it.trusted }

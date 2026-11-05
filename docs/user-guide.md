@@ -83,7 +83,7 @@ Run key).
 3. The phone asks **Connect to <computer name>?** Check the name and tap **Continue**, then **Pair**. Home opens with
    **Paired ✓ with <computer>**.
 
-**No GeekBridge on the computer yet?** On the phone, step 1 has **Don't have GeekBridge on your computer yet?**. Tap
+**No GeekBridge on the computer yet?** On the phone, step 1, under **Other ways to link**, has **Don't have GeekBridge on your computer yet?**. Tap
 **Send me the download link** and pick any app (email, a chat with yourself, notes): the text holds the public releases
 page (https://github.com/fspecii/geekbridge/releases/latest) and three install lines, nothing about you or this phone.
 **Email it to myself** opens a draft in your mail app instead. Or **Copy link**, or type the short address

@@ -40,13 +40,14 @@ settings. Desktop with no Bluetooth: banner "no Bluetooth: you can see and answe
 
 ## Remaining, ranked
 
-1. (High) "Answer calls" is one page with six sections (permission, switch, grants, dial, confirm, Bluetooth audio) and
+1. (DONE) "Answer calls" is one page with six sections (permission, switch, grants, dial, confirm, Bluetooth audio) and
    about 600 words at 1.5x. A first-timer should see only the permission and the switch; dial and call audio belong in a
    later "More about calls" page or Settings.
-2. (High) Step 1 offers three equal ways to link (scan, "Look for computers", camera app) plus a pasted link and a
+2. (DONE) Step 1 offers three equal ways to link (scan, "Look for computers", camera app) plus a pasted link and a
    "KDE Connect" mention. Scan should be the only visible path; the rest behind "Another way".
-3. (Medium) Back on the Android QR page while "Connecting..." closes the page without cancelling the attempt
+3. (DONE) Back on the Android QR page while "Connecting..." closes the page without cancelling the attempt
    (`QrPairActivity` has no back handler); Back should behave like "Cancel".
+   Done: "Answer calls" shows the permission and the switch, with "More call options" (placing calls, call audio) collapsed; step 1 shows only the scan button, with "Other ways to link" (download link, look for computers) collapsed and no KDE Connect mention; Back on "Connecting..." cancels the attempt and closes a half-open connection. Goldens `setup-pair*`, `setup-answer*` are stale (emulator would not stay online on this host).
 4. (Medium) Desktop first-run: the firewall card sits in the middle of step 2 and is long; show it only after the phone
    has failed to appear for a while, or as step 2b.
 5. (Medium) Desktop doctor hint tells the user to run `geekbridge-ctl doctor` in a terminal; a "Check for problems" button

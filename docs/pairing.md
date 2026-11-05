@@ -23,7 +23,7 @@ help), `crates/bridge-apps/src/pair_ui.rs` (desktop UI), `android/.../QrPairActi
 3. **Something wrong?** Both sides say what happened in plain words (different network, guest Wi-Fi, VPN, firewall,
    expired QR code, wrong computer) and have a **Test connection** button that checks it step by step.
 4. **Done.** Both sides say **Paired ✓**; the computer shows a "what to do next" card (clipboard, sending a file).
-5. **No computer app yet.** The phone offers **Don't have GeekBridge on your computer yet?**: a share sheet / mail draft
+5. **No computer app yet.** Under **Other ways to link** the phone offers **Don't have GeekBridge on your computer yet?**: a share sheet / mail draft
    with the public releases page and three install lines, a copyable short address. Nothing about the phone or any
    pairing secret is in that text (`ComputerInvite.kt`, unit-tested).
 6. **Unlink.** **Unlink…** on the computer (confirmation names the phone) and **Unlink** on the phone's pair step or

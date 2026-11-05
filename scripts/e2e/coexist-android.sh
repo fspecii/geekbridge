@@ -77,6 +77,7 @@ start_gb_link() {
     $ADB shell am force-stop $GB; sleep 1
     $ADB shell am start -f 0x04000000 -n "$GB/.HomeActivity" >/dev/null; sleep 3
     $UI tap "Pair a computer" >/dev/null 2>&1; sleep 2
+    $UI tap "Other ways to link" >/dev/null 2>&1; sleep 1
     $UI tap "Look for computers" >/dev/null 2>&1; sleep 5
 }
 # Diagnostics > "Start link": the foreground-service link survives leaving the app (TCP listener only; the

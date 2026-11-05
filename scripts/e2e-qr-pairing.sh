@@ -97,7 +97,7 @@ fresh_phone
 $ADB shell am start -W -n $PKG/.HomeActivity >/dev/null
 if ui wait "Scan QR code from my computer" 25; then
   shot wizard
-  order="$(ui dump | cut -f1 | grep -n -m2 "Scan QR code from my computer\|Look for computers" | cut -d: -f1 | tr '\n' ' ')"
+  order="$(ui dump | cut -f1 | grep -n -m2 "Scan QR code from my computer\|Other ways to link" | cut -d: -f1 | tr '\n' ' ')"
   rec wizard PASS "step 1 offers the scan first (lines: $order)"
 else shot wizard-fail; rec wizard FAIL "no 'Scan QR code from my computer' on step 1"; fi
 $ADB shell pm grant $PKG android.permission.CAMERA >/dev/null 2>&1
@@ -117,7 +117,8 @@ else shot camera-denied-fail; rec camera_denied FAIL "no explanation before the 
 # ------------------------------------------------------------------ no computer app yet
 fresh_phone
 $ADB shell am start -W -n $PKG/.HomeActivity >/dev/null
-if ui wait "Don't have GeekBridge on your computer yet?" 25; then
+if ui wait "Other ways to link" 25; then
+  tap_to "Other ways to link" >/dev/null; ui wait "Don't have GeekBridge on your computer yet?" 10 >/dev/null
   tap_to "Don't have GeekBridge on your computer yet?" >/dev/null
   if ui wait "github.com/fspecii/geekbridge/releases/latest" 15; then
     shot invite
