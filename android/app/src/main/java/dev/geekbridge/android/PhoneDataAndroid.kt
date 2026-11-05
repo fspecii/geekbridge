@@ -109,19 +109,8 @@ class AndroidContactsPort(context: Context, private val cancel: QueryCancel = Qu
         )?.use { if (it.moveToFirst()) it.getLong(0).toString() else null }
         val uri = Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_VCARD_URI, Uri.encode(uid))
         val text = if (ts == null) null else resolver.openAssetFileDescriptor(uri, "r")?.use { fd ->
-            // InputStream.readNBytes needs API 33; minSdk is 26.
-            fd.createInputStream().use { s ->
-                val out = java.io.ByteArrayOutputStream()
-                val chunk = ByteArray(8192)
-                var left = MAX_RAW_VCARD
-                while (left > 0) {
-                    val n = s.read(chunk, 0, minOf(chunk.size, left))
-                    if (n < 0) break
-                    out.write(chunk, 0, n)
-                    left -= n
-                }
-                String(out.toByteArray(), Charsets.UTF_8)
-            }
+            // The photo is dropped while reading, so a contact with a big picture keeps the fields after it.
+            fd.createInputStream().use { s -> stripVCardPhotos(s.reader(Charsets.UTF_8), MAX_RAW_VCARD) }
         }
         if (text == null || ts == null) null else text to ts
     } catch (_: SecurityException) {
@@ -133,6 +122,50 @@ class AndroidContactsPort(context: Context, private val cancel: QueryCancel = Qu
     private companion object {
         const val MAX_RAW_VCARD = 512 * 1024 // photos are stripped afterwards
     }
+}
+
+private val VCARD_PHOTO = Regex("^([A-Za-z0-9-]+\\.)?PHOTO[;:]", RegexOption.IGNORE_CASE)
+private val BASE64_LINE = Regex("^[A-Za-z0-9+/=]+$")
+
+/**
+ * Reads a vCard from [reader] without its PHOTO property (folded lines, and the unfolded base64 lines of version 2.1,
+ * included) and stops at [max] characters, closing the card with END:VCARD, so the fields after a large photo
+ * survive and the card stays complete. A line longer than [max] is dropped unless it is the photo.
+ */
+internal fun stripVCardPhotos(reader: java.io.Reader, max: Int): String {
+    val out = StringBuilder()
+    val line = StringBuilder()
+    var over = false
+    var skipping = false
+    var full = false
+    fun finish() {
+        val l = line.toString()
+        val tooLong = over
+        line.setLength(0)
+        over = false
+        if (skipping) {
+            if (l.isEmpty()) { skipping = false; return }
+            if (l[0] == ' ' || l[0] == '\t' || BASE64_LINE.matches(l)) return
+            skipping = false
+        }
+        if (VCARD_PHOTO.containsMatchIn(l)) { skipping = true; return }
+        if (tooLong) return
+        if (out.length + l.length + 1 > max) { full = true; return }
+        out.append(l).append('\n')
+    }
+    val buf = CharArray(8192)
+    while (!full) {
+        val n = reader.read(buf)
+        if (n < 0) break
+        for (i in 0 until n) {
+            val ch = buf[i]
+            if (ch == '\r') continue
+            if (ch == '\n') { finish(); if (full) break } else if (line.length < max) line.append(ch) else over = true
+        }
+    }
+    if (!full && line.isNotEmpty()) finish()
+    if (out.isNotEmpty() && !out.trimEnd().endsWith("END:VCARD", ignoreCase = true)) out.append("END:VCARD\n")
+    return out.toString()
 }
 
 class AndroidCalendarPort(context: Context, private val cancel: QueryCancel = QueryCancel()) : CalendarPort {
@@ -607,10 +640,18 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         const val MMS_SCAN_ROWS = 500
     }
 
-    /** Newest inbox row from [address] with this [body], for linking a just-received broadcast to its provider row. */
-    fun findIncoming(address: String, body: String): SmsRow? =
-        query("${Telephony.Sms.TYPE} = 1 AND ${Telephony.Sms.ADDRESS} = ?", arrayOf(address), 5).firstOrNull { it.body == body }
+    /**
+     * Newest inbox row from [address] with this [body] that was not already pushed ([taken]) and arrived at or after
+     * [notBeforeMs], for linking a just-received broadcast to its provider row. A second identical text must not be
+     * linked to the first one's row while the default app has not written its own yet.
+     */
+    fun findIncoming(address: String, body: String, taken: Set<Long> = emptySet(), notBeforeMs: Long = 0L): SmsRow? =
+        pickIncoming(query("${Telephony.Sms.TYPE} = 1 AND ${Telephony.Sms.ADDRESS} = ?", arrayOf(address), 5), body, taken, notBeforeMs)
 }
+
+/** The provider row ([rows] newest first) for a broadcast with this [body]: not yet [taken], not older than [notBeforeMs]. */
+internal fun pickIncoming(rows: List<SmsRow>, body: String, taken: Set<Long>, notBeforeMs: Long): SmsRow? =
+    rows.firstOrNull { it.body == body && it.id !in taken && it.date >= notBeforeMs }
 
 /** An unguessable part of a status action name: below API 33 the receivers cannot be marked not-exported. */
 internal fun smsActionToken(random: java.security.SecureRandom = java.security.SecureRandom()): String {
@@ -1139,6 +1180,10 @@ object PhoneDataRuntime {
         }
     }
 
+    // Provider rows already pushed from a broadcast (newest last, bounded): a second identical text is another row.
+    private val pushedIds = ArrayDeque<Long>()
+    private val INCOMING_SLACK_MS = 10_000L
+
     // Retries for an incoming text are scheduled, not slept: the shared worker also runs provider reads and sends.
     private val retries = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "geekbridge-data-retry").apply { isDaemon = true }
@@ -1153,12 +1198,18 @@ object PhoneDataRuntime {
         val e = engine
         val port = smsPort
         if (e == null || port == null || !linkRunning || !active().sms) return done()
+        val receivedAt = System.currentTimeMillis()
         fun attempt(n: Int) {
             worker.execute {
                 var finished = false
                 try {
-                    val row = port.findIncoming(address, body)
+                    val taken = synchronized(pushedIds) { pushedIds.toSet() }
+                    val row = port.findIncoming(address, body, taken, receivedAt - INCOMING_SLACK_MS)
                     if (row != null) {
+                        synchronized(pushedIds) {
+                            pushedIds.addLast(row.id)
+                            while (pushedIds.size > 32) pushedIds.removeFirst()
+                        }
                         e.onIncomingSms(row)
                         finished = true
                     } else if (n >= 3) {

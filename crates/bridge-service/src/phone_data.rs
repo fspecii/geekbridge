@@ -133,6 +133,8 @@ const VCARD_RETRY_MS: u64 = 15_000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
 const SENDS_PER_MINUTE: usize = 10;
+/// SMS parts per minute (a long or emoji text is several, each billed by the carrier).
+const SEND_PARTS_PER_MINUTE: usize = 40;
 /// Texts remembered per phone (settled ones beyond this are forgotten, oldest first), so a link that stays
 /// up for months does not grow the send book or the status snapshot without bound.
 const SEND_HISTORY: usize = 200;
@@ -276,7 +278,8 @@ struct Dev {
     ledger: SendLedger,
     requests: HashMap<String, SendId>,
     send_reasons: HashMap<SendId, String>,
-    send_times: VecDeque<u64>,
+    /// When each recent text left and how many SMS parts it was, for the per-minute limits.
+    send_times: VecDeque<(u64, usize)>,
     /// When each sender last caused a desktop notification (bounded), so one chatty sender cannot hide another.
     notified_at: HashMap<String, u64>,
 }
@@ -758,17 +761,28 @@ impl Dev {
         out
     }
 
-    /// Frees room by dropping the oldest messages of the largest thread; returns how many slots opened.
+    /// Frees room by dropping the oldest messages on the phone (a batch of up to 100, taken one at a time
+    /// from whichever thread holds the oldest one, never emptying a thread); returns how many slots opened.
     fn evict_for_room(&mut self) -> usize {
-        let Some(t) = self.threads.values_mut().max_by_key(|t| t.conv.len()) else {
-            return 0;
-        };
-        let keep = t.conv.len().saturating_sub(100).max(1);
-        let n = t.conv.trim_oldest(keep);
-        if n > 0 {
+        let mut freed = 0;
+        while freed < 100 {
+            let Some(t) = self
+                .threads
+                .values_mut()
+                .filter(|t| t.conv.len() > 1)
+                .min_by_key(|t| t.conv.oldest_date_ms().unwrap_or(u64::MAX))
+            else {
+                break;
+            };
+            let keep = t.conv.len() - 1;
+            let n = t.conv.trim_oldest(keep);
+            if n == 0 {
+                break;
+            }
             t.capped = true;
+            freed += n;
         }
-        n
+        freed
     }
 
     /// Stock phones send no status packets; a newly seen outgoing message that matches exactly one
@@ -960,6 +974,9 @@ impl PhoneData {
         if !caps.calendar {
             d.clear(CALENDAR);
         }
+        if !caps.sms_read {
+            d.clear(SMS);
+        }
         // A new link is a new session: ask again from scratch.
         d.contacts_requested = false;
         d.calendar_requested = false;
@@ -1114,7 +1131,7 @@ impl PhoneData {
 
     fn display_name(&self, d: &Dev, address: &str) -> String {
         let names = name_index(d);
-        names.get(&suffix(address)).cloned().unwrap_or_else(|| {
+        lookup_name(&names, address).unwrap_or_else(|| {
             address
                 .chars()
                 .filter(|c| !c.is_control())
@@ -1244,7 +1261,7 @@ impl PhoneData {
         };
         let intent = OutgoingTextIntent::new(&[recipient], text, sim)
             .map_err(|e| err(ErrorCode::BadRequest, e.to_string()))?;
-        d.check_can_send(now)?;
+        d.check_can_send(now, parts_of(intent.text()))?;
         let id = match d
             .ledger
             .submit(submission, intent.clone(), now)
@@ -1263,7 +1280,7 @@ impl PhoneData {
     pub fn can_send_text(&self, device: &str) -> bool {
         let now = now_ms();
         let mut g = self.lock();
-        Self::target(&mut g, device).is_ok_and(|d| d.check_can_send(now).is_ok())
+        Self::target(&mut g, device).is_ok_and(|d| d.check_can_send(now, 1).is_ok())
     }
 
     pub fn resend(&self, device: &str, send_id: u64, submission: &str) -> Result<u64, ErrorBody> {
@@ -1272,13 +1289,13 @@ impl PhoneData {
         let now = now_ms();
         let mut g = self.lock();
         let d = Self::target(&mut g, device)?;
-        d.check_can_send(now)?;
         let intent = d
             .ledger
             .get(SendId(send_id))
             .ok_or_else(|| err(ErrorCode::NotFound, "unknown message"))?
             .intent
             .clone();
+        d.check_can_send(now, parts_of(intent.text()))?;
         let id = match d
             .ledger
             .resend(
@@ -1565,7 +1582,8 @@ impl PhoneData {
         for id in ids {
             let d = &g.devices[id];
             if d.consent[CONTACTS] {
-                let found = d.agenda.people(&query);
+                let mut found = d.agenda.people(&query);
+                rank_prefix_first(&mut found, &query);
                 people_total += found.len();
                 for rec in found {
                     if people.len() >= people_limit || people_bytes > VIEW_PEOPLE_BYTES {
@@ -1669,7 +1687,7 @@ impl PhoneData {
                     .collect();
                 let title = addrs
                     .iter()
-                    .map(|a| names.get(&suffix(a)).cloned().unwrap_or_else(|| a.clone()))
+                    .map(|a| lookup_name(&names, a).unwrap_or_else(|| a.clone()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let mut matched = None;
@@ -1785,7 +1803,7 @@ impl PhoneData {
 }
 
 impl Dev {
-    fn check_can_send(&mut self, now: u64) -> Result<(), ErrorBody> {
+    fn check_can_send(&mut self, now: u64, parts: usize) -> Result<(), ErrorBody> {
         if !self.consent[SMS] {
             return Err(err(
                 ErrorCode::Unsupported,
@@ -1807,11 +1825,14 @@ impl Dev {
         while self
             .send_times
             .front()
-            .is_some_and(|t| now.saturating_sub(*t) > 60_000)
+            .is_some_and(|(t, _)| now.saturating_sub(*t) > 60_000)
         {
             self.send_times.pop_front();
         }
-        if self.send_times.len() >= SENDS_PER_MINUTE {
+        let used: usize = self.send_times.iter().map(|(_, p)| p).sum();
+        if self.send_times.len() >= SENDS_PER_MINUTE
+            || (used > 0 && used + parts > SEND_PARTS_PER_MINUTE)
+        {
             return Err(err(
                 ErrorCode::TooMany,
                 "too many messages in a minute, wait a moment",
@@ -1834,7 +1855,7 @@ impl Dev {
         }
         let _ = self.ledger.apply(id, SendEvent::Dispatched, now);
         self.requests.insert(request_id, id);
-        self.send_times.push_back(now);
+        self.send_times.push_back((now, parts_of(intent.text())));
         let gone = self.ledger.prune_settled(SEND_HISTORY);
         if !gone.is_empty() {
             self.requests.retain(|_, sid| !gone.contains(sid));
@@ -1844,6 +1865,11 @@ impl Dev {
         }
         Ok(())
     }
+}
+
+/// SMS parts a text will most likely use (at least one).
+fn parts_of(text: &str) -> usize {
+    bridge_core::messages::sms_segments(text).segments.max(1)
 }
 
 fn phase_of(state: SendState, dispatched: bool) -> SendPhase {
@@ -1898,32 +1924,96 @@ fn digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
 }
 
-/// Last seven digits: matches `+1 555 123 4567` with `5551234567` without a phone-number library.
-/// Who a text is from, for "one banner per sender": the number's last digits, so +49 151 2345678 and
-/// 0151 2345678 are one person; a sender with no real number (a shop's name) stays as written.
+/// Digits that identify a number: the last ten, so `+49 151 2345678` and `0151 2345678` are the same
+/// number while numbers from different countries that only share a short tail are not.
+const KEY_DIGITS: usize = 10;
+/// Shorter tail used only to find a contact for a number stored without its country code.
+const LOOSE_DIGITS: usize = 7;
+
+/// Whether `s` is written as a phone number (digits and the usual separators), not a sender name.
+fn number_like(s: &str) -> bool {
+    let t = s.trim();
+    t.chars().any(|c| c.is_ascii_digit())
+        && t.chars()
+            .all(|c| c.is_ascii_digit() || " -.()+/".contains(c))
+}
+
+/// Who a text is from, for "one banner per sender": the number's last ten digits; a sender with no real
+/// number (a shop's name, `Bank12345`, a short code) stays as written.
 fn sender_key(s: &str) -> String {
-    let d = suffix(s);
-    if d.len() >= 5 { d } else { s.to_owned() }
-}
-
-fn suffix(s: &str) -> String {
     let d = digits(s);
-    d[d.len().saturating_sub(7)..].to_owned()
+    if number_like(s) && d.len() >= 5 {
+        tail(&d, KEY_DIGITS)
+    } else {
+        s.to_owned()
+    }
 }
 
+fn tail(d: &str, n: usize) -> String {
+    d[d.len().saturating_sub(n)..].to_owned()
+}
+
+/// Contact names by number: exact (last ten digits) entries, plus a seven-digit entry for contacts stored
+/// without a `+` country code. A seven-digit entry shared by two different names is blank (ambiguous).
 fn name_index(d: &Dev) -> HashMap<String, String> {
     let mut m = HashMap::new();
     if d.consent[CONTACTS] {
         for (_, c) in d.agenda.contacts.live() {
+            if c.display_name.trim().is_empty() {
+                continue;
+            }
             for p in &c.phones {
-                let s = suffix(p);
-                if s.len() >= 5 && !c.display_name.trim().is_empty() {
-                    m.entry(s).or_insert_with(|| c.display_name.clone());
+                let dg = digits(p);
+                if dg.len() < 5 {
+                    continue;
+                }
+                m.entry(tail(&dg, KEY_DIGITS))
+                    .or_insert_with(|| c.display_name.clone());
+                if dg.len() >= LOOSE_DIGITS && !p.trim_start().starts_with('+') {
+                    m.entry(format!("~{}", tail(&dg, LOOSE_DIGITS)))
+                        .and_modify(|e| {
+                            if *e != c.display_name {
+                                e.clear();
+                            }
+                        })
+                        .or_insert_with(|| c.display_name.clone());
                 }
             }
         }
     }
     m
+}
+
+/// The contact for `address`: an exact number match, else a unique contact stored without a country code
+/// whose last seven digits agree. Not for names or codes (`Bank12345`).
+fn lookup_name(names: &HashMap<String, String>, address: &str) -> Option<String> {
+    let dg = digits(address);
+    if !number_like(address) || dg.len() < 5 {
+        return None;
+    }
+    if let Some(n) = names.get(&tail(&dg, KEY_DIGITS)) {
+        return Some(n.clone());
+    }
+    if dg.len() >= LOOSE_DIGITS {
+        return names
+            .get(&format!("~{}", tail(&dg, LOOSE_DIGITS)))
+            .filter(|n| !n.is_empty())
+            .cloned();
+    }
+    None
+}
+
+/// Puts contacts whose name starts with the query first (stable, so alphabetical within each group), so a
+/// short view limit cannot cut off the best match.
+fn rank_prefix_first(found: &mut [&Record<Contact>], query: &str) {
+    let q = bridge_core::collate::fold(query.trim());
+    if q.is_empty() {
+        return;
+    }
+    found.sort_by_cached_key(|r| {
+        !r.item()
+            .is_some_and(|c| bridge_core::collate::fold(&c.display_name).starts_with(&q))
+    });
 }
 
 fn person(device: &str, rec: &Record<Contact>, c: &Contact) -> Person {
@@ -3412,7 +3502,7 @@ mod tests {
             number: "+1 (555) 123-0000".into(),
             body: None,
         });
-        let hint = "--hint=string:x-canonical-private-synchronous:geekbridge-sms-1230000";
+        let hint = "--hint=string:x-canonical-private-synchronous:geekbridge-sms-5551230000";
         assert!(a.iter().any(|x| x == hint), "{a:?}");
         assert!(a.iter().any(|x| x == "--category=im.received"));
         // Options stay before the `--` separator, so sender text can never be read as one.
@@ -3464,5 +3554,158 @@ mod tests {
         // ... and two new texts arrive (the list carries only the newest of the thread).
         h.on_packet(ID, sms::MESSAGES, &list(msg(4, 11, 1, "b", now), 2));
         assert_eq!(unread(&h), 2, "the stale mark of 5 must not hide them");
+    }
+
+    // ------------------------------------------------------------ Messages review 2 follow-up
+
+    fn give_contacts(h: &PhoneData, cards: &[(&str, &str)]) {
+        let uids: Vec<&str> = cards.iter().map(|c| c.0).collect();
+        let mut listing = serde_json::Map::new();
+        listing.insert("uids".into(), json!(uids));
+        let mut vcards = serde_json::Map::new();
+        vcards.insert("uids".into(), json!(uids));
+        for (uid, card) in cards {
+            listing.insert((*uid).into(), json!("1"));
+            vcards.insert((*uid).into(), json!(card));
+        }
+        h.on_packet(ID, wire::CONTACTS_UIDS, &listing);
+        h.on_packet(ID, wire::CONTACTS_VCARDS, &vcards);
+    }
+    fn card(name: &str, tel: &str) -> String {
+        format!("BEGIN:VCARD\nVERSION:3.0\nFN:{name}\nTEL:{tel}\nEND:VCARD\n")
+    }
+
+    #[test]
+    fn senders_with_a_shared_short_tail_are_different_senders() {
+        assert_eq!(sender_key("+49 151 2345678"), sender_key("0151 2345678"));
+        assert_eq!(sender_key("+1 (555) 123-4567"), sender_key("5551234567"));
+        assert_ne!(
+            sender_key("+44 20 7946 0001"),
+            sender_key("+1 555 946 0001"),
+            "same last seven digits, different countries"
+        );
+        assert_ne!(sender_key("Bank12345"), sender_key("12345"));
+        assert_eq!(sender_key("Bank12345"), "Bank12345");
+    }
+
+    #[test]
+    fn contact_names_need_an_exact_number_or_one_unambiguous_local_match() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, false, false));
+        drain(&mut rx);
+        give_contacts(
+            &h,
+            &[
+                ("a", &card("Ann", "+44 20 7946 0001")),
+                ("b", &card("Local Lou", "946 7777")),
+                ("c", &card("Dup One", "555 1234")),
+                ("d", &card("Dup Two", "(777) 555 1234")),
+            ],
+        );
+        let g = h.lock();
+        let names = name_index(g.devices.get(ID).unwrap());
+        assert_eq!(lookup_name(&names, "020 7946 0001").as_deref(), Some("Ann"));
+        assert_eq!(
+            lookup_name(&names, "+1 555 946 0001"),
+            None,
+            "other country"
+        );
+        assert_eq!(
+            lookup_name(&names, "Bank9460001"),
+            None,
+            "a name, not a number"
+        );
+        assert_eq!(
+            lookup_name(&names, "+1 555 946 7777").as_deref(),
+            Some("Local Lou"),
+            "a contact stored without a country code, one candidate"
+        );
+        assert_eq!(
+            lookup_name(&names, "+1 000 555 1234"),
+            None,
+            "two candidates"
+        );
+    }
+
+    #[test]
+    fn a_prefix_match_is_not_cut_off_by_the_view_limit() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, false, false));
+        drain(&mut rx);
+        let mut cards: Vec<(String, String)> = (0..20)
+            .map(|i| (format!("a{i}"), card(&format!("Alicia{i:02}"), "555 0100")))
+            .collect();
+        cards.push(("z".into(), card("Liam", "555 0199")));
+        let refs: Vec<(&str, &str)> = cards
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        give_contacts(&h, &refs);
+        let v = h.agenda_view_range("li", "2026-11-05", 0, 1, 3).unwrap();
+        let names: Vec<_> = v.people.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names.len(), 3);
+        assert_eq!(names[0], "Liam", "{names:?}");
+    }
+
+    #[test]
+    fn the_send_limit_counts_sms_parts() {
+        let (h, _rx) = sms_hub();
+        let long = "\u{1F600}".repeat(1000); // 2000 UTF-16 units: about 30 parts
+        assert!((25..=40).contains(&parts_of(&long)), "{}", parts_of(&long));
+        assert_eq!(parts_of("x"), 1);
+        h.send_text(ID, "5551230000", &long, "l1", None).unwrap();
+        assert_eq!(
+            h.send_text(ID, "5551230000", &long, "l2", None)
+                .unwrap_err()
+                .code,
+            ErrorCode::TooMany,
+            "a second 30-part text in the minute"
+        );
+        h.send_text(ID, "5551230000", "short", "s1", None).unwrap();
+    }
+
+    #[test]
+    fn losing_the_sms_permission_on_the_phone_takes_the_conversations_with_it() {
+        let (h, _rx) = sms_hub();
+        feed(&h, vec![msg(4, 1, 1, "hello", now_ms() - 1000)]);
+        assert_eq!(h.unread_total(), 1);
+        let mut caps = caps_all();
+        caps.sms_read = false;
+        h.link_up(ID, "Pixel", caps, (false, false, true));
+        assert_eq!(h.unread_total(), 0);
+        assert!(h.lock().devices.get(ID).unwrap().threads.is_empty());
+    }
+
+    #[test]
+    fn eviction_drops_the_oldest_messages_not_the_biggest_threads() {
+        let (h, _rx) = sms_hub();
+        let base = now_ms() - 1_000_000;
+        // Thread 1 is small and old; thread 2 is big and newer.
+        for chunk in 0..3 {
+            let list: Vec<Value> = (0..50)
+                .map(|i| {
+                    let n = chunk * 50 + i;
+                    msg(2, 1000 + n, 1, "big", base + 10_000 + n as u64)
+                })
+                .collect();
+            feed(&h, list);
+        }
+        feed(
+            &h,
+            (0..60)
+                .map(|i| msg(1, i, 1, "old", base + i as u64))
+                .collect(),
+        );
+        let freed = h.lock().devices.get_mut(ID).unwrap().evict_for_room();
+        assert_eq!(freed, 100, "a batch of 100");
+        let g = h.lock();
+        let d = g.devices.get(ID).unwrap();
+        let len = |t: i64| d.threads.get(&ThreadId(t)).map_or(0, |t| t.conv.len());
+        assert_eq!(
+            len(1),
+            1,
+            "the old thread is trimmed first and never emptied"
+        );
+        assert_eq!(len(2), 150 - 41, "then the oldest of the big one");
     }
 }
