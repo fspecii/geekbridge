@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android
 
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+
 /**
  * One shared file opened while the Share screen (and with it Android's temporary read grant for the content
  * Uri) is still alive. The grant of an ACTION_SEND is tied to the receiving activity, so a queued file opened
@@ -42,3 +45,25 @@ class EarlyOpen<T : AutoCloseable>(private val open: () -> T) {
         held = null
     }
 }
+
+/** Concurrent prefetch workers: enough that one slow provider cannot hold up the rest, few enough to stay bounded. */
+const val PREFETCH_THREADS = 4
+
+/** The pool the Share flow opens its files on: [PREFETCH_THREADS] daemon threads named geekbridge-share-open-N. */
+fun newPrefetchPool(): ExecutorService {
+    val n = java.util.concurrent.atomic.AtomicInteger()
+    return Executors.newFixedThreadPool(PREFETCH_THREADS) { r -> Thread(r, "geekbridge-share-open-${n.incrementAndGet()}").apply { isDaemon = true } }
+}
+
+/**
+ * Submits one [EarlyOpen.prefetch] per item so a slow content provider only delays its own file; with one thread
+ * the later files queued behind it and could miss the revoke of the temporary read grant. Parallelism narrows that
+ * window but does not remove it, and a failed open is not lost: [EarlyOpen.take] reports it per file. Memory is
+ * bounded by ShareLimits.MAX_FILES items and at most [PREFETCH_THREADS] opens in flight.
+ */
+fun prefetchAll(items: List<EarlyOpen<*>?>, executor: java.util.concurrent.Executor) {
+    for (source in items) if (source != null) executor.execute { source.prefetch() }
+}
+
+/** True only when every source has settled (null = a text item with nothing to open). */
+fun allSettled(items: List<EarlyOpen<*>?>): Boolean = items.all { it?.isSettled() != false }

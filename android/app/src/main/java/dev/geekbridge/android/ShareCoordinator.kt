@@ -48,7 +48,7 @@ class ShareCoordinator private constructor(app: Context) {
     private val ctx = app.applicationContext
     private val main = Handler(Looper.getMainLooper())
     private val io: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-share").apply { isDaemon = true } }
-    private val prefetch: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-share-open").apply { isDaemon = true } }
+    private val prefetch: ExecutorService = newPrefetchPool()
     private val core: CoreClient by lazy { CoreClient.native() }
     val controller: TransportController = TransportController.get({ core.transportAction(it) }, { main.post(it) })
     val notifications = ShareNotifications(ctx)
@@ -229,7 +229,7 @@ class ShareCoordinator private constructor(app: Context) {
      * screen only for the Share screen that ran them (this object outlives it); otherwise every later share in this
      * process would just show the old result and never send.
      */
-    fun filesOpened(): Boolean = items.all { it.source?.isSettled() != false }
+    fun filesOpened(): Boolean = allSettled(items.map { it.source })
 
     fun forgetFinishedSession() {
         if (!sessionActive) items = emptyList()
@@ -251,7 +251,7 @@ class ShareCoordinator private constructor(app: Context) {
         queue.addAll(list)
         // Open every file now, while the Share screen's temporary read grant is certain to be alive (Photos, Gallery,
         // Chrome): a later file of a long queue would otherwise be opened after the screen is gone.
-        prefetch.execute { for ((_, item) in list) item.source?.prefetch() }
+        prefetchAll(list.map { it.second.source }, prefetch)
         pump()
         onChange()
     }
