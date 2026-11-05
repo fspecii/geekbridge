@@ -512,6 +512,15 @@ impl Calls {
 
 /// Screenshot aid: a scripted phone report instead of the service (`GEEKBRIDGE_CALLS_FIXTURE`).
 pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
+    fixture_feed_sending(kind, wake, |_| Ok(()))
+}
+
+/// [`fixture_feed`] that hands every request the window sends to `send` (tests).
+pub(crate) fn fixture_feed_sending(
+    kind: &str,
+    wake: egui::Context,
+    send: impl FnMut(&bridge_core::ipc::Request) -> Result<(), String> + Send + 'static,
+) -> CallFeed {
     let ringing = kind == "ringing";
     use bridge_core::{
         calls::{CallState, Sensitive},
@@ -588,7 +597,7 @@ pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),
         move || Ok(status.clone()),
-        |_| Ok(()),
+        send,
         move || wake.request_repaint(),
     )
 }
@@ -640,6 +649,9 @@ impl AppView for Calls {
         {
             self.number = input::sanitize_dial(&n);
         }
+        if crate::prefill::take_keypad() {
+            self.panel.open_keypad();
+        }
         let feed = self.feed.take().unwrap_or_else(|| {
             // Screenshots: open on the Recents tab, where the call audio checklist is.
             if std::env::var("GEEKBRIDGE_CALLS_TAB").as_deref() == Ok("recents") {
@@ -648,9 +660,14 @@ impl AppView for Calls {
             let wake = ctx.clone();
             match std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() {
                 Ok(
-                    kind @ ("ringing" | "active" | "recents" | "active-wifi" | "listening-wifi"
-                    | "speaking-wifi"),
-                ) => fixture_feed(kind, wake),
+                    kind @ ("ringing" | "active" | "recents" | "keypad" | "active-wifi"
+                    | "listening-wifi" | "speaking-wifi"),
+                ) => {
+                    if kind == "keypad" {
+                        self.panel.open_keypad();
+                    }
+                    fixture_feed(kind, wake)
+                }
                 _ => CallFeed::spawn(move || wake.request_repaint()),
             }
         });

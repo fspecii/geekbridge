@@ -105,6 +105,9 @@ pub enum Body {
         mute: Option<bool>,
         /// "Use computer audio" is offered.
         computer_audio: bool,
+        /// The service offers keypad tones for this call: the card gets a Keypad button that opens the Calls window
+        /// on the keypad (the card is a small window that never takes the keyboard).
+        keypad: bool,
         wifi: Option<WifiCard>,
         /// A refused hang-up or mute.
         problem: Option<String>,
@@ -422,6 +425,7 @@ impl Card {
             can_hangup: row.hangup.is_some(),
             mute: view.mute.as_ref().map(|m| m.muted == Some(true)),
             computer_audio,
+            keypad: view.tones.is_some(),
             wifi: crate::call_wifi_ui::card(status, Some(row)),
             problem: state.problem.clone(),
         })
@@ -444,6 +448,8 @@ pub enum LiveChoice {
     HangUp,
     ToggleMute,
     ComputerAudio,
+    /// Open the Calls window on the keypad.
+    Keypad,
     Wifi(CallWifiAction),
 }
 
@@ -629,6 +635,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                 can_hangup,
                 mute,
                 computer_audio,
+                keypad,
                 wifi,
                 problem,
             } => {
@@ -716,6 +723,23 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                             && ui.add(small(tr("overlay.audio.use"))).clicked()
                                         {
                                             action.live = Some(LiveChoice::ComputerAudio);
+                                        }
+                                        if *keypad {
+                                            let r = ui.add(small(tr("overlay.keypad")));
+                                            let name = tr_args(
+                                                "overlay.keypad.name",
+                                                &[("caller", title)],
+                                            );
+                                            r.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    name.clone(),
+                                                )
+                                            });
+                                            if r.clicked() {
+                                                action.live = Some(LiveChoice::Keypad);
+                                            }
                                         }
                                         if let Some(WifiCard::Offer { device_id, phone }) = wifi {
                                             let r = ui.add(small(tr("overlay.wifi.listen")));
@@ -862,7 +886,7 @@ impl eframe::App for OverlayApp {
             let kind = std::env::var("GEEKBRIDGE_CALLS_FIXTURE").unwrap_or_default();
             if matches!(
                 kind.as_str(),
-                "ringing" | "active" | "active-wifi" | "listening-wifi" | "ended"
+                "ringing" | "active" | "keypad" | "active-wifi" | "listening-wifi" | "ended"
             ) {
                 self.fixture = true;
                 if kind == "ended" {
@@ -900,6 +924,15 @@ impl eframe::App for OverlayApp {
         }
         if let Some(live) = action.live.take() {
             let request = match live {
+                LiveChoice::Keypad => {
+                    // The card never takes the keyboard, so the keys live in the Calls window.
+                    let _ = crate::prefill::launch_with(
+                        "geekbridge-calls",
+                        crate::prefill::KEYPAD_VAR,
+                        "1",
+                    );
+                    None
+                }
                 LiveChoice::HangUp => self.card.live_request(&state, Decision::HangUp),
                 LiveChoice::ToggleMute => self.card.live_request(&state, Decision::ToggleMute),
                 LiveChoice::ComputerAudio => {
@@ -1321,6 +1354,36 @@ mod tests {
             panic!()
         };
         assert!(!can_hangup);
+    }
+
+    #[test]
+    fn the_keypad_button_exists_only_when_the_service_offers_tones() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let mut live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let keypad = |c: &Card, st: &FeedState| match c.body(st) {
+            Some(Body::Live { keypad, .. }) => keypad,
+            other => panic!("{other:?}"),
+        };
+        assert!(!keypad(&c, &live));
+        // The same call, the phone able to play tones.
+        let view = &mut live.status.as_mut().unwrap().view;
+        view.tones = Some(calls_view::TonesView {
+            source: "link:d".into(),
+            path: calls_view::ControlPath::Link,
+        });
+        assert!(keypad(&c, &live));
+        // It draws inside the card with its named button.
+        let mut rig = Rig::new(AppKind::Calls, geometry::CARD_WIDTH, geometry::CARD_HEIGHT);
+        let body = c.body(&live).unwrap();
+        let pal = theme::current(&rig.ctx, AppKind::Calls);
+        for _ in 0..3 {
+            let input = rig.input(vec![]);
+            let _ = rig.ctx.run(input, |ctx| {
+                assert_eq!(show(ctx, &pal, &body), Action::default());
+            });
+        }
     }
 
     #[test]

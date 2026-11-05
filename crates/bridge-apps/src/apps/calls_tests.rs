@@ -162,3 +162,61 @@ fn c_status(kind: &str) -> bridge_core::ipc::CallsStatus {
     wait_until("fixture state", || feed.state().status.is_some());
     feed.state().status.unwrap()
 }
+
+#[test]
+fn the_in_call_keypad_sends_one_tone_per_key_and_only_while_the_service_offers_it() {
+    use bridge_core::ipc::Request;
+    use std::sync::{Arc, Mutex};
+    let mut rig = Rig::new(AppKind::Calls, 420.0, 640.0);
+    let sent: Arc<Mutex<Vec<Request>>> = Arc::default();
+    let log = sent.clone();
+    let mut c = Calls::default();
+    c.feed = Some(fixture_feed_sending("keypad", rig.ctx.clone(), move |r| {
+        log.lock().unwrap().push(r.clone());
+        Ok(())
+    }));
+    c.panel.open_keypad();
+    settle_with_state(&mut c, &mut rig);
+    assert!(shapes(&rig.settle(&mut c, 2)) > 5);
+    // Keys typed on the keyboard while the panel is open (digits, * and #) go out one by one; letters do not.
+    rig.frame(&mut c, vec![Event::Text("5*#a".into())]);
+    rig.settle(&mut c, 3);
+    let tones: Vec<String> = sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|r| match r {
+            Request::CallTone { tone, .. } => Some(tone.expose().to_owned()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tones, ["5", "*", "#"]);
+    // Narrow windows draw it too.
+    for (w, h) in [(300.0, 420.0), (900.0, 700.0)] {
+        let mut rig = Rig::new(AppKind::Calls, w, h);
+        let mut c = Calls::default();
+        c.feed = Some(fixture_feed("keypad", rig.ctx.clone()));
+        c.panel.open_keypad();
+        settle_with_state(&mut c, &mut rig);
+        assert!(shapes(&rig.settle(&mut c, 2)) > 5);
+    }
+}
+
+#[test]
+fn an_active_call_without_tones_shows_no_keypad_and_sends_none() {
+    use bridge_core::ipc::Request;
+    use std::sync::{Arc, Mutex};
+    let mut rig = Rig::new(AppKind::Calls, 420.0, 640.0);
+    let sent: Arc<Mutex<Vec<Request>>> = Arc::default();
+    let log = sent.clone();
+    let mut c = Calls::default();
+    c.feed = Some(fixture_feed_sending("active", rig.ctx.clone(), move |r| {
+        log.lock().unwrap().push(r.clone());
+        Ok(())
+    }));
+    c.panel.open_keypad(); // asked for, but the service does not offer tones
+    settle_with_state(&mut c, &mut rig);
+    rig.frame(&mut c, vec![Event::Text("123".into())]);
+    rig.settle(&mut c, 3);
+    assert!(sent.lock().unwrap().is_empty());
+}

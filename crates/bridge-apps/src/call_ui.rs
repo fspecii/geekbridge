@@ -70,6 +70,41 @@ pub fn request_for(view: &CallsView, d: Decision) -> Option<Request> {
     }
 }
 
+/// The request that plays one keypad tone into the live call, or `None` unless the service offers the keypad right
+/// now and the character is one of `0-9 * #`. The service checks all of it again.
+pub fn tone_request(view: &CallsView, tone: char) -> Option<Request> {
+    let t = view.tones.as_ref()?;
+    bridge_core::calls_link::valid_tone(tone).then(|| Request::CallTone {
+        source: t.source.clone(),
+        tone: Sensitive::new(tone.to_string()),
+    })
+}
+
+/// The keypad characters in text typed this frame (digits, `*`, `#`); everything else is ignored.
+pub fn tones_in_text(typed: &str) -> Vec<char> {
+    typed
+        .chars()
+        .filter(|c| bridge_core::calls_link::valid_tone(*c))
+        .collect()
+}
+
+/// Keypad layout, as on a phone.
+pub const TONE_KEYS: [[char; 3]; 4] = [
+    ['1', '2', '3'],
+    ['4', '5', '6'],
+    ['7', '8', '9'],
+    ['*', '0', '#'],
+];
+
+/// The spoken name of a key for screen readers: "Key 5", "Key star", "Key pound".
+pub fn tone_key_name(key: char) -> String {
+    match key {
+        '*' => tr("call.keypad.star").to_owned(),
+        '#' => tr("call.keypad.pound").to_owned(),
+        d => tr_args("call.keypad.key", &[("key", &d)]),
+    }
+}
+
 /// The request that places a call, or `None` unless the service offers dialing and the number is
 /// one it will dial. The caller must have asked the user to confirm first ([`dial_confirmation`]).
 pub fn dial_request(view: &CallsView, number: &str) -> Option<Request> {
@@ -180,6 +215,8 @@ pub struct CallPanel {
     popup_ring: Vec<egui::Id>,
     /// A new ring: move keyboard focus onto the popup sheet.
     focus_sheet: bool,
+    /// The keypad for the live call is open (a toggle in the ongoing-call panel).
+    keypad_open: bool,
 }
 
 fn sheet_id() -> egui::Id {
@@ -197,6 +234,11 @@ pub(crate) fn fixed_call_seconds() -> Option<u64> {
 }
 
 impl CallPanel {
+    /// Show the keypad as soon as the service offers one (the card's Keypad button, a screenshot fixture).
+    pub fn open_keypad(&mut self) {
+        self.keypad_open = true;
+    }
+
     fn seconds(&mut self, key: &str) -> u64 {
         if let Some(secs) = fixed_call_seconds() {
             return secs;
@@ -242,6 +284,27 @@ impl CallPanel {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
+        if view.tones.is_none() {
+            // The call ended, or the service stopped offering tones: the keypad closes with it.
+            self.keypad_open = false;
+        }
+        if self.keypad_open && !ctx.wants_keyboard_input() {
+            // Digits, * and # typed on the keyboard play their tones; nothing else does.
+            let typed: String = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .filter_map(|e| match e {
+                        egui::Event::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect()
+            });
+            for t in tones_in_text(&typed) {
+                if let Some(request) = tone_request(view, t) {
+                    feed.send(request);
+                }
+            }
+        }
         if view.live().is_none()
             || self
                 .hangup_armed
@@ -310,6 +373,7 @@ impl CallPanel {
                                 row,
                                 secs,
                                 self.hangup_armed.is_some(),
+                                &mut self.keypad_open,
                             )
                         });
                 });
@@ -499,6 +563,7 @@ fn ongoing(
     row: &CallRow,
     secs: u64,
     armed: bool,
+    keypad_open: &mut bool,
 ) {
     let view = &state.status.as_ref().expect("checked by caller").view;
     ui.horizontal(|ui| {
@@ -541,6 +606,16 @@ fn ongoing(
                     ));
                 }
             }
+            if view.tones.is_some() {
+                let label = tr(if *keypad_open {
+                    "call.keypad.hide"
+                } else {
+                    "call.keypad.show"
+                });
+                if theme::pill_button(ui, pal, label, ButtonKind::Plain, true).clicked() {
+                    *keypad_open = !*keypad_open;
+                }
+            }
             if let Some(m) = &view.mute {
                 let label = if m.muted == Some(true) {
                     "Unmute  M"
@@ -559,6 +634,9 @@ fn ongoing(
     if !route.is_empty() {
         ui.add(egui::Label::new(theme::caption(pal, route)).wrap());
     }
+    if *keypad_open && view.tones.is_some() {
+        keypad(ui, pal, feed, view);
+    }
     if view.audio.connect.is_some()
         && ui.small_button("Use computer audio").clicked()
         && let Some(r) = request_for(view, Decision::UseComputerAudio)
@@ -576,6 +654,44 @@ fn ongoing(
         crate::call_wifi_ui::show(ui, pal, feed, &card);
     }
     notice(ui, pal, state);
+}
+
+/// The 12 keys of the in-call keypad. Each press is one request; the service decides (and rate-limits).
+fn keypad(ui: &mut egui::Ui, pal: &Palette, feed: &CallFeed, view: &CallsView) {
+    ui.add_space(6.0);
+    let key_w = 52.0_f32;
+    let key_h = 34.0_f32;
+    let gap = 6.0_f32;
+    let grid = ui.scope(|ui| {
+        ui.spacing_mut().item_spacing = vec2(gap, gap);
+        let width = 3.0 * key_w + 2.0 * gap;
+        for row in TONE_KEYS {
+            ui.horizontal(|ui| {
+                ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                for key in row {
+                    let r = ui.add_sized(
+                        [key_w, key_h],
+                        egui::Button::new(
+                            RichText::new(key.to_string()).size(17.0).color(pal.text),
+                        )
+                        .fill(pal.control_hover)
+                        .corner_radius(egui::CornerRadius::same(nothing::R_CARD)),
+                    );
+                    let name = tone_key_name(key);
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.clone())
+                    });
+                    if r.clicked()
+                        && let Some(request) = tone_request(view, key)
+                    {
+                        feed.send(request);
+                    }
+                }
+            });
+        }
+    });
+    crate::a11y::named(grid.response, tr("call.keypad.group"));
+    ui.add(egui::Label::new(theme::caption(pal, tr("call.keypad.hint"))).wrap());
 }
 
 /// What the keyboard asked for this frame.
@@ -798,6 +914,36 @@ mod tests {
                 .1
                 .contains("comes to this computer")
         );
+    }
+
+    #[test]
+    fn tones_are_requested_only_when_offered_and_only_for_keypad_characters() {
+        let live = link_view(PhoneState::OffHook, true);
+        for c in "0123456789*#".chars() {
+            let Some(Request::CallTone { source, tone }) = tone_request(&live, c) else {
+                panic!("{c}");
+            };
+            assert_eq!(
+                (source.as_str(), tone.expose()),
+                ("link:d", c.to_string().as_str())
+            );
+        }
+        for c in ['A', 'd', ' ', '+', '\n', '\u{0661}', 'x'] {
+            assert!(tone_request(&live, c).is_none(), "{c:?}");
+        }
+        // No keypad offered: ringing, idle, nothing.
+        assert!(tone_request(&link_view(PhoneState::Ringing, true), '1').is_none());
+        assert!(tone_request(&link_view(PhoneState::Idle, true), '1').is_none());
+        assert!(tone_request(&CallsView::empty(), '1').is_none());
+        assert_eq!(tones_in_text("a1 2*#\u{ff13}b"), ['1', '2', '*', '#']);
+        // Every key has a spoken name; star and pound are not read as symbols.
+        assert_eq!(TONE_KEYS.iter().flatten().count(), 12);
+        for k in TONE_KEYS.iter().flatten() {
+            assert!(!tone_key_name(*k).is_empty());
+        }
+        assert_eq!(tone_key_name('5'), "Key 5");
+        assert_eq!(tone_key_name('*'), "Key star");
+        assert_eq!(tone_key_name('#'), "Key pound");
     }
 
     #[test]

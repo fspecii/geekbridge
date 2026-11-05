@@ -10,6 +10,8 @@ use std::{
 
 pub const DIAL_VAR: &str = "GEEKBRIDGE_DIAL";
 pub const MESSAGE_VAR: &str = "GEEKBRIDGE_MESSAGE_TO";
+/// Set (to `1`) by the in-call card's Keypad button: the new Calls window opens with the call's keypad shown.
+pub const KEYPAD_VAR: &str = "GEEKBRIDGE_KEYPAD";
 
 /// Starts a sibling app with one prefill variable set. Returns a short error for the window.
 pub fn launch_with(binary: &str, var: &str, value: &str) -> Result<(), String> {
@@ -26,6 +28,12 @@ pub fn launch_with(binary: &str, var: &str, value: &str) -> Result<(), String> {
 
 static DIAL_TAKEN: AtomicBool = AtomicBool::new(false);
 static MESSAGE_TAKEN: AtomicBool = AtomicBool::new(false);
+static KEYPAD_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether this window was started from the in-call card's Keypad button, once.
+pub fn take_keypad() -> bool {
+    take(KEYPAD_VAR, &KEYPAD_TAKEN).is_some()
+}
 
 /// The number the dialer was started with, once.
 pub fn take_dial() -> Option<String> {
