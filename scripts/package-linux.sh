@@ -32,6 +32,8 @@ debversion="$(printf '%s' "$version" | sed 's/-/~/')"   # not ${version/-/~}: ba
 mapfile -t bins < <(grep -v -e '^#' -e '^[[:space:]]*$' "$ROOT/scripts/release-binaries.txt")
 for b in "${bins[@]}"; do [[ -x "$bindir/$b" ]] || { echo "missing binary: $bindir/$b" >&2; exit 66; }; done
 command -v rsvg-convert >/dev/null || { echo "rsvg-convert is required (librsvg)" >&2; exit 69; }
+for tool in ar tar gzip xz md5sum install; do command -v "$tool" >/dev/null || { echo "$tool is required" >&2; exit 69; }; done
+umask 022   # directory modes inside the archives come from mkdir -p: do not let the caller's umask change the bytes
 
 source "$ROOT/scripts/lib-tmp.sh"
 source "$ROOT/scripts/lib/repro.sh"
@@ -84,7 +86,7 @@ install -m 0644 "$t/README.md" "$root/usr/share/doc/geekbridge/README.md"
 install -m 0644 "$pk/copyright" "$root/usr/share/doc/geekbridge/copyright"
 install -m 0644 "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$root/usr/share/doc/geekbridge/"   # the About section opens these
 
-size_kb=$(du -sk "$root" | cut -f1)
+size_kb=$(du -sk --apparent-size "$root" | cut -f1)
 ctl="$work/control"; mkdir -p "$ctl"
 cat > "$ctl/control" <<EOF
 Package: geekbridge
@@ -127,7 +129,7 @@ fi
 exit 0
 EOF
 chmod 0755 "$ctl/postinst" "$ctl/prerm"
-(cd "$root" && find . -type f -exec md5sum {} + | sed 's| \./| |' | sort -k2) > "$ctl/md5sums"
+(cd "$root" && find . -type f -exec md5sum {} + | sed 's| \./| |' | LC_ALL=C sort -k2) > "$ctl/md5sums"
 echo 2.0 > "$work/debian-binary"
 tar_opts=(--owner=0 --group=0 --numeric-owner --sort=name)
 [[ -z "${SOURCE_DATE_EPOCH:-}" ]] || tar_opts+=(--format=gnu "--mtime=@$SOURCE_DATE_EPOCH")

@@ -63,7 +63,7 @@ done
 
 umask 077
 # 32 random characters from [A-Za-z0-9] (192 bits); written only to the chosen file.
-head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 32 > "$passfile"
+head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 32 > "$passfile" || true   # head closes the pipe early: pipefail may report SIGPIPE; the length check below is the real test
 chmod 600 "$passfile"
 [[ "$(wc -c < "$passfile")" -eq 32 ]] || { rm -f "$passfile"; die "could not generate a password"; }
 
@@ -79,7 +79,7 @@ fi
 chmod 600 "$out"
 
 fp_colon="$(keytool -list -v -keystore "$out" -storepass:file "$passfile" -alias "$alias_" 2>/dev/null \
-  | awk -F'SHA256: ' '/SHA256:/ {print $2; exit}' | tr -d ' ')"
+  | awk -F'SHA256: ' '/SHA256:/ {print $2; exit}' | tr -d ' ' || true)"
 fp="$(echo "$fp_colon" | tr -d ':' | tr 'A-F' 'a-f')"
 [[ "$fp" =~ ^[0-9a-f]{64}$ ]] || die "could not read the certificate fingerprint"
 

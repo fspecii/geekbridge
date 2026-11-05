@@ -17,7 +17,7 @@ mode=user prefix="" uninstall=0 purge=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --system) mode=system; shift;;
-    --prefix) prefix="$2"; mode=custom; shift 2;;
+    --prefix) prefix="${2:?--prefix needs a directory}"; mode=custom; shift 2;;
     --uninstall) uninstall=1; shift;;
     --purge-data) purge=1; shift;;
     -h|--help) sed -n '3,13p' "${BASH_SOURCE[0]}"; exit 0;;
@@ -29,6 +29,9 @@ if [[ $purge -eq 1 && $uninstall -ne 1 ]]; then echo "--purge-data only makes se
 # notes under $XDG_STATE_HOME/geekbridge.
 statedir="${XDG_DATA_HOME:-$HOME/.local/share}/geekbridge"
 updatedir="${XDG_STATE_HOME:-$HOME/.local/state}/geekbridge"
+if [[ $mode == custom && ( "$prefix" != /* || "$prefix" == / ) ]]; then
+  echo "--prefix must be an absolute directory other than / (got '$prefix')" >&2; exit 64
+fi
 case "$mode" in
   user) prefix="${HOME}/.local"; unitdir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
         autostart="${XDG_CONFIG_HOME:-$HOME/.config}/autostart";;

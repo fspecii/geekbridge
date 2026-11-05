@@ -110,6 +110,7 @@ soft() {
 # ---------------------------------------------------------------- preflight
 log "Preflight for $TAG ($([[ $PRERELEASE == 1 ]] && echo prerelease || echo stable)$([[ $DRY == 1 ]] && echo ', DRY RUN'))"
 for c in git cargo tar gzip sha256sum awk sed ar xz; do command -v "$c" >/dev/null || die "missing tool: $c"; done
+(( WINDOWS )) && for c in zip unzip file objdump python3; do command -v "$c" >/dev/null || die "missing tool for the Windows zip: $c"; done
 (( ARCH )) && for c in makepkg rsvg-convert zstd; do command -v "$c" >/dev/null || die "missing tool for the Arch package: $c (or pass --skip-arch)"; done
 [[ -f "$ROOT/.tools/jdk/jdk-17.0.21+9/bin/java" || -n "$(command -v java || true)" ]] \
     || die "no JDK: run scripts/bootstrap-android.sh"
@@ -186,7 +187,7 @@ if [[ -n "$KS" ]]; then
         warn "the keystore lives inside a git work tree; keep keys outside any repository"
     fi
     got_pin="$(with_android keytool -list -v -keystore "$KS" -storepass:file "$PASS_FILE" -alias "$ALIAS" 2>/dev/null \
-        | awk -F'SHA256: ' '/SHA256:/ {print $2; exit}' | tr -d ': ' | tr 'A-F' 'a-f')"
+        | awk -F'SHA256: ' '/SHA256:/ {print $2; exit}' | tr -d ': ' | tr 'A-F' 'a-f' || true)"   # `|| true`: pipefail would exit silently before the message below
     [[ "$got_pin" =~ ^[0-9a-f]{64}$ ]] || die "cannot read alias '$ALIAS' from $KS (wrong password file or alias? GB_KEY_ALIAS)"
     if [[ -n "$want_pin" ]]; then
         [[ "$want_pin" =~ ^[0-9a-f]{64}$ ]] || die "the pinned signer is not 64 hex digits"
@@ -525,8 +526,11 @@ if (( WINDOWS )); then
     unzip -q "$OUT/$WIN_ZIP" -d "$wdir"
     for b in "${BINS[@]}"; do
         f="$wdir/geekbridge-windows-x86_64/$b.exe"
-        file "$f" | grep -q 'PE32+ executable.*x86-64' || bad "$b.exe is not a PE32+ x86-64 file"
-        objdump -p "$f" 2>/dev/null | awk '/DLL Name/{print tolower($3)}' | grep -Eq '^(libgcc|libwinpthread|libstdc|libunwind|libc\+\+)' && bad "$b.exe imports a non-system runtime DLL"
+        # No `grep -q` at the end of a pipe: it exits early, the writer gets SIGPIPE and pipefail turns a match into a failure.
+        file "$f" | grep 'PE32+ executable.*x86-64' >/dev/null || bad "$b.exe is not a PE32+ x86-64 file"
+        if objdump -p "$f" 2>/dev/null | awk '/DLL Name/{print tolower($3)}' | grep -E '^(libgcc|libwinpthread|libstdc|libunwind|libc\+\+)' >/dev/null; then
+            bad "$b.exe imports a non-system runtime DLL"
+        fi
     done
     ok "Windows zip: ${#BINS[@]} PE32+ x86-64 executables with system-DLL imports only (never executed)"
     rm -rf "$wdir"

@@ -7,8 +7,12 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 apk="${1:-$here/android/app/build/outputs/apk/release/app-release-unsigned.apk}"
 [ -f "$apk" ] || { echo "no APK at $apk" >&2; exit 2; }
-aapt2="${AAPT2:-$(ls -d "${ANDROID_HOME:-$here/.tools/android-sdk}"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)}"
+# `|| true`: with pipefail a missing build-tools directory (ls fails) would otherwise abort silently, before the message below.
+aapt2="${AAPT2:-$(ls -d "${ANDROID_HOME:-$here/.tools/android-sdk}"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1 || true)}"
 [ -x "$aapt2" ] || { echo "aapt2 not found (set AAPT2)" >&2; exit 2; }
+for tool in unzip strings; do
+  command -v "$tool" >/dev/null || { echo "$tool not found (unzip and binutils are required)" >&2; exit 2; }
+done
 work="$(mktemp -d "${TMPDIR:-/tmp}/gb-isolation.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 fail=0

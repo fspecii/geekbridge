@@ -105,6 +105,7 @@ if [[ -n "$FROM" ]]; then
 else
     if (( DESKTOP )); then
         log "Linux desktop archive"
+        command -v cargo >/dev/null || die "missing tool: cargo (or pass --skip-desktop)"
         source "$ROOT/scripts/lib/repro.sh"
         mapfile -t BINS < <(grep -v -e '^#' -e '^[[:space:]]*$' "$ROOT/scripts/release-binaries.txt")
         GEEKBRIDGE_BUILD_COMMIT="$COMMIT" GEEKBRIDGE_BUILD_COUNT="$COUNT" \
@@ -140,7 +141,7 @@ SIGNER=""
 if [[ -f "$OUT/geekbridge-debug.apk" ]]; then
     log "Verifying the APK"
     if [[ -n "${ANDROID_HOME:-}" || -d "$ROOT/.tools/android-sdk" ]]; then
-        bt="$(ls -d "${ANDROID_HOME:-$ROOT/.tools/android-sdk}"/build-tools/* 2>/dev/null | sort -V | tail -1)"
+        bt="$(ls -d "${ANDROID_HOME:-$ROOT/.tools/android-sdk}"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)"
         if [[ -n "$bt" && -x "$bt/apksigner" ]]; then
             verify="$("$bt/apksigner" verify --print-certs "$OUT/geekbridge-debug.apk")" || die "APK signature does not verify"
             SIGNER="$(sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' <<<"$verify" | head -1 | tr 'A-F' 'a-f')"

@@ -80,7 +80,7 @@ row() { # name value budget unit
 }
 # Voluntary context switches summed over every thread: each is a thread that blocked and was woken
 # again, i.e. one wakeup. Involuntary (preempted) switches are excluded: they measure machine load.
-ctxt() { cat /proc/"$1"/task/*/status | awk '$1 == "voluntary_ctxt_switches:" {s += $2} END {print s + 0}'; }
+ctxt() { { cat /proc/"$1"/task/*/status 2>/dev/null || true; } | awk '$1 == "voluntary_ctxt_switches:" {s += $2} END {print s + 0}'; }
 ticks() { awk '{print $14 + $15}' "/proc/$1/stat"; }
 status() { awk -v k="$2:" '$1 == k {print $2}' "/proc/$1/status"; }
 port() { echo $((20000 + RANDOM % 20000)); }
@@ -98,13 +98,19 @@ if [[ -z "${PERF_NO_TRAY:-}" ]] && command -v dbus-daemon >/dev/null; then
 CONF
     dbus-daemon --config-file="$TMP/bus.conf" --nofork --print-address=1 > "$TMP/bus.addr" 2>/dev/null &
     PIDS+=("$!")
-    until [[ -s "$TMP/bus.addr" ]]; do sleep 0.02; done
+    until [[ -s "$TMP/bus.addr" ]]; do
+        kill -0 "${PIDS[-1]}" 2>/dev/null || { echo "dbus-daemon exited before printing its address" >&2; exit 1; }
+        sleep 0.02
+    done
     export DBUS_SESSION_BUS_ADDRESS="$(head -n1 "$TMP/bus.addr")"
     TRAY_FLAG=(--tray)
     if [[ -x "$BIN_DIR/examples/tray-fake-watcher" ]]; then
         "$BIN_DIR/examples/tray-fake-watcher" >"$TMP/watcher.log" 2>&1 &
         PIDS+=("$!")
-        until grep -q 'WATCHER READY' "$TMP/watcher.log" 2>/dev/null; do sleep 0.02; done
+        until grep -q 'WATCHER READY' "$TMP/watcher.log" 2>/dev/null; do
+            kill -0 "${PIDS[-1]}" 2>/dev/null || { cat "$TMP/watcher.log" >&2; echo "tray-fake-watcher exited" >&2; exit 1; }
+            sleep 0.02
+        done
     fi
 fi
 API_PORT=$(port) CONTROL_PORT=$((API_PORT + 1)) DISC_PORT=$((API_PORT + 2))
