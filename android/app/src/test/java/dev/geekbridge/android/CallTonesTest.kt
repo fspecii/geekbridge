@@ -177,6 +177,32 @@ class CallTonesTest {
         assertEquals(5000L, s.reserve(5000))
     }
 
+    @Test fun slidingLimitWindowEdgesRefusalsAreNotCountedAndZeroAllowsNothing() {
+        val l = SlidingLimit(2, 100)
+        assertTrue(l.tryAcquire(0))
+        assertTrue(l.tryAcquire(50))
+        // Refused attempts must not extend the window or take a slot.
+        repeat(10) { assertFalse(l.tryAcquire(99)) }
+        assertTrue("the oldest leaves exactly at windowMs", l.tryAcquire(100))
+        assertFalse(l.tryAcquire(120))
+        assertTrue("the second leaves at 150", l.tryAcquire(150))
+        assertFalse(SlidingLimit(0, 100).tryAcquire(0))
+        // A long quiet spell empties it completely.
+        assertTrue(l.tryAcquire(10_000))
+        assertTrue(l.tryAcquire(10_001))
+        assertFalse(l.tryAcquire(10_002))
+    }
+
+    @Test fun toneScheduleSlotsAreBackToBackAndNeverGoBackwardsWhenTheClockDoes() {
+        val s = ToneSchedule(150, 50)
+        assertEquals(1000L, s.reserve(1000))
+        // The clock stepped back: the next tone still waits for the previous one.
+        assertEquals(1200L, s.reserve(900))
+        // Exactly when the slot frees up it starts at once.
+        assertEquals(1400L, s.reserve(1400))
+        assertEquals(1600L, s.reserve(1400))
+    }
+
     @Test fun aFloodOfValidTonesStillOnlyPlaysIntoTheLiveCall() {
         val r = Rig(Tel(), all)
         r.engine.onState(CallState.Ringing)
