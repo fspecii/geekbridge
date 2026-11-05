@@ -241,7 +241,7 @@ mod tests {
     fn defaults_set_persist_and_reload() {
         let d = tempfile::tempdir().unwrap();
         let state = d.path().join("state");
-        let p = Privacy::with_env(Some(state.clone()), env(&[]));
+        let p = Privacy::with_env(Some(state.clone()), env(&[])).on_os("linux");
         let v = p.view();
         assert!(!v.get(PrivacyKey::MessageText).unwrap().on);
         assert!(!v.get(PrivacyKey::PhoneNotificationText).unwrap().on);

@@ -187,7 +187,7 @@ impl TrayInput {
             short.push_str(&tr_n("tray.unread", u64::from(self.unread), &[]));
         }
         let candidates = [
-            format!("GeekBridge \u{2013} {title}: {body}"),
+            format!("GeekBridge \u{2013} {title}: {body}"), // i18n-ok: product name
             format!("{title}: {body}"),
             format!("{title}: {short}"),
             short,
