@@ -8,8 +8,9 @@ use std::io::{BufRead, IsTerminal, Write};
 
 pub const USAGE: &str = "  calls --trace [--json] [--clear]    what the service saw during calls (state changes, card, answer/decline
                                       requests, audio route; hashed ids, last two digits only); --clear empties it
-  calls [--reveal]                    ringing and live calls, the controls that really exist,
-                                      the audio route and why a control is missing (numbers masked)
+  calls [--reveal]                    ringing and live calls, the controls that really exist, the audio route,
+                                      why a control is missing, and the calls that ended since the service
+                                      started (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to
                                       confirm unless --yes. Needs Telephony consent and the phone's permission
@@ -94,6 +95,20 @@ pub fn describe(s: &CallsStatus, reveal: bool) -> String {
                 Some(false) => "on",
                 None => "unknown",
             }
+        ));
+    }
+    for c in &s.view.recent {
+        out.push_str(&format!(
+            "recent: {:?} | {}s ago | number: {}{}\n",
+            c.kind,
+            c.ended_secs_ago,
+            c.number.as_ref().map_or("-".to_owned(), |n| if reveal {
+                n.expose().to_owned()
+            } else {
+                mask(n.expose())
+            }),
+            c.talk_secs
+                .map_or(String::new(), |t| format!(" | talk {t}s")),
         ));
     }
     if let Some(n) = &s.audio_note {
@@ -531,6 +546,28 @@ mod tests {
             serde_json::json!({"hangup": target("link"), "missing_control": "no answer button"}),
         );
         assert!(describe_row(&missing, false).ends_with("hangup: phone-link | no answer button"));
+    }
+
+    #[test]
+    fn finished_calls_are_listed_with_masked_numbers() {
+        use bridge_core::calls::Sensitive;
+        use bridge_core::calls_view::{RecentCall, RecentKind};
+        let mut s = status(vec![], &[], None);
+        s.view.recent = vec![RecentCall {
+            phone: "Pixel".into(),
+            kind: RecentKind::Missed,
+            number: Some(Sensitive::new("+15550142")),
+            name: Some(Sensitive::new("Ada")),
+            ended_secs_ago: 90,
+            talk_secs: None,
+        }];
+        let text = describe(&s, false);
+        assert!(
+            text.contains("recent: Missed | 90s ago | number: *******42\n"),
+            "{text}"
+        );
+        assert!(!text.contains("Ada") && !text.contains("5550142"));
+        assert!(describe(&s, true).contains("number: +15550142"));
     }
 
     #[test]

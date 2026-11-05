@@ -158,6 +158,11 @@ pub trait CallNotifier: Send + Sync {
         can_decline: bool,
         reply: Box<dyn FnOnce(RingChoice) + Send>,
     );
+    /// A ring ended with nobody answering. `number` is a plain, dialable number when the caller
+    /// is known by one, so the banner may offer "Call back" and "Message". Default: say nothing.
+    fn missed(&self, caller: &str, number: Option<&str>) {
+        let _ = (caller, number);
+    }
 }
 
 /// Best-effort freedesktop notification through `notify-send` with Answer/Decline actions
@@ -194,7 +199,60 @@ impl NotifySendCalls {
         args
     }
 }
+impl NotifySendCalls {
+    /// The missed-call banner: a plain notice with "Call back" and "Message" when the number is
+    /// plain, and a click on the body opening the Calls window (Recents).
+    pub fn missed_args(caller: &str, number: Option<&str>) -> Vec<String> {
+        let clean = crate::notify_text::plain(caller, 80);
+        let mut args = vec![
+            "--app-name=GeekBridge".to_owned(),
+            "--icon=dev.geekbridge.Calls".to_owned(),
+            "--urgency=normal".to_owned(),
+            "--category=call.missed".to_owned(),
+            "--expire-time=60000".to_owned(),
+            "--wait".to_owned(),
+        ];
+        if number.is_some() {
+            args.push("--action=callback=Call back".into());
+            args.push("--action=message=Message".into());
+        }
+        args.push("--action=default=Open".into());
+        args.push("--".into());
+        args.push("Missed call".into());
+        args.push(clean);
+        args
+    }
+}
 impl CallNotifier for NotifySendCalls {
+    fn missed(&self, caller: &str, number: Option<&str>) {
+        let args = Self::missed_args(caller, number);
+        let number = number.map(str::to_owned);
+        std::thread::spawn(move || {
+            let out = std::process::Command::new("notify-send")
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .output();
+            let Ok(out) = out else { return };
+            // The number travels in the new window's environment, never on a command line. "Call
+            // back" only fills the keypad: the Calls window still asks before anything is dialed.
+            match (String::from_utf8_lossy(&out.stdout).trim(), number) {
+                ("callback", Some(n)) => crate::desktop_notify::open_app_with_env(
+                    "geekbridge-calls",
+                    "GEEKBRIDGE_DIAL",
+                    &n,
+                ),
+                ("message", Some(n)) => crate::desktop_notify::open_app_with_env(
+                    "geekbridge-messages",
+                    "GEEKBRIDGE_MESSAGE_TO",
+                    &n,
+                ),
+                ("default", _) => crate::desktop_notify::open_app("geekbridge-calls"),
+                _ => {}
+            }
+        });
+    }
+
     fn ringing(
         &self,
         caller: &str,
@@ -278,6 +336,8 @@ struct Inner {
     suspended: Vec<Suspended>,
     /// What the call trace last recorded about the view (only changes are written).
     trace: crate::call_trace::ViewMemo,
+    /// Calls that ended since the service started (memory only).
+    history: crate::call_history::History,
     /// `notice` is the phone's "no such call" for an answer or decline that raced the phone (the
     /// user picked up by hand, the caller gave up); the next report that shows the call moved on
     /// explains it, so it is cleared then.
@@ -824,9 +884,12 @@ impl CallHub {
             .host_notes()
             .into_iter()
             .find(|l| !l.starts_with("Call audio:"));
+        let mut view = view::build(&snaps);
+        let inner = self.inner();
+        view.recent = inner.history.recent(Instant::now());
         CallsStatus {
-            view: view::build(&snaps),
-            notice: self.inner().notice.clone(),
+            view,
+            notice: inner.notice.clone(),
             sources,
             audio_note: audio_problem.or_else(|| Self::audio_note(&snaps)),
             wifi: None,
@@ -959,6 +1022,20 @@ impl CallHub {
         match &result {
             Ok(()) => inner.notice = None,
             Err(e) => inner.notice = Some(e.message.clone()),
+        }
+        if result.is_ok() && action == CallAction::Reject {
+            // So the ring that follows is listed as declined, not missed (and gets no banner).
+            for r in view
+                .rows
+                .iter()
+                .filter(|r| r.reject.as_ref() == Some(target))
+            {
+                inner.history.declined(&if r.parts.is_empty() {
+                    vec![r.key.clone()]
+                } else {
+                    r.parts.clone()
+                });
+            }
         }
         result
     }
@@ -1203,14 +1280,17 @@ impl CallHub {
     /// rings that are over.
     fn announce_new_calls(self: &Arc<Self>) {
         let _one_at_a_time = self.announcing.lock().unwrap_or_else(|e| e.into_inner());
-        let view = self.view();
+        let snaps = self.snapshots();
+        let view = view::build(&snaps);
+        let live_sources: BTreeSet<String> = snaps.iter().map(|s| s.key.clone()).collect();
         let now = Instant::now();
         let flap = self.timings.flap_memory;
         let live_now = view.live().is_some();
-        let (fresh, ringing_now) = {
+        let (fresh, ringing_now, missed) = {
             let mut guard = self.inner();
             let inner = &mut *guard;
             inner.trace.observe(&view);
+            let missed = inner.history.observe(&view, &live_sources, now);
             inner
                 .suspended
                 .retain(|s| now.saturating_duration_since(s.at) < flap);
@@ -1290,7 +1370,7 @@ impl CallHub {
                     }
                 });
             }
-            (fresh, ringing_now)
+            (fresh, ringing_now, missed)
         };
         // The card does not wait for the caller's name: it shows it when it comes.
         if let Some(o) = self
@@ -1315,6 +1395,9 @@ impl CallHub {
         else {
             return;
         };
+        for call in &missed {
+            notifier.missed(&call.caller_label(), call.callback_number().as_deref());
+        }
         for (ring, row) in fresh {
             let hub = self.clone();
             let answer = row.answer.clone();
@@ -2397,6 +2480,73 @@ mod tests {
             rings.lock().unwrap().is_empty(),
             "a missed call is not announced after it ended"
         );
+    }
+
+    type Missed = Arc<Mutex<Vec<(String, Option<String>)>>>;
+    struct Misses(Missed);
+    impl CallNotifier for Misses {
+        fn ringing(&self, _: &str, _: bool, _: bool, _: Box<dyn FnOnce(RingChoice) + Send>) {}
+        fn missed(&self, caller: &str, number: Option<&str>) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((caller.to_owned(), number.map(str::to_owned)));
+        }
+    }
+
+    #[test]
+    fn a_missed_call_is_announced_once_with_its_number_and_listed_but_answered_and_declined_are_not()
+     {
+        let misses = Arc::new(Mutex::new(Vec::new()));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Misses(misses.clone())));
+        let _rx = hub.link_up("dev", "Pixel", true);
+        let state = |v: serde_json::Value| hub.on_packet("dev", link::STATE, &body(v));
+        // Missed.
+        state(
+            json!({"state":"ringing","name":"Ada","number":"+1 555 0142","canAnswer":true,"canEnd":true}),
+        );
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        // Answered on the phone.
+        state(
+            json!({"state":"ringing","name":"Bob","number":"+1555","canAnswer":true,"canEnd":true}),
+        );
+        state(json!({"state":"offhook","canAnswer":true,"canEnd":true}));
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        // Declined here.
+        state(
+            json!({"state":"ringing","name":"Cy","number":"+1556","canAnswer":true,"canEnd":true}),
+        );
+        let target = hub.view().rows[0].reject.clone().unwrap();
+        hub.act(&target, CallAction::Reject).unwrap();
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+
+        assert_eq!(
+            *misses.lock().unwrap(),
+            vec![("Ada".to_owned(), Some("+15550142".to_owned()))]
+        );
+        let kinds: Vec<_> = hub.status().view.recent.iter().map(|r| r.kind).collect();
+        use bridge_core::calls_view::RecentKind::*;
+        assert_eq!(kinds, vec![Declined, Incoming, Missed]);
+        assert_eq!(
+            hub.status().view.recent[2].name.as_ref().unwrap().expose(),
+            "Ada"
+        );
+    }
+
+    #[test]
+    fn the_missed_call_banner_offers_call_back_and_message_only_for_a_plain_number() {
+        let with = NotifySendCalls::missed_args("Ada", Some("+15550142"));
+        assert!(with.contains(&"--action=callback=Call back".to_owned()));
+        assert!(with.contains(&"--action=message=Message".to_owned()));
+        assert!(with.contains(&"--action=default=Open".to_owned()));
+        assert!(with.iter().any(|a| a == "--category=call.missed"));
+        // The caller is text after `--`, and the number is never part of the arguments.
+        assert_eq!(&with[with.len() - 3..], ["--", "Missed call", "Ada"]);
+        assert!(!with.iter().any(|a| a.contains("5550142")));
+        let without = NotifySendCalls::missed_args("--hostile", None);
+        assert!(!without.iter().any(|a| a.starts_with("--action=callback")));
+        assert!(without.iter().any(|a| a == "--action=default=Open"));
     }
 
     #[test]

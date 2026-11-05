@@ -140,6 +140,70 @@ pub struct DialView {
     pub phone: String,
 }
 
+/// How a finished call went, as the history shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecentKind {
+    /// Rang and nobody answered (the phone cannot say whether it was declined elsewhere).
+    Missed,
+    /// Declined from this computer.
+    Declined,
+    /// Answered, here or on the phone.
+    Incoming,
+    /// Placed and answered.
+    Outgoing,
+    /// Placed and never answered.
+    OutgoingUnanswered,
+    /// Answered, but the phone did not say who started it.
+    Connected,
+}
+
+/// One finished call. Kept in the service's memory only, never written to disk; the newest comes first.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentCall {
+    pub phone: String,
+    pub kind: RecentKind,
+    pub number: Option<Sensitive>,
+    pub name: Option<Sensitive>,
+    /// Seconds since the call ended, when the view was built.
+    pub ended_secs_ago: u64,
+    /// How long it was live (answered calls only).
+    pub talk_secs: Option<u64>,
+}
+impl std::fmt::Debug for RecentCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecentCall")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+impl RecentCall {
+    /// Name, else number, else "Unknown caller".
+    pub fn caller_label(&self) -> String {
+        match (&self.name, &self.number) {
+            (Some(n), _) | (None, Some(n)) => n.expose().to_owned(),
+            _ => "Unknown caller".to_owned(),
+        }
+    }
+    /// The number as something that can be called back or texted: digits with an optional leading
+    /// `+`, after dropping the usual separators. None when absent or not a plain number.
+    pub fn callback_number(&self) -> Option<String> {
+        callback_number(self.number.as_ref()?.expose())
+    }
+}
+
+/// See [`RecentCall::callback_number`].
+pub fn callback_number(raw: &str) -> Option<String> {
+    let plus = raw.trim_start().starts_with('+');
+    let digits: String = raw.chars().filter(char::is_ascii_digit).collect();
+    let plain = raw
+        .chars()
+        .all(|c| c.is_ascii_digit() || " ()-.+".contains(c))
+        && raw.matches('+').count() <= usize::from(plus);
+    ((1..=20).contains(&digits.len()) && plain)
+        .then(|| if plus { format!("+{digits}") } else { digits })
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CallsView {
     /// Ringing calls first.
@@ -152,6 +216,9 @@ pub struct CallsView {
     /// Present only when a number can really be dialed from this computer right now.
     #[serde(default)]
     pub dial: Option<DialView>,
+    /// Calls that ended since the service started, newest first (filled by the service, not by [`build`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent: Vec<RecentCall>,
 }
 impl CallsView {
     pub fn empty() -> Self {
@@ -165,6 +232,7 @@ impl CallsView {
             mute: None,
             sources_up: 0,
             dial: None,
+            recent: Vec::new(),
         }
     }
     pub fn ringing(&self) -> Option<&CallRow> {
@@ -231,6 +299,7 @@ pub fn build(sources: &[SourceSnapshot]) -> CallsView {
         mute,
         sources_up,
         dial,
+        recent: Vec::new(),
     }
 }
 
