@@ -111,6 +111,11 @@ start_service() {
      --name E2E-Desktop >>"$LOGS/e2e-service.log" 2>&1 &)
   wait_for 15 ctl status >/dev/null 2>&1
 }
+# Keep the whole logcat of the run (the failure collector runs after the emulator is gone and finds only a stub).
+emu_logcat_start() {
+  [[ -n "${LOGS:-}" ]] || return 0
+  (setsid nohup $ADB logcat -b all -v threadtime >>"$LOGS/logcat-full.txt" 2>&1 &)
+}
 start_emulator() {
   [[ "$($ADB get-state 2>/dev/null)" == device ]] && return 0
   gb_preflight "$ROOT/.tools" || return 1
@@ -125,7 +130,8 @@ start_emulator() {
   if [[ -z "${CI:-}" ]] && command -v systemd-run >/dev/null 2>&1 && systemd-run --user --collect --quiet --unit "gbe2e-emulator${E2E_TAG:-}" \
        "${envs[@]/#/--setenv=}" "$launcher" >/dev/null 2>&1; then :
   else (env "${envs[@]}" setsid nohup "$launcher" >"$LOGS/e2e-emulator.log" 2>&1 &); fi
-  wait_for 300 bash -c "[[ \$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]"
+  wait_for 300 bash -c "[[ \$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]" || return 1
+  emu_logcat_start
 }
 build_all() {
   if [[ ! -x "$SVC" || "$BUILD" == yes ]]; then

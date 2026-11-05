@@ -169,7 +169,23 @@ phone_config() {
   ((listener)) && $ADB shell cmd notification allow_listener "$MIRROR_SVC" >/dev/null 2>&1
   goto_home; sleep 3
   desk_dial >/dev/null 2>&1
-  link_up 180
+  link_up 180 || return 1
+  # The app can be restarted by the system (a listener rebind, a job) between the force-stop and the file edits above and then
+  # keeps the old values in memory: the link would come up with the wrong battery switch and every wait below would time out
+  # (run 42062165995). The phone logs what it declared at link start; if it is not what was written, do the round again once.
+  [[ "${PHONE_CONFIG_RETRY:-0}" == 1 ]] && return 0
+  [[ "$(phone_declared_battery)" == "$b" || -z "$(phone_declared_battery)" ]] && return 0
+  echo "phone_config: the phone declared battery=$(phone_declared_battery), wanted $b: again" >>"$LOGS/e2e-features-notes.txt"
+  PHONE_CONFIG_RETRY=1 phone_config "$grants" "$b" "$n" "$c" "$@"
+}
+phone_declared_battery() { # true|false, the last link start the phone logged
+  $ADB logcat -d -s GB:I 2>/dev/null | tr -d '\r' | grep 'declared at link start' | tail -1 | sed -n 's/.* battery=\([a-z]*\) .*/\1/p'
+}
+# What the phone holds and what the computer sees, for a failed battery step (the log has the phone side).
+batt_diag() {
+  { echo "== battery diag $(date +%T): desktop sees $(batt)"
+    $ADB shell "run-as $PKG sh -c 'cat shared_prefs/geekbridge_phonedata.xml shared_prefs/geekbridge_grants.xml'" 2>&1 | tr -d '\r' | head -30
+    ctl status 2>&1 | head -c 1500; echo; } >>"$LOGS/e2e-features-notes.txt"
 }
 
 stage_pair() {
@@ -211,6 +227,17 @@ stay_none() { # seconds -> it never appears
   # A momentary "nolink" (the emulator destroying the socket and the desktop redialing) is not a reading appearing.
   local i; for ((i = 0; i < $1; i++)); do batt_none || [[ "$(batt)" == nolink ]] || return 1; sleep 1; done
 }
+# wait_for for a reading on the computer: when the link is down (the emulator destroys the phone's socket on its mobile
+# network, docs/reports/e2e-link-drops.md) the computer dials again instead of waiting for the phone's own redial.
+wait_batt() { # seconds cmd...
+  local n="$1" i; shift
+  for ((i = 0; i < n; i++)); do
+    "$@" && return 0
+    [[ "$(batt)" == nolink ]] && { desk_dial >/dev/null 2>&1; link_up 20 || true; }
+    sleep 1
+  done
+  return 1
+}
 stage_battery() {
   [[ "$STOPPING" == 1 ]] && return 0
   load_ids
@@ -219,46 +246,46 @@ stage_battery() {
   # 1. Desktop consent on, but the phone shares nothing with this computer (master switch off, no grant).
   ctl consent "$PHONE_ID" battery on >/dev/null
   if stay_none 15; then rec feat_battery_default_off PASS "computer consent on, phone grants nothing: no reading after 15 s"
-  else rec feat_battery_default_off FAIL "a reading appeared without the phone allowing it: $(batt)"; fi
+  else rec feat_battery_default_off FAIL "a reading appeared without the phone allowing it: $(batt)"; batt_diag; fi
   # 2. The phone's master switch on but no per-computer allow: still nothing.
   phone_config "calls" true false false
   ctl consent "$PHONE_ID" battery on >/dev/null
   if stay_none 15; then rec feat_battery_needs_allow PASS "phone switch on but this computer not allowed: no reading after 15 s"
-  else rec feat_battery_needs_allow FAIL "a reading appeared without the per-computer allow: $(batt)"; fi
+  else rec feat_battery_needs_allow FAIL "a reading appeared without the per-computer allow: $(batt)"; batt_diag; fi
   # 3. Allowed on the phone, computer consent off: nothing is shown on the computer.
   ctl consent "$PHONE_ID" battery off >/dev/null
   phone_config "calls battery" true false false
   if stay_none 10; then rec feat_battery_needs_consent PASS "phone allows, computer consent off: nothing shown"
-  else rec feat_battery_needs_consent FAIL "reading shown with the computer's consent off: $(batt)"; fi
+  else rec feat_battery_needs_consent FAIL "reading shown with the computer's consent off: $(batt)"; batt_diag; fi
   # 4. Both on: level and charging state arrive.
   ctl consent "$PHONE_ID" battery on >/dev/null
-  if wait_for 40 batt_is 42 False; then rec feat_battery_level PASS "both ends allow: desktop status shows 42% not charging (emulator level 42, unplugged)"
-  else rec feat_battery_level FAIL "expected 42% not charging, desktop shows: $(batt)"; fi
+  if wait_batt 40 batt_is 42 False; then rec feat_battery_level PASS "both ends allow: desktop status shows 42% not charging (emulator level 42, unplugged)"
+  else rec feat_battery_level FAIL "expected 42% not charging, desktop shows: $(batt)"; batt_diag; fi
   # 5. Charging state change is sent at once.
   $ADB shell dumpsys battery set ac 1 >/dev/null
-  if wait_for 20 batt_is 42 True; then rec feat_battery_charging PASS "AC plugged in: desktop shows charging"
-  else rec feat_battery_charging FAIL "charging not shown: $(batt)"; fi
+  if wait_batt 20 batt_is 42 True; then rec feat_battery_charging PASS "AC plugged in: desktop shows charging"
+  else rec feat_battery_charging FAIL "charging not shown: $(batt)"; batt_diag; fi
   # 6. Low flag.
   $ADB shell dumpsys battery unplug >/dev/null; $ADB shell dumpsys battery set level 9 >/dev/null
-  if wait_for 20 batt_low; then rec feat_battery_low PASS "level 9 unplugged: desktop shows 9% not charging, low flag set"
-  else rec feat_battery_low FAIL "low state not shown: $(batt)"; fi
+  if wait_batt 20 batt_low; then rec feat_battery_low PASS "level 9 unplugged: desktop shows 9% not charging, low flag set"
+  else rec feat_battery_low FAIL "low state not shown: $(batt)"; batt_diag; fi
   # 7. A plain percentage change is sent at most once a minute (with one trailing send), so allow up to 90 s.
   $ADB shell dumpsys battery set level 77 >/dev/null
-  if wait_for 90 batt_is 77 False; then rec feat_battery_follows PASS "level 77: desktop follows the emulator battery (rate-limited sends allow up to 60 s)"
-  else rec feat_battery_follows FAIL "desktop still shows $(batt) after level 77"; fi
+  if wait_batt 90 batt_is 77 False; then rec feat_battery_follows PASS "level 77: desktop follows the emulator battery (rate-limited sends allow up to 60 s)"
+  else rec feat_battery_follows FAIL "desktop still shows $(batt) after level 77"; batt_diag; fi
   # 8. Withdrawing the computer's consent erases the reading now.
   ctl consent "$PHONE_ID" battery off >/dev/null
-  if wait_for 10 batt_none; then rec feat_battery_withdraw_desktop PASS "consent off on the computer: reading erased"
-  else rec feat_battery_withdraw_desktop FAIL "reading still shown: $(batt)"; fi
+  if wait_batt 10 batt_none; then rec feat_battery_withdraw_desktop PASS "consent off on the computer: reading erased"
+  else rec feat_battery_withdraw_desktop FAIL "reading still shown: $(batt)"; batt_diag; fi
   # ... and back on: the phone answers the request again.
   ctl consent "$PHONE_ID" battery on >/dev/null
-  if wait_for 30 batt_is 77 False; then rec feat_battery_reallow PASS "consent on again: the reading is back"
-  else rec feat_battery_reallow FAIL "no reading after re-allowing: $(batt)"; fi
+  if wait_batt 30 batt_is 77 False; then rec feat_battery_reallow PASS "consent on again: the reading is back"
+  else rec feat_battery_reallow FAIL "no reading after re-allowing: $(batt)"; batt_diag; fi
   # 9. Withdrawing on the phone: drop the grant, the link comes back without it, the reading is gone and stays gone.
   phone_config "calls" true false false
   ctl consent "$PHONE_ID" battery on >/dev/null
   if stay_none 20; then rec feat_battery_withdraw_phone PASS "grant removed on the phone: reading erased after reconnect and not re-sent in 20 s"
-  else rec feat_battery_withdraw_phone FAIL "reading still shown after the phone withdrew the grant: $(batt)"; fi
+  else rec feat_battery_withdraw_phone FAIL "reading still shown after the phone withdrew the grant: $(batt)"; batt_diag; fi
   ctl consent "$PHONE_ID" battery off >/dev/null
   $ADB shell dumpsys battery reset >/dev/null
 }

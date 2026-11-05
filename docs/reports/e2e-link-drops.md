@@ -84,3 +84,28 @@ would show it on the Fold5.
    next time. A one-line check for the e2e runner: `grep -c 'Destroyed [1-9][0-9]* sockets for netId' logcat`.
 4. If the owner wants certainty about the socket's network on the emulator, log the socket's `SO_MARK` (`getsockopt`) once
    after connect in the debug build.
+
+## 5. Follow-up 2026-11-05 (features run 42062165995, photos run 42058656797)
+
+* **Why the socket is on the cellular network (section 3, answered).** The suites dial the phone through the emulator's port
+  redirection (`adb emu redir add tcp:HOST:1716`). The emulator delivers a redirected connection to the guest's radio
+  interface (10.0.2.15), not to Wi-Fi (10.0.2.16), so every link the computer dials in lives on the mobile network and is
+  destroyed when that network loses FOREGROUND. Only a link the phone dialed itself (its redial, bound to Wi-Fi) is safe.
+* **`adb shell svc data disable` is not a fix here.** Tried on a private AVD: the radio interface goes down, nothing
+  redirected reaches the phone any more, and the computer's dial ends with "the phone is not announcing itself" /
+  "the connection stopped answering" for as long as data stays off; `svc data enable` and one more dial connected at once.
+  (`mobile_data_always_on` is already 1 on the image.) The suites therefore keep mobile data on and tolerate the 2 s drop.
+* **features battery steps.** Not reproduced on a private AVD with the CI binaries of that run (`e2e-build` of 42062165995):
+  all eleven battery steps passed, with 4 link drops in the whole run against about 12 in CI. The code between the last green
+  features run (342454172) and the failing head touches nothing on the battery, link or consent path (Share worker pool, a
+  test-only `cfg`, call-ui script, docs). In the CI trace the link stayed up for 220 s after the phone was configured with
+  the battery grant and the computer's consent was on, and the reading never arrived, so one cause not excluded is the app
+  being restarted by the system between `force-stop` and the preference edits (it then keeps the old switch in memory).
+  The suite now checks what the phone declared at link start against what it wrote and redoes the configuration once if they
+  differ, redials during the battery waits when the link is down, and writes the phone's preference files and the computer's
+  status into `e2e-features-notes.txt` on a battery failure.
+* **photos `photos_switch_setup`.** Single step; every other photos step passed, including the list steps before and after.
+  The list request sent while the link was down is lost (the phone only answers a request it receives), so the wait now
+  redials a down link on every round.
+* **Evidence next time.** `start_emulator` records the whole logcat (`dist/android/logs/logcat-full.txt`, uploaded with the
+  failure artifacts); the post-run collector only ever saw a stub because the suite has already killed the emulator.

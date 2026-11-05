@@ -164,6 +164,12 @@ jobs:
           source scripts/android-env.sh >/dev/null 2>&1
           mkdir -p dist/android/logs
           ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 60 adb logcat -d > dist/android/logs/logcat-final.txt 2>&1 || true
+          # The suite has killed its emulator by now, so logcat-final is a stub; the whole run is in logcat-full.txt
+          # (recorded by start_emulator in scripts/e2e-android.sh). Count the netd socket destroys that drop the link
+          # (docs/reports/e2e-link-drops.md) so a failed run says at once whether the emulator's network did it.
+          if [[ -s dist/android/logs/logcat-full.txt ]]; then
+            echo "logcat-full.txt: $(wc -l < dist/android/logs/logcat-full.txt) lines; socket destroys on a network: $(grep -c 'Destroyed [1-9][0-9]* sockets for netId' dist/android/logs/logcat-full.txt); link closes conn_aborted: $(grep -c 'code=conn_aborted' dist/android/logs/logcat-full.txt)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           ANDROID_ADB_SERVER_PORT="$ADB_PORT" timeout 30 adb devices -l > dist/android/logs/adb-devices.txt 2>&1 || true
       - name: Upload logs, screenshots and logcat
         if: env.SKIP != '1' && (failure())

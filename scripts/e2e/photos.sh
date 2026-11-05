@@ -275,7 +275,11 @@ have_pics() { [[ "$(list_names)" == "$want_pics" ]]; }
 # Ask until the pictures are listed (a refresh asked within a few seconds of the last one is not repeated).
 refresh_until() { # seconds cmd...
   local secs="$1" i; shift
-  for ((i = 0; i < secs / 4; i++)); do ctl photos refresh "$PHONE_ID" >/dev/null 2>&1; sleep 4; "$@" && return 0; done
+  for ((i = 0; i < secs / 4; i++)); do
+    # A request sent while the emulator has just destroyed the link socket is lost: bring the link back, then ask again.
+    is_connected || { desk_dial >/dev/null 2>&1; link_up 40; }
+    ctl photos refresh "$PHONE_ID" >/dev/null 2>&1; sleep 4; "$@" && return 0
+  done
   return 1
 }
 # The phone must stay silent: ask a few times, nothing is listed, `listed` never turns true.
