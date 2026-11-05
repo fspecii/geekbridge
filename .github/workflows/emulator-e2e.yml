@@ -116,7 +116,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y $CI_APT dbus-x11 libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
-            libnotify-bin sway xwayland mako-notifier grim xdotool imagemagick tesseract-ocr
+            libnotify-bin sway xwayland mako-notifier grim xdotool x11-utils imagemagick tesseract-ocr
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: env.SKIP != '1'
         with:
