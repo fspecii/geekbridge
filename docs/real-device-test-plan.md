@@ -1,7 +1,7 @@
 # Real-device test plan
 
 An ordered checklist for one session with **one real phone** (Samsung Galaxy Z Fold5 SM-F946B, One UI, Android 13+,
-sideloaded APK) and **one Linux PC** (Omarchy / Hyprland; it has an integrated Bluetooth controller, `hci0`, but the steps below do not use it). About **2 hours**, 30 minutes of which
+sideloaded APK) and **one Linux PC** (Omarchy / Hyprland; it has an integrated Bluetooth controller, `hci0`, which the steps below do not use). About **2 hours**, 30 minutes of which
 the phone just sits locked. Fill the Result column as you go. Every failure can be diagnosed afterwards from one file
 (step 12), so do not stop to debug: note it, run the "If it fails" command, move on.
 
@@ -53,7 +53,7 @@ with a new QR (`geekbridge-ctl unpair $DEV`).
 
 ## Not in this session (needs other hardware)
 
-Bluetooth call audio and HFP answer (not part of this session; control over the link is step 7; the Round 8 call features, including Bluetooth setup on this PC's `hci0`, are in [morning-test-checklist.md](reports/morning-test-checklist.md) section 7), Windows and macOS PCs, a second
+Bluetooth call audio and HFP answer (not part of this session; control over the link is step 7; the call features, Bluetooth setup on this PC's `hci0`, Messages, the update path and the Wi-Fi probe are in the ordered session script [morning-test-checklist.md](reports/morning-test-checklist.md), sections 2 to 8), Windows and macOS PCs, a second
 Android vendor (battery vendor screens other than One UI), the memory and battery-drain measurements (use
 `scripts/perf-check.sh --build`, `adb shell dumpsys meminfo dev.geekbridge.android` and `$S battery-baseline` /
 `battery-report` over 4-8 h for the drain figures: drain with the app minus control run <= 1 %/h, wake locks none).

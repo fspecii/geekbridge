@@ -1,134 +1,199 @@
-# Morning test checklist (2026-11-05)
+# Real-device session script (Fold5 SM-F946B, Android 16, this Arch/Omarchy PC)
 
-Build (round 9, final): head `37af23dba` (origin/main after 3 h of waiting: main never stayed quiet for 25 minutes, so this is the head at the cap, built from a clean worktree, commit count 373; the Rust checks on it were still running when it was built, the previous head `7a3603f48` failed only the CI perf size row, since raised, and `1c51129c1` failed one macOS timing test). APK `dist/android/geekbridge-debug.apk`: versionCode 20373, versionName 0.1.0, sha256 `5d7cb3878f8722bae8f451a4ad54137213cdd81a0c2a6729bdba694b68fa2a5e`, same signer `4d711ab4...a3c3`, so it updates in place and pairings are kept (host tests of bridge-android with the Wi-Fi feature, gradle unit tests and lint passed; `check-release-isolation.sh` passed on a release APK built without the Wi-Fi feature). PC binaries in `target/release` (all nine of `scripts/release-binaries.txt`; sha256 starts: geekbridge `04605e08`, service `feca3ee8`, ctl `3993019f`, calls `4ba529a4`, messages `7eec4ded`, clipboard `fafaf0ea`, agenda `223c7fbd`, contacts `012306d3`, share `d41a8d50`); `scripts/perf-check.sh`: startup 10 ms, idle RSS 4.1-4.4 MB, 7 threads, 19 fds, 0 CPU ticks, service 7 514 184 B of 7 560 000 (the +16.5 kB over round 8 is the Messages data matching work, budget raised for it), ctl 1 635 176 B; wakeups read 4-5 per second against the local budget of 3 on this loaded PC (load average 5-12), and the round 8 binaries read 4 per second in the same conditions, so it is machine load, not a regression (CI budget 6, CI measured 1). The running service was NOT restarted: `scripts/run-desktop.sh --restart` to run the new binaries (pairings kept). New since round 8 (25 commits): share opens files on a pool of 4 workers; Messages banner/contact matching on ten digits, same-name contacts stay separate rows in the compose picker, a changed message at the memory cap evicts nothing; first run: Answer calls shows the permission and switch with the rest behind More call options and step 1 is QR-only; call chain keeps the engine when the call listener is already running; call audio self-test and e2e timing hardening; goldens regenerated; token cache, DND keep-warm, trust store, limiter and tone-schedule tests; SMS send receivers released when the send call throws.
+One ordered script, about 90 minutes, copy-paste from the repository root in a terminal inside Hyprland. Each step has a
+**Send back** line; on any failure note the step, run the shown capture command, and move on (step 7 collects
+everything). Needs: the Fold5 on the home Wi-Fi, an iPhone (or any second phone) to call it, the HyperX USB headset on the
+PC. Older rounds' build notes are in git history of this file; the long Wi-Fi call-audio walk is
+[call-audio-wifi-realphone.md](call-audio-wifi-realphone.md); the bring-up and troubleshooting tables are
+[../real-device-quickstart.md](../real-device-quickstart.md); the generic 12-step plan is
+[../real-device-test-plan.md](../real-device-test-plan.md).
 
-Previous build (round 8): head `07fa92a6f` (origin/main when it had been quiet for 20 minutes and the shipper's lock was released; built from a clean worktree, commit count 348). APK `dist/android/geekbridge-debug.apk`: versionCode 20348, versionName 0.1.0, sha256 `e19d5291f002f31699ac8c6878d3e9b6c90d9fa12abec50dca344222cc9dce2e`, same signer `4d711ab4...a3c3`, so it updates in place and pairings are kept (host tests of bridge-android with the Wi-Fi feature, gradle unit tests and lint all passed; `check-release-isolation.sh` passed on a release APK built without the Wi-Fi feature). PC binaries in `target/release` (all nine of `scripts/release-binaries.txt`; sha256 starts: geekbridge `020729bf`, service `6b37584a`, ctl `861af0d1`, calls `d8fd33d5`, messages `1fde5269`, clipboard `65af85a6`, agenda `f4176a4f`, contacts `45d12e67`, share `5660134e`); `scripts/perf-check.sh` within budget (idle RSS 4.2 MB, 7 threads, 3 wakeups/s, service 7 497 672 B of 7 500 000). The running service was NOT restarted: `scripts/run-desktop.sh --restart` to run the new binaries (pairings kept). The notes below about the round 7 build otherwise still apply; the host test failure listed there is fixed in this build.
+What changed since the round 8 APK (20348) and round 9 binaries (`37af23dba`): self-update
+(`geekbridge-ctl update install|rollback|restart|support`, the service restarts only when idle), the Android Home
+**Update available** chip, accessibility fixes (call card announcements, TalkBack focus), first-run changes (Answer calls
+step, QR-only step 1), Messages matching and memory-cap fixes, emulator-script hardening. The chip and the update commands
+exist only in a build of current `main`, so **rebuild both sides first** (step 0).
 
-Previous build (round 7): head `bb58be4ff` (origin/main when it had been quiet for 15 minutes; later commits `72336a027` docs and `db776e241` a Wi-Fi echo guard unit test change are not in it). Built from a clean worktree. APK `dist/android/geekbridge-debug.apk`: versionCode 20294, versionName 0.1.0, sha256 `f3ff26610b1e403fbc6a27372901c9eb9c135670726d762ff9deed5afe9a81cc`, same signer `4d711ab4...a3c3` as before, so it updates in place and pairings are kept (gradle unit tests and lint passed; `check-release-isolation.sh` passed on a release APK built without the Wi-Fi feature). PC binaries in `target/release` (all nine of `scripts/release-binaries.txt`; sha256 starts: geekbridge `da22701b`, service `42768146`, ctl `a9863115`, calls `bf016b95`, messages `70c59d2d`, clipboard `6242f046`, agenda `5ae7fe3b`, contacts `cbaeab89`, share `dd2da022`); `scripts/perf-check.sh` within budget (idle RSS 3.8 MB, 6 threads, 3 wakeups/s). The running service was NOT restarted: `scripts/run-desktop.sh --restart` to run the new binaries (pairings kept). The `geekbridge-ctl calls --trace` and Wi-Fi items below need that restart. What is new since `2c508ee07`: the in-call card (caller, timer, Hang up, Mute, audio route, Use computer audio, Wi-Fi Listen/Stop, and Speak / Mic off while listening when the phone reported a way to speak), the call trace (`geekbridge-ctl calls --trace [--json] [--clear]`: a redacted, capped, local record of call states, card launches, requests, audio route and hub state; also in `report` and `doctor`), the Wi-Fi self-test rule (Works only if a quiet no-call control capture opened and delivered samples first; a loud, refused, empty or missing control gives Unsure), Wi-Fi speak (experimental: Test speaking on the phone picks the uplink route, echo guard `geekbridge-ctl callwifi echo auto|on|off`, `geekbridge-ctl callwifi setup`; status and the real-phone procedure in [call-audio-wifi-realphone.md](call-audio-wifi-realphone.md): proven only on an emulator, whether the Fold5 lets the caller hear you is open and may well be no), one malloc arena in the service (-230 kB idle). Known failure at this head: `cargo test -p bridge-android --features callwifi --test transport` fails `start_reports_identity_listener_and_only_ping` (the test expects the five base capabilities, the feature adds the `geekbridge.callaudio.*` ones); the APK was built with `--skip-host-tests`, the phone behaves correctly. The file server's 12 h timer ends about 02:27 on 2026-11-05; restart it with the command in step 1.1 if it does not answer.
+## 0. Install the APK and restart the service
 
-Previous build (kept for reference): head `2c508ee07` (origin/main, includes the in-call card; PC binaries rebuilt from a clean worktree at 2026-11-05 and the live service restarted on them, phone relinked, `doctor` 0 problems; sha256 starts: geekbridge `00dff764`, service `7578ddba`, ctl `7571c82b`, calls `4b0993e5`, messages `921a56aa`, clipboard `cb42c054`, agenda `ce55a39e`, contacts `1e2db101`, share `5fe69dbb`). The APK below is from the earlier head `d2c3cbc02`; the rest of this paragraph describes that build. Earlier build: head `d2c3cbc02` (built from a clean worktree; main kept moving, so commits after it, docs, emulator e2e scripts, goldens and CI tweaks, are not in this build). It contains everything of the earlier `c08893f6a` build (call audio backend review) plus: the About section in desktop Settings and `geekbridge-ctl about`/`--version`, security review 7 follow-ups, the call audio troubleshooting page (`geekbridge-ctl calling` points failing steps at it), the call chain review (one ring is one banner and card, dial offered only with call state, permission grants take effect), Messages desktop changes (Enter sends, Ctrl+N, one banner per person, Privacy switches), the fresh install audit fixes, and the experimental Wi-Fi call audio (off by default; Bluetooth stays the supported voice path). APK versionCode 20260, sha256 `9f032f70ea0af69077deeeb1c62e7cec6428cd60a982209f80da933a52bf989c` (gradle tests and lint passed; one run failed `SelfTestTest.theLivePortMeasuresLevelsSeesRefusalAndNeverWritesWhenAskedForTheUplink` in the full suite, then passed 3 of 3 in isolation and in a full rerun of the same head, so a timing flake of the new Wi-Fi call audio test; versionCode is above the previous 20215 and the signer is the same `4d711ab4...a3c3`, so it updates in place and pairings are kept). PC binaries in `target/release` are from the same head (all nine in `scripts/release-binaries.txt`; sha256 starts: service `53d0eaad`, ctl `079db380`, geekbridge `56754902`, calls `64c42211`, messages `476c0ec0`, clipboard `22209b68`, agenda `6e51cc9b`, contacts `ece886bf`, share `a3abda38`; the full list is `sha256sum target/release/geekbridge*`). A sandbox `geekbridge-ctl doctor`, `calling` and `about` ran on a throwaway service: 0 problems (warnings only for no phone, no Bluetooth, no desktop session and clipboard tool in the sandbox); `scripts/check-release-isolation.sh` passed on the release APK; the running service was not restarted. CI on `d2c3cbc02` never finished because new pushes cancelled each run (the last completed green run was `acbd605e7`; its one red run, `fc92fa936`, was the binary size budget, since raised on main). Needs: the phone, an iPhone (to call the phone), the PC (its integrated Bluetooth controller `hci0` is enough; a USB dongle is optional).
+```
+git pull --ff-only && git rev-parse --short HEAD                     # write the head down
+cargo build --release --locked -p bridge-apps -p bridge-service      # PC binaries (all nine: scripts/release-binaries.txt)
+scripts/build-android.sh --skip-host-tests                           # dist/android/geekbridge-debug.apk
+sha256sum dist/android/geekbridge-debug.apk target/release/geekbridge-ctl
+```
 
-Every command below was dry-run in a sandbox on this PC (see [morning-dry-run.md](morning-dry-run.md)). Two things differ from older notes: the binaries in `target/release` now include the doctor firewall and hotkey fixes (built from `d2c3cbc02`), so a rebuild (step 2.1) is only needed for later commits; and `adb` is not on this PC's PATH, use `.tools/android-sdk/platform-tools/adb`.
+Phone, either way (same signer, so it updates in place and pairings stay; never uninstall, that deletes them):
 
-## 1. Phone: install the APK
-1. Phone on the home Wi-Fi. Scan `dist/android/apk-qr.png` or open `http://192.168.1.150:8000/geekbridge-debug.apk` (file server, 12 h timer from 2026-11-04 14:27; if it does not answer: `cd dist/android/serve && setsid nohup timeout 43200 python3 -m http.server 8000 --bind 0.0.0.0 &`).
-2. Install, choose Update. If Android says "app not installed / conflicts": phone on USB with debugging on, then `scripts/realdevice.sh install --apk dist/android/geekbridge-debug.apk` (checks the signing key first; never uninstall, it deletes pairings).
+* Cable: `scripts/realdevice.sh install --apk dist/android/geekbridge-debug.apk` (checks the signing key first).
+* Wi-Fi: `(cd dist/android/serve && setsid nohup timeout 43200 python3 -m http.server 8000 --bind 0.0.0.0 &)` after
+  copying the APK there, then open `http://<PC-IP>:8000/geekbridge-debug.apk` on the phone and choose Update.
 
-## 2. PC: new binaries, firewall, hotkey
-In a terminal inside Hyprland, in the repo. Do not `source scripts/android-env.sh` here.
-1. Rebuild (only if you want commits newer than `d2c3cbc02`): `cargo build --release --locked -p bridge-apps -p bridge-service`, then `scripts/run-desktop.sh --restart` (pairings kept). Then, in every terminal you use: `eval "$(scripts/run-desktop.sh --env)"` (puts `geekbridge-ctl` on PATH, pointed at this session's service; without it `doctor` says "Service: not answering").
-2. Firewall. On this PC ufw already has the rule `1716:1764` tcp and udp from 192.168.1.0/24, so this is a check: `scripts/realdevice.sh firewall` (prints PASS, or the two `sudo ufw allow ...` lines). Only if it says FAIL: `scripts/realdevice.sh firewall --apply` from a terminal (it needs one for the sudo password and refuses without it). `realdevice.sh check` needs the phone on USB, do not use it for this.
-3. Hotkey: `geekbridge-ctl hotkey install` (dry run, read the diff), then `geekbridge-ctl hotkey install --apply`, `geekbridge-ctl hotkey status`. The default key is Super+Shift+V (Ctrl+Shift+V is terminal paste); another key: `--key "Ctrl+Alt+P"`. The window rules (float, centre, pin, card top right) come from this step, so do it before section 4.
-4. `geekbridge-ctl doctor`: read it top to bottom; every red line is worth sending back. Expected on this PC with no phone paired yet: no red line; yellow lines for "No phone is paired" and possibly "Hear calls here" (call audio not set up yet; this PC has an integrated Bluetooth controller, so it is not a missing-hardware warning).
+Then the service (pairings kept) and the environment, in every terminal you use:
 
-## 3. Bluetooth controller and call audio
-This PC has an integrated controller (`hci0`, 8C:68:8B:01:04:A0, powered), so no dongle is needed; the dongle advice below applies if you swap in a USB one. The new Round 8 order is in section 7. Hardware tips first (from [call-audio-backend-review.md](call-audio-backend-review.md)):
-* Use a **wired or USB headset** for the PC side (the HyperX dongle is USB, fine), not a Bluetooth headset: most dongles carry one voice (SCO) link, the phone's, and a Bluetooth headset would need a second one.
-* On the phone, Settings > Connections > Bluetooth > gear next to the computer: the **Calls** toggle must be on. If it is off the connection fails with "connection refused / profile unavailable" and no call audio appears.
-* On the phone, **tap the computer by its name** (the setup's first line says which name phones see, for example `phones list this computer as "omarchy"`). The phone's Bluetooth name (`Galaxy Z Fold5`) is not what GeekBridge knows it as (`SM-F946B`), so the setup accepts any phone that pairs from its own side during the setup; an already paired phone under another name is not guessed at.
+```
+scripts/run-desktop.sh --restart
+eval "$(scripts/run-desktop.sh --env)"
+geekbridge-ctl --version && geekbridge-ctl doctor
+```
 
-1. `geekbridge-ctl call-audio` should list the adapter (`hci0`; plug a dongle in only if you use one). "No Bluetooth on this computer" means it is not seen (`bluetoothctl list`, `rfkill list`, `dmesg | grep -i btusb`).
-2. Settings (home window) > Call audio on this computer > **Set up call audio**: adapter, power on, visible for 2 minutes, six-digit code, connecting, pick headphones and microphone, test.
-3. On the phone: Bluetooth settings, tap the computer's name, compare the six-digit code, accept on the phone, then press **Yes, same code** on the PC. Allow **Phone calls** for the computer on the phone if asked.
-4. **Use these devices**, wait for the tone and mic meter. Expected: "Call audio is ready". Terminal route: `geekbridge-ctl calling`, `geekbridge-ctl call setup` (exit 1 with "no Bluetooth adapter" when no controller is seen), `geekbridge-ctl call setup --fix-config`.
-5. `call setup --fix-config` writes a WirePlumber drop-in so the PC offers the hands-free role, **restarts WirePlumber** and checks it came back; if the new file does not parse or WirePlumber does not start it is rolled back. The restart drops the phone's call link for about 20 seconds (the setup reconnects it), and PC sound pauses briefly. Do not run it in the middle of a call.
-6. If a call connects but is **silent** ("digital silence" in `geekbridge-ctl calls` or the log): (a) set `bluez5.enable-msbc = false` for narrowband CVSD voice (a WirePlumber drop-in under `~/.config/wireplumber/wireplumber.conf.d/`, then `systemctl --user restart wireplumber`; exact file and syntax: [troubleshooting](../call-audio-troubleshooting.md#wideband-off-msbc-for-a-silent-or-choppy-call); the review, open item A, has the background), call again; (b) still silent: try another dongle (cheap CSR clones often have broken voice links; Intel AX200/AX210 and good Realtek RTL8761B ones work); (c) collect everything while reproducing it: `scripts/realdevice-report.sh --bt-trace 60`, then place the call within the 60 seconds.
+Expect: the head's version line, `doctor` without red lines (yellow for call audio not set up yet is fine). If it says
+"Service: not answering" you skipped the `eval`. **Send back:** head hash, both sha256 lines, red lines of `doctor`.
 
-## 4. Overlay
-`geekbridge-ctl call-overlay-test`: a card with "Test call" and "This is a test. Nobody is calling." appears top right for 10 seconds, buttons greyed, no typing focus stolen. On Hyprland it is floating and pinned only after the hotkey rules from 2.3.
+## 1. Pairing sanity
 
-## 5. Test calls from the iPhone
-On the phone's Home turn **Answer from computer** on and allow Calls for the phone on the PC. Then:
-1. Ring the phone and let it ring: the card appears within about 2 s with the caller name. Answer on the PC: voice through the headset, the iPhone caller hears you.
-2. Ring again, Decline on the PC: the iPhone hears busy/voicemail, the card disappears.
-3. Ring again and answer on the phone: audio stays on the phone, the card goes away.
-4. Hang up from the PC mid-call (`geekbridge-ctl call hangup` or the card). Try `geekbridge-ctl call mute on|off` and `call audio phone` / `call audio`.
-5. With two SIMs (the Fold5), ring each SIM once.
-6. With the new service running: after the calls, `geekbridge-ctl calls --trace` shows what happened (states, card launches, audio route); attach it to a report. The card stays up through the call and closes after "Call ended mm:ss".
-Known gaps: the Wi-Fi call-audio experiment is off; Bluetooth is the supported voice path. Windows/macOS call guidance is in the build but only matters on those systems.
+```
+geekbridge-ctl status | jq '.paired, .links'
+DEV=$(geekbridge-ctl status | jq -r '.paired[0].device_id'); echo $DEV
+geekbridge-ctl ping $DEV
+geekbridge-ctl consent $DEV telephony on; geekbridge-ctl consent $DEV sms on; geekbridge-ctl consent $DEV contacts on
+geekbridge-ctl consent $DEV clipboard on; geekbridge-ctl consent $DEV photos on
+```
 
-## 6. Send back
-Right after any failure: `scripts/realdevice-report.sh --no-adb` (or `--serial SERIAL` with adb, using the `.tools` adb on PATH or `GEEKBRIDGE_ADB=.tools/android-sdk/platform-tools/adb`). It is read-only and redacted, writes under `~/.cache/geekbridge-reports/`. Attach the printed file and say: which step failed, what the screen said, whether the dongle LED lit, and the time of each test call. On a debug phone build the report includes phone-state and phone-log (needs `geekbridge-ctl consent DEVICE_ID debug on`; DEVICE_ID is in `geekbridge-ctl status`, under `paired`).
+Expect: the Fold5 under `paired`, link phase `connected`, `ping` answers. Still paired after the APK update (no QR
+needed); if not, phone wizard > Pair with your computer > scan the QR from the PC window. Phone Home: **Answer calls from
+my computer** on (the permission and switch are on the first screen; the rest is behind **More call options**).
+**Send back:** `geekbridge-ctl doctor` if the link is not `connected`, and `geekbridge-ctl test-connection`.
 
-## If X then run Y
+## 2. Calls over the link (the iPhone rings the Fold5)
 
-| If | Run |
-| --- | --- |
-| `doctor`: "Service: not answering ... no control token" | `eval "$(scripts/run-desktop.sh --env)"`, then `doctor` again; still red: `scripts/run-desktop.sh --restart` |
-| `doctor`: "FAIL Firewall" but `scripts/realdevice.sh firewall` says PASS | old binary bug (fixed in `df23d137e`, included in the current build): only an older binary shows it; rebuild (2.1) |
-| `realdevice.sh firewall` says FAIL, phone cannot connect | `scripts/realdevice.sh firewall --apply` in a terminal; it prints the `sudo ufw allow ... 1716:1764 ...` lines and the undo lines first |
-| `realdevice.sh check`: "adb not found" / "no usable phone" | plug the phone in (USB debugging), and put `.tools/android-sdk/platform-tools` on PATH or set `GEEKBRIDGE_ADB` |
-| `run-desktop.sh`: "older than ... binary" | `scripts/run-desktop.sh --restart` |
-| `run-desktop.sh`: "port 17381 is taken" | `scripts/run-desktop.sh --stop`, or set `GEEKBRIDGE_CONTROL_PORT` |
-| phone does not find the PC | `geekbridge-ctl test-connection`, then `scripts/realdevice.sh firewall`; QR address wrong: `GEEKBRIDGE_QR_ADDRESSES=192.168.1.150` and `--restart` |
-| hotkey does nothing | `geekbridge-ctl hotkey status`; installed from a shell without the `eval` of 2.1: run `hotkey install --apply` again from one that has it |
-| `call-audio` / `calling`: "No Bluetooth" | controller not seen (check `bluetoothctl list` shows `8C:68:8B:01:04:A0`): `bluetoothctl list`, `rfkill list`, `dmesg \| grep -i btusb`; replug; firmware, rfkill, service: [troubleshooting](../call-audio-troubleshooting.md#adapter-not-found) |
-| `call setup`: "no Bluetooth adapter" | same; the controller must be listed and powered first |
-| `call hangup` / `call mute` / `call audio`: "not available" | there is no live call; ring the phone first, then `geekbridge-ctl calls` shows what is possible |
-| `call-overlay-test`: no card | `geekbridge-ctl doctor` line "Incoming-call overlay"; no WAYLAND_DISPLAY in the shell: run it inside Hyprland |
-| `phone-state` / `phone-log`: "not a debug build" | phone runs the release APK: nothing to do, the report says so |
-| `consent DEVICE_ID FEATURE on`: "unknown feature" | features: contacts, calendar, notifications, battery, photos, telephony, sms, clipboard, debug (also calendar_edit, calendar_alerts) |
-| call connects but is silent | step 3.6: `bluez5.enable-msbc = false`, another dongle, `scripts/realdevice-report.sh --bt-trace 60` ([silent](../call-audio-troubleshooting.md#connected-but-silent), [choppy](../call-audio-troubleshooting.md#choppy-or-robotic-audio), [dongles](../call-audio-troubleshooting.md#usb-dongles)) |
-| phone connected but no calls profile / `audio-gateway` missing | [phone never connects HFP](../call-audio-troubleshooting.md#phone-never-connects-hfp), [profile missing](../call-audio-troubleshooting.md#profile-audio-gateway-missing) |
-| anything else red | `scripts/realdevice-report.sh --no-adb`, attach the file |
+Hotkey and window rules once: `geekbridge-ctl hotkey install` (dry run), then `geekbridge-ctl hotkey install --apply`.
+Start a clean trace: `geekbridge-ctl calls --trace --clear`.
 
-## 7. Round 8 features (real Fold5 + this PC, run in this order)
+| # | Do | Expect |
+| --- | --- | --- |
+| a | Ring, do not answer yet | Ring card top right within about 2 s, caller name/number, Answer / Decline, **Decline with message** |
+| b | Answer on the PC | Becomes the in-call card: caller, running timer, Hang up, an audio line saying where the voice goes. Without Bluetooth call audio the voice stays on the phone (the card says so) |
+| c | Hang up on the PC (card or `geekbridge-ctl call hangup`) | "Call ended mm:ss" for a few seconds, then the card goes; the iPhone side ends |
+| d | Open the Calls window, **Recents** tab | The calls above are listed (in memory since the service started) |
+| e | Ring and let it ring out | Banner "Missed call" with **Call back** and **Message**; Recents shows it as Missed |
+| f | Ring, **Decline with message**, pick a quick reply | Card closes; the iPhone receives the SMS (note the delay). Needs the sms and telephony consents from step 1 |
+| g | Answer a call on the PC, look for a keypad on the in-call card | **Hidden** on the link path (no Bluetooth call audio). Visible and greyed, or visible at all here, is a bug. It appears only after step 3 works |
+| h | Do Not Disturb: `geekbridge-ctl privacy set respect_dnd on`, `makoctl mode -a do-not-disturb` (dunst: `dunstctl set-paused true`; swaync: `swaync-client -dn`), ring | **No card and no ringing banner**; the phone still rings; `geekbridge-ctl calls --trace` has `ring: kept quiet: Do Not Disturb`; answering in the Calls window still works. Undo: `makoctl mode -r do-not-disturb` (dunst `dunstctl set-paused false`; swaync `swaync-client -df`), `geekbridge-ctl privacy set respect_dnd off` |
 
-Needs the newest APK and binaries, then `scripts/run-desktop.sh --restart` and `eval "$(scripts/run-desktop.sh --env)"` in your terminal. The iPhone calls the Fold5. Turn **Answer from computer** on and allow Calls for the phone on the PC (section 5). For every failure send back: the command shown, `geekbridge-ctl calls --trace` (7.7), the time of the test, and `scripts/realdevice-report.sh --no-adb`.
+Also once: `geekbridge-ctl call dial NUMBER` with your second phone (never an emergency number), confirm on the PC, end with
+`geekbridge-ctl call hangup`. **Send back:** `geekbridge-ctl calls --trace` (redacted; from the first `ring` to the last
+`ended` of the failing call), the time of each test call, a photo of the card if the layout looks wrong, and which row
+(a to h) failed.
 
-1. **Ring, answer, hang up.** Trigger: call the Fold5 from the iPhone. See: within about 2 s a ringing card top right with the caller and Answer / Decline; press Answer on the PC; the card becomes the in-call card (caller, running timer, Hang up, audio line saying where the voice goes); press Hang up; the card shows "Call ended mm:ss" for a few seconds, then goes. If it fails: `geekbridge-ctl calls` and `geekbridge-ctl doctor` (line "Incoming-call overlay"), plus the trace.
-2. **Missed call.** Trigger: call again and let it ring out (or answer on the iPhone side and hang up before the Fold5 answers). See: a banner "Missed call" with **Call back** and **Message**; Call back dials via the phone (confirm on the phone if asked), Message opens Messages on that number; the **Recents** tab of the Calls window lists the call as missed. If it fails: `geekbridge-ctl calls`, and say whether the banner, the buttons or the Recents entry was missing.
-3. **Decline with message.** Needs the Messages consent on both sides (phone: Share with computer > Messages on and the SMS permission; PC: `geekbridge-ctl consent DEVICE_ID sms on`) and `consent DEVICE_ID telephony on`. Trigger: ring, then on the ringing card choose Decline with message and a quick reply. See: the card closes, the iPhone hears the decline, and **the SMS arrives on the iPhone** (check its Messages app; write down the delay). Without consent the option should be hidden or say what is missing. If it fails: `geekbridge-ctl consent DEVICE_ID sms` state from `geekbridge-ctl status`, `geekbridge-ctl messages`, the trace.
-4. **Keypad (Bluetooth only).** Trigger: answer a call on the PC over Bluetooth (7.8 done first) and open the keypad on the in-call card; press digits against a phone menu (for example call a number that asks "press 1"). See: tones reach the other side. On the **link path** (no Bluetooth call audio) the keypad must be hidden, not greyed; if you see it there, that is a bug. If it fails: the trace and `geekbridge-ctl calling`.
-5. **Do Not Disturb.** First switch it on: Settings > Privacy > Do Not Disturb (off by default; Linux notification daemons only). Trigger: `makoctl mode -a do-not-disturb` (mako; dunst: `dunstctl set-paused true`; swaync: `swaync-client -dn`). Ring the phone. See: the ringing card still appears (or follows the DND rule shown in `geekbridge-ctl doctor`) and no extra banner sound or popup from the notification daemon; the missed-call banner is held while DND is on. Undo: `makoctl mode -r do-not-disturb` (dunst: `dunstctl set-paused false`; swaync: `swaync-client -df`). If it fails: which daemon, `makoctl mode`, `geekbridge-ctl doctor`, the trace.
-6. **Dialer autocomplete.** Needs contacts consent (`geekbridge-ctl consent DEVICE_ID contacts on`; phone: Share with computer > Contacts). Trigger: open the dialer in the Calls window and type the first letters of a contact, or the first digits of a number. See: suggestions with name and number; Enter or click fills the number; nothing is placed until you press Call. Without consent: no suggestions and a hint about the consent, no crash. If it fails: `geekbridge-ctl contacts`, `geekbridge-ctl doctor`.
-7. **Call trace.** After the calls above run `geekbridge-ctl calls --trace` (add `--json` for a file). It is redacted and local. Paste back: the lines from the first `ring` to the last `ended`/`idle` of the failing call (state changes, card launches, requests, audio route, hub state), with no edits except that you may drop other calls. Check nothing looks like a full phone number or a name; if it does, say so, that is a bug. `--clear` empties it before a clean repro.
-8. **Bluetooth on this PC.** The controller `hci0` (8C:68:8B:01:04:A0) is integrated and powered. Order: `bluetoothctl list` (expect that address), `geekbridge-ctl call setup --fix-config` (writes the WirePlumber drop-in and restarts WirePlumber; PC sound pauses for a moment; not during a call), then `geekbridge-ctl call setup`. During setup the phone shows a **Bluetooth pairing request with a six-digit code**: compare it with the PC, accept on the phone, press **Yes, same code** on the PC, allow **Phone calls** if asked, and make sure Settings > Connections > Bluetooth > gear > **Calls** is on. Then place a test call (section 5) and check the in-call audio line says Bluetooth. Headset: use a **wired or USB headset**; a Bluetooth headset needs a second voice link and may fail on this controller (try it as a separate, second test, note the result). Do not touch the real Bluetooth devices you already use more than needed. If it fails: `geekbridge-ctl calling`, `geekbridge-ctl call setup` output, `scripts/realdevice-report.sh --bt-trace 60` while placing the call, [troubleshooting](../call-audio-troubleshooting.md).
-9. **Wi-Fi call audio (experimental, optional, last).** Only after the Bluetooth path is judged. Procedure and what the verdicts mean: [call-audio-wifi-realphone.md](call-audio-wifi-realphone.md). Whether the Fold5 lets the caller hear you is open and may well be no; write the verdict either way.
-10. **Setup wizard wording.** Phone: open the setup wizard from the start (Settings > Run setup again, or a fresh pair). See: the **battery step is now the 3rd step**; the sharing step says **Messages** (not "SMS" or "texts"); the words **link** (the connection between phone and computer) and **pair** are used consistently, with no "tunnel", "socket" or "session" leaking through; each step has one plain next action and Back works. Send back: a screenshot per step (`scripts/realdevice.sh screens wizard-N` with the phone on) and a line for each wording you found confusing.
+## 3. Bluetooth call audio (the PC is the hands-free unit)
 
-## Experimental: Wi-Fi call audio (optional, skip it if Bluetooth works)
+Decision tree with every failure line: [call-audio-decision.md](call-audio-decision.md) section 1. Use the USB headset,
+not a Bluetooth one. Phone: Settings > Connections > Bluetooth open and unlocked.
 
-**Newer procedure (hear and speak, guided setup with `geekbridge-ctl callwifi setup`, beep test for the uplink): [call-audio-wifi-realphone.md](call-audio-wifi-realphone.md).** The steps below still work.
+```
+geekbridge-ctl calling                       # B0: steps 1-4 [ok] (controller hci0, not blocked, bluetooth.service, powered)
+geekbridge-ctl call setup --fix-config       # B1: "The WirePlumber configuration needs no change." or "Wrote ~/.config/wireplumber/wireplumber.conf.d/zz-geekbridge-call-audio.conf ..."
+geekbridge-ctl call setup                    # B2: add --phone "Fold5" if the phone is not found by name
+geekbridge-ctl calling                       # B3: "Call audio: ready (phone: ...)."
+geekbridge-ctl call-audio test               # two-note tone in the headset, then the microphone meter for 5 s
+```
 
-Off by default, a debug phone build only, and **not proven on any real phone**: whether a Samsung Fold5 lets the `shell` user read the caller's voice is exactly what this section finds out. Bluetooth (section 3) stays the supported way; do this only after Bluetooth works or if you have no dongle. Design: [call-audio-over-wifi](../design/call-audio-over-wifi.md); status: [integration](call-audio-wifi-integration.md). It needs `pw-cat` (PipeWire's tools) on the PC and uses the same headphones you picked for Bluetooth calls (`geekbridge-ctl call audio-devices`).
+B1 pauses PC sound for a second and drops the phone link for up to 20 s: never in a call. B2 expected, in order:
+`Using Bluetooth adapter hci0 ...` > `visible as a Bluetooth device for 120 s` > `Found <phone> ...` > `Does the phone show
+NNNNNN? Accept there too. [y/N]` (compare, Pair on the phone, type `y`) > `Paired with ...` > `<phone> is set up for
+calls.` If it fails with "did not accept the calls (hands-free) connection": phone Bluetooth > gear next to the PC >
+turn **Calls** on, then `geekbridge-ctl calling`. Cancel: `geekbridge-ctl call setup --cancel`.
 
-1. **Phone side first** (needs the build from the phone agent's change): phone Settings > Experimental > "Call audio over Wi-Fi", read the Wireless debugging warning, then start the helper from the PC with `scripts/callaudio-enable.sh` (`--status` shows whether it runs, `--stop` stops it). In the phone's self-test, make or take a short call while the test runs: the result must say **works**. `silent` (Samsung blocks it), `refused` or `unsure` mean this phone cannot be heard here; stop, note the verdict, use Bluetooth.
-2. **PC consent**: `geekbridge-ctl consent DEVICE_ID call_audio_wifi on`, then `geekbridge-ctl callwifi`. Expected: your phone listed, "ready to listen" (and "and to speak" only if the phone found an uplink route), or the reason it is not. `geekbridge-ctl doctor` has a "Wi-Fi call audio (experimental)" line per phone; it prints nothing at all when no phone offers the feature.
-3. **Listen**: ring the phone, answer it, then press **Listen here (Wi-Fi, experimental)** on the live-call card in the Calls window (or `geekbridge-ctl callwifi listen`). Expected within a second or two: a red "Listening to this call on this computer over Wi-Fi (experimental)" box with a **Stop listening** button, the caller's voice on the headphones from step 3.4, and a notification on the phone. Check: does the caller sound clear, how late is it (clap or speak on the phone and compare), does it stutter when you walk away from the router (`geekbridge-ctl callwifi` shows frames lost and the buffer in ms)?
-4. **Stop paths**: each must end the audio within about 2 seconds: the Stop button, `geekbridge-ctl callwifi stop`, hanging up the call, `geekbridge-ctl consent DEVICE_ID call_audio_wifi off`, switching Wi-Fi off on the phone, and Stop on the phone's notification. After each, `geekbridge-ctl callwifi` shows no session.
-5. **Speak (experimental)** only appears when the phone said it has a way to speak into the call. Press it, say something, ask the caller whether they heard you; the box then also says "Your microphone is on: the caller can hear you". Expect that on most phones the caller will NOT hear you (design, section 2: a carrier call has no ordinary uplink); that is a valid result, write it down. If the caller hears an echo, use headphones, not speakers.
-6. **Afterwards**: `scripts/callaudio-enable.sh --stop` and switch Wireless debugging off on the phone (it opens adbd on the LAN while it is on).
+The real proof (B4): the iPhone rings the Fold5, answer **on the PC**, within 3 s `geekbridge-ctl calls` should show
+`active` and `source: Call audio: on this computer (speaker: ...; microphone: ...; codec mSBC, wideband 16 kHz)` (or CVSD
+narrowband), `microphone: on`, and both people hear each other. Then `geekbridge-ctl call mute on` / `off`,
+`geekbridge-ctl call audio phone` (voice moves to the earpiece in about 2 s), `geekbridge-ctl call audio` (back), and the
+keypad now appears: press digits against a phone menu. Silent but "voice link open": add `bluez5.enable-msbc = false`
+as in [../call-audio-troubleshooting.md](../call-audio-troubleshooting.md#wideband-off-msbc-for-a-silent-or-choppy-call),
+`systemctl --user restart wireplumber`, call again.
 
-| If | Run |
-| --- | --- |
-| `callwifi`: "no connected phone offers it" | the phone app has no Wi-Fi call audio (release build, or the feature is off in its Settings > Experimental); nothing to do on the PC |
-| `callwifi listen`: "Wi-Fi call audio is off for this phone" | `geekbridge-ctl consent DEVICE_ID call_audio_wifi on` |
-| `callwifi listen`: "has not said its helper is ready" | `scripts/callaudio-enable.sh --status`, then start it; the phone then sends its state |
-| `callwifi listen`: "no live call on this phone" | the call must be answered (not ringing) and the phone's call state shared (Setup > Answer calls) |
-| `callwifi`: "not available on this computer: pw-cat ..." | install PipeWire's tools (Arch: `pipewire`); Wi-Fi call audio plays through `pw-cat` only |
-| listening starts but nothing is heard | `geekbridge-ctl call audio-devices` (the output it names is the one used); `callwifi` frames should rise by 50 per second; if they do not, the phone sends silence or nothing: record the self-test verdict and `scripts/realdevice-report.sh --no-adb` |
-| stops after about 5 seconds | no frames reached the PC (idle timeout); weak Wi-Fi or the helper died; start the helper again |
+**Send back:** each `calling` and `call setup` output, the `calls` line from B4, whether each side heard the other, and
+`scripts/realdevice-report.sh --no-adb --bt-trace 60` started just before a failing call (place the call within the 60
+seconds).
 
-## Experimental: Wi-Fi call audio, phone side step by step (OPTIONAL)
+## 4. Messages
 
-The section above is the short version and the "if X then Y" table. This one walks the phone side in order, including the self-test, which is the most important answer.
+Phone: Share with computer > Messages on and the SMS permission (Android 13+ sideload: Settings > Apps > GeekBridge >
+three dots > Allow restricted settings). Then `geekbridge-ctl messages` or open Messages (`geekbridge-messages`).
 
-Only after sections 1 to 6 are done. This is an experiment: **debug APK only**, off by default, listen-first. Bluetooth stays the supported path; if anything here goes wrong, switch it off (the "Stop and turn it off" step) and carry on. Why it may fail on a Samsung: [report](call-audio-wifi-integration.md). Needs the debug APK from step 1 (`scripts/build-android.sh`), `adb` on the PC, and a second person to call you.
+* **Unread count:** have the iPhone send two texts. The tray/waybar count and the thread's unread badge go up by two. Read
+  the thread **on the phone**: the count on the PC comes down after the next refresh (`geekbridge-ctl messages-refresh
+  $DEV`). Opening the thread on the PC lowers it on the PC only (`messages-read`; the phone keeps its own state).
+* **Group reply blocked:** open a group conversation. Replying is refused with "Group conversations can't be answered from
+  the computer." and nothing is sent.
+* **Compose by name:** New message, type a contact's first letters in **To**: suggestions with name and number (several
+  numbers ask "Which number for NAME?"); same-name contacts stay separate rows. Send one SMS to your second phone only.
 
-1. **Turn it on, on the phone.** GeekBridge → Settings → **Experimental** → *Call audio over Wi-Fi (ADB helper)*. Read the risk card, switch it on, press *Turn on*. Expect: the switch stays on, a "Helper not running" line appears.
-2. **Allow your PC.** Same screen, "3. Which computers" → *Choose* → tick your PC → OK. Expect the line to name the PC.
-3. **Developer options.** Phone: Settings → Developer options → USB debugging on (cable) or Wireless debugging on. Allow the PC's debugging prompt.
-4. **Start the helper from the PC.** `scripts/callaudio-enable.sh` (answer `y`; with several devices add `--serial SERIAL`). Expect the last line: `helper started and handed to GeekBridge. Now open GeekBridge > Settings > Experimental ...`, and on the phone "Helper connected." If it says *turn the Experimental switch on* the switch (step 1) is off; if it says *release build* you installed the wrong APK.
-5. **Self-test, step 1 (no call).** On the phone press *Step 1: check with no call* (about 6 s, no call active). Expect a line ending "Now make a call and press step 2." If it says the phone "still produced sound ... with no call", the final answer will be Unsure; carry on anyway, it is useful evidence.
-6. **Self-test, step 2 (with a call).** Press *Step 2: test during a call*, then have the other person call you (or call voicemail) and answer; ask them to talk for ten seconds. Expect one of, in plain words:
-   - **Works**: the other person's voice reaches the helper. Go on to the PC step.
-   - **Silent**: the source opens but delivers silence (Samsung may block it). Stop here, send the report (the "Send back" step).
-   - **Refused**: Android denied it. Stop here.
-   - **Unsure**: sound with no call too, so it proves nothing. Treat as not working.
-7. **Listen on the PC.** On the PC: `geekbridge-ctl consent DEVICE_ID call_audio_wifi on` (this PC's consent for the phone), then `geekbridge-ctl callwifi` (expect the phone *ready to listen*), then during a call press **Listen here (Wi-Fi, experimental)** on the call card or run `geekbridge-ctl callwifi listen`. Expect: a notification on the phone "Call audio is being shared with <PC>", the PC card shows "Phone call audio here" and you hear the other person in the chosen headphones (the same device pick as the Bluetooth path). Ask them to say a word; note the delay (target under 0.3 s).
-   *Speak (experimental)* is separate and optional: on the phone switch it on (only offered after a *Works* test with an uplink route), then press **Speak** on the PC. Ask the other person whether they heard you. Expect "no" on most phones; that is a useful answer.
-8. **Stop and turn it off.** Press *Stop* in the phone notification (or `geekbridge-ctl callwifi stop`): the audio stops within a second on both devices. Then `scripts/callaudio-enable.sh --stop`, switch the Experimental switch off, and turn Wireless/USB debugging off.
-9. **Send back.** The phone result sentence (step 6), `geekbridge-ctl callwifi`, `scripts/callaudio-enable.sh --status`, whether you heard them (yes/no, delay), whether they heard you (yes/no), and `scripts/realdevice-report.sh --no-adb`. No audio is stored anywhere, so there is nothing else to attach.
+**Send back:** the three outcomes (yes/no), the screenshot of any wrong count, `geekbridge-ctl messages` (personal data:
+skim it first) or just `geekbridge-ctl doctor` lines for Messages.
 
-If the PC has no `callwifi` command yet, the phone steps 1 to 6 still work on their own and give the most important answer (does this Fold5 let the helper hear the call).
+## 5. Share, clipboard, photos (about 10 minutes)
+
+```
+geekbridge-ctl share allow $DEV on                        # then on the phone: Gallery > a photo > Share > Send to computer
+geekbridge-ctl send-file $DEV some-file.txt               # PC to phone; geekbridge-ctl share status shows both
+geekbridge-ctl clipboard status                           # copy "alpha" on the phone, unlock, press the hotkey (or: clipboard paste-from-phone --notify) within 30 s
+geekbridge-ctl photos refresh $DEV; geekbridge-ctl photos $DEV   # names only; photos save $DEV PHOTO_ID asks for the full file
+```
+
+Expect: the file arrives in the save folder both ways, "alpha" pastes, the photos list shows recent names and thumbnails.
+**Send back:** `geekbridge-ctl share status`, `geekbridge-ctl clipboard status` (counters only), which one failed.
+
+## 6. Update path (sandbox only)
+
+Phone: Home shows the **Update available** chip only when a newer stable release is published; with none, **no chip is
+the correct result** (Diagnostics has the update card with the last check). Do not tap Install on anything.
+PC, read-only plus a sandbox prefix; the live install and the running service are never touched:
+
+```
+geekbridge-ctl update status                     # up to date / update available / channel; last install outcome
+geekbridge-ctl update support                    # first word: user-install, package-managed or download-only (a build-folder run is download-only: expected)
+P=$HOME/.cache/gb-update-sandbox; mkdir -p $P/bin $P/lib
+geekbridge-ctl update install --dry-run --prefix $P
+```
+
+Expect `GeekBridge v0.1.0 is up to date; there is nothing to install.` when nothing newer exists, or, when a newer stable
+release has a verified installer, `Dry run: vX passed every check (checksum, archive contents, executables, version).
+Nothing was changed.` (it downloads the archive first). On the dev channel it says download only. Do **not** run `update
+install` without `--prefix`, `update rollback` or `update restart` unless you decide to update the live install on
+purpose. Clean up: `rm -rf $P`. Design and failure table: [../updates.md](../updates.md).
+**Send back:** the three outputs and a screenshot of Home (chip or none).
+
+## 7. If something fails: what to capture
+
+```
+geekbridge-ctl doctor > ~/gb-doctor.txt 2>&1
+geekbridge-ctl calls --trace > ~/gb-calls-trace.txt 2>&1
+geekbridge-ctl report --preview                # exactly what a public bug report would carry (redacted); nothing is sent
+scripts/realdevice-report.sh --no-adb          # redacted bundle under ~/.cache/geekbridge-reports/; add --serial SERIAL with adb
+```
+
+Phone side, adb (`ADB=.tools/android-sdk/platform-tools/adb`; run `$ADB devices` first):
+
+```
+ADB=.tools/android-sdk/platform-tools/adb
+$ADB logcat -d -v time -t 4000 > ~/gb-logcat.txt                                   # whole recent buffer; right after the failure
+$ADB logcat -d -v time --pid=$($ADB shell pidof dev.geekbridge.android) > ~/gb-app.txt
+scripts/realdevice.sh logs                                                         # filtered logcat, crash buffer, dumpsys
+geekbridge-ctl consent $DEV debug on; geekbridge-ctl phone-state $DEV; geekbridge-ctl phone-log $DEV -n 300   # debug APK only
+```
+
+No cable: phone Settings > Developer options > **Wireless debugging** on > **Pair device with pairing code**, then
+`$ADB pair HOST:PORT CODE` (the pairing port), then `$ADB connect HOST:PORT` (the port on the Wireless debugging screen;
+it differs and changes whenever it is toggled; "connection refused" = stale port). Turn it off when done.
+**Send back:** the files above, the step number, the clock time, and what the screen said.
+
+## 8. Wi-Fi call audio probe (experimental, optional, last, only after step 3 is judged)
+
+Debug APK only. Full procedure and verdict table: [call-audio-wifi-realphone.md](call-audio-wifi-realphone.md) (steps C, D
+and the cleanup block); why it may be a dead end: [call-audio-decision.md](call-audio-decision.md) section 2.
+**Warnings:** the probe with no call flashes the phone's microphone indicator and plays nothing to anyone; run in a call
+it plays a **1 kHz tone into the call**, so do not run it in a call. Any beep test is **loud in the other person's ear**:
+warn them, phone call volume near 30 %, no headphones on the Fold5, not on speaker, and set the PC output low first
+(`wpctl set-volume @DEFAULT_AUDIO_SINK@ 25%`). Wireless debugging opens adbd on the LAN while it is on.
+
+```
+export ADB="$PWD/.tools/android-sdk/platform-tools/adb" ANDROID_ADB_SERVER_PORT=5038; $ADB devices      # isolated adb server; pair + connect as in step 7
+$ADB shell 'CLASSPATH=$(pm path dev.geekbridge.android | sed s/^package://) app_process /system/bin dev.geekbridge.android.callaudio.CallAudioHelper --probe'   # no call, 8-12 s, let it finish
+# read three fields of the JSON line: pstnInterceptable, telephonyTxDevice, uplinkInjectionTrack.outcome   (false + false = no uplink without root: close the Wi-Fi route)
+# only if pstnInterceptable is true: continue with steps E to J of the linked procedure, with a person on the other phone who knows what to expect
+geekbridge-ctl callwifi stop; geekbridge-ctl callwifi setup --adb "$ADB" --stop; $ADB shell am force-stop dev.geekbridge.android; $ADB shell settings put global adb_wifi_enabled 0; $ADB disconnect; $ADB kill-server   # cleanup, also after any aborted run
+```
+
+**Send back:** the whole probe JSON line and, if you went further, what the other person heard (1, 2, 3 beeps or nothing).
