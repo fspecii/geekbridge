@@ -2,8 +2,10 @@
 //! The "Update available" banner and the update controls in the details panel.
 //!
 //! The service owns the schedule, the network and the SHA-256 check (`bridge-update`). This
-//! module only shows its state and forwards explicit clicks. It never installs anything: after a
-//! verified download it reveals the file and the user opens it.
+//! module only shows its state and forwards explicit clicks. Installing is a click on "Install
+//! update" in the Settings card, run by `geekbridge-ctl update install` (the same code and checks as
+//! the command line; per-user Linux installs only). The banner still reveals the downloaded file,
+//! and a package-managed or non-Linux copy says so instead of offering to install.
 use crate::{
     i18n::{tr, tr_args},
     theme::{self, ButtonKind, Palette},
@@ -50,7 +52,62 @@ fn call(request: &Request) -> Result<UpdateStatus, String> {
     }
 }
 
+/// Can this copy install updates itself? Answered by `geekbridge-ctl update support`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Support {
+    User,
+    PackageManaged,
+    DownloadOnly,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Install {
+    Idle,
+    Working,
+    /// Installed; the service still runs the old version.
+    Installed(String),
+    Restarting,
+    Done(String),
+    Failed(String),
+}
+
+/// `geekbridge-ctl` next to this executable (same version), else the one on PATH.
+fn ctl_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| Some(p.parent()?.join("geekbridge-ctl")))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| "geekbridge-ctl".into())
+}
+
+/// Run `geekbridge-ctl update <args>`; its first stdout line on success, its last stderr line on failure.
+fn run_ctl(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new(ctl_path())
+        .arg("update")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| e.to_string())?;
+    let last = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .to_owned()
+    };
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        Err(crate::state::display_text(&last(&out.stderr)))
+    }
+}
+
 pub struct Updates {
+    wake: Arc<dyn Fn() + Send + Sync>,
+    support: Arc<Mutex<Option<Support>>>,
+    support_asked: bool,
+    install: Arc<Mutex<Install>>,
     commands: mpsc::SyncSender<Command>,
     published: Arc<Mutex<Published>>,
     stop: Arc<AtomicBool>,
@@ -67,8 +124,10 @@ impl Updates {
 
     fn spawn(
         mut call: impl FnMut(&Request) -> Result<UpdateStatus, String> + Send + 'static,
-        wake: impl Fn() + Send + 'static,
+        wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
+        let worker_wake = wake.clone();
         let (commands, rx) = mpsc::sync_channel::<Command>(4);
         let published: Arc<Mutex<Published>> = Arc::default();
         let out = published.clone();
@@ -102,12 +161,16 @@ impl Updates {
                     if next != previous {
                         previous = next.clone();
                         *out.lock().unwrap_or_else(|e| e.into_inner()) = next;
-                        wake();
+                        worker_wake();
                     }
                 }
             })
             .expect("spawn update status worker");
         Self {
+            wake,
+            support: Arc::default(),
+            support_asked: false,
+            install: Arc::new(Mutex::new(Install::Idle)),
             commands,
             published,
             stop,
@@ -131,6 +194,55 @@ impl Updates {
             Some(Err(message)) => self.problem = Some(message),
             None => {}
         }
+    }
+
+    /// Ask `geekbridge-ctl update support` once, off the UI thread.
+    fn support(&mut self) -> Option<Support> {
+        if !self.support_asked {
+            self.support_asked = true;
+            let (slot, wake) = (self.support.clone(), self.wake.clone());
+            std::thread::spawn(move || {
+                let word = run_ctl(&["support"])
+                    .ok()
+                    .and_then(|o| o.lines().next().map(str::to_owned));
+                let found = match word.as_deref() {
+                    Some("user-install") => Support::User,
+                    Some("package-managed") => Support::PackageManaged,
+                    _ => Support::DownloadOnly,
+                };
+                *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(found);
+                wake();
+            });
+        }
+        self.support
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Run one ctl step in the background and publish its outcome.
+    fn run_install(
+        &self,
+        working: Install,
+        args: &'static [&'static str],
+        ok: impl Fn(String) -> Install + Send + 'static,
+    ) {
+        {
+            let mut state = self.install.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*state, Install::Working | Install::Restarting) {
+                return;
+            }
+            *state = working;
+        }
+        let (slot, wake) = (self.install.clone(), self.wake.clone());
+        std::thread::spawn(move || {
+            let next = match run_ctl(args) {
+                Ok(out) => ok(out),
+                Err(e) => Install::Failed(tr_args("update.install_failed", &[("reason", &e)])),
+            };
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = next;
+            wake();
+        });
     }
 
     fn send(&self, command: Command) {
@@ -293,6 +405,7 @@ impl Updates {
             return;
         };
         ui.add(egui::Label::new(theme::secondary(pal, summary_line(&status))).wrap());
+        self.install_controls(ui, pal, &status);
         ui.horizontal_wrapped(|ui| {
             let idle = !matches!(
                 status.state,
@@ -328,6 +441,71 @@ impl Updates {
             ui.add(egui::Label::new(theme::caption(pal, tr("update.channel_dev_note"))).wrap());
         }
         ui.label(theme::caption(pal, tr("update.privacy")));
+    }
+}
+
+impl Updates {
+    /// "Install update" (per-user Linux installs), or the plain reason there is no such button.
+    fn install_controls(&mut self, ui: &mut egui::Ui, pal: &Palette, status: &UpdateStatus) {
+        let offered = status.newer && !status.skipped;
+        let state = self
+            .install
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match (&state, self.support()) {
+            (Install::Installed(version), _) => {
+                ui.add(
+                    egui::Label::new(theme::caption(
+                        pal,
+                        tr_args("update.installed", &[("version", version)]),
+                    ))
+                    .wrap(),
+                );
+                if theme::pill_button(ui, pal, tr("update.restart_now"), ButtonKind::Primary, true)
+                    .clicked()
+                {
+                    self.run_install(Install::Restarting, &["restart"], |_| {
+                        Install::Done(tr("update.restarted").to_owned())
+                    });
+                }
+            }
+            (Install::Working, _) => {
+                ui.add(egui::Label::new(theme::caption(pal, tr("update.installing"))).wrap());
+            }
+            (Install::Restarting, _) => {
+                ui.add(egui::Label::new(theme::caption(pal, tr("update.restarting"))).wrap());
+            }
+            (Install::Done(text) | Install::Failed(text), _) => {
+                ui.add(egui::Label::new(theme::caption(pal, text.clone())).wrap());
+            }
+            (Install::Idle, Some(Support::User))
+                if offered && status.channel == UpdateChannel::Stable =>
+            {
+                if (status.downloadable || status.state == UpdateState::Downloaded)
+                    && theme::pill_button(ui, pal, tr("update.install"), ButtonKind::Primary, true)
+                        .clicked()
+                {
+                    let version = status
+                        .latest
+                        .as_ref()
+                        .map(|l| l.version.clone())
+                        .unwrap_or_default();
+                    self.run_install(
+                        Install::Working,
+                        &["install", "--yes", "--no-restart"],
+                        move |_| Install::Installed(version.clone()),
+                    );
+                }
+            }
+            (Install::Idle, Some(Support::PackageManaged)) if offered => {
+                ui.add(egui::Label::new(theme::caption(pal, tr("update.package_managed"))).wrap());
+            }
+            (Install::Idle, Some(Support::DownloadOnly)) if offered => {
+                ui.add(egui::Label::new(theme::caption(pal, tr("update.download_only"))).wrap());
+            }
+            _ => {}
+        }
     }
 }
 

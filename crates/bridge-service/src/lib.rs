@@ -56,6 +56,7 @@ pub mod reconnect;
 pub mod session_env;
 pub mod share;
 pub mod tray;
+pub mod update_cli;
 pub mod waybar;
 pub mod why;
 pub mod windows_host;
@@ -410,6 +411,17 @@ fn update_service(state_dir: &std::path::Path) -> Arc<bridge_update::Updater> {
     // `GEEKBRIDGE_UPDATE_REPO` (owner/name) and `GEEKBRIDGE_UPDATE_TOKEN` (testers; private repo).
     let mut cfg = bridge_update::Config::github_from_env(env!("CARGO_PKG_VERSION"));
     cfg.state_file = Some(state_dir.join("update-state.json"));
+    // After an interrupted self-update: remove its leftovers and make sure `current` works.
+    #[cfg(target_os = "linux")]
+    if let Some(prefix) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(bridge_update::install::prefix_of_exe)
+    {
+        for note in bridge_update::install::recover(&prefix, cfg.state_file.as_deref()) {
+            eprintln!("GeekBridge service: self-update: {note}");
+        }
+    }
     // Test hook (scripts/e2e/update-install.sh): a mock release server. Only a loopback `http://` URL is
     // honoured, and the updater itself never contacts another http host.
     if let Ok(base) = std::env::var("GEEKBRIDGE_UPDATE_BASE_URL")

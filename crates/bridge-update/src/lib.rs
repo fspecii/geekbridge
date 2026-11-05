@@ -14,6 +14,7 @@
 
 mod dev;
 mod http;
+pub mod install;
 mod release;
 mod version;
 

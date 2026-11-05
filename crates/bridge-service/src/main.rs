@@ -32,6 +32,15 @@ fn release_own_console() {
 }
 
 fn main() -> std::io::Result<()> {
+    // `geekbridge-service --version`: what the self-updater asks a staged binary before it goes live
+    // (docs/design/desktop-self-update.md). Answered before anything else is touched.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == "--version" || a == "-V")
+    {
+        println!("geekbridge-service {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     #[cfg(windows)]
     release_own_console();
     bridge_service::memtrim::single_arena();

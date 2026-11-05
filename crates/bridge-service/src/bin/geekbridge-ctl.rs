@@ -102,7 +102,18 @@ Commands:
   clipboard image-limit MIB           largest image accepted or sent (1-32)
   update [status|check|download|skip VERSION|channel stable|dev|enable|disable]
                                       look for a newer GitHub release, download and SHA-256-verify
-                                      it (never installs anything); default: status
+                                      it; default: status
+  update install [--yes] [--dry-run] [--no-restart] [--prefix DIR]
+                                      install the verified update into the per-user install
+                                      (~/.local from install.sh): unpack beside the old version,
+                                      check it, switch atomically, keep the old one. Asks before
+                                      it restarts the service and never does during a call.
+                                      --dry-run checks everything and changes nothing. Package
+                                      installs and the dev channel are download only.
+  update rollback [--yes] [--no-restart]  go back to the previous version (again: forward)
+  update restart                      restart the service onto the installed version (not during a call)
+  update support                      can this copy update itself? (user-install, package-managed,
+                                      download-only)
   whats-new                           what changed in this version (the same text as the card Home shows
                                       once after an update), and where the full release notes are
   send-file DEVICE_ID PATH...         send files to a connected, paired device
@@ -1825,7 +1836,13 @@ fn describe_update(s: &UpdateStatus) {
     }
     if let Some(path) = &s.downloaded_path {
         println!("verified download: {path}");
-        println!("Open it yourself to install; GeekBridge never runs or replaces anything.");
+        if bridge_update::install::support_here().can_install() {
+            println!("Install it with: geekbridge-ctl update install");
+        } else {
+            println!(
+                "Install it yourself (see `geekbridge-ctl update status`); this copy does not replace its own files."
+            );
+        }
     }
     if let Some(error) = &s.error {
         println!("problem:  {error}");
@@ -1834,8 +1851,36 @@ fn describe_update(s: &UpdateStatus) {
 
 fn update_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> Result<(), String> {
     let sub = args.first().and_then(|a| a.to_str()).unwrap_or("status");
+    if sub == "support" {
+        return bridge_service::update_cli::support_command();
+    }
     let token = load_token(state_dir)?;
     let (request, wait_for) = match sub {
+        "install" => {
+            return bridge_service::update_cli::install_command(
+                &args[1..],
+                port,
+                &token,
+                state_dir,
+                &|r| update_call(port, &token, r),
+            );
+        }
+        "rollback" => {
+            return bridge_service::update_cli::rollback_command(
+                &args[1..],
+                port,
+                &token,
+                state_dir,
+            );
+        }
+        "restart" => {
+            return bridge_service::update_cli::restart_command(
+                &args[1..],
+                port,
+                &token,
+                state_dir,
+            );
+        }
         "status" => (Request::UpdateStatus, None),
         "check" => (Request::UpdateCheck, Some(UpdateState::Checking)),
         "download" => (Request::UpdateDownload, Some(UpdateState::Downloading)),
@@ -1874,6 +1919,15 @@ fn update_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> 
         }
     }
     describe_update(&status);
+    if sub == "status" {
+        println!(
+            "install:  {}",
+            bridge_service::update_cli::describe_support()
+        );
+        if let Some(last) = bridge_service::update_cli::last_outcome(state_dir) {
+            println!("last install: {last}");
+        }
+    }
     if status.error.is_some() && wait_for.is_some() {
         return Err("the update operation failed".into());
     }
