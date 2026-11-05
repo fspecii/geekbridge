@@ -135,6 +135,10 @@ class MainActivity : Activity() {
         refreshCore()
         link.onStart()
         updates.onStart()
+        if (intent.getBooleanExtra(UpdateNotice.EXTRA_SHOW_UPDATE, false)) {
+            intent.removeExtra(UpdateNotice.EXTRA_SHOW_UPDATE)
+            updates.showFromNotice()
+        }
         offers = OfferDialogs(this, ShareCoordinator.get(this)).also { it.attach() }
         ShareCoordinator.get(this).controller.appVisible = true
     }

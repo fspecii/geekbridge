@@ -71,6 +71,7 @@ class HomeActivity : Activity() {
         offers = OfferDialogs(this, ShareCoordinator.get(this)).also { it.attach() }
         ShareCoordinator.get(this).controller.appVisible = true
         main.post(poller)
+        UpdateNotice.maybeCheck(this, background = false) { main.post { if (!isDestroyed) { lastSig = ""; render() } } }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -144,7 +145,7 @@ class HomeActivity : Activity() {
         )
         val glance = TransferGlanceModel.of(s?.transfers.orEmpty())
         val clipLine = clipboardLine(connected.isNotEmpty())
-        val sig = listOf(justPaired, WhatsNewRuntime.pending() != null, clipLine.text, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, SmsReadinessAndroid.evaluate(this)).joinToString("|")
+        val sig = listOf(justPaired, WhatsNewRuntime.pending() != null, clipLine.text, hero, connected, warnings, steps.map { it.status }, AppState.keepConnected, AppState.setupFinished, QuickActions.sendClipboard != null, glance, SmsReadinessAndroid.evaluate(this), UpdateNotice.pendingVersion(this), UpdateNotice.notifyOn(this)).joinToString("|")
         if (sig == lastSig) return
         lastSig = sig
         // The whole screen is rebuilt on a state change; put TalkBack back where the user was.
@@ -169,6 +170,9 @@ class HomeActivity : Activity() {
 
         // Shown once after an update, until dismissed
         WhatsNewRuntime.pending()?.let { whatsNewCard(root, it) }
+
+        // A newer version is out: a small chip that opens the update card (nothing is installed from here)
+        UpdateNotice.pendingVersion(this)?.let { updateChip(root, it) }
 
         // Warning / unfinished setup
         if (warnings.isNotEmpty() || !AppState.setupFinished) {
@@ -297,6 +301,15 @@ class HomeActivity : Activity() {
             },
         )
         kit.divider(set)
+        kit.row(
+            set, R.drawable.ic_bell, getString(R.string.upd_notice_row), getString(R.string.upd_notice_row_sub),
+            kit.toggle(UpdateNotice.notifyOn(this)) { on ->
+                UpdateNotice.setNotify(this, on)
+                lastSig = ""
+                render()
+            },
+        )
+        kit.divider(set)
         kit.row(set, R.drawable.ic_person, getString(R.string.home_name_row), DeviceName.current(this), null) { chooseName() }
         ClipboardSettingsUi.addRows(this, kit, set) { lastSig = ""; render() }
         kit.divider(set)
@@ -315,6 +328,19 @@ class HomeActivity : Activity() {
         card.addView(kit.text(getString(R.string.qr_done_title, Bidi.isolate(computer)), 18f, Tone.Ok, bold = true).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE })
         card.addView(kit.text(getString(R.string.home_paired_banner_body), 14f, Tone.Muted).apply { setPadding(0, kit.dp(4), 0, 0) })
         kit.button(card, getString(R.string.home_paired_banner_ok), BtnStyle.Tonal) { justPaired = null; lastSig = ""; render() }
+    }
+
+    private fun updateChip(root: LinearLayout, version: String) {
+        val label = getString(R.string.upd_chip)
+        val chip = kit.chip(label, Tone.Ok).apply {
+            contentDescription = getString(R.string.upd_chip_cd, Bidi.isolate(version))
+            isClickable = true
+            setOnClickListener { startActivity(Intent(this@HomeActivity, MainActivity::class.java).putExtra(UpdateNotice.EXTRA_SHOW_UPDATE, true)) }
+            isFocusable = true
+            minHeight = kit.dp(48) // a full-size touch target around the small pill
+            kit.asButton(this)
+        }
+        root.addView(chip, LinearLayout.LayoutParams(Ui.WRAP, Ui.WRAP).apply { topMargin = kit.dp(12) })
     }
 
     private fun whatsNewCard(root: LinearLayout, notes: WhatsNew) {

@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- App update messages (Settings > App updates). -->
 <resources>
+        <string name="upd_chip">Update available</string>
+    <string name="upd_chip_cd">Update available, version %1$s. Opens the update card.</string>
+    <string name="upd_notice_row">Tell me about updates</string>
+    <string name="upd_notice_row_sub">One quiet notification when a new version is out. Never installs by itself.</string>
+    <string name="upd_notice_title">GeekBridge update available</string>
+    <string name="upd_notice_text">Version %1$s is out. Tap to review it.</string>
+    <string name="channel_update">App updates</string>
+    <string name="channel_update_desc">A quiet notice, off by default, when a newer version of GeekBridge is published.</string>
     <string name="upd_err_not_modified">GitHub answered \'not modified\' without a cached copy.</string>
     <string name="upd_err_rate_limit">GitHub is rate limiting requests. Try again later.</string>
     <string name="upd_err_no_sha">This release publishes no SHA-256 for the app, so it won\'t be downloaded.</string>
@@ -32,7 +40,7 @@
     <string name="upd_title">App updates</string>
     <string name="upd_intro">GeekBridge %1$s (build %2$d). Checking only asks GitHub for the latest release (stable or, on the Dev channel, the rolling dev build) of this project; nothing about you or this phone is sent. Android always asks you to confirm an install, and an update only installs over the same signing key.</string>
     <string name="upd_not_checked">Not checked yet.</string>
-    <string name="upd_auto">Check when the app opens (at most every 12 hours)</string>
+    <string name="upd_auto">Check automatically (when the app opens, at most every 12 hours; Home and the link service at most once a day)</string>
     <string name="upd_check">Check for updates</string>
     <string name="upd_download">Download and verify</string>
     <string name="upd_install">Install update</string>

@@ -121,7 +121,7 @@ not in the release APK. `crates/bridge-core/tests/privacy_doc.rs` fails if the t
 | Permission | Kind | Why |
 | --- | --- | --- |
 | `INTERNET` | install | The LAN link to a paired computer (TLS, pinned certificates) and the optional update check to GitHub |
-| `ACCESS_NETWORK_STATE` | install | Notice Wi-Fi coming and going so the link redials |
+| `ACCESS_NETWORK_STATE` | install | Notice Wi-Fi coming and going so the link redials; whether the network is metered, for the update notice |
 | `CHANGE_NETWORK_STATE` | install | Prerequisite Android 14+ lists for a `connectedDevice` foreground service |
 | `CHANGE_WIFI_MULTICAST_STATE` | install | Receive discovery broadcasts while discovery listening is on; also a `connectedDevice` prerequisite |
 | `WAKE_LOCK` | install | A Wi-Fi lock (no CPU wake lock) while a computer is linked |
@@ -130,7 +130,7 @@ not in the release APK. `crates/bridge-core/tests/privacy_doc.rs` fails if the t
 | `RECEIVE_BOOT_COMPLETED` | install | Restart the link service after a reboot or an app update, only if a computer is paired |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | install | The setup step "Allow unrestricted battery" opens the system dialog; Android asks the user |
 | `REQUEST_INSTALL_PACKAGES` | install | "Install update" hands a SHA-256-verified APK to the system installer; Android asks and the user confirms each install |
-| `POST_NOTIFICATIONS` | runtime (Android 13+) | Link status, clipboard tap request, transfers, dial questions; everything works without it |
+| `POST_NOTIFICATIONS` | runtime (Android 13+) | Link status, clipboard tap request, transfers, dial questions, and the optional update notice (off by default); everything works without it |
 | `CAMERA` | runtime | The in-app QR scan screen, only while it is open |
 | `READ_CONTACTS` | runtime | The phonebook feature |
 | `READ_CALENDAR` | runtime | Calendar (read) |
@@ -438,7 +438,7 @@ true in `UpdateSection.kt`).
 
 | Request | When |
 | --- | --- |
-| `GET https://api.github.com/repos/fspecii/geekbridge/releases/latest` | desktop: about 15 s after the service starts, then about daily; Android: when Diagnostics & about opens, at most once per 12 h; or when you press Check |
+| `GET https://api.github.com/repos/fspecii/geekbridge/releases/latest` | desktop: about 15 s after the service starts, then about daily; Android: when Diagnostics & about opens (at most once per 12 h), when Home opens or the background link sees a Wi-Fi network (at most once per 24 h, one retry per 15 min after a failure, only on a network that is not metered unless the last good answer is a week old); or when you press Check |
 | `GET <SHA256SUMS asset>` on `github.com` / `*.githubusercontent.com` | only when a newer release has an installer for this system |
 | `GET <installer or APK asset>` | only after you press Download |
 | `GET https://api.github.com/repos/fspecii/geekbridge/releases/tags/dev`, then the small `dev-manifest.json` asset | **instead of** `releases/latest`, only if you chose the **dev channel** (default on Android *debug* builds, otherwise off); same host, same headers, same schedule |
@@ -454,7 +454,8 @@ resolver. The desktop uses rustls with bundled roots and ignores system proxy se
 platform stack ([doc] `docs/updates.md`).
 
 Turn it off: desktop `geekbridge-ctl update disable`, the **Check automatically** box, or `GEEKBRIDGE_NO_UPDATE_CHECK=1`
-([code] `crates/bridge-service/src/lib.rs`); Android: the switch in the App updates card. Manual checks still work.
+([code] `crates/bridge-service/src/lib.rs`); Android: the switch in the App updates card (it also stops the Home chip and the notice). Manual checks still work.
+The Android "Update available" chip and the optional notification (**Tell me about updates**, off by default) only report what that check found; they send nothing, store a version string in the existing `updates` preferences, and never install.
 
 **Started by you, not by GeekBridge.** The release-notes, licence and **Report a problem** buttons hand a URL to your
 browser through `xdg-open` or an Android `ACTION_VIEW` intent ([code] `update_ui.rs`, `report.rs`, `HomeActivity.kt`,

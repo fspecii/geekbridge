@@ -181,8 +181,15 @@ class UpdateSection(
         }
     }
 
+    /** Reached from the Home chip or the notification: check now (a 304 is cheap) and bring the card into view. */
+    fun showFromNotice() {
+        if (!busy && offer == null) startCheck(manual = false)
+        card.post { card.requestRectangleOnScreen(android.graphics.Rect(0, 0, card.width, card.height), true) }
+    }
+
     private fun onCheckDone(result: UpdateCheckResult) {
         busy = false
+        UpdateNotice.record(activity, result)
         when (result) {
             is UpdateCheckResult.Available -> {
                 offer = result.offer

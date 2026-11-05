@@ -211,8 +211,18 @@ exactly these names.
 
 ## Android
 
-* `UpdateChecker` (platform `HttpURLConnection`, no libraries) checks when the Diagnostics & about screen opens (the card lives there, not on Home) at most once per 12 h
+* `UpdateChecker` (platform `HttpURLConnection`, no libraries) checks when the Diagnostics & about screen opens (the card lives there) at most once per 12 h
   (switch in the "App updates" card) and on **Check for updates**. It shows the version and notes.
+* **Update notice.** The same check also runs, at most once per 24 h, when Home opens and when the background link
+  service sees a Wi-Fi network (events that happen anyway: no timer, no JobScheduler/WorkManager, no extra wake-up).
+  `UpdateNoticePolicy` decides: switch off or no network means no check; after a failed attempt the next waits 15 min;
+  a metered network waits until the last good answer is a week old (the request is conditional, so usually a few hundred
+  bytes). A newer version shows a small **Update available** chip on Home that opens the update card in Diagnostics.
+  Settings on Home has **Tell me about updates** (off by default): one low-importance notification per version, posted
+  only from the background and only if Android allows notifications. Nothing is downloaded or installed from the chip or
+  the notification. The same rules apply as in the card: Stable never offers a pre-release, Dev only when selected, and an
+  offer must have a higher version code than the installed build; the chip also disappears after an install or a channel
+  switch. State: `notice_*` keys in the existing `updates` preferences.
 * **Download and verify** fetches `geekbridge-android.apk` into the app-private cache (`cache/updates/`),
   verifies size and SHA-256 from `SHA256SUMS`, and deletes it on any mismatch. The download is abandoned if the
   app leaves the foreground.

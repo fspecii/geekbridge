@@ -172,6 +172,7 @@ class LinkService : Service() {
                 if (id != lastNetwork) lastV4 = null // addresses of the new network arrive in onLinkPropertiesChanged
                 lastNetwork = id
                 GbLog.i("link", "wifi network available (action=$action)")
+                UpdateNotice.maybeCheck(this@LinkService, background = true) // gated to once a day; no timer of its own
                 when (action) {
                     NetworkAction.Restart -> scheduleRestart()
                     NetworkAction.Nudge -> controller.heartbeatNow()
