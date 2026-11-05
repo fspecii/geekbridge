@@ -32,7 +32,7 @@ Effort is rough, for this code base.
 | 2 | Recents were empty | High | Low-medium | Every other platform has a list with call-back. Phone's real call log needs READ_CALL_LOG over the link (new packets, consent, Kotlin); the in-memory list needs none. **Done here for calls seen by this service.** |
 | 3 | No Message from a missed call or a recent call | Medium-high | Low | Messages already opens with a prefilled recipient. **Done here.** |
 | 4 | Decline with a message (from the card) | High | Medium | Needs a place for canned texts, a settings switch, the Messages send path with its consent, and room on a 360x96 card. Next best after the three above. |
-| 5 | Keypad during a call (DTMF) | Medium-high | Medium | The Bluetooth backends already accept tones (`SendTones`) on Linux and Windows. Missing: the link has no tone packet, and the in-call card has no keypad. Useful for phone menus. Start with the Bluetooth path only and say so. |
+| 5 | Keypad during a call (DTMF) | Medium-high | Medium | The Bluetooth backends already accept tones (`SendTones`) on Linux and Windows. Missing: the link has no tone packet, and the in-call card has no keypad. Useful for phone menus. Start with the Bluetooth path only and say so. **Done here, see below.** |
 | 6 | Do Not Disturb awareness | Medium | Medium | Respect the desktop's DND (freedesktop inhibit or the compositor's mute) for the card and banner, still show the tray state. Needs a setting; silently hiding a call is a risk, so it must be opt-in. |
 | 7 | Hold and swap, call waiting | Medium | Medium-high | The Windows backend has hold; the link reports one call only. Needs a model change for a second call. |
 | 8 | Contacts autocomplete in the dialer | Medium | Medium | The Contacts feed exists; the dialer would read it (consent is already per phone). Arrow keys plus accessible announcements add most of the cost. |
@@ -57,6 +57,17 @@ All three share one source of truth, a small call history kept in the service's 
 * **Recents tab.** Rows with name or number, how it went, talk time and how long ago; missed calls in the error colour;
   Call back (opens the confirmation sheet, or the keypad with the reason when dialling is not offered) and Message per row;
   a note that the phone's own history is not read. `geekbridge-ctl calls` lists the same entries with masked numbers.
+
+## Gap 5: keypad tones (done)
+
+The 12 keys sit in the Calls window's live-call panel (a Keypad toggle; keyboard digits work while it is open) and the in-call
+card gets a Keypad button that opens that panel. `geekbridge-ctl call tone KEYS` is the script form. The merged view offers it
+(`CallsView.tones`) for a live, answered call: Bluetooth hands-free first (`SendTones`), else the phone link
+(`geekbridge.calls.request` with `action: "tone"`, gated by the phone's `canTones`). Every layer validates the character
+(`0-9 * #` only), requires a live call, rate-limits (20 per 5 s on the computer, 24 on the phone) and logs only a count.
+
+The honest limit is the phone: Android lets only the bound in-call service (the default phone app) play a DTMF tone, so a stock
+phone reports `canTones = false` and the link path stays off; Bluetooth is what works. Details and tests: [../call-control.md](../call-control.md).
 
 ## Known limits of the change
 

@@ -7,6 +7,7 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Calls: a keypad for the live call (`0-9 * #`) in the Calls window, a Keypad button on the in-call card and `geekbridge-ctl call tone KEYS`, for phone menus. Over Bluetooth hands-free it works where the backend accepts tones; over the phone link it is built (an extra `tone` request, a `canTones` capability, limits on both ends, nothing logged but a count) but Android only lets the default phone app play tones, so a stock phone does not offer it. Not run on a real phone.
 - Calls: a missed-call notification with Call back and Message, and a Recents list in the Calls window (calls since the service started, kept in memory only) with Call back and Message per row. Call back still asks for confirmation before dialling.
 
 ## [0.1.0] - 2026-11-03

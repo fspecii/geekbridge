@@ -13,6 +13,11 @@ What works, how it is wired, what it needs, and what has **not** been tried on a
   backend can really mute) and the **audio route**: "Audio on this computer (mSBC)", "Moving the audio to this
   computer…", or "Audio on the phone" with the reason. **Use computer audio** appears only when the Bluetooth
   backend declares audio-link control.
+- **Keypad (phone menus).** While a call is live and answered, the panel has a **Keypad** button (the in-call card has one
+  too; it opens the Calls window on the keypad, because the card is a small window that never takes the keyboard). The 12
+  keys (`0-9 * #`) each play one tone into the call, and digits typed on the keyboard do the same while the keypad is
+  open. It exists only when the service offers it (see "Keypad tones" below), and `geekbridge-ctl call tone KEYS` does the
+  same from a script.
 - **Honest controls.** A button exists only if the service offered a target for it (`CallRow.answer/reject/hangup`).
   If a ringing call cannot be answered from here the popup says why ("Answer on the phone. To answer from here, allow
   GeekBridge to answer calls in the phone app's setup.") instead of showing a dead button.
@@ -67,6 +72,7 @@ when HFP is present but its audio link is closed, offers **Use computer audio**.
 | --- | --- | --- |
 | `geekbridge.calls.state` | phone → computer | `state` (`idle`/`ringing`/`offhook`), optional `number`, `name` (≤ 128 bytes, no control characters), `canAnswer`, `canEnd`, `canDial` (absent = false) |
 | `geekbridge.calls.request` | computer → phone | `requestId` (`[A-Za-z0-9_-]{1,64}`), `action` (`answer`/`reject`/`hangup`/`dial`/`report`); `dial` also carries `number` (`+`? then 1-20 digits); `report` asks the phone to send its state again (sent when Telephony is switched on here; answered with a `state` packet and no `result`, never reaches the app) |
+| `geekbridge.calls.request` with `action: "tone"` | computer → phone | adds `tone`: exactly one of `0-9 * #` (one character per request; the phone counts and limits them) |
 | `geekbridge.calls.result` | phone → computer | `requestId`, `ok`, optional `reason` (`permission_missing`/`no_such_call`/`failed`) |
 
 Rules (service, `gate.rs` + `call_control.rs`):
@@ -86,6 +92,41 @@ Rules (service, `gate.rs` + `call_control.rs`):
   `calls: {enabled}`; the app always passes it (enabled = the user's switch, default off) so turning the switch on needs no
   reconnect. While it is off nothing is reported and requests are refused. A computer that connects while a call is ringing receives the current report at once. When the
   app's switch is off, requests are refused by the core itself and never reach Kotlin.
+
+### Keypad tones (DTMF)
+
+Two paths, merged like the other controls (`calls_view::CallsView.tones`: Bluetooth first, the link as the fallback):
+
+- **Bluetooth hands-free (Linux, Windows).** `CallCommand::SendTones` (`AudioGateway1.SendTones` on Linux; the Windows
+  backend's tone call) was already there; the view now offers it for a live call and the UI and `call tone` use it. Not run
+  against a real phone. macOS plans it (`sendDTMF:`) but has no keypad path in the helper protocol yet.
+- **Phone link.** No new packet type: `tone` is one more `action` of `geekbridge.calls.request` (a `geekbridge.*` name, never
+  in the plaintext identity, so a stock KDE Connect peer neither sees nor sends it). The phone says it can play tones with
+  `canTones` in its state report (absent = false, so an older app is simply not offered a keypad), and the computer sends
+  nothing otherwise.
+
+Checks, in every layer (each also exists on the phone, so a compromised computer is not trusted):
+
+- The character is exactly one of `0-9 * #`. `A-D`, look-alike Unicode digits, several characters, none and wrong types are
+  refused (the wire parser, the service, the phone core and Kotlin each check).
+- Only while a call is live and answered: the view offers tones only for an active call, the service re-checks that the
+  target is still offered, the phone core only forwards, and Kotlin requires the phone to be off hook. Ringing, held, idle
+  or unknown state answers `no_such_call`.
+- Rate limit: 20 tones per 5 s on the computer (`MAX_TONES`, "too many keypad tones" when over) and 24 per 5 s per computer on
+  the phone (`rate_limited`, answered by the Rust core without waking Kotlin). A person typing a PIN stays far under it.
+  Tones have their own pending-request allowance so quick taps neither fill nor are refused by the few slots Answer, Hang up
+  and Dial use.
+- **Nothing is logged but the count.** The tone may be a PIN or a menu choice. `Request::CallTone`, `LinkRequest`,
+  `CallRequest` and `LinkCallReport` never print it; the call trace gets `keypad tones sent=N` and the outcome, nothing more
+  (`geekbridge-ctl calls --trace`).
+
+**What the phone can really do.** Android has no `TelecomManager` call for DTMF. `Call.playDtmfTone` / `stopDtmfTone` exist
+only on the `Call` objects Android hands to a bound `InCallService`, and Android binds one only for the app the user chose
+as the phone (dialer) app. GeekBridge is not that and does not ask to be. `GeekBridgeInCallService` (no screen, reads nothing,
+declared with `BIND_INCALL_SERVICE` and `IN_CALL_SERVICE_UI=false`) is therefore only the plug: on a stock phone it is never
+bound, `canTones` stays false and the computer shows no keypad on the link path. The keypad works there when Bluetooth
+hands-free carries the call. Everything on the link path is built and tested against the stand-in phone and Kotlin fakes;
+it has not played a tone on any real phone.
 
 ### Phone-side dial protection
 
@@ -145,6 +186,7 @@ Hosts are started only when the service's calling probe is enabled. Their capabi
 | Service | `bridge-service` `call_control` unit tests; `tests/calls_api.rs` | hub flow with a scripted host; a real daemon with a real TLS stand-in phone: consent gating, ring → decline → ring → answer → hang up, forged/stale targets, permission refusal shown, malformed packets ignored |
 | Hosts | `windows_host` (in-memory Windows port), `macos_host` (stand-in helper script) | answerable/rejectable ringing call, no connect without a chosen phone, dead helper reported |
 | Phone transport | `bridge-android/tests/calls_transport.rs` | declared only when asked, reports validated, mid-ring greeting, requests become events, results leave, disabled app refuses by itself, blocked wait ends on stop |
+| Keypad tones | `calls_link` (wire), `calls_view` (offer), `tests/call_chain.rs` (link and Bluetooth, in order, ended call, older phone, hostile digits, no call, flood), `calls_transport.rs` (phone core: one character, hostile bodies, limit, app off), `CallTonesTest.kt`, `call_ui`/`calls_tests`/`call_overlay` (UI) | one tone per request, only live and answered, validated and limited at every hop, never logged |
 | Kotlin (JVM) | `CallControlTest.kt` | capabilities by API level and permission, number/name rules, answer/reject/hang-up preconditions, failure vocabulary, protocol builders and strict wait parsing, engine dedupe/retry/stale requests, wizard steps |
 | Desktop UI | `call_ui`, `call_feed` unit tests | a button exists only if offered, mute toggling, route text, worker wakes only on change and shows refusals |
 | End to end (emulated) | scenario **S8** in `bridge-phone-sim` (`scripts/emulate-call.sh fake\|emulator`) | the service hub over the real `bridge-calls` stack against the simulated phone: ring → offers → Decline → Idle; ring → Answer → Active with the audio route → Hang up → Idle; a stale target sends nothing. Also S1/S2 exercise `Session` answer/reject/hang-up directly |
@@ -167,6 +209,7 @@ Hosts are started only when the service's calling probe is enabled. Their capabi
 - Dialing over the link (`dial`, `CALL_PHONE`) is covered by the stand-in phone tests, Rust/Kotlin unit tests and the
   emulator script `scripts/e2e/features.sh` ([reports/emulator-features-e2e.md](reports/emulator-features-e2e.md); a
   simulated modem was dialed, no network). It has not run on a real phone, and no real call was placed anywhere.
-- Not implemented: waiting/second calls over the link (Android reports one current call), hold/swap from the UI, DTMF
-  tones, dialing `*`/`#` codes, a Windows/macOS phone picker, microphone mute on Linux/macOS, an OS notification that
+- Keypad tones: Bluetooth path not run against a real phone; link path inert on stock Android (see "Keypad tones" above)
+  and untested on a device; the in-call card's Keypad button only opens the Calls window.
+- Not implemented: waiting/second calls over the link (Android reports one current call), hold/swap from the UI, dialing `*`/`#` codes, a Windows/macOS phone picker, microphone mute on Linux/macOS, an OS notification that
   launches the Calls window when none is open (the service notification covers Linux only).
