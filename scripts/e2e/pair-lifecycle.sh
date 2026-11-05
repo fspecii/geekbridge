@@ -79,7 +79,7 @@ finish_setup() { # mark the setup wizard finished so Home/Diagnostics open direc
 phone_unpair() { # Diagnostics > Unlink <computer> > confirm; works with the PC unreachable
   goto_diag || return 1
   ui scrolltap "Unlink " >/dev/null || return 1; sleep 1
-  ui tap Unlink >/dev/null; sleep 3; ui has "Unpaired on this phone"
+  ui tap Unlink >/dev/null; sleep 3; ui has "Unlinked on this phone"
 }
 phone_knows_computer() { goto_diag && { ui scrollto "Unlink" >/dev/null 2>&1; ui dump | cut -f1 | grep -q '^Unlink '; }; }
 phone_paired_with_computer() { # Diagnostics lists the computer as paired
@@ -90,7 +90,7 @@ phone_paired_with_computer() { # Diagnostics lists the computer as paired
 pc_paired() { [[ -n "$(paired_ids)" ]]; }
 
 # First pairing through a QR link (the setup every scenario starts from).
-qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the phone; prints seconds on stdout
+qr_pair() { # -> 0 when the phone reached "Linked ✓ with" and the PC lists the phone; prints seconds on stdout
   local t0 p; t0=$(date +%s); p="$(ctl pair-qr 2>/dev/null | head -1)"
   [[ "$p" == geekbridge://pair?* ]] || return 1
   scan "$p"
@@ -101,7 +101,7 @@ qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the
   local i seen=0 dump
   for ((i = 0; i < 40; i++)); do
     dump="$(ui dump | cut -f1)"
-    grep -q "^Paired ✓ with" <<<"$dump" && break
+    grep -q "^Linked ✓ with" <<<"$dump" && break
     # The banner can be scrolled off or already dismissed: the computer listing the phone and the phone on Home count too.
     if pc_paired && grep -q "^Stay connected" <<<"$dump"; then break; fi
     if grep -q "^Computer identity" <<<"$dump"; then
@@ -109,7 +109,7 @@ qr_pair() { # -> 0 when the phone reached "Paired ✓ with" and the PC lists the
     fi
     sleep 1
   done
-  { grep -q "^Paired ✓ with" <<<"$dump" || { pc_paired && grep -q "^Stay connected" <<<"$dump"; }; } || { pshot "$TAG-qr-no-done"; return 3; }
+  { grep -q "^Linked ✓ with" <<<"$dump" || { pc_paired && grep -q "^Stay connected" <<<"$dump"; }; } || { pshot "$TAG-qr-no-done"; return 3; }
   pshot "$TAG-qr-done"
   wait_for 10 pc_paired || return 5
   echo $(( $(date +%s) - t0 ))

@@ -210,7 +210,12 @@ stage_battery() {
   tap "Allow unrestricted battery"; sleep 2; tap Allow; sleep 2; shot 05c-battery-after-allow
   local allowed_ok=0; ui has "Unrestricted" && allowed_ok=1
   local wl=0; $ADB shell dumpsys deviceidle whitelist | grep -q "$PKG" && wl=1
-  tap Overview; sleep 2; shot 06-setup-overview; tap Finish; sleep 2; shot 06-home
+  # The Battery step is third now, so six optional steps follow: walk them (Skip/Next), then the overview's Finish.
+  local k; for k in $(seq 1 14); do
+    ui dump | cut -f1 | grep -q "^Step " || break
+    tap Skip >/dev/null 2>&1 || tap Next >/dev/null 2>&1 || tap Overview >/dev/null 2>&1 || tap Finish >/dev/null 2>&1; sleep 1
+  done
+  shot 06-setup-overview; tap Finish >/dev/null 2>&1; sleep 2; shot 06-home
   if ((denied_ok && allowed_ok && wl)); then rec battery PASS "deny keeps the prompt, allow -> Unrestricted + Doze whitelist; notifications permission: $notif"
   else rec battery FAIL "deny_ok=$denied_ok allow_ok=$allowed_ok whitelist=$wl"; fi
 }

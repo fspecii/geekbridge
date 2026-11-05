@@ -492,7 +492,8 @@ pub async fn run(cfg: LabConfig) -> Result<LabReport, String> {
                 Action::IndicatorOn
                 | Action::IndicatorOff
                 | Action::PeerReady(_)
-                | Action::SpeakState(_) => {}
+                | Action::SpeakState(_)
+                | Action::PeerStats(_) => {}
             }
         }
     };
