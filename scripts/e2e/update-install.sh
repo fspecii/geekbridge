@@ -151,7 +151,11 @@ android() {
   log() { printf '[upd %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
   rec() { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" | tee -a "$RESULTS" >&2; }
   start_emulator >/dev/null 2>&1   # no-op when it is already up
-  $ADB get-state 2>/dev/null | grep -q device || { rec android FAIL "no emulator on $SERIAL (adb server $ANDROID_ADB_SERVER_PORT)"; return 1; }
+  # Right after boot_completed the emulator's adb transport can still flap ("adb: device offline", seen on a loaded
+  # runner): wait until the transport is "device" and the package manager answers before the first install.
+  adb_ready() { [[ "$($ADB get-state 2>/dev/null)" == device ]] && $ADB shell pm path android 2>/dev/null | grep -q '^package:'; }
+  wait_for 120 adb_ready || { $ADB reconnect offline >/dev/null 2>&1; wait_for 60 adb_ready; } \
+    || { rec android FAIL "no emulator on $SERIAL (adb server $ANDROID_ADB_SERVER_PORT, state: $($ADB get-state 2>&1 | head -1))"; return 1; }
   $ADB shell svc power stayon true; wake
   local shotn=0
   upshot() { $ADB exec-out screencap -p >"$SHOTS/e2e-upd-$1.png" 2>/dev/null; }
@@ -160,7 +164,17 @@ android() {
 
   # fresh v0.1.0 with some private data
   $ADB uninstall $PKG >/dev/null 2>&1
-  $ADB install "$A1" 2>&1 | grep -q Success || { rec android-install-v1 FAIL "adb install"; return 1; }
+  # Bounded retry with the adb error text kept: a transient transport error (device offline, closed, timeout) is
+  # retried after nudging the link; a real refusal (INSTALL_FAILED_*) is reported at once and never retried.
+  local ins="" try
+  for try in 1 2 3; do
+    ins="$($ADB install "$A1" 2>&1)"
+    grep -q Success <<<"$ins" && break
+    log "adb install attempt $try failed: $(tr '\n' ' ' <<<"$ins" | cut -c1-300)"
+    grep -q 'INSTALL_FAILED\|INSTALL_PARSE' <<<"$ins" && break
+    $ADB reconnect offline >/dev/null 2>&1; wait_for 60 adb_ready; $ADB uninstall $PKG >/dev/null 2>&1
+  done
+  grep -q Success <<<"$ins" || { rec android-install-v1 FAIL "adb install: $(tr '\n\t' '  ' <<<"$ins" | cut -c1-300)"; return 1; }
   $ADB shell appops set $PKG REQUEST_INSTALL_PACKAGES allow
   $ADB shell am start -n "$PKG/.HomeActivity" >/dev/null; sleep 4
   # A fresh install opens the setup wizard. Mark it finished through the app's own preference file (as the
