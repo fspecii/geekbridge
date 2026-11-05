@@ -1551,6 +1551,25 @@ async fn the_banner_declines_with_a_text_and_an_old_banner_cannot_text_a_later_r
 }
 
 #[tokio::test]
+async fn a_banner_button_never_sends_other_words_than_it_was_labelled_with() {
+    let w = world(None).await;
+    let phone = texting_phone(&w).await;
+    phone.ring_all(PhoneState::Ringing);
+    until(&w.rig, "ringing", ringing).await;
+    eventually("the banner", || w.banners.count() == 1).await;
+    // The list is edited while the banner is up: its second button said "I'm in a meeting".
+    w.rig
+        .ok(Request::CallRepliesSet {
+            texts: vec!["One".into(), "Something else entirely".into()],
+        })
+        .await;
+    w.banners.press(0, RingChoice::DeclineWith(1)).await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!((phone.controls(), phone.texts()), (vec![], vec![]));
+    assert!(ringing(&w.calls().await), "the call still rings");
+}
+
+#[tokio::test]
 async fn saved_replies_replace_the_defaults_and_a_bad_list_is_refused() {
     let w = world(None).await;
     let phone = texting_phone(&w).await;

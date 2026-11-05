@@ -358,7 +358,24 @@ impl Daemon {
         }
         if let Some(dir) = options.privacy_dir.clone() {
             // Only read when a call rings: the stored choice, then (if on) the desktop's state.
-            let dnd = crate::dnd::Detector::default();
+            // Asking is instant (the last answer); a background thread keeps it fresh only while the
+            // setting is on, and ends when the hub drops the closure.
+            let dnd = Arc::new(crate::dnd::Detector::default());
+            let keep_warm = Arc::downgrade(&dnd);
+            let warm_dir = dir.clone();
+            let _ = std::thread::Builder::new()
+                .name("gb-dnd-warm".into())
+                .spawn(move || {
+                    while let Some(d) = keep_warm.upgrade() {
+                        if crate::privacy::stored_choice(&warm_dir, PrivacyKey::RespectDnd)
+                            == Some(true)
+                        {
+                            d.refresh_in_background();
+                        }
+                        drop(d);
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                });
             calls.set_quiet(Arc::new(move || {
                 crate::privacy::stored_choice(&dir, PrivacyKey::RespectDnd) == Some(true)
                     && dnd.active()

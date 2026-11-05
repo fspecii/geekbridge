@@ -19,6 +19,9 @@ pub const FILE: &str = "call-replies";
 pub struct Replies {
     dir: Option<PathBuf>,
     saved: Mutex<Vec<String>>,
+    /// One save at a time; the disk write happens under this, never under `saved`, so reading the
+    /// texts (a ring, a status poll) never waits for an fsync.
+    writing: Mutex<()>,
 }
 
 impl Replies {
@@ -28,6 +31,7 @@ impl Replies {
         Self {
             dir,
             saved: Mutex::new(saved),
+            writing: Mutex::new(()),
         }
     }
 
@@ -38,7 +42,7 @@ impl Replies {
     /// Save `texts` (cleaned; an empty list restores the defaults and removes the file).
     pub fn set(&self, texts: &[String]) -> Result<(), ReplyError> {
         let clean = call_replies::clean(texts)?;
-        let mut g = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        let _one_save = self.writing.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(dir) = &self.dir {
             let path = dir.join(FILE);
             if clean.is_empty() {
@@ -49,7 +53,7 @@ impl Replies {
                     .map_err(|_| ReplyError::Save)?;
             }
         }
-        *g = clean;
+        *self.saved.lock().unwrap_or_else(|e| e.into_inner()) = clean;
         Ok(())
     }
 }

@@ -9,7 +9,8 @@
 //!
 //! Windows (Focus Assist) and macOS (Focus) have no documented, cheap, permission-free way to read the
 //! state, so there this answers "no" and the setting says it is not supported on this system.
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Whether this build can tell at all.
@@ -68,8 +69,13 @@ const PROBES: [Probe; 5] = [
     ),
 ];
 
-/// Run `tool`, wait at most half a second, return stdout of a successful run.
-fn run(tool: &str, args: &[&str]) -> Option<String> {
+/// The whole chain gives up after this, whatever each tool does.
+const CHAIN_DEADLINE: Duration = Duration::from_millis(600);
+/// One tool gets at most this long.
+const TOOL_LIMIT: Duration = Duration::from_millis(500);
+
+/// Run `tool`, wait at most `limit`, return stdout of a successful run.
+fn run(tool: &str, args: &[&str], limit: Duration) -> Option<String> {
     use std::io::Read;
     use std::process::{Command, Stdio};
     let mut child = Command::new(tool)
@@ -79,7 +85,7 @@ fn run(tool: &str, args: &[&str]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let end = Instant::now() + Duration::from_millis(500);
+    let end = Instant::now() + limit;
     loop {
         match child.try_wait().ok()? {
             Some(status) if status.success() => break,
@@ -102,19 +108,34 @@ fn run(tool: &str, args: &[&str]) -> Option<String> {
     Some(out)
 }
 
-fn probe_now() -> bool {
-    if !SUPPORTED {
-        return false;
+/// The first tool that answers decides; the whole chain stops at `deadline`.
+fn probe_chain(probes: &[Probe], deadline: Instant) -> bool {
+    for (tool, args, parse) in probes {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        if let Some(on) = run(tool, args, left.min(TOOL_LIMIT)).and_then(|o| parse(&o)) {
+            return on;
+        }
     }
-    PROBES
-        .iter()
-        .find_map(|(tool, args, parse)| run(tool, args).and_then(|o| parse(&o)))
-        .unwrap_or(false)
+    false
 }
 
-/// Cached answer for the call hub.
-pub struct Detector {
+fn probe_now() -> bool {
+    SUPPORTED && probe_chain(&PROBES, Instant::now() + CHAIN_DEADLINE)
+}
+
+#[derive(Default)]
+struct Shared {
     last: Mutex<Option<(Instant, bool)>>,
+    refreshing: AtomicBool,
+}
+
+/// Cached answer for the call hub. Asking never runs a tool on the caller's thread and never waits
+/// for one: a stale answer is returned at once and a short-lived thread refreshes it.
+pub struct Detector {
+    shared: Arc<Shared>,
     probe: fn() -> bool,
 }
 
@@ -127,21 +148,41 @@ impl Default for Detector {
 impl Detector {
     pub fn with_probe(probe: fn() -> bool) -> Self {
         Self {
-            last: Mutex::new(None),
+            shared: Arc::default(),
             probe,
         }
     }
 
+    /// The last known answer (not in Do Not Disturb until one has been learned). Starts a refresh in
+    /// the background when it is older than a few seconds.
     pub fn active(&self) -> bool {
-        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, on)) = *last
-            && at.elapsed() < CACHE
-        {
-            return on;
+        let known = *self.shared.last.lock().unwrap_or_else(|e| e.into_inner());
+        match known {
+            Some((at, on)) if at.elapsed() < CACHE => on,
+            _ => {
+                self.refresh_in_background();
+                known.is_some_and(|(_, on)| on)
+            }
         }
-        let on = (self.probe)();
-        *last = Some((Instant::now(), on));
-        on
+    }
+
+    /// Learn the current state off the caller's thread. One refresh at a time; no lock is held
+    /// while a tool runs.
+    pub fn refresh_in_background(&self) {
+        if self.shared.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let (shared, probe) = (self.shared.clone(), self.probe);
+        let spawned = std::thread::Builder::new()
+            .name("gb-dnd-probe".into())
+            .spawn(move || {
+                let on = probe();
+                *shared.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), on));
+                shared.refreshing.store(false, Ordering::Release);
+            });
+        if spawned.is_err() {
+            self.shared.refreshing.store(false, Ordering::Release);
+        }
     }
 }
 
@@ -180,12 +221,90 @@ mod tests {
             CALLS.fetch_add(1, Ordering::SeqCst);
             true
         });
+        let _ = d.active(); // learns in the background
+        wait_until(|| d.shared.last.lock().unwrap().is_some());
         assert!(d.active() && d.active() && d.active());
         assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn a_missing_tool_is_not_dnd() {
-        assert!(run("geekbridge-no-such-tool-xyz", &[]).is_none());
+        assert!(run("geekbridge-no-such-tool-xyz", &[], TOOL_LIMIT).is_none());
+    }
+
+    fn wait_until(mut cond: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !cond() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(cond(), "timed out");
+    }
+
+    #[test]
+    fn a_slow_probe_never_blocks_the_caller() {
+        let d = Detector::with_probe(|| {
+            std::thread::sleep(Duration::from_millis(400));
+            true
+        });
+        let t = Instant::now();
+        assert!(!d.active(), "nothing learned yet: not Do Not Disturb");
+        assert!(!d.active(), "still probing");
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            t.elapsed()
+        );
+        wait_until(|| d.shared.last.lock().unwrap().is_some());
+        assert!(d.active());
+    }
+
+    #[test]
+    fn a_stale_answer_is_returned_at_once_while_it_refreshes() {
+        let d = Detector::with_probe(|| {
+            std::thread::sleep(Duration::from_millis(300));
+            false
+        });
+        *d.shared.last.lock().unwrap() = Some((Instant::now() - CACHE * 2, true));
+        let t = Instant::now();
+        assert!(d.active(), "the stale yes");
+        assert!(t.elapsed() < Duration::from_millis(150));
+        // The lock is free while the probe runs.
+        assert!(d.shared.last.try_lock().is_ok());
+        wait_until(|| !d.active());
+    }
+
+    #[test]
+    fn only_one_refresh_runs_at_a_time() {
+        use std::sync::atomic::AtomicU32;
+        static STARTS: AtomicU32 = AtomicU32::new(0);
+        let d = Detector::with_probe(|| {
+            STARTS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(200));
+            false
+        });
+        for _ in 0..20 {
+            d.active();
+        }
+        wait_until(|| d.shared.last.lock().unwrap().is_some());
+        assert_eq!(STARTS.load(Ordering::SeqCst), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_chain_stops_at_its_deadline() {
+        fn never(_: &str) -> Option<bool> {
+            None
+        }
+        let probes: [Probe; 5] = [("sleep", &["5"], never); 5];
+        let t = Instant::now();
+        assert!(!probe_chain(
+            &probes,
+            Instant::now() + Duration::from_millis(250)
+        ));
+        assert!(
+            t.elapsed() < Duration::from_millis(600),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }

@@ -1305,7 +1305,18 @@ impl CallHub {
         target: &ActionTarget,
         index: usize,
     ) -> Result<(), ErrorBody> {
-        let result = self.decline_with_reply_inner(target, index);
+        self.decline_with_reply_expecting(target, index, None)
+    }
+
+    /// As [`Self::decline_with_reply`], but refuse when text `index` is no longer `expect` (a button
+    /// was labelled with the list as it was when the call rang; the list may have been edited since).
+    pub fn decline_with_reply_expecting(
+        self: &Arc<Self>,
+        target: &ActionTarget,
+        index: usize,
+        expect: Option<&str>,
+    ) -> Result<(), ErrorBody> {
+        let result = self.decline_with_reply_inner(target, index, expect);
         crate::call_trace::record(
             "request",
             &format!("decline-with-text reply={index}: {}", outcome(&result)),
@@ -1317,6 +1328,7 @@ impl CallHub {
         self: &Arc<Self>,
         target: &ActionTarget,
         index: usize,
+        expect: Option<&str>,
     ) -> Result<(), ErrorBody> {
         let src = self.reply_source().ok_or_else(|| {
             err(
@@ -1341,6 +1353,12 @@ impl CallHub {
             .get(index)
             .cloned()
             .ok_or_else(|| err(ErrorCode::BadRequest, "no such reply"))?;
+        if expect.is_some_and(|e| e != text) {
+            return Err(err(
+                ErrorCode::BadRequest,
+                "the saved texts changed; nothing was sent",
+            ));
+        }
         let (Some(device), Some(number)) = (
             link_device(row).map(str::to_owned),
             row.number
@@ -1359,20 +1377,19 @@ impl CallHub {
                 .chain(std::iter::once(&row.key))
                 .find_map(|p| inner.rings.get(p).copied())
         };
-        if let Some(ring) = ring
-            && !self.inner().replied.insert(ring)
-        {
+        // Without a ring number a repeat could not be recognised and would send a second text.
+        let ring =
+            ring.ok_or_else(|| err(ErrorCode::NotFound, "that call changed; nothing was sent"))?;
+        if !self.inner().replied.insert(ring) {
             return Ok(());
         }
         if let Err(e) = self.act(target, CallAction::Reject) {
-            if let Some(ring) = ring {
-                self.inner().replied.remove(&ring);
-            }
+            self.inner().replied.remove(&ring);
             return Err(e);
         }
         let submission = format!(
             "dr{}-{}",
-            ring.unwrap_or(0),
+            ring,
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis())
@@ -1880,6 +1897,7 @@ impl CallHub {
             let reject = row.reject.clone();
             let (can_answer, can_decline) = (answer.is_some(), reject.is_some());
             let replies = self.replies_for(&row);
+            let labelled = replies.clone();
             notifier.ringing_with_replies(
                 &row.caller_label(),
                 can_answer,
@@ -1891,7 +1909,12 @@ impl CallHub {
                         (RingChoice::Decline, _, Some(t)) => (t, CallAction::Reject),
                         (RingChoice::DeclineWith(i), _, Some(t)) => {
                             if hub.still_ringing(ring) {
-                                let _ = hub.decline_with_reply(&t, usize::from(i));
+                                let i = usize::from(i);
+                                let _ = hub.decline_with_reply_expecting(
+                                    &t,
+                                    i,
+                                    labelled.get(i).map(String::as_str),
+                                );
                             }
                             return;
                         }
