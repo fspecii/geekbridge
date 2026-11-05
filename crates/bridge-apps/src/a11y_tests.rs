@@ -635,3 +635,174 @@ fn dot_matrix_and_status_dots_add_no_operable_nodes() {
         .count();
     assert_eq!(focusable, 0, "{}", tree.outline());
 }
+
+/// WCAG 2.2 SC 2.5.8: a pointer target under 24 x 24 points is still allowed when a 24-point circle
+/// centred on it touches no other target. Targets that contain the small one (a row around its
+/// button) do not count as neighbours.
+fn crowded_small_targets(tree: &Tree) -> Vec<String> {
+    let boxes: Vec<(String, accesskit_rect::R)> = tree
+        .nodes
+        .values()
+        .filter(|n| is_control(n) && !name(n).ends_with("scroll bar"))
+        .filter_map(|n| {
+            let b = n.bounds()?;
+            Some((
+                name(n).to_owned(),
+                accesskit_rect::R {
+                    x0: b.x0,
+                    y0: b.y0,
+                    x1: b.x1,
+                    y1: b.y1,
+                },
+            ))
+        })
+        .collect();
+    let mut bad = Vec::new();
+    for (n, r) in &boxes {
+        if r.x1 - r.x0 >= 24.0 && r.y1 - r.y0 >= 24.0 {
+            continue;
+        }
+        let (cx, cy) = ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+        for (m, o) in &boxes {
+            if std::ptr::eq(r, o) || o.contains(r) {
+                continue;
+            }
+            // Distance from the centre to the other rectangle.
+            let dx = (o.x0 - cx).max(0.0).max(cx - o.x1);
+            let dy = (o.y0 - cy).max(0.0).max(cy - o.y1);
+            if (dx * dx + dy * dy).sqrt() < 12.0 {
+                bad.push(format!(
+                    "{n:?} {:.0}x{:.0} pt has {m:?} inside its 24 pt circle",
+                    r.x1 - r.x0,
+                    r.y1 - r.y0
+                ));
+            }
+        }
+    }
+    bad.sort();
+    bad.dedup();
+    bad
+}
+
+mod accesskit_rect {
+    pub struct R {
+        pub x0: f64,
+        pub y0: f64,
+        pub x1: f64,
+        pub y1: f64,
+    }
+    impl R {
+        pub fn contains(&self, o: &R) -> bool {
+            self.x0 <= o.x0 && self.y0 <= o.y0 && self.x1 >= o.x1 && self.y1 >= o.y1
+        }
+    }
+}
+
+/// What walking a screen with the keyboard found.
+pub(crate) struct Audit {
+    /// Names of the controls Tab landed on, in order, from the light-theme walk.
+    pub stops: Vec<String>,
+    pub problems: Vec<String>,
+    /// The final accessibility tree (light theme).
+    pub tree: Tree,
+}
+
+/// Tabs through the screen `frame` draws, in both themes, and reports: a stop without a visible
+/// focus indicator or a name, any unnamed control, and any pointer target under 24 pt that is
+/// crowded by another (SC 2.5.8).
+pub(crate) fn audit_screen(
+    what: &str,
+    app: AppKind,
+    size: egui::Vec2,
+    mut frame: impl FnMut(&egui::Context),
+) -> Audit {
+    let mut problems = Vec::new();
+    let mut stops_out = Vec::new();
+    let mut tree_out = None;
+    for theme_choice in [egui::Theme::Light, egui::Theme::Dark] {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        ctx.enable_accesskit();
+        theme::apply(&ctx, app);
+        ctx.set_theme(theme_choice);
+        let mut nodes: HashMap<NodeId, Node> = HashMap::new();
+        let mut root = None;
+        let mut run = |events: Vec<egui::Event>| {
+            let out = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    events,
+                    ..Default::default()
+                },
+                &mut frame,
+            );
+            let update = out.platform_output.accesskit_update.clone().unwrap();
+            root = update.tree.as_ref().map(|t| t.root).or(root);
+            nodes = update.nodes.iter().cloned().collect();
+            (out, update)
+        };
+        for _ in 0..4 {
+            run(vec![]);
+        }
+        let tab = vec![egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }];
+        let mut seen: Vec<NodeId> = Vec::new();
+        let mut stops = Vec::new();
+        for _ in 0..120 {
+            run(tab.clone());
+            let (_, update) = run(vec![]);
+            let focus = update.focus;
+            let Some((_, node)) = update.nodes.iter().find(|(n, _)| *n == focus) else {
+                continue;
+            };
+            if node.role() == Role::Window || seen.last() == Some(&focus) {
+                continue;
+            }
+            if seen.contains(&focus) {
+                break;
+            }
+            seen.push(focus);
+            // The ring is painted on the frame after focus moved; this is that frame.
+            let (out, _) = run(vec![]);
+            let label = name(node).to_owned();
+            let is_bar = label.ends_with("scroll bar");
+            let pal = theme::current(&ctx, app);
+            if !is_bar && !has_focus_indicator(&out.shapes, &pal) {
+                problems.push(format!(
+                    "{what} {theme_choice:?}: stop {label:?} ({:?}) draws no focus indicator",
+                    node.role()
+                ));
+            }
+            if label.is_empty() {
+                problems.push(format!("{what} {theme_choice:?}: an unnamed tab stop"));
+            }
+            stops.push(label);
+        }
+        let tree = Tree {
+            nodes,
+            root: root.expect("root"),
+        };
+        for c in tree.unnamed_controls() {
+            problems.push(format!("{what} {theme_choice:?}: unnamed control {c}"));
+        }
+        for c in crowded_small_targets(&tree) {
+            problems.push(format!("{what} {theme_choice:?}: {c}"));
+        }
+        if theme_choice == egui::Theme::Light {
+            stops_out = stops;
+            tree_out = Some(tree);
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    Audit {
+        stops: stops_out,
+        problems,
+        tree: tree_out.unwrap(),
+    }
+}

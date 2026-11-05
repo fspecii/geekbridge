@@ -1084,18 +1084,28 @@ mod contrast_tests {
 
     #[test]
     fn no_text_is_set_below_12_points() {
-        let files: [(&str, &str); 9] = [
-            ("theme.rs", include_str!("theme.rs")),
-            ("shell.rs", include_str!("shell.rs")),
-            ("nothing.rs", include_str!("nothing.rs")),
-            ("call_ui.rs", include_str!("call_ui.rs")),
-            ("apps/calls.rs", include_str!("apps/calls.rs")),
-            ("apps/messages.rs", include_str!("apps/messages.rs")),
-            ("apps/contacts.rs", include_str!("apps/contacts.rs")),
-            ("apps/calendar.rs", include_str!("apps/calendar.rs")),
-            ("home_app.rs", include_str!("home_app.rs")),
-        ];
-        for (name, src) in files {
+        // Every source file, so a new screen is covered without remembering to list it.
+        fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    rs_files(&p, out);
+                } else if p.extension().is_some_and(|x| x == "rs") {
+                    out.push(p);
+                }
+            }
+        }
+        let mut paths = Vec::new();
+        rs_files(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut paths,
+        );
+        assert!(paths.len() > 30);
+        let files: Vec<(String, String)> = paths
+            .iter()
+            .map(|p| (p.display().to_string(), std::fs::read_to_string(p).unwrap()))
+            .collect();
+        for (name, src) in &files {
             for (n, line) in src.lines().enumerate() {
                 for pat in ["FontId::new(", ".size("] {
                     let mut rest = line;

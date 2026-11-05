@@ -27,7 +27,7 @@ the Calls window opened only when that banner was clicked.
   contact name only and "Unknown caller" otherwise, never the number. The card shows what the Telephony-consented view
   carries and nothing more; no sound (the phone rings).
 * **Accessibility / i18n / theme**: `overlay.*` strings in `crates/bridge-i18n/i18n/en.properties`; the card is an
-  `Alert` node, an assertive live region ("Incoming call from Ada", then each outcome); buttons are named
+  `Alert` node, an assertive live region for the ring ("Incoming call from Ada"); the in-call state ("IN CALL, Ada", no running clock) and each outcome are a polite `Status` node; buttons are named
   ("Answer the call from Ada"); the egui theme (dot-matrix INCOMING, `tile` fill, brand red, white text on 5.1:1 green).
 * **Robust launch** (owner priority): the card finds the display even if the service started without session variables
   (falls back to the `wayland-*` socket in `XDG_RUNTIME_DIR` / `/run/user/UID`, then an X11 socket). When it cannot start, one

@@ -747,7 +747,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                             let r = ui.add(
                                                 egui::Button::new(
                                                     egui::RichText::new(tr("overlay.reply"))
-                                                        .size(11.5)
+                                                        .size(12.0)
                                                         .color(pal.accent),
                                                 )
                                                 .frame(false),
@@ -759,6 +759,10 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                                     name.clone(),
                                                 )
                                             });
+                                            // A link without a frame shows keyboard focus by its ring only.
+                                            if r.has_focus() {
+                                                theme::focus_ring(ui, pal, r.rect.expand(2.0), 6);
+                                            }
                                             if r.clicked() {
                                                 action.reply = Some(ReplyChoice::Open);
                                             }
@@ -813,6 +817,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                     ui,
                     card_rect,
                     &tr_args("overlay.announce", &[("caller", title)]),
+                    true,
                 );
             }
             Body::Reply { title, texts } => {
@@ -860,6 +865,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                     ui,
                     card_rect,
                     &tr_args("overlay.reply.announce", &[("caller", title)]),
+                    true,
                 );
             }
             Body::Live {
@@ -1041,7 +1047,13 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                         }
                     });
                 });
-                announce(ui, card_rect, &format!("{header}, {title}"));
+                // Without the running clock: a text that changes every second would be read every second.
+                announce(
+                    ui,
+                    card_rect,
+                    &format!("{}, {title}", without_clock(header)),
+                    false,
+                );
             }
             Body::Done { text, ok } => {
                 ui.allocate_ui_with_layout(
@@ -1052,23 +1064,53 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                         ui.label(egui::RichText::new(text).size(16.0).color(color));
                     },
                 );
-                announce(ui, card_rect, text);
+                announce(ui, card_rect, text, false);
             }
         }
     });
     action
 }
 
+/// `"IN CALL 02:13"` without its running clock: `"IN CALL"`.
+fn without_clock(header: &str) -> &str {
+    match header.rsplit_once(' ') {
+        Some((words, tail))
+            if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit() || c == ':') =>
+        {
+            words
+        }
+        _ => header,
+    }
+}
+
 /// A named, non-interactive node covering the card, marked as a live region so a screen reader
-/// reads a new ring (assertive) and each outcome without the window taking focus.
-fn announce(ui: &mut egui::Ui, rect: egui::Rect, text: &str) {
+/// reads what changed without the window taking focus. A new ring (`urgent`) interrupts as an alert;
+/// the in-call state and each outcome wait their turn as a polite status. The text must stay the
+/// same while nothing happened, or it is read again.
+fn announce(ui: &mut egui::Ui, rect: egui::Rect, text: &str, urgent: bool) {
     let id = egui::Id::new("call-overlay-card");
     let node = ui.interact(rect, id, Sense::hover());
     let text = text.to_owned();
     node.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text.clone()));
-    crate::a11y::live_region(ui.ctx(), node.id, crate::a11y::Live::Assertive);
+    crate::a11y::live_region(
+        ui.ctx(),
+        node.id,
+        if urgent {
+            crate::a11y::Live::Assertive
+        } else {
+            crate::a11y::Live::Polite
+        },
+    );
     #[cfg(feature = "accesskit")]
-    crate::a11y::set_role(ui.ctx(), node.id, eframe::egui::accesskit::Role::Alert);
+    crate::a11y::set_role(
+        ui.ctx(),
+        node.id,
+        if urgent {
+            eframe::egui::accesskit::Role::Alert
+        } else {
+            eframe::egui::accesskit::Role::Status
+        },
+    );
 }
 
 // ---------------------------------------------------------------- the window
@@ -2083,5 +2125,148 @@ mod tests {
         assert_eq!(v.active, Some(false));
         assert_eq!(v.window_type, Some(egui::X11WindowType::Notification));
         assert_eq!(v.resizable, Some(false));
+    }
+
+    // ---- accessibility: names, order, focus, live regions
+
+    fn audit_body(what: &str, body: Body) -> crate::a11y_tests::Audit {
+        crate::a11y_tests::audit_screen(
+            what,
+            AppKind::Calls,
+            egui::vec2(geometry::CARD_WIDTH, geometry::CARD_HEIGHT),
+            move |ctx| {
+                let pal = theme::current(ctx, AppKind::Calls);
+                let _ = show(ctx, &pal, &body);
+            },
+        )
+    }
+
+    fn live_body(header: &str, with_options: bool) -> Body {
+        Body::Live {
+            title: "Ada".into(),
+            header: header.into(),
+            route: "Audio is on the phone".into(),
+            setup_hint: !with_options,
+            can_hangup: true,
+            mute: with_options.then_some(false),
+            computer_audio: with_options,
+            keypad: with_options,
+            wifi: with_options.then(|| WifiCard::Offer {
+                device_id: "d".into(),
+                phone: "Pixel".into(),
+            }),
+            problem: None,
+        }
+    }
+
+    /// The live node of the card: its label, urgency and role.
+    fn announcement(
+        tree: &crate::a11y_tests::Tree,
+    ) -> Vec<(
+        String,
+        eframe::egui::accesskit::Live,
+        eframe::egui::accesskit::Role,
+    )> {
+        tree.nodes
+            .values()
+            .filter_map(|n| Some((crate::a11y_tests::name(n).to_owned(), n.live()?, n.role())))
+            .collect()
+    }
+
+    #[test]
+    fn every_card_state_has_named_buttons_a_focus_ring_and_a_tab_order() {
+        use eframe::egui::accesskit::{Live, Role};
+        let t = Instant::now();
+        let st = with_replies(ringing(), true);
+        let mut ring = Card::new(Reveal::Full, t);
+        ring.update(&st, t);
+        let mut pick = Card::picking_fixture(Reveal::Full, t);
+        pick.update(&st, t);
+        let cases: Vec<(&str, Body, &[&str], Live, Role)> = vec![
+            (
+                "ringing",
+                ring.body(&st).unwrap(),
+                &[
+                    "Hide this card. The call keeps ringing.",
+                    "Decline the call from Ada and send a text message",
+                    "Answer the call from Ada",
+                    "Decline the call from Ada",
+                ],
+                Live::Assertive,
+                Role::Alert,
+            ),
+            (
+                "decline picker",
+                pick.body(&st).unwrap(),
+                &["Decline and send: ", "Back to Answer and Decline"],
+                Live::Assertive,
+                Role::Alert,
+            ),
+            (
+                "in call",
+                live_body("IN CALL 00:05", false),
+                &["Hide this card", "Hang up the call with Ada"],
+                Live::Polite,
+                Role::Status,
+            ),
+            (
+                "in call, every option",
+                live_body("IN CALL 00:05", true),
+                &[
+                    "Use computer audio",
+                    "Open the keypad for the call with Ada",
+                    "Listen to the call from Pixel",
+                    "Hang up the call with Ada",
+                    "Mute your microphone",
+                ],
+                Live::Polite,
+                Role::Status,
+            ),
+            (
+                "outcome",
+                Body::Done {
+                    text: "Answered on phone".into(),
+                    ok: true,
+                },
+                &[],
+                Live::Polite,
+                Role::Status,
+            ),
+        ];
+        let mut problems = Vec::new();
+        for (what, body, expect, live, role) in cases {
+            let audit = audit_body(what, body);
+            problems.extend(audit.problems.clone());
+            for want in expect {
+                if !audit.stops.iter().any(|s| s.starts_with(want)) {
+                    problems.push(format!(
+                        "{what}: Tab never reaches {want:?}: {:?}",
+                        audit.stops
+                    ));
+                }
+            }
+            let live_nodes = announcement(&audit.tree);
+            if live_nodes.len() != 1 || live_nodes[0].1 != live || live_nodes[0].2 != role {
+                problems.push(format!(
+                    "{what}: expected one {live:?} {role:?} node, got {live_nodes:?}"
+                ));
+            }
+        }
+        assert!(problems.is_empty(), "{}", problems.join("\n"));
+    }
+
+    /// The running clock is not part of what the card announces, or a screen reader would read the
+    /// call state again every second.
+    #[test]
+    fn the_in_call_announcement_does_not_change_with_the_clock() {
+        let said = |header: &str| {
+            let a = audit_body("clock", live_body(header, false));
+            announcement(&a.tree).remove(0).0
+        };
+        assert_eq!(said("IN CALL 00:05"), said("IN CALL 12:59"));
+        assert_eq!(said("IN CALL 00:05"), "IN CALL, Ada");
+        assert_eq!(without_clock("ON HOLD 1:02:03"), "ON HOLD");
+        assert_eq!(without_clock("CALLING"), "CALLING");
+        assert_eq!(without_clock("IN CALL"), "IN CALL");
     }
 }

@@ -1,7 +1,7 @@
 # Files that still hold English literals outside i18n/en.properties, with the most each may hold.
 # Migrate a file, then delete its line. Format: <path under src/> <count>.
 apps/calendar.rs 101
-apps/calls.rs 13
+apps/calls.rs 12
 apps/clipboard.rs 26
 apps/contacts.rs 28
 apps/messages.rs 79

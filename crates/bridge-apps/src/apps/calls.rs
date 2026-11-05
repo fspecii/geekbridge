@@ -105,9 +105,10 @@ fn key_button(
             pal.text2,
         );
     }
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("Key {key}"))
-    });
+    // "Key star" and "Key pound": a screen reader would say "asterisk" and "number sign" for the glyphs.
+    let name = call_ui::tone_key_name(key);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name.clone()));
     response
 }
 

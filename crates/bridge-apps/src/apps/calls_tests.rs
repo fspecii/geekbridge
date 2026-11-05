@@ -348,3 +348,95 @@ fn the_pad_keys_extend_a_name_search_instead_of_wiping_it() {
     c.push_key('5');
     assert_eq!(c.number, "+445");
 }
+
+/// Walks the Calls window with Tab in each state the newest widgets appear in: the dial pad, Recents
+/// with its Call back / Message buttons, the ringing sheet, the in-call panel with its keypad.
+fn audit_calls(what: &str, kind: Option<&str>, tab: Tab, keypad: bool) -> crate::a11y_tests::Audit {
+    use crate::{connection::ControlState, shell::Env, test_support::paired_model};
+    let mut c = Calls::default();
+    if let Some(kind) = kind {
+        let feed = fixture_feed(kind, egui::Context::default());
+        wait_until("fixture state", || feed.state().status.is_some());
+        c.feed = Some(feed);
+    } else {
+        c.feed = Some(CallFeed::spawn_with(
+            std::time::Duration::from_secs(3600),
+            || Err("The service is not running.".to_string()),
+            |_| Err("no".into()),
+            || {},
+        ));
+    }
+    c.tab = tab;
+    if keypad {
+        c.panel.open_keypad();
+    }
+    let (model, control) = (paired_model(), ControlState::default());
+    crate::a11y_tests::audit_screen(what, AppKind::Calls, egui::vec2(420.0, 700.0), move |ctx| {
+        let pal = crate::theme::current(ctx, AppKind::Calls);
+        let env = Env {
+            app: AppKind::Calls,
+            api_port: 1,
+            model: &model,
+            pal: &pal,
+            control: &control,
+        };
+        c.show(ctx, &env);
+    })
+}
+
+#[test]
+fn calls_window_states_are_named_focus_marked_and_reachable_by_keyboard() {
+    #[allow(clippy::type_complexity)]
+    let cases: [(&str, Option<&str>, Tab, bool, &[&str]); 7] = [
+        (
+            "dial pad, service down",
+            None,
+            Tab::Keypad,
+            false,
+            &["Key 5"],
+        ),
+        (
+            "dial pad",
+            Some("recents"),
+            Tab::Keypad,
+            false,
+            &["Key 5", "Key star", "Key pound"],
+        ),
+        (
+            "recents",
+            Some("recents"),
+            Tab::Recents,
+            false,
+            &["Call back Ada Lovelace"],
+        ),
+        ("ringing", Some("ringing"), Tab::Keypad, false, &["Answer"]),
+        (
+            "ringing, replies",
+            Some("ringing-reply"),
+            Tab::Keypad,
+            false,
+            &["Answer"],
+        ),
+        ("in call", Some("active"), Tab::Keypad, false, &["Hang up"]),
+        (
+            "in call, keypad",
+            Some("keypad"),
+            Tab::Keypad,
+            true,
+            &["Key 5"],
+        ),
+    ];
+    let mut problems = Vec::new();
+    let mut report = String::new();
+    for (what, kind, tab, keypad, expect) in cases {
+        let audit = audit_calls(what, kind, tab, keypad);
+        report += &format!("{what}: {:?}\n", audit.stops);
+        problems.extend(audit.problems);
+        for want in expect {
+            if !audit.stops.iter().any(|s| s.contains(want)) {
+                problems.push(format!("{what}: Tab never reaches {want:?}"));
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}\n{report}", problems.join("\n"));
+}
