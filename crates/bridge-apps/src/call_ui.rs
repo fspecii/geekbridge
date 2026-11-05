@@ -555,6 +555,7 @@ fn notice(ui: &mut egui::Ui, pal: &Palette, state: &FeedState) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // one panel, drawn from the window's own state
 fn ongoing(
     ui: &mut egui::Ui,
     pal: &Palette,
