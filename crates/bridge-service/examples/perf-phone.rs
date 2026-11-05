@@ -212,6 +212,7 @@ mod linux {
                 can_answer: true,
                 can_end: true,
                 can_dial: false,
+                can_tones: false,
             }
             .body(),
         )
