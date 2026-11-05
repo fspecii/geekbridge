@@ -657,21 +657,19 @@ impl Dev {
             let incoming = m.direction() == Direction::Incoming;
             let unread = !m.read;
             let recent = now.saturating_sub(m.date_ms) <= NOTIFY_MAX_AGE_MS;
-            let sender = m.addresses.first().map(|a| a.as_str().to_owned());
-            let text = m.body.clone();
             match t.conv.merge(m.clone()) {
                 Ok(MergeOutcome::Inserted) => {
                     room -= 1;
                     touched.insert(tid);
-                    fresh.push(m);
                     if incoming
                         && unread
                         && recent
                         && self.sms_listed
-                        && let Some(s) = sender
+                        && let Some(s) = m.addresses.first()
                     {
-                        notify.push((s, text));
+                        notify.push((s.as_str().to_owned(), m.body.to_string()));
                     }
+                    fresh.push(m);
                 }
                 Ok(MergeOutcome::Updated) => {
                     touched.insert(tid);

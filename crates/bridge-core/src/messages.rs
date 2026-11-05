@@ -8,7 +8,7 @@
 //! MMS attachments and RCS are out of scope: MMS messages parse (text part only, `attachment_count`
 //! kept) but nothing here sends them.
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{collections::BTreeMap, error::Error, fmt, sync::Arc};
 
 /// Application bound in Unicode scalar values (not a carrier limit; the phone segments long text).
 pub const MAX_TEXT_CHARS: usize = 2000;
@@ -239,12 +239,12 @@ pub struct MessageKey {
 pub struct Message {
     pub key: MessageKey,
     pub message_box: MessageBox,
-    pub body: String,
+    pub body: Box<str>,
     /// Milliseconds since the epoch on the *phone* clock (MMS seconds are scaled by the phone).
     pub date_ms: u64,
     pub read: bool,
     /// Remote party first for incoming multi-target messages; recipients (self excluded) for outgoing.
-    pub addresses: Vec<Address>,
+    pub addresses: Arc<[Address]>,
     pub subscription: Option<SubscriptionId>,
     /// MMS parts reported by the phone. Content is not modelled yet.
     pub attachment_count: u32,
@@ -354,8 +354,8 @@ impl Message {
                 uid: nonneg(&w.uid, "_id")?,
             },
             message_box,
-            body,
-            addresses,
+            body: body.into_boxed_str(),
+            addresses: addresses.into(),
             subscription,
             date_ms: u64::try_from(nonneg(&w.date, "date")?)
                 .map_err(|_| ValidationError::NegativeField("date"))?,
@@ -415,16 +415,52 @@ impl fmt::Display for StoreError {
 }
 impl Error for StoreError {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A stored body is cut to this many bytes (at a character boundary, with an ellipsis): a text this
+/// long is far beyond a phone's own SMS limits, the full text stays on the phone, and the cap bounds
+/// what one message can pin in memory (the wire still admits [`MAX_INCOMING_BODY_BYTES`]).
+pub const MAX_STORED_BODY_BYTES: usize = 4096;
+/// Distinct recipient lists a conversation shares between its messages.
+const ADDRESS_POOL: usize = 16;
+
+/// The messages of one thread, a vector sorted by key (a B-tree's node slack and per-entry overhead
+/// cost more than the memmove of a few thousand 80-byte rows). Recipient lists are shared between
+/// the thread's messages, bodies are exact-size boxes, and growth is 12.5% steps, so a stored
+/// message costs its text plus about 100 bytes.
+#[derive(Clone, Debug)]
 pub struct Conversation {
     thread_id: ThreadId,
-    messages: BTreeMap<MessageKey, Message>,
+    messages: Vec<Message>,
+    pool: Vec<Arc<[Address]>>,
 }
+impl PartialEq for Conversation {
+    fn eq(&self, o: &Self) -> bool {
+        self.thread_id == o.thread_id && self.messages == o.messages
+    }
+}
+impl Eq for Conversation {}
+
+/// Cuts a body to [`MAX_STORED_BODY_BYTES`]; true if it was cut.
+fn clip_body(body: &mut Box<str>) -> bool {
+    if body.len() <= MAX_STORED_BODY_BYTES {
+        return false;
+    }
+    let mut end = MAX_STORED_BODY_BYTES - '\u{2026}'.len_utf8();
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut s = String::with_capacity(end + '\u{2026}'.len_utf8());
+    s.push_str(&body[..end]);
+    s.push('\u{2026}');
+    *body = s.into_boxed_str();
+    true
+}
+
 impl Conversation {
     pub fn new(thread_id: ThreadId) -> Self {
         Self {
             thread_id,
-            messages: BTreeMap::new(),
+            messages: Vec::new(),
+            pool: Vec::new(),
         }
     }
     pub fn thread_id(&self) -> ThreadId {
@@ -436,24 +472,41 @@ impl Conversation {
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
+    fn find(&self, key: &MessageKey) -> Result<usize, usize> {
+        self.messages.binary_search_by(|m| m.key.cmp(key))
+    }
     pub fn get(&self, key: &MessageKey) -> Option<&Message> {
-        self.messages.get(key)
+        self.find(key).ok().map(|i| &self.messages[i])
+    }
+    /// Makes the message's recipient list the thread's shared copy when it has one.
+    fn share_addresses(&mut self, m: &mut Message) {
+        if let Some(p) = self.pool.iter().find(|p| ***p == *m.addresses) {
+            m.addresses = Arc::clone(p);
+        } else if self.pool.len() < ADDRESS_POOL {
+            self.pool.push(Arc::clone(&m.addresses));
+        }
     }
 
-    pub fn merge(&mut self, m: Message) -> Result<MergeOutcome, StoreError> {
+    pub fn merge(&mut self, mut m: Message) -> Result<MergeOutcome, StoreError> {
         if m.key.thread_id != self.thread_id {
             return Err(StoreError::WrongThread);
         }
+        clip_body(&mut m.body);
         let full = self.messages.len() >= MAX_CONVERSATION_MESSAGES;
-        match self.messages.get_mut(&m.key) {
-            Some(old) if *old == m => Ok(MergeOutcome::Duplicate),
-            Some(old) => {
-                *old = m;
+        match self.find(&m.key) {
+            Ok(i) if self.messages[i] == m => Ok(MergeOutcome::Duplicate),
+            Ok(i) => {
+                self.share_addresses(&mut m);
+                self.messages[i] = m;
                 Ok(MergeOutcome::Updated)
             }
-            None if full => Err(StoreError::ConversationFull),
-            None => {
-                self.messages.insert(m.key, m);
+            Err(_) if full => Err(StoreError::ConversationFull),
+            Err(i) => {
+                self.share_addresses(&mut m);
+                if self.messages.len() == self.messages.capacity() {
+                    self.messages.reserve_exact(self.messages.len() / 8 + 4);
+                }
+                self.messages.insert(i, m);
                 Ok(MergeOutcome::Inserted)
             }
         }
@@ -473,20 +526,20 @@ impl Conversation {
     }
     /// Oldest first; ties on the phone timestamp are broken by key so the order is deterministic.
     pub fn ordered(&self) -> Vec<&Message> {
-        let mut v: Vec<&Message> = self.messages.values().collect();
+        let mut v: Vec<&Message> = self.messages.iter().collect();
         v.sort_by_key(|m| (m.date_ms, m.key));
         v
     }
     /// The latest message (same order as [`Self::ordered`]) without sorting the thread: O(n), no allocation.
     pub fn newest(&self) -> Option<&Message> {
-        self.messages.values().max_by_key(|m| (m.date_ms, m.key))
+        self.messages.iter().max_by_key(|m| (m.date_ms, m.key))
     }
     pub fn oldest_date_ms(&self) -> Option<u64> {
-        self.messages.values().map(|m| m.date_ms).min()
+        self.messages.iter().map(|m| m.date_ms).min()
     }
     /// Newest phone timestamp held.
     pub fn newest_date_ms(&self) -> Option<u64> {
-        self.messages.values().map(|m| m.date_ms).max()
+        self.messages.iter().map(|m| m.date_ms).max()
     }
     /// Drops the oldest messages until at most `keep` remain; returns how many went. This bounds
     /// memory for a long thread: the newest history is what the window shows.
@@ -495,17 +548,29 @@ impl Conversation {
         if excess == 0 {
             return 0;
         }
-        let mut order: Vec<(u64, MessageKey)> =
-            self.messages.values().map(|m| (m.date_ms, m.key)).collect();
+        let mut order: Vec<(u64, MessageKey, usize)> = self
+            .messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.date_ms, m.key, i))
+            .collect();
         order.sort_unstable();
-        for (_, key) in order.into_iter().take(excess) {
-            self.messages.remove(&key);
+        let mut gone = vec![false; self.messages.len()];
+        for (_, _, i) in order.into_iter().take(excess) {
+            gone[i] = true;
         }
+        let mut i = 0;
+        self.messages.retain(|_| {
+            i += 1;
+            !gone[i - 1]
+        });
+        // Give the freed rows back; a thread that stopped growing keeps no slack.
+        self.messages.shrink_to_fit();
         excess
     }
     /// Iterates in key order (not time order); for searches that do not care about order.
     pub fn iter(&self) -> impl Iterator<Item = &Message> {
-        self.messages.values()
+        self.messages.iter()
     }
 }
 
@@ -1061,7 +1126,7 @@ impl SendRecord {
             m.direction() == Direction::Outgoing
                 && m.message_box != MessageBox::Draft
                 && m.date_ms >= not_before_ms
-                && m.body == self.intent.text
+                && *m.body == *self.intent.text
                 && self
                     .intent
                     .recipients
@@ -1264,7 +1329,7 @@ mod tests {
             body: body.into(),
             date_ms: date,
             read: true,
-            addresses: vec![Address::new("+15551234567").unwrap()],
+            addresses: vec![Address::new("+15551234567").unwrap()].into(),
             subscription: None,
             attachment_count: 0,
         }
@@ -1952,7 +2017,7 @@ mod tests {
         let old = msg(7, Transport::Sms, 13, MessageBox::Sent, 10, "hello");
         let draft = msg(7, Transport::Sms, 14, MessageBox::Draft, 1000, "hello");
         let mut stranger = msg(7, Transport::Sms, 15, MessageBox::Sent, 1000, "hello");
-        stranger.addresses = vec![Address::new("+19998887777").unwrap()];
+        stranger.addresses = vec![Address::new("+19998887777").unwrap()].into();
         let pool = [other_body, incoming, old, draft, stranger, mine.clone()];
         assert_eq!(r.correlate(pool.iter(), 500), Correlation::Unique(mine.key));
         assert_eq!(r.correlate(pool.iter(), 5000), Correlation::None);

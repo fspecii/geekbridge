@@ -374,3 +374,22 @@ payload size, not full equality, for mutated input.
 The phone side in these tests is a real `bridge-kde` endpoint. `bridge-phone-sim` simulates a
 Bluetooth telephony stack, not the KDE Connect transport, and `bridge-android` has its own tests
 (`tests/transport*.rs`); no test here drives `bridge-android` against the desktop service.
+
+## Message store memory (2026-11-05)
+
+`crates/bridge-core/tests/message_memory.rs` builds 10,000 synthetic messages (50 threads, bodies 20-160 chars, 5% group
+messages, 3% MMS) through the real `Message::from_wire` and `Conversation::merge`, counts live heap with a global allocator
+and charges each block as glibc does (16-byte granule, 8-byte header, 32 minimum). It asserts at most 220 B per message.
+
+| | before | after |
+|---|---|---|
+| glibc-charged bytes per stored message | 406.7 | 193.5 |
+| requested bytes per stored message | 359.7 | 177.5 |
+| heap blocks per message | 3.27 | 1.02 |
+| 10,000 messages | 4.07 MB | 1.94 MB |
+| 20,000 messages (the per-phone cap) | 8.1 MB | 3.9 MB |
+
+Floor for the same data: about 90 B of text plus 24 B of key/date/flags, about 115 B. What changed: the thread keeps a sorted
+`Vec<Message>` (no B-tree node slack, 12.5% growth steps) instead of a `BTreeMap`; the body is a `Box<str>`; the recipient list is an
+`Arc<[Address]>` shared by the thread's messages; the notification path no longer clones every body; a stored body is cut at
+4096 bytes (worst case per message was 256 KiB).

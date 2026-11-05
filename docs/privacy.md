@@ -164,6 +164,8 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
 * Travels: stock `kdeconnect.sms.*` packets plus the GeekBridge `geekbridge.sms.status` ([doc] `docs/phone-data-link.md`).
 * Computer: memory only, bounded counts per thread and per conversation, dropped on consent-off, unpair and restart
   ([code] `crates/bridge-service/src/phone_data.rs` module comment; [doc] `docs/state-formats.md` "Not persisted").
+  A stored text is cut to 4096 bytes (ending in an ellipsis; the full text stays on the phone), so one message cannot pin
+  more than that in memory ([code] `crates/bridge-core/src/messages.rs` `MAX_STORED_BODY_BYTES`).
   Read marks stay on the computer and are **memory only**: they live in the service's per-thread state
   (`read_through_ms`, `unread_at_mark`; [code] `phone_data.rs` `mark_read`), not in the Messages app, which only calls
   the service and writes no file (grep of non-test `fs::write` / `File::create` in `crates/bridge-apps/src`). They do

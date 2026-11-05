@@ -106,7 +106,7 @@ fn android_sms_messages_parse() {
     let p = sms::parse_messages(&packet("android-sms-messages.json").body).unwrap();
     assert_eq!((p.messages.len(), p.rejected), (1, 0));
     let m = &p.messages[0];
-    assert_eq!(m.body, "Hello from Ada, interop test");
+    assert_eq!(&*m.body, "Hello from Ada, interop test");
     assert!(!m.read);
 }
 
