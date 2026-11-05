@@ -5,6 +5,7 @@
 //! * Authenticated control API ([`control::serve_control`]): pairing and link lifecycle for
 //!   explicitly chosen phones, backed by `bridge-kde`. See `docs/service-integration.md`.
 pub mod autostart;
+pub mod banner_pool;
 pub mod calendar_edit;
 pub mod call_audio;
 pub mod call_audio_cli;

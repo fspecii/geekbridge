@@ -189,6 +189,8 @@ struct Thread {
     phone_unread: Option<u32>,
     /// What `phone_unread` was when the user marked the conversation read here.
     unread_at_mark: u32,
+    /// Newest message held when the phone last reported its unread counts.
+    phone_seen_ms: u64,
 }
 impl Thread {
     fn new(tid: ThreadId) -> Self {
@@ -200,6 +202,7 @@ impl Thread {
             capped: false,
             phone_unread: None,
             unread_at_mark: 0,
+            phone_seen_ms: 0,
         }
     }
     /// Unread here: what is loaded and unread after the local mark, or what the phone counted
@@ -209,7 +212,12 @@ impl Thread {
             .conv
             .iter()
             .filter(|m| {
-                !m.read && m.direction() == Direction::Incoming && m.date_ms > self.read_through_ms
+                !m.read
+                    && m.direction() == Direction::Incoming
+                    && m.date_ms > self.read_through_ms
+                    // Once the phone reports counts, older loaded rows (whose read flag was
+                    // never refreshed) are covered by that count; only newer ones add to it.
+                    && (self.phone_unread.is_none() || m.date_ms > self.phone_seen_ms)
             })
             .count()
             .try_into()
@@ -218,7 +226,8 @@ impl Thread {
             .phone_unread
             .unwrap_or(0)
             .saturating_sub(self.unread_at_mark);
-        loaded.max(phone)
+        // `loaded` only holds rows newer than the phone's report once it has reported, so the two add.
+        loaded.saturating_add(phone)
     }
 }
 
@@ -607,6 +616,9 @@ impl Dev {
             self.sims = sims;
         }
         let phone_unread = sms::parse_unread(body);
+        let has_unread_map = sms::has_unread_map(body);
+        let packet_threads: HashSet<ThreadId> =
+            parsed.messages.iter().map(|m| m.key.thread_id).collect();
         if let Some(n) = body.get("threadsTotal").and_then(Value::as_u64) {
             self.threads_on_phone = Some(usize::try_from(n.min(1_000_000)).unwrap_or(0));
         }
@@ -669,15 +681,21 @@ impl Dev {
                 }
             }
         }
-        for t in self.threads.values_mut() {
-            if t.asked_older {
+        for (tid, t) in &mut self.threads {
+            // Only a packet that answers this thread (nothing in it from any other thread) can
+            // say the phone has no more; unrelated traffic leaves the request pending.
+            if t.asked_older && packet_threads.iter().all(|p| p == tid) {
                 t.exhausted = true;
                 t.asked_older = false;
             }
         }
-        for (tid, n) in phone_unread {
-            if let Some(t) = self.threads.get_mut(&tid) {
+        if has_unread_map {
+            // A thread missing from the phone's map has nothing unread there.
+            let counts: HashMap<ThreadId, u32> = phone_unread.into_iter().collect();
+            for (tid, t) in &mut self.threads {
+                let n = counts.get(tid).copied().unwrap_or(0);
                 t.phone_unread = Some(n);
+                t.phone_seen_ms = t.conv.newest_date_ms().unwrap_or(0);
                 // Read on the phone since the mark: the baseline can only fall with the count.
                 t.unread_at_mark = t.unread_at_mark.min(n);
             }
@@ -2458,6 +2476,54 @@ mod tests {
         // A status for a request we never made is dropped.
         let b = obj(json!({"requestId": "nope", "state": "sent"}));
         assert_eq!(h.on_packet(ID, wire::SMS_STATUS, &b), Disposition::Ignored);
+    }
+
+    #[test]
+    fn a_thread_read_on_the_phone_stops_counting_as_unread() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (false, false, true));
+        drain(&mut rx);
+        let now = now_ms();
+        let first = obj(json!({"version": 2, "unread": {"4": 2, "5": 1}, "messages": [
+            msg(4, 1, 1, "a", now - 3000), msg(4, 2, 1, "b", now - 2000),
+            msg(5, 3, 1, "c", now - 1000)]}));
+        h.on_packet(ID, sms::MESSAGES, &first);
+        assert_eq!(h.unread_total(), 3);
+        // The phone read thread 4: it drops out of the map, the older rows stay flagged unread here.
+        let second = obj(json!({"version": 2, "unread": {"5": 1}, "messages": [
+            msg(5, 3, 1, "c", now - 1000)]}));
+        h.on_packet(ID, sms::MESSAGES, &second);
+        assert_eq!(h.unread_total(), 1);
+        // A push without a map (stock phones, single messages) still counts what is new.
+        let push = obj(json!({"version": 2, "messages": [msg(5, 9, 1, "d", now)]}));
+        h.on_packet(ID, sms::MESSAGES, &push);
+        assert_eq!(h.unread_total(), 2);
+    }
+
+    #[test]
+    fn unrelated_traffic_does_not_exhaust_load_older() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (false, false, true));
+        drain(&mut rx);
+        let now = now_ms();
+        let first = obj(json!({"version": 2, "messages": [msg(4, 1, 1, "a", now - 5000)]}));
+        h.on_packet(ID, sms::MESSAGES, &first);
+        h.refresh_messages(ID, Some(4)).unwrap();
+        assert_eq!(drain(&mut rx), vec![sms::REQUEST_CONVERSATION]);
+        // A push for another thread arrives before the page does.
+        let other = obj(json!({"version": 2, "messages": [msg(7, 2, 1, "x", now)]}));
+        h.on_packet(ID, sms::MESSAGES, &other);
+        h.refresh_messages(ID, Some(4)).unwrap();
+        assert_eq!(
+            drain(&mut rx),
+            vec![sms::REQUEST_CONVERSATION],
+            "still not exhausted"
+        );
+        // An empty answer for the thread is the phone saying there is no more.
+        let empty = obj(json!({"version": 2, "messages": []}));
+        h.on_packet(ID, sms::MESSAGES, &empty);
+        h.refresh_messages(ID, Some(4)).unwrap();
+        assert!(drain(&mut rx).is_empty());
     }
 
     #[test]

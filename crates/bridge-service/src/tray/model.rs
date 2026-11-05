@@ -484,7 +484,7 @@ mod tests {
             ..TrayInput::default()
         };
         assert_eq!(lone.icon_state(), IconState::UpdateAvailable);
-        assert_eq!(lone.status_line(), "No phone paired yet");
+        assert_eq!(lone.status_line(), "No phone linked yet");
     }
 
     #[test]

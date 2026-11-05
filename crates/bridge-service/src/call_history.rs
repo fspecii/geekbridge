@@ -32,6 +32,13 @@ struct Open {
 struct Done {
     call: RecentCall,
     at: Instant,
+    /// The sources (`link:<device>`, `hfp:...`) that saw the call, for [`History::forget_source`].
+    sources: BTreeSet<String>,
+}
+
+/// The source key of a `source|call` part.
+fn source_of(part: &str) -> &str {
+    part.split_once('|').map_or(part, |(s, _)| s)
 }
 
 #[derive(Default)]
@@ -119,7 +126,12 @@ impl History {
                 if self.done.len() >= KEEP {
                     self.done.pop_front();
                 }
-                self.done.push_back(Done { call, at: now });
+                let sources = o.parts.iter().map(|p| source_of(p).to_owned()).collect();
+                self.done.push_back(Done {
+                    call,
+                    at: now,
+                    sources,
+                });
             }
         }
         self.open = keep;
@@ -158,6 +170,30 @@ impl History {
                 o.declined = true;
             }
         }
+    }
+
+    /// The decline did not go through (the phone refused or never took it): the ring that follows
+    /// is not a declined one.
+    pub fn undeclined(&mut self, source: &str) {
+        for o in &mut self.open {
+            if o.parts.iter().any(|p| source_of(p) == source) {
+                o.declined = false;
+            }
+        }
+    }
+
+    /// Forget the calls in progress that `source` showed, without recording how they ended (the
+    /// source could not confirm them, so they are neither missed nor anything else).
+    pub fn forget_open(&mut self, source: &str) {
+        self.open
+            .retain(|o| !o.parts.iter().any(|p| source_of(p) == source));
+    }
+
+    /// Forget everything `source` contributed, finished calls included: its consent was withdrawn
+    /// or the phone was unpaired, so its numbers and names must not outlive that.
+    pub fn forget_source(&mut self, source: &str) {
+        self.forget_open(source);
+        self.done.retain(|d| !d.sources.contains(source));
     }
 
     /// Newest first, with the time since each ended.
@@ -261,6 +297,55 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(h.recent(t)[0].kind, RecentKind::Declined);
+    }
+
+    #[test]
+    fn forgetting_a_source_drops_its_finished_and_open_calls() {
+        let mut h = History::default();
+        let t = Instant::now();
+        h.observe(&view(PhoneState::Ringing, Some("+1555")), &alive(), t);
+        h.observe(&view(PhoneState::Idle, None), &alive(), t);
+        h.observe(&view(PhoneState::Ringing, Some("+1666")), &alive(), t);
+        assert_eq!(h.recent(t).len(), 1);
+        h.forget_source("link:other");
+        assert_eq!(h.recent(t).len(), 1);
+        h.forget_source("link:p");
+        assert!(h.recent(t).is_empty());
+        assert!(h.is_empty());
+        // The ring that was open is gone too: its end records nothing.
+        assert!(
+            h.observe(&view(PhoneState::Idle, None), &alive(), t)
+                .is_empty()
+        );
+        assert!(h.recent(t).is_empty());
+    }
+
+    #[test]
+    fn forgetting_open_calls_keeps_the_finished_ones_and_never_reports_a_miss() {
+        let mut h = History::default();
+        let t = Instant::now();
+        h.observe(&view(PhoneState::Ringing, Some("+1555")), &alive(), t);
+        h.observe(&view(PhoneState::Idle, None), &alive(), t);
+        h.observe(&view(PhoneState::Ringing, Some("+1666")), &alive(), t);
+        h.forget_open("link:p");
+        assert!(
+            h.observe(&view(PhoneState::Idle, None), &alive(), t)
+                .is_empty()
+        );
+        assert_eq!(h.recent(t).len(), 1);
+    }
+
+    #[test]
+    fn a_decline_that_did_not_go_through_is_a_miss() {
+        let mut h = History::default();
+        let t = Instant::now();
+        let v = view(PhoneState::Ringing, Some("+1555"));
+        h.observe(&v, &alive(), t);
+        h.declined(&v.rows[0].parts);
+        h.undeclined("link:p");
+        let missed = h.observe(&view(PhoneState::Idle, None), &alive(), t);
+        assert_eq!(missed.len(), 1);
+        assert_eq!(h.recent(t)[0].kind, RecentKind::Missed);
     }
 
     #[test]

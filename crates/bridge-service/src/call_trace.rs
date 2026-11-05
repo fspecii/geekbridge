@@ -8,14 +8,15 @@
 //! short hash salted per process, numbers as their last two digits. It is capped (about 128 KiB in
 //! memory, 256 KiB in the private `call-trace.log` in the state folder), lives only on this
 //! computer, and is emptied when the service starts or on `calls --trace --clear`. Recording is a
-//! lock and a `VecDeque` push at the moment something changes: no thread, no timer.
+//! lock and a `VecDeque` push at the moment something changes; the file append is handed to a writer
+//! thread that only exists while there is something to write (no timer, no idle wakeups).
 
 use bridge_core::ipc::TraceEvent;
 use std::collections::{BTreeMap, VecDeque};
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const FILE: &str = "call-trace.log";
@@ -24,17 +25,178 @@ pub const FILE: &str = "call-trace.log";
 const MEMORY_CAP: usize = 128 * 1024;
 const FILE_CAP: usize = 256 * 1024;
 const MAX_DETAIL: usize = 240;
+/// What `calls --trace` returns at most (the newest lines), well under the IPC response cap.
+const SNAPSHOT_CAP: usize = 64 * 1024;
+
+/// Control characters (newline, return, tab, escapes) become spaces, so recorded text cannot start
+/// a forged line.
+fn flatten(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// Replace Bluetooth addresses (`AA:BB:CC:DD:EE:FF`, `AA-BB-...`, and BlueZ's `dev_AA_BB_...`) by
+/// `<mac>`.
+fn redact_macs(s: &str) -> String {
+    let c: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < c.len() {
+        if mac_at(&c, i) {
+            out.push_str("<mac>");
+            i += 17;
+        } else {
+            out.push(c[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A MAC address starts at `i` (six hex pairs with one repeated separator, not part of a longer
+/// hex run).
+fn mac_at(c: &[char], i: usize) -> bool {
+    let Some(w) = c.get(i..i + 17) else {
+        return false;
+    };
+    let sep = w[2];
+    if !matches!(sep, ':' | '-' | '_') {
+        return false;
+    }
+    for (k, ch) in w.iter().enumerate() {
+        let ok = if k % 3 == 2 {
+            *ch == sep
+        } else {
+            ch.is_ascii_hexdigit()
+        };
+        if !ok {
+            return false;
+        }
+    }
+    let before = i.checked_sub(1).and_then(|p| c.get(p));
+    let after = c.get(i + 17);
+    let hexish = |x: Option<&char>| x.is_some_and(|x| x.is_ascii_hexdigit());
+    !hexish(before) && !hexish(after)
+}
 
 fn line(e: &TraceEvent) -> String {
     format!("{}\t{}\t{}\n", e.ms, e.kind, e.detail)
+}
+
+/// Most queued file operations before the oldest append is dropped (the memory ring keeps it).
+const FILE_QUEUE: usize = 256;
+
+enum Op {
+    Append(String),
+    /// Reopen the file empty and write this (a rewrite after the cap, or just a clear).
+    Replace(String),
+}
+
+struct Queue {
+    ops: VecDeque<Op>,
+    running: bool,
+    dropped: usize,
+}
+
+/// Hands file writes to one writer thread, started when there is something to write and gone when
+/// the queue is empty: the caller (an async task, with the hub lock held) never touches the disk.
+struct Sink {
+    queue: Mutex<Queue>,
+    file: Mutex<Option<std::fs::File>>,
+    path: PathBuf,
+    max_ops: usize,
+}
+
+impl Sink {
+    fn new(path: PathBuf, file: Option<std::fs::File>, max_ops: usize) -> Arc<Self> {
+        Arc::new(Self {
+            queue: Mutex::new(Queue {
+                ops: VecDeque::new(),
+                running: false,
+                dropped: 0,
+            }),
+            file: Mutex::new(file),
+            path,
+            max_ops,
+        })
+    }
+
+    fn enqueue(self: &Arc<Self>, op: Op) {
+        let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+        match op {
+            // Supersedes everything before it.
+            Op::Replace(_) => q.ops.clear(),
+            Op::Append(_) if q.ops.len() >= self.max_ops => {
+                let at = q.ops.iter().position(|o| matches!(o, Op::Append(_)));
+                let _ = q.ops.remove(at.unwrap_or(0));
+                q.dropped += 1;
+            }
+            Op::Append(_) => {}
+        }
+        q.ops.push_back(op);
+        if !q.running {
+            q.running = true;
+            let me = Arc::clone(self);
+            if std::thread::Builder::new()
+                .name("call-trace".into())
+                .spawn(move || me.drain())
+                .is_err()
+            {
+                q.running = false;
+                q.ops.clear();
+            }
+        }
+    }
+
+    fn drain(&self) {
+        loop {
+            let op = {
+                let mut q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                match q.ops.pop_front() {
+                    Some(op) => op,
+                    None => {
+                        q.running = false;
+                        return;
+                    }
+                }
+            };
+            let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+            match op {
+                Op::Append(text) => {
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(text.as_bytes());
+                    }
+                }
+                Op::Replace(text) => {
+                    *file = open_private(&self.path);
+                    if let Some(f) = file.as_mut() {
+                        let _ = f.write_all(text.as_bytes());
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_idle(&self) {
+        loop {
+            {
+                let q = self.queue.lock().unwrap_or_else(|e| e.into_inner());
+                if q.ops.is_empty() && !q.running {
+                    return;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
 }
 
 /// The ring itself; the global one is [`record`]'s target. Separate so tests can use their own.
 pub struct Trace {
     events: VecDeque<TraceEvent>,
     bytes: usize,
-    path: Option<PathBuf>,
-    file: Option<std::fs::File>,
+    sink: Option<Arc<Sink>>,
     file_bytes: usize,
     memory_cap: usize,
     file_cap: usize,
@@ -45,8 +207,7 @@ impl Trace {
         Self {
             events: VecDeque::new(),
             bytes: 0,
-            path: None,
-            file: None,
+            sink: None,
             file_bytes: 0,
             memory_cap,
             file_cap,
@@ -54,15 +215,26 @@ impl Trace {
     }
 
     /// Start on a fresh, private file in `dir` (an old one is emptied: a restart clears the trace).
+    /// Opened here, once, at start-up; every later write goes through the writer thread.
     pub fn attach(&mut self, dir: &std::path::Path) {
-        self.clear();
+        self.events.clear();
+        self.bytes = 0;
+        self.file_bytes = 0;
         let path = dir.join(FILE);
-        self.file = open_private(&path);
-        self.path = Some(path);
+        let file = open_private(&path);
+        self.sink = Some(Sink::new(path, file, FILE_QUEUE));
+    }
+
+    #[cfg(test)]
+    fn flush(&self) {
+        if let Some(s) = &self.sink {
+            s.wait_idle();
+        }
     }
 
     pub fn push(&mut self, ms: u64, kind: &str, detail: &str) {
-        let mut detail = detail.to_owned();
+        let kind = flatten(kind);
+        let mut detail = redact_macs(&flatten(detail));
         if detail.len() > MAX_DETAIL {
             let mut cut = MAX_DETAIL;
             while !detail.is_char_boundary(cut) {
@@ -70,11 +242,7 @@ impl Trace {
             }
             detail.truncate(cut);
         }
-        let e = TraceEvent {
-            ms,
-            kind: kind.to_owned(),
-            detail,
-        };
+        let e = TraceEvent { ms, kind, detail };
         let text = line(&e);
         self.bytes += text.len();
         self.events.push_back(e);
@@ -84,39 +252,41 @@ impl Trace {
                 None => break,
             }
         }
-        if let Some(f) = self.file.as_mut() {
+        if let Some(sink) = self.sink.clone() {
             if self.file_bytes + text.len() > self.file_cap {
-                self.rewrite();
-            } else if f.write_all(text.as_bytes()).is_ok() {
-                self.file_bytes += text.len();
-            }
-        }
-    }
-
-    fn rewrite(&mut self) {
-        let Some(path) = self.path.clone() else {
-            return;
-        };
-        self.file = open_private(&path);
-        self.file_bytes = 0;
-        if let Some(f) = self.file.as_mut() {
-            let all: String = self.events.iter().map(line).collect();
-            if f.write_all(all.as_bytes()).is_ok() {
+                let all: String = self.events.iter().map(line).collect();
                 self.file_bytes = all.len();
+                sink.enqueue(Op::Replace(all));
+            } else {
+                self.file_bytes += text.len();
+                sink.enqueue(Op::Append(text));
             }
         }
     }
 
+    /// The newest events whose lines add up to at most [`SNAPSHOT_CAP`] bytes, oldest first.
     pub fn snapshot(&self) -> Vec<TraceEvent> {
-        self.events.iter().cloned().collect()
+        let mut size = 0;
+        let mut out: Vec<TraceEvent> = self
+            .events
+            .iter()
+            .rev()
+            .take_while(|e| {
+                size += line(e).len();
+                size <= SNAPSHOT_CAP
+            })
+            .cloned()
+            .collect();
+        out.reverse();
+        out
     }
 
     pub fn clear(&mut self) {
         self.events.clear();
         self.bytes = 0;
         self.file_bytes = 0;
-        if let Some(path) = self.path.clone() {
-            self.file = open_private(&path);
+        if let Some(sink) = self.sink.clone() {
+            sink.enqueue(Op::Replace(String::new()));
         }
     }
 }
@@ -347,6 +517,7 @@ mod tests {
         std::fs::write(dir.join(FILE), "old secret\n").unwrap();
         let mut t = Trace::new(2000, 5000);
         t.attach(&dir);
+        t.flush();
         let path = dir.join(FILE);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
@@ -355,6 +526,7 @@ mod tests {
         );
         for i in 0..400 {
             t.push(i, "call", &format!("event number {i}"));
+            t.flush();
             assert!(std::fs::metadata(&path).unwrap().len() <= 5000);
         }
         let on_disk = std::fs::read_to_string(&path).unwrap();
@@ -366,9 +538,100 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         t.clear();
+        t.flush();
         assert!(t.snapshot().is_empty());
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn sink_dir(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("gb-trace-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(FILE);
+        (dir, path)
+    }
+
+    #[test]
+    fn file_appends_keep_their_order() {
+        let (dir, path) = sink_dir("order");
+        let sink = Sink::new(path.clone(), open_private(&path), 1000);
+        for i in 0..300 {
+            sink.enqueue(Op::Append(format!("{i}\n")));
+        }
+        sink.wait_idle();
+        let want: String = (0..300).map(|i| format!("{i}\n")).collect();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), want);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_queue_drops_the_oldest_appends_not_the_newest() {
+        let (dir, path) = sink_dir("full");
+        let sink = Sink::new(path.clone(), open_private(&path), 4);
+        {
+            // The writer cannot make progress while the file is held.
+            let _held = sink.file.lock().unwrap();
+            for i in 0..20 {
+                sink.enqueue(Op::Append(format!("{i}\n")));
+            }
+        }
+        sink.wait_idle();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let got: Vec<u32> = text.lines().map(|l| l.parse().unwrap()).collect();
+        assert!(got.len() <= 5, "{got:?}");
+        assert_eq!(*got.last().unwrap(), 19);
+        assert!(got.windows(2).all(|w| w[0] < w[1]));
+        let dropped = sink.queue.lock().unwrap().dropped;
+        assert_eq!(dropped + got.len(), 20);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writer_thread_exits_when_idle_and_restarts() {
+        let (dir, path) = sink_dir("idle");
+        let sink = Sink::new(path.clone(), open_private(&path), 10);
+        sink.enqueue(Op::Append("a\n".into()));
+        sink.wait_idle();
+        assert!(!sink.queue.lock().unwrap().running);
+        sink.enqueue(Op::Replace("b\n".into()));
+        sink.wait_idle();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn control_characters_cannot_forge_lines() {
+        let mut t = Trace::new(10_000, 10_000);
+        t.push(1, "call\n", "a\nb\r\tc\u{1b}[0m\u{7f}");
+        let e = &t.snapshot()[0];
+        assert_eq!(e.kind, "call ");
+        assert!(!e.detail.chars().any(char::is_control), "{:?}", e.detail);
+        assert_eq!(render(&t.snapshot()).matches('\n').count(), 1);
+    }
+
+    #[test]
+    fn bluetooth_addresses_are_redacted() {
+        let mut t = Trace::new(10_000, 10_000);
+        let raw = "no /org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/fd1 or 11:22:33:44:55:66 or aa-bb-cc-dd-ee-ff";
+        t.push(1, "x", raw);
+        let d = &t.snapshot()[0].detail;
+        assert_eq!(d, "no /org/bluez/hci0/dev_<mac>/fd1 or <mac> or <mac>");
+        let plain = "12:34:56 and 0123456789abcdef0123 stay";
+        t.push(2, "x", plain);
+        assert_eq!(t.snapshot()[1].detail, plain);
+    }
+
+    #[test]
+    fn snapshot_returns_only_the_newest_lines_within_the_cap() {
+        let mut t = Trace::new(10 * 1024 * 1024, 10 * 1024 * 1024);
+        for i in 0..5000 {
+            t.push(i, "call", &"y".repeat(200));
+        }
+        let s = t.snapshot();
+        assert!(s.len() < 5000);
+        assert!(s.iter().map(|e| line(e).len()).sum::<usize>() <= SNAPSHOT_CAP);
+        assert_eq!(s.last().unwrap().ms, 4999);
+        assert!(s.windows(2).all(|w| w[0].ms < w[1].ms));
     }
 
     #[test]

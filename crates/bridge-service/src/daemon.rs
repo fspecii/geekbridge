@@ -979,12 +979,23 @@ impl Daemon {
             }
             Request::CallAudioTest => self.call_audio(|s| s.start_test()).await,
             Request::Calls => {
-                let mut status = self.calls.status();
-                let wifi = self.callwifi.view(false);
-                if !wifi.phones.is_empty() || wifi.session.is_some() {
-                    status.wifi = Some(wifi);
+                // status() can run `bluetoothctl` (up to 2 s per paired device) and the Wi-Fi view
+                // reads the sound server: neither belongs on an async worker.
+                let hub = self.calls.clone();
+                let wifi_hub = self.callwifi.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let mut status = hub.status();
+                    let wifi = wifi_hub.view(false);
+                    if !wifi.phones.is_empty() || wifi.session.is_some() {
+                        status.wifi = Some(wifi);
+                    }
+                    status
+                })
+                .await
+                {
+                    Ok(status) => Ok(Response::Calls(Box::new(status))),
+                    Err(_) => Err(err(ErrorCode::Failed, "the request was interrupted")),
                 }
-                Ok(Response::Calls(Box::new(status)))
             }
             Request::CallTrace { clear } => {
                 let events = crate::call_trace::snapshot();
@@ -1774,6 +1785,8 @@ impl Daemon {
         self.photos.clear(device_id);
         self.share.forget_device(device_id);
         self.data.forget(device_id);
+        // Recents hold this phone's numbers and names.
+        self.calls.forget_device(device_id);
         if let Some(clip) = &self.clipboard {
             clip.forget(device_id);
             self.sync_hotkey();

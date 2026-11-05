@@ -283,7 +283,12 @@ pub struct Supervisor {
     linger: Duration,
     /// The call trace already said there is a live call with no card (once per call).
     noted_live: bool,
+    /// When a card was last started for a live call (a card that keeps dying is not restarted in a loop).
+    live_launch: Option<Instant>,
 }
+
+/// The least time between two card starts for the same live call.
+const LIVE_RELAUNCH: Duration = Duration::from_secs(3);
 
 impl Supervisor {
     pub fn new(launcher: std::sync::Arc<dyn Launcher>) -> Self {
@@ -298,6 +303,7 @@ impl Supervisor {
             last_ring: None,
             linger,
             noted_live: false,
+            live_launch: None,
         }
     }
 
@@ -335,9 +341,26 @@ impl Supervisor {
                 self.noted_live = true;
                 crate::call_trace::record("card", "live call but no card is running");
             }
+            if !running
+                && self
+                    .live_launch
+                    .is_none_or(|t| now.saturating_duration_since(t) >= LIVE_RELAUNCH)
+            {
+                self.live_launch = Some(now);
+                match self.launcher.launch() {
+                    Ok(card) => {
+                        crate::call_trace::record("card", "launched for a live call");
+                        self.card = Some(card);
+                    }
+                    Err(why) => {
+                        crate::call_trace::record("card", &format!("launch failed: {}", why.code()))
+                    }
+                }
+            }
             return;
         }
         self.noted_live = false;
+        self.live_launch = None;
         if running
             && self
                 .last_ring
@@ -376,28 +399,77 @@ impl ProcessLauncher {
     }
 }
 
-struct ProcessCard(Child);
+/// Where a card started on a helper thread is. The caller of `launch` is whichever thread reported
+/// the ring (maybe an async worker); the preflight reads, the status-file write and `fork`/`exec`
+/// happen on a short-lived thread of their own, which ends once the process is started.
+enum CardState {
+    Starting,
+    Running(Child),
+    /// Could not start, or was killed while starting.
+    Gone,
+}
+
+struct ProcessCard(std::sync::Arc<std::sync::Mutex<CardState>>);
+
+fn lock_card(s: &std::sync::Mutex<CardState>) -> std::sync::MutexGuard<'_, CardState> {
+    s.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 impl Card for ProcessCard {
     fn running(&mut self) -> bool {
-        matches!(self.0.try_wait(), Ok(None))
+        match &mut *lock_card(&self.0) {
+            CardState::Starting => true,
+            CardState::Running(c) => matches!(c.try_wait(), Ok(None)),
+            CardState::Gone => false,
+        }
     }
     fn kill(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        match std::mem::replace(&mut *lock_card(&self.0), CardState::Gone) {
+            CardState::Running(mut c) => {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+            // The starting thread sees `Gone` and kills what it started.
+            CardState::Starting | CardState::Gone => {}
+        }
     }
 }
 
 impl Launcher for ProcessLauncher {
     fn launch(&self) -> Result<Box<dyn Card>, Cannot> {
-        let launch = &self.launch;
-        let result = preflight(&launch.state_dir)
-            .and_then(|(mode, env)| spawn(launch, args(launch, mode), env));
-        record(
-            &launch.state_dir,
-            &result.as_ref().map(|_| ()).map_err(Clone::clone),
-        );
-        result.map(|child| Box::new(ProcessCard(child)) as Box<dyn Card>)
+        let launch = self.launch.clone();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(CardState::Starting));
+        let theirs = state.clone();
+        std::thread::Builder::new()
+            .name("card-launch".into())
+            .spawn(move || {
+                let result = preflight(&launch.state_dir)
+                    .and_then(|(mode, env)| spawn(&launch, args(&launch, mode), env));
+                record(
+                    &launch.state_dir,
+                    &result.as_ref().map(|_| ()).map_err(Clone::clone),
+                );
+                match result {
+                    Ok(mut child) => {
+                        let mut s = lock_card(&theirs);
+                        if matches!(*s, CardState::Starting) {
+                            *s = CardState::Running(child);
+                        } else {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                        }
+                    }
+                    Err(why) => {
+                        *lock_card(&theirs) = CardState::Gone;
+                        crate::call_trace::record(
+                            "card",
+                            &format!("launch failed: {}", why.code()),
+                        );
+                    }
+                }
+            })
+            .map_err(|e| Cannot::SpawnFailed(e.to_string()))?;
+        Ok(Box::new(ProcessCard(state)))
     }
 }
 
@@ -708,6 +780,27 @@ mod tests {
     }
 
     #[test]
+    fn a_live_call_whose_card_is_gone_gets_a_new_card_but_not_in_a_loop() {
+        let fake = Arc::new(Fake::default());
+        let mut s = Supervisor::new(fake.clone());
+        let t = Instant::now();
+        s.update(&rings(&[1]), false, t);
+        s.update(&rings(&[]), true, t + Duration::from_secs(1));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        // The card exits mid-call: the next look starts another one.
+        fake.alive.store(false, Ordering::SeqCst);
+        s.update(&rings(&[]), true, t + Duration::from_secs(2));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+        // It dies again at once: not restarted at every look.
+        fake.alive.store(false, Ordering::SeqCst);
+        s.update(&rings(&[]), true, t + Duration::from_millis(2250));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 2);
+        s.update(&rings(&[]), true, t + Duration::from_secs(6));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 3);
+        assert!(s.card_running());
+    }
+
+    #[test]
     fn a_launch_that_cannot_start_is_tried_once_per_ring() {
         let fake = Arc::new(Fake::default());
         fake.fail.store(true, Ordering::SeqCst);
@@ -755,5 +848,35 @@ mod tests {
         s.update(&rings(&[1]), false, Instant::now());
         drop(s);
         assert_eq!(fake.kills.load(Ordering::SeqCst), 1);
+    }
+
+    /// The real launcher must hand control back at once even when the first file it reads hangs
+    /// (a stalled disk, a network home). A FIFO with no writer stands in for that read.
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_preflight_read_does_not_block_the_ringing_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join(SETTINGS_FILE);
+        let made = Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            return; // no mkfifo here
+        }
+        let launcher = ProcessLauncher::new(Launch {
+            state_dir: dir.path().to_path_buf(),
+            api_port: 1,
+            control_port: 2,
+        });
+        let t = Instant::now();
+        let mut card = launcher.launch().expect("a card handle at once");
+        assert!(
+            t.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(card.running(), "starting counts as running");
+        card.kill();
+        assert!(!card.running());
+        // Let the helper thread finish: "off" disables the card, nothing is started.
+        std::fs::write(&fifo, "off\n").unwrap();
     }
 }

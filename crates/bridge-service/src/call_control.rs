@@ -126,6 +126,60 @@ struct HostCommand {
     source: String,
     command: CallCommand,
     reply: std_mpsc::SyncSender<Result<(), String>>,
+    /// When the caller stops waiting. A command still queued after this is dropped, not run late (a keypad tone
+    /// must never reach a different call than the one it was pressed in).
+    deadline: Instant,
+}
+
+/// Run `cmd` through `run` unless its deadline has passed; either way the caller is answered.
+fn run_host_command(
+    cmd: HostCommand,
+    now: Instant,
+    run: impl FnOnce(&str, &CallCommand) -> Result<(), String>,
+) {
+    let result = if now >= cmd.deadline {
+        Err("the command waited too long and was dropped".to_owned())
+    } else {
+        run(&cmd.source, &cmd.command)
+    };
+    let _ = cmd.reply.send(result);
+}
+
+#[cfg(test)]
+mod host_deadline_tests {
+    use super::*;
+
+    fn command(deadline: Instant) -> (HostCommand, std_mpsc::Receiver<Result<(), String>>) {
+        let (reply, wait) = std_mpsc::sync_channel(1);
+        let cmd = HostCommand {
+            source: "hfp:x".into(),
+            command: CallCommand::ConnectAudio,
+            reply,
+            deadline,
+        };
+        (cmd, wait)
+    }
+
+    #[test]
+    fn an_expired_host_command_is_dropped_and_a_live_one_runs() {
+        let now = Instant::now();
+        let (cmd, wait) = command(now);
+        let mut ran = false;
+        run_host_command(cmd, now, |_, _| {
+            ran = true;
+            Ok(())
+        });
+        assert!(!ran, "an expired command must not run");
+        assert!(wait.try_recv().unwrap().is_err());
+
+        let (cmd, wait) = command(now + Duration::from_secs(8));
+        run_host_command(cmd, now, |_, _| {
+            ran = true;
+            Ok(())
+        });
+        assert!(ran);
+        assert_eq!(wait.try_recv().unwrap(), Ok(()));
+    }
 }
 
 #[derive(Default)]
@@ -266,30 +320,33 @@ impl CallNotifier for NotifySendCalls {
     fn missed(&self, caller: &str, number: Option<&str>) {
         let args = Self::missed_args(caller, number);
         let number = number.map(str::to_owned);
-        std::thread::spawn(move || {
-            let out = std::process::Command::new("notify-send")
-                .args(&args)
-                .stdin(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .output();
-            let Ok(out) = out else { return };
-            // The number travels in the new window's environment, never on a command line. "Call
-            // back" only fills the keypad: the Calls window still asks before anything is dialed.
-            match (String::from_utf8_lossy(&out.stdout).trim(), number) {
-                ("callback", Some(n)) => crate::desktop_notify::open_app_with_env(
-                    "geekbridge-calls",
-                    "GEEKBRIDGE_DIAL",
-                    &n,
-                ),
-                ("message", Some(n)) => crate::desktop_notify::open_app_with_env(
-                    "geekbridge-messages",
-                    "GEEKBRIDGE_MESSAGE_TO",
-                    &n,
-                ),
-                ("default", _) => crate::desktop_notify::open_app("geekbridge-calls"),
-                _ => {}
-            }
-        });
+        let mut cmd = std::process::Command::new("notify-send");
+        cmd.args(args);
+        // Queued for the banner pool (bounded, reaped by one thread, spawned off this thread).
+        crate::banner_pool::submit(
+            &format!("missed:{caller}"),
+            cmd,
+            MISSED_BANNER_LIMIT,
+            move |out| {
+                // The number travels in the new window's environment, never on a command line.
+                // "Call back" only fills the keypad: the Calls window still asks before anything
+                // is dialed.
+                match (out.trim(), number) {
+                    ("callback", Some(n)) => crate::desktop_notify::open_app_with_env(
+                        "geekbridge-calls",
+                        "GEEKBRIDGE_DIAL",
+                        &n,
+                    ),
+                    ("message", Some(n)) => crate::desktop_notify::open_app_with_env(
+                        "geekbridge-messages",
+                        "GEEKBRIDGE_MESSAGE_TO",
+                        &n,
+                    ),
+                    ("default", _) => crate::desktop_notify::open_app("geekbridge-calls"),
+                    _ => {}
+                }
+            },
+        );
     }
 
     fn ringing(
@@ -314,32 +371,36 @@ impl CallNotifier for NotifySendCalls {
         let args = Self::args_with_replies(caller, can_answer, can_decline, &replies);
         // The top-right card with Answer / Reject is started by the hub (call_overlay::Supervisor);
         // this banner stays as the additional signal and the fallback.
-        std::thread::spawn(move || {
-            let out = std::process::Command::new("notify-send")
-                .args(&args)
-                .stdin(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .output();
-            if let Ok(out) = out {
-                match String::from_utf8_lossy(&out.stdout).trim() {
-                    "answer" if can_answer => reply(RingChoice::Answer),
-                    "decline" if can_decline => reply(RingChoice::Decline),
-                    other if can_decline && other.starts_with("reply") => {
-                        if let Some(i) = other["reply".len()..]
-                            .parse::<u8>()
-                            .ok()
-                            .filter(|i| usize::from(*i) < replies.len())
-                        {
-                            reply(RingChoice::DeclineWith(i));
-                        }
+        let mut cmd = std::process::Command::new("notify-send");
+        cmd.args(args);
+        crate::banner_pool::submit(
+            &format!("ring:{caller}"),
+            cmd,
+            RING_BANNER_LIMIT,
+            move |out| match out.trim() {
+                "answer" if can_answer => reply(RingChoice::Answer),
+                "decline" if can_decline => reply(RingChoice::Decline),
+                other if can_decline && other.starts_with("reply") => {
+                    if let Some(i) = other["reply".len()..]
+                        .parse::<u8>()
+                        .ok()
+                        .filter(|i| usize::from(*i) < replies.len())
+                    {
+                        reply(RingChoice::DeclineWith(i));
                     }
-                    "default" => crate::desktop_notify::open_app("geekbridge-calls"),
-                    _ => {}
                 }
-            }
-        });
+                "default" => crate::desktop_notify::open_app("geekbridge-calls"),
+                _ => {}
+            },
+        );
     }
 }
+
+/// A ring banner expires after 30 s on its own; a server that never ends it is cut off shortly after.
+const RING_BANNER_LIMIT: std::time::Duration = std::time::Duration::from_secs(35);
+/// The missed-call banner asks for 60 s.
+const MISSED_BANNER_LIMIT: std::time::Duration = std::time::Duration::from_secs(65);
+
 
 // ------------------------------------------------------------------ decline with a message
 
@@ -612,8 +673,7 @@ impl CallHub {
             .spawn(move || {
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                     while let Ok(cmd) = command_rx.try_recv() {
-                        let result = host.execute(&cmd.source, &cmd.command);
-                        let _ = cmd.reply.send(result);
+                        run_host_command(cmd, Instant::now(), |s, c| host.execute(s, c));
                     }
                     if let Some(hub) = hub.upgrade() {
                         host.set_link_phones(hub.link_phone_names());
@@ -778,6 +838,11 @@ impl CallHub {
     pub fn set_enabled(self: &Arc<Self>, device_id: &str, enabled: bool) {
         let mut guard = self.inner();
         let inner = &mut *guard;
+        if !enabled {
+            // Recents hold numbers and names: they go with the consent, link up or not.
+            let source = format!("{LINK_PREFIX}{device_id}");
+            inner.history.forget_source(&source);
+        }
         let Some(phone) = inner.links.get_mut(device_id) else {
             return;
         };
@@ -799,6 +864,12 @@ impl CallHub {
         }
     }
 
+    /// The phone was unpaired: its Recents (numbers and names) are forgotten.
+    pub fn forget_device(self: &Arc<Self>, device_id: &str) {
+        let source = format!("{LINK_PREFIX}{device_id}");
+        self.inner().history.forget_source(&source);
+    }
+
     /// A `geekbridge.calls.*` packet arrived. False if it was malformed or unexpected (the caller
     /// counts that as misbehaviour); packets from a device without consent are dropped quietly.
     pub fn on_packet(
@@ -814,6 +885,7 @@ impl CallHub {
                 notice,
                 suspended,
                 race_notice,
+                history,
                 ..
             } = &mut *guard;
             let Some(phone) = links.get_mut(device_id) else {
@@ -889,6 +961,10 @@ impl CallHub {
                             .map(|(_, a, _)| *a);
                         phone.pending.retain(|(p, _, _)| *p != id);
                         if let (Some(action), Err(reason)) = (action, outcome) {
+                            if action == LinkAction::Reject {
+                                // Queued is not declined: the ring that follows is a miss.
+                                history.undeclined(&format!("{LINK_PREFIX}{device_id}"));
+                            }
                             // "No such call" for what already happened (the phone was answered by
                             // hand a moment before the click, a decline raced the caller hanging
                             // up, a second click) is not a failure worth a notice.
@@ -914,6 +990,9 @@ impl CallHub {
                                         }
                                         (LinkAction::Tone, LinkFailure::NoSuchCall) => {
                                             "The call had changed, so the tone was not played."
+                                        }
+                                        (LinkAction::Tone, LinkFailure::PermissionMissing) => {
+                                            "The phone cannot play keypad tones now."
                                         }
                                         (LinkAction::Tone, LinkFailure::Failed) => {
                                             "The phone could not play that tone."
@@ -1494,6 +1573,10 @@ impl CallHub {
             .links
             .get_mut(device_id)
             .ok_or_else(|| err(ErrorCode::NotConnected, "the phone is not connected"))?;
+        if !phone.enabled {
+            // Consent was turned off after the request passed the view check.
+            return Err(err(ErrorCode::NotConnected, "the phone is not connected"));
+        }
         phone
             .pending
             .retain(|(_, _, at)| at.elapsed() < PENDING_TTL);
@@ -1544,6 +1627,7 @@ impl CallHub {
                     source: source.to_owned(),
                     command: command.clone(),
                     reply,
+                    deadline: Instant::now() + HOST_COMMAND_TIMEOUT,
                 })
                 .map_err(|_| err(ErrorCode::Failed, "Bluetooth calling stopped"))?;
         }
@@ -1616,6 +1700,9 @@ impl CallHub {
                 }
             }
             for device in &cleared {
+                // Nobody knows how this ring ended: not a missed call.
+                let source = format!("{LINK_PREFIX}{device}");
+                inner.history.forget_open(&source);
                 // A late answer that the phone still rings is the same ring, not a new banner.
                 Self::suspend(inner, device);
             }
@@ -2138,6 +2225,44 @@ mod tests {
         for secret in ["4915112345678", "12345678", "Zelda", "Quux", dev] {
             assert!(!everything.contains(secret), "trace leaked {secret}");
         }
+    }
+
+    #[test]
+    fn send_link_refuses_once_consent_is_off() {
+        let hub = CallHub::new();
+        let mut rx = hub.link_up("dev-consent", "Pixel", true);
+        assert!(
+            hub.send_link("link:dev-consent", LinkAction::Hangup, None, None)
+                .is_ok()
+        );
+        assert_eq!(rx.try_recv().unwrap().action, LinkAction::Hangup);
+        hub.set_enabled("dev-consent", false);
+        assert!(
+            hub.send_link("link:dev-consent", LinkAction::Hangup, None, None)
+                .is_err()
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn consent_off_and_unpairing_erase_the_phones_recents() {
+        let hub = CallHub::new();
+        let _rx = hub.link_up("dev-forget", "Pixel", true);
+        let state = |v: serde_json::Value| hub.on_packet("dev-forget", link::STATE, &body(v));
+        let missed_call = || {
+            state(json!({"state":"ringing","name":"Ada","number":"+1555","canAnswer":true,"canEnd":true}));
+            state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        };
+        missed_call();
+        missed_call();
+        assert_eq!(hub.status().view.recent.len(), 2);
+        hub.set_enabled("dev-forget", false);
+        assert!(hub.status().view.recent.is_empty());
+        hub.set_enabled("dev-forget", true);
+        missed_call();
+        assert_eq!(hub.status().view.recent.len(), 1);
+        hub.forget_device("dev-forget");
+        assert!(hub.status().view.recent.is_empty());
     }
 
     #[test]

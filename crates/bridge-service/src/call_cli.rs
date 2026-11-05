@@ -25,6 +25,19 @@ pub const USAGE: &str = "  calls --trace [--json] [--clear]    what the service 
                                       list speakers/headphones and microphones for calls; with a flag,
                                       pick one (NAME from the list, or default = follow the system)";
 
+/// Pause between keys. The service allows 20 keys per 5 s; this keeps the CLI near 3 keys/s, well under it.
+const TONE_PAUSE: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// The message when the service refuses key number `sent + 1` of `total`: how many were already pressed, so a
+/// half-entered PIN or menu path is not a surprise. Never names the keys.
+fn tone_refusal(sent: usize, total: usize, message: &str) -> String {
+    if sent == 0 {
+        message.to_owned()
+    } else {
+        format!("{message} (stopped after {sent} of {total} keys; they were already pressed in the call)")
+    }
+}
+
 /// Keep the last two digits, like the redacted device reports.
 pub fn mask(number: &str) -> String {
     let n = number.chars().count();
@@ -425,10 +438,12 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
                     {
                         return Err("keys are 0-9, * and # (at most 32)".into());
                     }
-                    // One request per key (the phone counts them), in order, with the pause a person's finger has.
+                    // One request per key (the phone counts them), in order. The pause keeps the pace under the
+                    // service's limit (20 keys per 5 s) so even 32 keys go through without a refusal.
+                    let total = keys.chars().count();
                     for (i, k) in keys.chars().enumerate() {
                         if i > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            std::thread::sleep(TONE_PAUSE);
                         }
                         let request = Request::CallTone {
                             source: source.clone(),
@@ -436,7 +451,7 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
                         };
                         match ipc::call(port, token, &request).map_err(|e| e.to_string())? {
                             Response::Ack => {}
-                            Response::Error(e) => return Err(e.message),
+                            Response::Error(e) => return Err(tone_refusal(i, total, &e.message)),
                             _ => return Err("unexpected reply from the service".into()),
                         }
                     }
@@ -526,6 +541,16 @@ mod tests {
         });
         v["view"]["rows"] = serde_json::to_value(&rows).unwrap();
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn tone_pace_keeps_32_keys_under_the_service_limit_and_a_refusal_says_how_far_it_got() {
+        // Any 5 s window holds at most ceil(5000 / pause) + 1 keys; the service refuses above 20.
+        let per_window = 5000 / TONE_PAUSE.as_millis() as usize + 1;
+        assert!(per_window <= 20, "{per_window} keys in 5 s");
+        assert_eq!(tone_refusal(0, 25, "Busy"), "Busy");
+        let m = tone_refusal(20, 25, "Busy");
+        assert!(m.contains("20 of 25") && m.starts_with("Busy"));
     }
 
     #[test]

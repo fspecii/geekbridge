@@ -406,7 +406,7 @@ fn run_tool(
     });
     // Large images need longer than the 2 s used for text.
     let wait = TOOL_TIMEOUT + Duration::from_millis((limit / 4096) as u64);
-    let bytes = match rx.recv_timeout(wait) {
+    let mut bytes = match rx.recv_timeout(wait) {
         Ok(b) => b,
         Err(_) => {
             let _ = child.kill();
@@ -427,9 +427,10 @@ fn run_tool(
             }
         }
     };
+    bytes.truncate(limit);
     Ok(Captured {
         ok: status.success(),
-        bytes: bytes.into_iter().take(limit).collect(),
+        bytes,
         truncated,
     })
 }
