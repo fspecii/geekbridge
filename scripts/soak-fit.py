@@ -20,7 +20,7 @@ BUDGET = {  # series: (unit, drift budget over the whole fitted window)
     "rss_kib": ("KiB", 3072),      # same allowance as scripts/soak.sh SOAK_RSS_GROWTH_KIB
     "threads": ("", 3),
     "fds": ("", 4),                # scripts/soak.sh SOAK_FD_SLACK
-    "state_bytes": ("B", 4096),
+    "state_bytes": ("B", 320 * 1024),  # call-trace.log fills its 256 KiB ring during the run; the hard cap below is the check
     "state_files": ("", 2),
     "log_bytes": ("B", 256 * 1024),
     "children": ("", 2),           # feature soak: pw-cat and card children come and go, the floor must not rise
@@ -29,10 +29,11 @@ CAPS = {  # hard caps on the maximum seen
     "events": 256,                 # the event log is a ring (leaks.rs)
     "notifications": 128,          # docs/kdeconnect-interop.md: mirrored notifications bounded to 128
     "state_files": 40,             # documented file set (docs/state-formats.md) with .bak / .lock
-    "state_bytes": 256 * 1024,
+    "state_bytes": 320 * 1024,     # call-trace.log is a file ring of 256 KiB (call_trace::FILE_CAP) plus the small files
     "paired": 3,
     "links": 3,
     "challenges": 3,
+    "banners": 12,                 # notify-send children: banner_pool::MAX_IN_FLIGHT (4, call banners) + mirror::MAX_OPEN_BANNERS (8, phone notifications)
 }
 
 

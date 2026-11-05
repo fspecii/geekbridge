@@ -767,6 +767,21 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        // Do Not Disturb probe: a `makoctl` that reads a flag file the driver toggles.
+        let mako = bin.join("makoctl");
+        std::fs::write(
+            &mako,
+            format!(
+                "#!/bin/sh\nif [ -e '{}' ]; then echo do-not-disturb; else echo default; fi\n",
+                bin.join("dnd.flag").display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&mako, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         exe = copy;
         if let Ok(r) = std::env::var("GEEKBRIDGE_SOAK_AUDIO_RUN") {
             runtime = PathBuf::from(r);
@@ -792,7 +807,14 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
         }
     }
     cmd.envs(preload.as_deref().map(|lib| ("LD_PRELOAD", lib)))
-        .env("PATH", "/usr/bin:/bin")
+        .env(
+            "PATH",
+            if features {
+                format!("{}:/usr/bin:/bin", out.join("bin").display())
+            } else {
+                "/usr/bin:/bin".to_string()
+            },
+        )
         .envs(
             std::env::var("FSYNC_SHIM_LOG")
                 .ok()
@@ -894,6 +916,12 @@ impl Feat<'_> {
             let _ = self.ctl.call(Request::CallAction { target, action }).await;
         }
     }
+    /// Whether the stub `makoctl` currently says Do Not Disturb.
+    fn dnd_on(&self) -> bool {
+        self.scratch
+            .parent()
+            .is_some_and(|d| d.join("bin").join("dnd.flag").exists())
+    }
     async fn calls(&self) -> Option<ipc::CallsStatus> {
         match self.ctl.call(Request::Calls).await {
             Ok(Response::Calls(c)) => Some(*c),
@@ -948,13 +976,14 @@ async fn ring_round(
     during_transfer: bool,
 ) {
     use bridge_core::call_wifi_view::CallWifiAction as W;
-    let kind = rng.below(5);
+    let kind = rng.below(6);
     let what = [
         "answer-pc",
         "decline-pc",
         "answer-phone",
         "miss",
         "drop-link",
+        "decline-msg",
     ][kind];
     let st = f.stats;
     st.rings.fetch_add(1, Relaxed);
@@ -996,14 +1025,39 @@ async fn ring_round(
     }
     if !seen {
         st.ring_not_seen.fetch_add(1, Relaxed);
-    } else if !f
-        .wait_children("geekbridge-calls", Duration::from_secs(5), |n| n >= 1)
-        .await
+    } else if !f.dnd_on()
+        && !f
+            .wait_children("geekbridge-calls", Duration::from_secs(5), |n| n >= 1)
+            .await
     {
+        // (With Do Not Disturb on the service keeps the ring quiet: no card, by design.)
         st.card_missing.fetch_add(1, Relaxed);
     }
     let mut wifi_used = false;
     match kind {
+        5 if seen => {
+            // Decline with a saved text; if the service refuses (no Messages path) fall back to a plain decline.
+            let target = f
+                .calls()
+                .await
+                .and_then(|c| c.view.rows.first().and_then(|r| r.reject.clone()));
+            let mut sent = false;
+            if let Some(target) = target {
+                sent = matches!(
+                    f.ctl
+                        .call(Request::CallDeclineReply { target, reply: 0 })
+                        .await,
+                    Ok(Response::Ack)
+                );
+            }
+            if !sent {
+                f.act(ipc::CallAction::Reject).await;
+            }
+            st.declined.fetch_add(1, Relaxed);
+        }
+        5 => {
+            st.missed.fetch_add(1, Relaxed);
+        }
         0 | 1 if seen => {
             let a = if kind == 0 {
                 ipc::CallAction::Answer
@@ -1173,6 +1227,15 @@ async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
         f.stats.poll_max_ms.fetch_max(ms, Relaxed);
         if ms > 1000 {
             f.stats.polls_slow.fetch_add(1, Relaxed);
+        }
+    }
+    // Do Not Disturb on / off (the stub `makoctl` reads this flag).
+    if let Some(dir) = f.scratch.parent() {
+        let flag = dir.join("bin").join("dnd.flag");
+        if rng.below(2) == 0 {
+            let _ = std::fs::write(&flag, b"1");
+        } else {
+            let _ = std::fs::remove_file(&flag);
         }
     }
     for k in PrivacyKey::ALL {
