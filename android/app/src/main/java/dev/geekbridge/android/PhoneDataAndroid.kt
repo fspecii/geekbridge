@@ -663,6 +663,17 @@ internal fun smsActionToken(random: java.security.SecureRandom = java.security.S
 /** `getSystemService(SmsManager::class.java)` exists from Android 12 (API 31); earlier releases return null. */
 internal fun smsManagerIsSystemService(sdk: Int = Build.VERSION.SDK_INT): Boolean = sdk >= 31
 
+/**
+ * The status receivers of one send. [releaseAll] is idempotent; [guarded] releases them at once if the send call throws
+ * (permission revoked, invalid address), since no report will ever come to do it.
+ */
+internal class SmsReceiverSet<T>(private val unregister: (T) -> Unit) {
+    private val items = ArrayList<T>(2)
+    fun add(r: T) { items += r }
+    fun releaseAll() = items.forEach { try { unregister(it) } catch (_: IllegalArgumentException) { } }
+    fun <R> guarded(block: () -> R): R = try { block() } catch (t: Throwable) { releaseAll(); throw t }
+}
+
 /** `SmsManager` behind [SmsSender]. Requires SEND_SMS (a SecurityException is mapped by the engine). */
 @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
 class AndroidSmsSender(context: Context) : SmsSender {
@@ -688,7 +699,7 @@ class AndroidSmsSender(context: Context) : SmsSender {
         val sentAction = "${app.packageName}.SMS_SENT.$token"
         val deliveredAction = "${app.packageName}.SMS_DELIVERED.$token"
         val tracker = SmsPartTracker(parts.size, listener)
-        val receivers = ArrayList<BroadcastReceiver>(2)
+        val receivers = SmsReceiverSet<BroadcastReceiver> { app.unregisterReceiver(it) }
         fun register(action: String, onResult: (Int) -> Boolean) {
             val r = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
@@ -696,12 +707,12 @@ class AndroidSmsSender(context: Context) : SmsSender {
                 }
                 fun release() = try { app.unregisterReceiver(this) } catch (_: IllegalArgumentException) { }
             }
-            receivers += r
+            receivers.add(r)
             val filter = IntentFilter(action)
             if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, filter, null, callbacks, Context.RECEIVER_NOT_EXPORTED)
             else app.registerReceiver(r, filter, null, callbacks)
         }
-        fun releaseAll() = receivers.forEach { try { app.unregisterReceiver(it) } catch (_: IllegalArgumentException) { } }
+        fun releaseAll() = receivers.releaseAll()
         fun intents(action: String) = ArrayList<PendingIntent>(parts.size).also { l ->
             repeat(parts.size) {
                 l += PendingIntent.getBroadcast(
@@ -709,16 +720,13 @@ class AndroidSmsSender(context: Context) : SmsSender {
                 )
             }
         }
-        try {
+        // If the call throws, no report will come: do not leave the receivers registered until the timer.
+        receivers.guarded {
             register(sentAction) { tracker.onSent(it) }
             register(deliveredAction) { tracker.onDelivered(it) }
             // Never leave receivers behind if a report never comes (delivery reports are optional for carriers).
             callbacks.postDelayed({ releaseAll() }, 15 * 60_000L)
             manager.sendMultipartTextMessage(address, null, parts, intents(sentAction), intents(deliveredAction))
-        } catch (t: Throwable) {
-            // The send never started, so no report will come: do not leave the receivers registered until the timer.
-            releaseAll()
-            throw t
         }
         listener.onStatus("accepted")
     }

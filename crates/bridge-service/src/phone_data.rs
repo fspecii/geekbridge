@@ -632,14 +632,18 @@ impl Dev {
         let mut touched = HashSet::new();
         for m in parsed.messages {
             let tid = m.key.thread_id;
-            if !self.threads.contains_key(&tid) {
-                if self.threads.len() >= MAX_THREADS && !self.drop_stalest_thread_before(m.date_ms)
-                {
-                    continue;
-                }
-                self.threads.insert(tid, Thread::new(tid));
+            if !self.threads.contains_key(&tid)
+                && self.threads.len() >= MAX_THREADS
+                && !self.drop_stalest_thread_before(m.date_ms)
+            {
+                continue;
             }
-            if room == 0 {
+            // Only a message that would add a row needs room; a changed one replaces in place.
+            let adds = self
+                .threads
+                .get(&tid)
+                .is_none_or(|t| t.conv.get(&m.key).is_none());
+            if adds && room == 0 {
                 // Memory for this phone is full: make room by dropping the oldest history of the
                 // biggest thread instead of refusing what just arrived.
                 let freed = self.evict_for_room();
@@ -648,7 +652,8 @@ impl Dev {
                 }
                 room = freed;
             }
-            let t = self.threads.get_mut(&tid).expect("inserted above");
+            // The thread exists only once its first message is going in (no empty ghost on a refusal).
+            let t = self.threads.entry(tid).or_insert_with(|| Thread::new(tid));
             let incoming = m.direction() == Direction::Incoming;
             let unread = !m.read;
             let recent = now.saturating_sub(m.date_ms) <= NOTIFY_MAX_AGE_MS;
@@ -3707,5 +3712,56 @@ mod tests {
             "the old thread is trimmed first and never emptied"
         );
         assert_eq!(len(2), 150 - 41, "then the oldest of the big one");
+    }
+
+    /// Fills the phone to the memory cap straight into the store (packets are rate-limited).
+    fn fill_to_cap(h: &PhoneData, base: u64) {
+        let mut g = h.lock();
+        let d = g.devices.get_mut(ID).unwrap();
+        let per = MAX_MESSAGES_TOTAL / 10;
+        for t in 0..10_i64 {
+            let th = d
+                .threads
+                .entry(ThreadId(10 + t))
+                .or_insert_with(|| Thread::new(ThreadId(10 + t)));
+            for i in 0..per as i64 {
+                let one = msg(10 + t, t * 100_000 + i, 1, "x", base + i as u64);
+                let body = obj(json!({"version": 2, "messages": [one]}));
+                for m in sms::parse_messages(&body).unwrap().messages {
+                    th.conv.merge(m).unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_changed_message_at_the_memory_cap_evicts_nothing_and_a_new_thread_leaves_no_ghost() {
+        let (h, _rx) = sms_hub();
+        let base = now_ms() - 10_000_000;
+        fill_to_cap(&h, base);
+        let held = |h: &PhoneData| -> usize {
+            let g = h.lock();
+            g.devices
+                .get(ID)
+                .unwrap()
+                .threads
+                .values()
+                .map(|t| t.conv.len())
+                .sum()
+        };
+        assert_eq!(held(&h), MAX_MESSAGES_TOTAL);
+        // The phone re-sends an existing message with changed text: replaced in place.
+        feed(&h, vec![msg(10, 0, 1, "edited", base)]);
+        assert_eq!(held(&h), MAX_MESSAGES_TOTAL, "an update needs no room");
+        // A new message in a new conversation makes room by dropping history, and the thread has a row.
+        feed(&h, vec![msg(999, 7, 1, "hello", now_ms() - 1000)]);
+        let g = h.lock();
+        let d = g.devices.get(ID).unwrap();
+        assert!(
+            d.threads.values().all(|t| !t.conv.is_empty()),
+            "no empty thread"
+        );
+        assert_eq!(d.threads.get(&ThreadId(999)).map(|t| t.conv.len()), Some(1));
+        assert!(d.threads.values().map(|t| t.conv.len()).sum::<usize>() <= MAX_MESSAGES_TOTAL);
     }
 }
