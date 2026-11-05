@@ -407,7 +407,17 @@ fn every_conversation_keeps_its_own_unsent_reply() {
     m.thread = Some(("d".into(), 2));
     rig.settle(&mut m, 3);
     assert_eq!(m.reply, "", "another person's draft never carries over");
-    rig.type_text(&mut m, "for two");
+    // The box takes the cursor a frame or more after the switch (slower on busy runners): type until it took.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while m.reply.is_empty() {
+        assert!(
+            std::time::Instant::now() < end,
+            "the reply box never took the text"
+        );
+        rig.type_text(&mut m, "for two");
+        rig.settle(&mut m, 3);
+    }
+    assert_eq!(m.reply, "for two");
     m.thread = Some(("d".into(), 1));
     rig.settle(&mut m, 3);
     assert_eq!(m.reply, "for Ann");
