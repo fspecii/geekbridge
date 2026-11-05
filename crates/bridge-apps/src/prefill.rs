@@ -15,15 +15,32 @@ pub const KEYPAD_VAR: &str = "GEEKBRIDGE_KEYPAD";
 
 /// Starts a sibling app with one prefill variable set. Returns a short error for the window.
 pub fn launch_with(binary: &str, var: &str, value: &str) -> Result<(), String> {
+    let mut child = spawn_with(binary, var, value)?;
+    // Reap it when it exits (no zombie); the window is not waited for here.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
+/// Like [`launch_with`], but hands the child to the caller (to reap it, or to see whether it still runs).
+pub fn spawn_with(binary: &str, var: &str, value: &str) -> Result<std::process::Child, String> {
     let exe = std::env::current_exe().ok();
     let path: PathBuf = crate::home_app::sibling(binary, exe.as_deref());
-    Command::new(path)
-        .env(var, value)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| {
-            crate::i18n::tr_args("home.launch_failed", &[("name", &binary), ("error", &e)])
-        })
+    command(path, var, value).spawn().map_err(|e| {
+        crate::i18n::tr_args("home.launch_failed", &[("name", &binary), ("error", &e)])
+    })
+}
+
+/// The command with only `var` set among the prefill variables: the others this process may have
+/// been started with must not reach the new app.
+fn command(path: PathBuf, var: &str, value: &str) -> Command {
+    let mut cmd = Command::new(path);
+    for other in [DIAL_VAR, MESSAGE_VAR, KEYPAD_VAR] {
+        cmd.env_remove(other);
+    }
+    cmd.env(var, value);
+    cmd
 }
 
 static DIAL_TAKEN: AtomicBool = AtomicBool::new(false);
@@ -68,6 +85,21 @@ pub fn clean_number(raw: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_child_gets_only_its_own_prefill_variable() {
+        let cmd = command(PathBuf::from("x"), MESSAGE_VAR, "+155");
+        let envs: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_string_lossy().into_owned(), v.map(|v| v.to_owned())))
+            .collect();
+        assert_eq!(
+            envs[MESSAGE_VAR].as_deref(),
+            Some(std::ffi::OsStr::new("+155"))
+        );
+        assert_eq!(envs[DIAL_VAR], None, "removed, not inherited");
+        assert_eq!(envs[KEYPAD_VAR], None, "removed, not inherited");
+    }
 
     #[test]
     fn only_dialable_characters_survive() {

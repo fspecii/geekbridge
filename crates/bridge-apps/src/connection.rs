@@ -88,12 +88,14 @@ impl ControlState {
 pub(crate) struct Config {
     state_dir: Option<std::path::PathBuf>,
     port: u16,
+    cached: Arc<Mutex<Option<Token>>>,
 }
 impl Config {
     pub(crate) fn from_environment() -> Self {
         Self {
             state_dir: ipc::default_state_dir(),
             port: ipc::control_port_from_env(),
+            cached: Arc::default(),
         }
     }
     fn token(&self) -> Result<Token, String> {
@@ -114,13 +116,30 @@ impl Config {
         bytes.zeroize();
         token
     }
-    fn fetch(&self) -> Result<Status, String> {
+    /// Run `op` with the cached token; on an authentication failure (the service may have
+    /// regenerated it) re-read the file once and retry.
+    fn with_token<T>(
+        &self,
+        op: impl Fn(&Token) -> Result<T, ipc::IpcError>,
+    ) -> Result<T, String> {
+        let cached = self.cached.lock().ok().and_then(|g| g.clone());
+        if let Some(token) = cached {
+            match op(&token) {
+                Err(ipc::IpcError::Unauthorized | ipc::IpcError::Protocol(_)) => {}
+                other => return other.map_err(service_error),
+            }
+        }
         let token = self.token()?;
-        ipc::status(self.port, &token).map_err(service_error)
+        if let Ok(mut g) = self.cached.lock() {
+            *g = Some(token.clone());
+        }
+        op(&token).map_err(service_error)
+    }
+    fn fetch(&self) -> Result<Status, String> {
+        self.with_token(|t| ipc::status(self.port, t))
     }
     pub(crate) fn request(&self, request: &Request) -> Result<Response, String> {
-        let token = self.token()?;
-        ipc::call(self.port, &token, request).map_err(service_error)
+        self.with_token(|t| ipc::call(self.port, t, request))
     }
 }
 fn service_error(error: ipc::IpcError) -> String {

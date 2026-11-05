@@ -42,9 +42,9 @@ const DONE_SHOW: Duration = Duration::from_millis(2500);
 const ENDED_SHOW: Duration = Duration::from_secs(4);
 /// A refusal is shown this long; the buttons come back if the call still rings.
 const FAIL_SHOW: Duration = Duration::from_secs(6);
-/// An accepted decision that the phone never confirms stops looking pending after this.
 /// How long `--test` shows its fake ring.
 const TEST_SECONDS: Duration = Duration::from_secs(10);
+/// An accepted decision that the phone never confirms stops looking pending after this.
 const PENDING_MAX: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,7 +136,12 @@ pub struct Card {
     live_secs: u64,
     /// The list of texts replaces the buttons ("Decline with message" was pressed).
     picking: bool,
+    /// When a successful poll first reported no call while one was going on.
+    no_live_since: Option<Instant>,
 }
+
+/// A call going on ends only after successful polls have reported none for this long (two polls).
+const LIVE_END_GRACE: Duration = Duration::from_millis(1800);
 
 /// Title (name, else number, else "Unknown caller") and, when allowed and different, the number.
 pub fn caller_lines(row: &CallRow, reveal: Reveal) -> (String, Option<String>) {
@@ -164,6 +169,7 @@ impl Card {
             live_since: None,
             live_secs: 0,
             picking: false,
+            no_live_since: None,
         }
     }
 
@@ -285,6 +291,7 @@ impl Card {
             Some(row) => {
                 self.seen_ringing = true;
                 self.idle_since = now;
+                self.no_live_since = None;
                 // The row's key changes when a second source (Bluetooth after the link) starts
                 // seeing the same call; its parts say whether it is still the call on the card.
                 let same = self.key.as_deref().is_some_and(|k| row.is(k))
@@ -343,6 +350,7 @@ impl Card {
                 }
                 self.outcome = None;
                 self.pending = None;
+                self.no_live_since = None;
                 self.seen_ringing = true;
                 self.idle_since = now;
                 self.key = Some(row.key.clone());
@@ -353,6 +361,27 @@ impl Card {
                 Verdict::Keep
             }
             None => {
+                if let Some(since) = self.live_since {
+                    // An unreachable service says nothing about the call: keep the last state. Only
+                    // successful polls that report no call, twice in a row, end it.
+                    let unsure = match view {
+                        None => {
+                            self.no_live_since = None;
+                            true
+                        }
+                        Some(_) => {
+                            let t = *self.no_live_since.get_or_insert(now);
+                            now.saturating_duration_since(t) < LIVE_END_GRACE
+                        }
+                    };
+                    if unsure && self.outcome.is_none() {
+                        self.idle_since = now;
+                        self.live_secs = crate::call_ui::fixed_call_seconds()
+                            .unwrap_or_else(|| now.saturating_duration_since(since).as_secs());
+                        return Verdict::Keep;
+                    }
+                }
+                self.no_live_since = None;
                 if let Some(since) = self.live_since.take() {
                     // The call was going on and is over: say how long it lasted.
                     self.pending = None;
@@ -1054,6 +1083,20 @@ struct OverlayApp {
     hidden_sent: bool,
     /// The native window style has been applied (once, on the first frame).
     styled: bool,
+    /// The Calls window the Keypad button opened, while it runs.
+    keypad_child: Option<std::process::Child>,
+}
+
+/// Whether the child in `slot` still runs. A finished one is reaped and the slot emptied.
+fn child_running(slot: &mut Option<std::process::Child>) -> bool {
+    let Some(child) = slot.as_mut() else {
+        return false;
+    };
+    if matches!(child.try_wait(), Ok(None)) {
+        return true;
+    }
+    *slot = None;
+    false
 }
 
 impl eframe::App for OverlayApp {
@@ -1143,11 +1186,15 @@ impl eframe::App for OverlayApp {
             let request = match live {
                 LiveChoice::Keypad => {
                     // The card never takes the keyboard, so the keys live in the Calls window.
-                    let _ = crate::prefill::launch_with(
-                        "geekbridge-calls",
-                        crate::prefill::KEYPAD_VAR,
-                        "1",
-                    );
+                    // One window at a time: a click while it is open does nothing.
+                    if !child_running(&mut self.keypad_child) {
+                        self.keypad_child = crate::prefill::spawn_with(
+                            "geekbridge-calls",
+                            crate::prefill::KEYPAD_VAR,
+                            "1",
+                        )
+                        .ok();
+                    }
                     None
                 }
                 LiveChoice::HangUp => self.card.live_request(&state, Decision::HangUp),
@@ -1313,6 +1360,7 @@ pub fn run(theme_choice: ThemeChoice, reveal: Reveal, test: bool) -> eframe::Res
                 placed: false,
                 hidden_sent: false,
                 styled: false,
+                keypad_child: None,
             }))
         }),
     )
@@ -1509,9 +1557,12 @@ mod tests {
         c.choose(&st, Choice::Answer, at(t, 100)).unwrap();
         let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
         c.update(&live, at(t, 500));
-        c.update(&live, at(t, 500 + 133_000));
+        c.update(&live, at(t, 500 + 131_000));
         let idle = idle();
-        let end = at(t, 500 + 133_400);
+        // One poll without a call is not yet the end; the second one is.
+        assert_eq!(c.update(&idle, at(t, 500 + 132_000)), Verdict::Keep);
+        assert!(matches!(c.body(&idle), Some(Body::Live { .. }) | None));
+        let end = at(t, 500 + 133_900);
         assert_eq!(c.update(&idle, end), Verdict::Keep);
         assert_eq!(
             c.body(&idle),
@@ -1525,6 +1576,47 @@ mod tests {
             c.update(&idle, end + Duration::from_secs(5)),
             Verdict::Close
         );
+    }
+
+    #[test]
+    fn an_unreachable_service_does_not_end_a_call_or_restart_its_timer() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let down = FeedState {
+            status: None,
+            problem: Some("unreachable".into()),
+        };
+        for s in [10u64, 20, 60, 120] {
+            assert_eq!(c.update(&down, t + Duration::from_secs(s)), Verdict::Keep);
+        }
+        // The service is back and the call still goes on: the timer kept counting.
+        assert_eq!(
+            c.update(&live, t + Duration::from_secs(133)),
+            Verdict::Keep
+        );
+        let Some(Body::Live { header, .. }) = c.body(&live) else {
+            panic!("an in-call card")
+        };
+        assert_eq!(header, "IN CALL 02:13");
+    }
+
+    #[test]
+    fn a_single_empty_poll_is_a_flicker_two_are_the_end() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let idle = idle();
+        assert_eq!(c.update(&idle, at(t, 60_000)), Verdict::Keep);
+        // The call is reported again: the flicker is forgotten.
+        c.update(&live, at(t, 60_500));
+        assert_eq!(c.update(&idle, at(t, 61_000)), Verdict::Keep);
+        assert!(!matches!(c.body(&idle), Some(Body::Done { .. })));
+        // A second empty poll in a row ends it.
+        c.update(&idle, at(t, 63_000));
+        assert!(matches!(c.body(&idle), Some(Body::Done { .. })));
     }
 
     #[test]
@@ -1949,6 +2041,27 @@ mod tests {
                 assert_eq!(show(ctx, &pal, &body), Action::default());
             });
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_running_keypad_window_blocks_a_second_and_a_finished_one_is_reaped() {
+        let mut slot = None;
+        assert!(!child_running(&mut slot));
+        slot = Some(
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap(),
+        );
+        assert!(child_running(&mut slot), "still open: the click is ignored");
+        slot.as_mut().unwrap().kill().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while child_running(&mut slot) {
+            assert!(Instant::now() < until, "never reaped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(slot.is_none(), "reaped and forgotten");
     }
 
     #[test]

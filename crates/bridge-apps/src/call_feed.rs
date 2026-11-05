@@ -75,7 +75,10 @@ impl CallFeed {
                             next.problem = action_problem.clone();
                         }
                         Err(why) => {
-                            next.status = None;
+                            // A failed poll does not end a call going on: keep what was last known.
+                            if !next.status.as_ref().is_some_and(|s| s.view.live().is_some()) {
+                                next.status = None;
+                            }
                             next.problem = Some(why);
                             down = true;
                         }

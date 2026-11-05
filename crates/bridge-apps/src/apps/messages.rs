@@ -30,6 +30,7 @@ use eframe::egui::{
     StrokeKind, UiBuilder, vec2,
 };
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -49,6 +50,9 @@ pub struct Messages {
     focus: Option<Focus>,
     copied_at: Option<f64>,
     feed: Option<Feed<MessagesView>>,
+    /// The view whose text was last scanned for scripts the fonts lack. Kept alive so the same
+    /// allocation is never mistaken for a new view; an unchanged view skips the rescan.
+    fonts_scanned: Option<Arc<MessagesView>>,
     /// (device id, thread id) shown in the conversation pane.
     thread: Option<(String, i64)>,
     reply: String,
@@ -401,7 +405,7 @@ impl Messages {
 
     // ------------------------------------------------------------ content
 
-    fn view(&self) -> (MessagesView, phone_feed::FeedState<MessagesView>) {
+    fn view(&self) -> (Arc<MessagesView>, phone_feed::FeedState<MessagesView>) {
         let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
         (state.view.clone().unwrap_or_default(), state)
     }
@@ -538,8 +542,10 @@ impl Messages {
         }
         // Reading a conversation marks it read here (the phone is not told). Asked again only
         // when more messages arrived since.
+        // Only while the window has focus: a minimised window is not reading anything.
         if let Some(c) = conv
             && c.unread > 0
+            && ui.ctx().input(|i| i.focused)
             && self.marked.get(&(device.clone(), thread)) != Some(&c.message_count)
         {
             self.marked
@@ -729,6 +735,8 @@ impl Messages {
             )
         } else if to.is_none() {
             Some("This conversation has no address to reply to.".into())
+        } else if conv.is_some_and(|c| c.addresses.len() > 1) {
+            Some(crate::i18n::tr("reply.group_blocked").into())
         } else {
             None
         };
@@ -1449,13 +1457,49 @@ fn day_label(day: localtime::Date, today: localtime::Date) -> String {
     }
 }
 
+/// Local day and clock label of one message time, remembered so a redrawn frame does not ask the
+/// system for the zone offset once per message. Valid for the minute it was made in (a zone or
+/// daylight-saving change shows up at the latest then); bounded.
+#[derive(Default)]
+struct TimeCache {
+    minute: u64,
+    map: HashMap<u64, (localtime::Date, String)>,
+}
+
+const TIME_CACHE_MAX: usize = 4096;
+
+impl TimeCache {
+    fn get(&mut self, ms: u64, minute: u64) -> &(localtime::Date, String) {
+        if self.minute != minute || self.map.len() >= TIME_CACHE_MAX {
+            self.map.clear();
+            self.minute = minute;
+        }
+        self.map.entry(ms).or_insert_with(|| {
+            let utc_ms = i64::try_from(ms).unwrap_or(0);
+            let day = localtime::split_unix(
+                utc_ms.div_euclid(1000),
+                localtime::utc_offset_minutes_at(utc_ms).saturating_mul(60),
+            )
+            .0;
+            (day, localtime::clock_label_local(utc_ms))
+        })
+    }
+}
+
+thread_local! {
+    static TIMES: std::cell::RefCell<TimeCache> = std::cell::RefCell::new(TimeCache::default());
+}
+
+fn cached_time<R>(ms: u64, f: impl FnOnce(&(localtime::Date, String)) -> R) -> R {
+    TIMES.with(|t| f(t.borrow_mut().get(ms, now_ms() / 60_000)))
+}
+
 fn local_day(ms: u64) -> localtime::Date {
-    let utc_ms = i64::try_from(ms).unwrap_or(0);
-    localtime::split_unix(
-        utc_ms.div_euclid(1000),
-        localtime::utc_offset_minutes_at(utc_ms).saturating_mul(60),
-    )
-    .0
+    cached_time(ms, |t| t.0)
+}
+
+fn local_clock(ms: u64) -> String {
+    cached_time(ms, |t| t.1.clone())
 }
 
 /// Sends of this conversation that still need a line of their own: the ones whose text has not
@@ -1749,9 +1793,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                         );
                     }
                     ui.label(
-                        RichText::new(localtime::clock_label_local(
-                            i64::try_from(m.date_ms).unwrap_or(0),
-                        ))
+                        RichText::new(local_clock(m.date_ms))
                         .color(fg.gamma_multiply(0.7))
                         .size(12.0),
                     );
@@ -1819,23 +1861,30 @@ impl AppView for Messages {
             self.to_list_open = false;
         }
         // Text in a script the bundled fonts lack (CJK, Arabic, Indic, ...) gets a system font on demand.
-        crate::script_fonts::ensure(
-            ctx,
-            view.conversations
-                .iter()
-                .flat_map(|c| {
-                    [
-                        c.title.as_str(),
-                        c.last_body.as_str(),
-                        c.matched.as_deref().unwrap_or(""),
-                    ]
-                })
-                .chain(
-                    view.selected
-                        .iter()
-                        .flat_map(|s| s.messages.iter().map(|m| m.body.as_str())),
-                ),
-        );
+        if !self
+            .fonts_scanned
+            .as_ref()
+            .is_some_and(|seen| Arc::ptr_eq(seen, &view))
+        {
+            crate::script_fonts::ensure(
+                ctx,
+                view.conversations
+                    .iter()
+                    .flat_map(|c| {
+                        [
+                            c.title.as_str(),
+                            c.last_body.as_str(),
+                            c.matched.as_deref().unwrap_or(""),
+                        ]
+                    })
+                    .chain(
+                        view.selected
+                            .iter()
+                            .flat_map(|s| s.messages.iter().map(|m| m.body.as_str())),
+                    ),
+            );
+            self.fonts_scanned = Some(view.clone());
+        }
         if !self.open_number_checked {
             self.open_number_checked = true;
             self.open_number = crate::prefill::take_message_to();
@@ -1913,6 +1962,22 @@ impl AppView for Messages {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn message_times_are_computed_once_per_minute() {
+        let mut cache = super::TimeCache::default();
+        let ms = 1_700_000_000_000;
+        let first = cache.get(ms, 5).clone();
+        assert_eq!(cache.map.len(), 1);
+        assert_eq!(cache.get(ms, 5).1, first.1, "a hit returns the same answer");
+        assert_eq!(cache.map.len(), 1, "a hit adds nothing");
+        cache.get(ms + 60_000, 5);
+        assert_eq!(cache.map.len(), 2);
+        cache.get(ms, 6);
+        assert_eq!(cache.map.len(), 1, "a new minute starts over");
+        assert!(super::local_day(ms) == super::local_day(ms));
+        assert_eq!(super::local_clock(ms), first.1);
+    }
+
     #[test]
     fn the_compose_hint_names_the_chord_the_platform_uses() {
         let hint = super::compose_hint();

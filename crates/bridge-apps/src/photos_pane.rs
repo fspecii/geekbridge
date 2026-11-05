@@ -343,10 +343,72 @@ pub enum CopyOutcome {
     Refused,
 }
 
+/// Textures kept alive at once; the least recently drawn is dropped first.
+const MAX_TEXTURES: usize = 48;
+/// How long the worker waits between polls while the tab is closed (it only watches whether a phone offers photos).
+const IDLE_POLL_MS: u64 = 10_000;
+
+/// A bounded map that drops the least recently used entry when it grows past its capacity.
+struct LruCache<K, V> {
+    map: HashMap<K, (V, u64)>,
+    tick: u64,
+    cap: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V> LruCache<K, V> {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            tick: 0,
+            cap: cap.max(1),
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<&V> {
+        self.tick += 1;
+        let tick = self.tick;
+        self.map.get_mut(key).map(|e| {
+            e.1 = tick;
+            &e.0
+        })
+    }
+
+    /// Adds `value`; returns the keys dropped to stay within the capacity.
+    fn insert(&mut self, key: K, value: V) -> Vec<K> {
+        self.tick += 1;
+        self.map.insert(key, (value, self.tick));
+        let mut dropped = Vec::new();
+        while self.map.len() > self.cap {
+            let Some(oldest) = self
+                .map
+                .iter()
+                .min_by_key(|(_, e)| e.1)
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            self.map.remove(&oldest);
+            dropped.push(oldest);
+        }
+        dropped
+    }
+
+    fn retain(&mut self, keep: impl Fn(&K) -> bool) {
+        self.map.retain(|k, _| keep(k));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// Everything the window shows, produced by the worker thread.
 #[derive(Clone, Default)]
 pub struct Model {
     pub photos: Option<PhotosView>,
+    /// Previews decoded since the pane last took them. Each is handed over once, becomes a texture, and is then
+    /// dropped: the pane keeps the texture only, never the pixels.
     pub thumbs: HashMap<Key, Arc<Decoded>>,
     pub copies: HashMap<u64, CopyOutcome>,
     pub notice: Option<String>,
@@ -359,15 +421,14 @@ impl Model {
             && self.notice == other.notice
             && self.error == other.error
             && self.copies == other.copies
-            && self.thumbs.len() == other.thumbs.len()
-            && self
-                .thumbs
-                .iter()
-                .all(|(k, v)| other.thumbs.get(k).is_some_and(|o| Arc::ptr_eq(v, o)))
     }
 }
 
 pub(crate) enum Cmd {
+    /// The tab was opened: poll now instead of waiting out the idle interval.
+    Poll,
+    /// A preview whose texture was dropped is drawn again: fetch it once more.
+    Forget(Key),
     Refresh(String),
     Allow(String, bool),
     Fetch {
@@ -407,6 +468,8 @@ impl Worker {
                 let mut model = Model::default();
                 let mut published: Option<Model> = None;
                 let mut handled: HashSet<u64> = HashSet::new();
+                // Previews already fetched and handed to the pane (their pixels are not kept here).
+                let mut have: HashSet<Key> = HashSet::new();
                 loop {
                     if fixture {
                         model.photos = Some(offered_fixture());
@@ -422,20 +485,34 @@ impl Worker {
                                     &token,
                                     &mut model,
                                     &mut handled,
+                                    &mut have,
                                     active.load(Ordering::Relaxed),
                                 );
                             }
                         }
                     }
-                    if published.as_ref().is_none_or(|p| !p.same_as(&model)) {
+                    if !model.thumbs.is_empty()
+                        || published.as_ref().is_none_or(|p| !p.same_as(&model))
+                    {
+                        {
+                            let mut slot = out.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut next = model.clone();
+                            // Previews the pane has not taken yet must not be lost to a newer publish.
+                            if let Some(old) = slot.take() {
+                                for (k, v) in old.thumbs {
+                                    next.thumbs.entry(k).or_insert(v);
+                                }
+                            }
+                            *slot = Some(next);
+                        }
+                        model.thumbs.clear();
                         published = Some(model.clone());
-                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(model.clone());
                         wake();
                     }
                     let wait = if active.load(Ordering::Relaxed) {
                         500
                     } else {
-                        2000
+                        IDLE_POLL_MS
                     };
                     match rx.recv_timeout(crate::pace::scaled(Duration::from_millis(wait))) {
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -445,6 +522,11 @@ impl Worker {
                         }
                         Ok(cmd) => {
                             let request = match cmd {
+                                Cmd::Poll => continue,
+                                Cmd::Forget(key) => {
+                                    have.remove(&key);
+                                    continue;
+                                }
                                 Cmd::Refresh(device_id) => Request::PhotosRefresh { device_id },
                                 Cmd::Allow(device_id, enabled) => Request::SetConsent {
                                     device_id,
@@ -491,6 +573,7 @@ fn cycle(
     token: &ipc::Token,
     model: &mut Model,
     handled: &mut HashSet<u64>,
+    have: &mut HashSet<Key>,
     active: bool,
 ) {
     match ipc::call(port, token, &Request::Photos { device_id: None }) {
@@ -514,18 +597,14 @@ fn cycle(
         .map(|i| (i.device_id.clone(), i.id.clone()))
         .collect();
     model.thumbs.retain(|k, _| wanted.contains(k));
+    have.retain(|k| wanted.contains(k));
     if !active {
         return;
     }
     let missing: Vec<&PhotoItem> = view
         .items
         .iter()
-        .filter(|i| {
-            i.has_thumb
-                && !model
-                    .thumbs
-                    .contains_key(&(i.device_id.clone(), i.id.clone()))
-        })
+        .filter(|i| i.has_thumb && !have.contains(&(i.device_id.clone(), i.id.clone())))
         .take(THUMBS_PER_CYCLE)
         .collect();
     for item in missing {
@@ -540,9 +619,9 @@ fn cycle(
                 .ok()
                 .and_then(|bytes| decode_thumb(&bytes).ok());
             if let Some(d) = decoded {
-                model
-                    .thumbs
-                    .insert((item.device_id.clone(), item.id.clone()), Arc::new(d));
+                let key = (item.device_id.clone(), item.id.clone());
+                have.insert(key.clone());
+                model.thumbs.insert(key, Arc::new(d));
             }
         }
     }
@@ -575,7 +654,9 @@ pub struct PhotosPane {
     pub model: Model,
     active: Arc<AtomicBool>,
     selected: Option<Key>,
-    textures: HashMap<Key, TextureHandle>,
+    textures: LruCache<Key, TextureHandle>,
+    /// Previews whose texture was dropped to stay within [`MAX_TEXTURES`]; fetched again if drawn.
+    evicted: HashSet<Key>,
     /// Phones this tab already asked for a list since they were allowed.
     asked: HashSet<String>,
 }
@@ -597,7 +678,8 @@ impl PhotosPane {
             model: Model::default(),
             active,
             selected: None,
-            textures: HashMap::new(),
+            textures: LruCache::new(MAX_TEXTURES),
+            evicted: HashSet::new(),
             asked: HashSet::new(),
         }
     }
@@ -615,7 +697,8 @@ impl PhotosPane {
                 model,
                 active: Arc::new(AtomicBool::new(false)),
                 selected: None,
-                textures: HashMap::new(),
+                textures: LruCache::new(MAX_TEXTURES),
+                evicted: HashSet::new(),
                 asked: HashSet::new(),
             },
             rx,
@@ -624,7 +707,12 @@ impl PhotosPane {
 
     pub fn poll(&mut self) {
         if let Some(m) = self.worker.latest() {
+            // Previews not yet turned into textures are kept across the swap.
+            let waiting = std::mem::take(&mut self.model.thumbs);
             self.model = m;
+            for (k, v) in waiting {
+                self.model.thumbs.entry(k).or_insert(v);
+            }
         }
     }
 
@@ -637,7 +725,10 @@ impl PhotosPane {
     }
 
     pub fn set_active(&self, on: bool) {
-        self.active.store(on, Ordering::Relaxed);
+        // Opening the tab wakes the worker, which otherwise sleeps out its long idle interval.
+        if !self.active.swap(on, Ordering::Relaxed) && on {
+            self.worker.send(Cmd::Poll);
+        }
     }
 
     fn command(&self, a: &Action) {
@@ -715,8 +806,14 @@ impl PhotosPane {
         {
             self.selected = Some((first.device_id.clone(), first.id.clone()));
         }
-        let live: HashSet<Key> = self.model.thumbs.keys().cloned().collect();
-        self.textures.retain(|k, _| live.contains(k));
+        let live: HashSet<Key> = view
+            .items
+            .iter()
+            .map(|i| (i.device_id.clone(), i.id.clone()))
+            .collect();
+        self.textures.retain(|k| live.contains(k));
+        self.evicted.retain(|k| live.contains(k));
+        self.model.thumbs.retain(|k, _| live.contains(k));
         for a in &actions {
             self.command(a);
         }
@@ -727,14 +824,22 @@ impl PhotosPane {
         if let Some(t) = self.textures.get(key) {
             return Some(t.clone());
         }
-        let d = self.model.thumbs.get(key)?;
+        let Some(d) = self.model.thumbs.remove(key) else {
+            if self.evicted.remove(key) {
+                self.worker.send(Cmd::Forget(key.clone()));
+            }
+            return None;
+        };
         let image = egui::ColorImage::from_rgba_unmultiplied([d.width, d.height], &d.rgba);
+        // The pixels are dropped here; the texture is all the pane keeps.
+        drop(d);
         let handle = ctx.load_texture(
             format!("photo-{}-{}", key.0, key.1),
             image,
             TextureOptions::LINEAR,
         );
-        self.textures.insert(key.clone(), handle.clone());
+        let dropped = self.textures.insert(key.clone(), handle.clone());
+        self.evicted.extend(dropped);
         Some(handle)
     }
 

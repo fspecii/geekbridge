@@ -19,7 +19,8 @@ pub const POLL_DOWN: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FeedState<V> {
-    pub view: Option<V>,
+    /// Shared, so handing the state out each frame copies a pointer, not the whole view.
+    pub view: Option<Arc<V>>,
     /// Why the service could not be asked, or refused the last action; plain words.
     pub problem: Option<String>,
     /// Short confirmation of the last action ("Sent to the phone.").
@@ -99,7 +100,7 @@ impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
                     let mut down = false;
                     let next = match fetch(&request) {
                         Ok(view) => FeedState {
-                            view: Some(view),
+                            view: Some(Arc::new(view)),
                             problem: sticky.0.clone(),
                             notice: sticky.1.clone(),
                             acted,
@@ -256,6 +257,17 @@ mod tests {
     }
 
     #[test]
+    fn cloning_the_state_shares_the_view() {
+        let state = FeedState::<String> {
+            view: Some(Arc::new("big".into())),
+            ..FeedState::default()
+        };
+        let copy = state.clone();
+        let (a, b) = (state.view.unwrap(), copy.view.unwrap());
+        assert!(Arc::ptr_eq(&a, &b), "a copy is a pointer, not the view");
+    }
+
+    #[test]
     fn follows_params_shows_action_results_and_reports_a_down_service() {
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let s = seen.clone();
@@ -292,7 +304,9 @@ mod tests {
         let _ = shared.set(feed.state.clone());
         wait_until("down", || feed.state().problem.as_deref() == Some("down"));
         feed.set_params(Request::Events { after: 7 });
-        wait_until("view", || feed.state().view.as_deref() == Some("events7"));
+        wait_until("view", || {
+            feed.state().view.as_ref().map(|v| v.as_str()) == Some("events7")
+        });
         feed.run(Request::Ping {
             device_id: "x".into(),
         });

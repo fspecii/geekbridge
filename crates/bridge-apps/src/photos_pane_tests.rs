@@ -408,6 +408,44 @@ fn renders_every_state_at_wide_and_narrow_sizes() {
 }
 
 #[test]
+fn the_texture_cache_drops_the_least_recently_used_entry_past_its_capacity() {
+    let mut c: LruCache<u32, &str> = LruCache::new(3);
+    assert!(c.insert(1, "a").is_empty());
+    assert!(c.insert(2, "b").is_empty());
+    assert!(c.insert(3, "c").is_empty());
+    // Drawing 1 makes 2 the oldest.
+    assert_eq!(c.get(&1), Some(&"a"));
+    assert_eq!(c.insert(4, "d"), vec![2]);
+    assert_eq!(c.len(), 3);
+    assert_eq!(c.get(&2), None);
+    assert_eq!(c.insert(5, "e"), vec![3]);
+    c.retain(|k| *k != 1);
+    assert_eq!(c.len(), 2);
+    // Replacing a key never grows the cache; a capacity of zero still holds one entry.
+    assert!(c.insert(4, "x").is_empty());
+    let mut one: LruCache<u32, ()> = LruCache::new(0);
+    one.insert(1, ());
+    assert_eq!(one.insert(2, ()), vec![1]);
+}
+
+#[test]
+fn a_texture_replaces_the_pixels_and_an_evicted_one_is_fetched_again() {
+    let (mut pane, rx) = PhotosPane::for_test(model(grid_view(vec![]), true));
+    pane.asked.insert("a".into());
+    let mut rig = Rig::new(AppKind::Clipboard, 480.0, 700.0);
+    settle(&mut pane, &mut rig);
+    assert!(pane.model.thumbs.is_empty(), "no decoded pixels are kept");
+    assert_eq!(pane.textures.len(), 3);
+    // A dropped texture that is drawn again asks the worker for its preview once.
+    let key: Key = ("a".into(), "p1".into());
+    pane.textures.retain(|k| *k != key);
+    pane.evicted.insert(key.clone());
+    settle(&mut pane, &mut rig);
+    assert!(matches!(rx.try_recv(), Ok(Cmd::Forget(k)) if k == key));
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
 fn a_phone_name_is_text_not_a_format_string() {
     let mut d = device(true, false);
     d.name = "{n} {phone} %s \u{202E}evil".into();
