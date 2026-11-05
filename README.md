@@ -53,12 +53,12 @@ individually confirmed there.**
 | File, link, text sharing | Both directions, Android Share sheet, drag and drop, up to 8 GiB, SHA-256 checked | Emulator, 500 MB each way | not yet |
 | Clipboard | Text, links, HTML, images; computer to phone automatic, phone to computer on demand via hotkey | Scripted + emulator for the transport; hotkey/`wl-clipboard` on Linux | not yet |
 | Calls: answer, decline, hang up | Popup and notification on the computer; opt-in on the phone | Emulator (simulated GSM signalling through the link) and a fake `org.pipewire.Telephony` | not yet |
-| Call audio on the computer | Voice through the computer's headset over Bluetooth hands-free (HFP): **Linux** via PipeWire, **Windows** via Windows' own stack, **macOS not available** (answer on the Mac, talk on the phone). A guided checklist, a tone and microphone test, and per-OS guidance ([guide](docs/call-audio-options.md)) | Checklist, parsers and test logic: unit and service tests; Android Bluetooth status: JVM tests. Bluetooth voice, codecs and echo **not verified on any OS**; Windows detection never run on a real PC | not yet |
-| In-call card, Recents, missed calls | A small card with the caller, a timer, **Hang up**, **Mute** (only where the PC carries the voice), an audio status line and a short "Call ended" linger. A **Recents** tab (last 30 calls since the service started, memory only) and a missed-call banner with **Call back** and **Message**. Dialer suggests names from your contacts as you type | Unit and service tests, UI tests; card and banner never seen on a live desktop with a real call | not yet |
+| Call audio on the computer | Voice through the computer's headset over Bluetooth hands-free (HFP): **Linux** via PipeWire, **Windows** via Windows' own stack, **macOS not available** (answer on the Mac, talk on the phone). **Needs a one-time Bluetooth pairing of the phone with the computer, and a Bluetooth controller in the PC.** A guided checklist, a tone and microphone test, and per-OS guidance ([guide](docs/call-audio-options.md), [decision report](docs/reports/call-audio-decision.md)) | Checklist, parsers and test logic: unit and service tests; Android Bluetooth status: JVM tests. **Unverified on real hardware by the maintainers:** Bluetooth voice, codecs and echo were not heard on any OS; Windows detection never run on a real PC | not yet |
+| In-call card, Recents, missed calls | A small card with the caller, a timer, **Hang up**, **Mute** (only where the PC carries the voice), an audio status line and a short "Call ended" linger. A **Recents** tab (last 30 calls since the service started, memory only) and a missed-call banner with **Call back** and **Message**. Dialer suggests names from your contacts as you type | Unit, service and UI tests; the `call-ui` emulator job rings a simulated call and watches the card; card and banner never seen with a real call | not yet |
 | Decline with a message | **Decline with message** sends one of 3 preset texts (editable in Settings) as an SMS. Needs Messages allowed on both ends; the SMS limiter applies | Unit and service tests against a stand-in phone | not yet |
 | Keypad during a call | 12 keys for phone menus, in the Calls window and from the in-call card. Works over Bluetooth hands-free. Over the phone link it needs the phone's default dialer role, so on a stock phone it is normally hidden | Unit tests, stand-in phone | not yet |
 | Do Not Disturb | Optional switch in Settings > Privacy: calls and banners respect the desktop's Do Not Disturb. Linux notification daemons only | Unit tests | not yet |
-| Call audio over Wi-Fi (experimental) | Listen and speak without Bluetooth, through an ADB helper on a debug build of the phone app. **Off by default; not in release builds.** `geekbridge-ctl callwifi`; see [the real-phone report](docs/reports/call-audio-wifi-realphone.md) | Emulator and a private PipeWire; whether a real phone gives the helper call audio is open | not yet |
+| Call audio over Wi-Fi (**experimental**) | Listen and speak without Bluetooth, through an ADB helper on a debug build of the phone app. **Off by default; not in release builds; may not work on your phone** (Samsung may block it). `geekbridge-ctl callwifi`; see [the real-phone report](docs/reports/call-audio-wifi-realphone.md) | Emulator (synthetic voice path: proves plumbing, not that anyone hears a call) and a private PipeWire; whether a real phone gives the helper call audio is open | not yet |
 | Messages (SMS) | Conversations, paging, send, notifications; no MMS, group or RCS | Emulator | not yet |
 | Contacts | Searchable phonebook, call / message / copy, read-only | Emulator | not yet |
 | Calendar | Month, week, day, agenda; Google calendars via the phone's own sync; optional two-way editing | Emulator (provider inserts, desktop create/edit/delete) | not yet |
@@ -66,7 +66,7 @@ individually confirmed there.**
 | Updates | GitHub release check, SHA-256 verified download, never auto-installs | Emulator self-update against a mock release server; real GitHub not contacted | not yet |
 | Phone battery on the computer | Level and charging state in the tray, Home and `status`; **off by default** on both ends | Scripted tests and unit tests against stock `kdeconnect.battery` packets | not yet |
 | Phone notifications on the computer | Banners with Dismiss and the phone's own buttons (no typed replies); only apps you pick; **off by default** on both ends; memory only | Emulator and scripted tests against stock `kdeconnect.notification` packets | not yet |
-| Recent phone photos on the computer | A "Phone photos" tab in the Share window: the newest 24 as small previews, **Save** and **Copy to clipboard** (full picture only on request); GeekBridge phones only; **off by default** on both ends; memory only | Scripted tests and a stand-in phone; Android code checked by unit tests | not yet |
+| Recent phone photos on the computer | A "Phone photos" tab in the Share window: the newest 24 as small previews, **Save** and **Copy to clipboard** (full picture only on request); GeekBridge phones only; **off by default** on both ends; memory only | Scripted tests, a stand-in phone and the `photos` emulator job; Android code checked by unit tests | not yet |
 | Dial from the computer | Type a number in Calls (or `geekbridge-ctl call dial`), confirm, the phone places the call; the voice stays on the phone | Scripted tests against a stand-in phone only; nothing was dialed on any network | not yet |
 | "Why is it disconnected" | One plain sentence and a fix for each paired phone without a link (Home, tray, waybar, `status`, `doctor`) | Unit and service tests; wording not yet judged on real failures | not yet |
 | Android service / battery | Foreground link service, boot restart, OEM battery guidance | Emulator reboot and battery dialog; no OEM device | not yet |
@@ -88,10 +88,9 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    `sudo apt install ./geekbridge_*.deb`, or extract the installer tarball and run `./install.sh` (per user; the service
    starts at login). Windows and macOS: no prebuilt binaries yet (build from source, below). Check downloads against
    `SHA256SUMS`.
-2. **Pair via QR.** Same Wi-Fi, and open the firewall first (see Requirements). On the computer open **GeekBridge** > **Link a phone** (a QR
+2. **Link via QR.** Same Wi-Fi, and open the firewall first (see Requirements). On the computer open **GeekBridge** > **Link a phone** (a QR
    code that renews itself). On the phone, in the setup wizard choose **Scan QR code from my computer**, point the camera at it, tap
-   **Continue**, then **Pair**. ("Link a phone" on the computer and "Pair a computer" on the phone are the same job.) Or pair by name and
-   compare the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**). Nothing
+   **Continue**, then confirm **Link**. Or link by name and compare the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**). Nothing
    shows up? Run `geekbridge-ctl doctor` and see the [FAQ](docs/FAQ.md).
 3. **Clipboard hotkey.** Switch clipboard sync on for the phone (both sides). Copy on the computer and it reaches the
    phone. To pull the phone's clipboard press **Ctrl+Shift+V** in the Clipboard window, or bind
@@ -103,8 +102,9 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    call shows a popup with Answer / Decline / Hang up in `geekbridge-calls`. To place a call from the computer, type a
    number there (or `geekbridge-ctl call dial +15550100`) and confirm; this needs *Allow placing calls from my
    computer* on the phone. Hearing and speaking on the computer needs Bluetooth (a controller in the PC, the phone paired as its
-   hands-free device; macOS: not available). Without it, control still works but the voice stays on the phone. Wi-Fi call audio exists only as an
-   experimental, off-by-default option on debug phone builds ([call audio options](docs/call-audio-options.md),
+   hands-free device after a one-time Bluetooth pairing; unverified on real hardware by the maintainers; macOS: not available). Without it,
+   control still works but the voice stays on the phone. Wi-Fi call audio exists only as an
+   experimental, off-by-default option on debug phone builds, not shown to work on a real phone ([call audio options](docs/call-audio-options.md),
    [Wi-Fi report](docs/reports/call-audio-wifi-realphone.md)). A call shows a small card with a timer, Hang up and Mute;
    the Recents tab and the missed-call banner offer Call back and Message; Decline can send a preset text.
 6. **Contacts and calendar.** Switch **Share contacts** / **Share calendar** on the phone, then open **Contacts** or

@@ -6,7 +6,7 @@ the computer: it says what is wrong in plain words and prints the fix.
 ## My phone does not show my computer (or the computer does not show the phone)
 
 Usually the computer's firewall is dropping the phone's broadcast, or the two are not on the same network. Use **Link a phone**
-on the computer and scan the QR code from the phone ("Pair a computer" > **Scan QR code from my computer**): it works even when
+on the computer and scan the QR code from the phone (**Scan QR code from my computer** in the setup wizard): it works even when
 broadcasts are blocked. Then allow TCP and UDP **1716-1764** from your LAN in the firewall (`geekbridge-ctl firewall` prints the
 commands; `geekbridge-ctl doctor` checks them). If the QR code scan says "the computer did not answer", it is the firewall,
 a guest Wi-Fi or a VPN. See [Cannot pair](user-guide.md#cannot-pair).
@@ -41,11 +41,12 @@ chats and RCS are not supported. See [Messages is off](user-guide.md#the-phone-d
 
 Answering, declining and hanging up work over the GeekBridge link with no Bluetooth, but **the voice stays on the phone**.
 To hear and speak on the computer, the computer must be the phone's Bluetooth hands-free device: a Bluetooth controller in the PC
-(a USB adapter works), the phone paired with it as hands-free with Phone calls allowed, and PipeWire plus WirePlumber on Linux.
+(a USB adapter works), a one-time Bluetooth pairing of the phone with it as hands-free with Phone calls allowed, and PipeWire plus
+WirePlumber on Linux.
 Open **Settings > Call audio on this computer** for a checklist with a fix for each step, or run `geekbridge-ctl calling`. Call
 audio over Wi-Fi exists only as an experimental, off-by-default option on debug phone builds (`geekbridge-ctl callwifi`;
-whether a real phone allows it is not settled, see [the report](reports/call-audio-wifi-realphone.md)). On macOS call audio
-is not available yet. Bluetooth voice has not been tested on real hardware yet. See
+whether a real phone allows it is not settled and it may not work on yours, see [the report](reports/call-audio-wifi-realphone.md)).
+On macOS call audio is not available yet. Bluetooth voice is unverified on real hardware by the maintainers. See
 [call audio](call-audio-options.md); when a step fails: [call audio troubleshooting](call-audio-troubleshooting.md).
 
 ## Where are my missed calls, and can I decline with a text?

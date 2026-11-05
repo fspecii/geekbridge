@@ -16,8 +16,11 @@ test peers.
   limits how often this can happen, shows a notice when it does, and can ask for its own confirmation. Answering and
   dialing need no Bluetooth. Hearing and speaking *on the computer* needs a Bluetooth controller in the PC (see
   limitations). The in-call card has a timer, Hang up and Mute; a Recents tab and a missed-call banner offer Call back and
-  Message; Decline can send one of three preset texts; a keypad for phone menus works over Bluetooth. Not yet tried with a
-  real call. An experimental, off-by-default Wi-Fi call audio option exists on debug phone builds only.
+  Message; Decline can send one of three preset texts; an opt-in switch makes incoming calls respect the desktop's Do Not
+  Disturb (Linux notification daemons only); the dialer suggests contacts as you type; a keypad for phone menus works
+  where Bluetooth hands-free accepts tones (on a stock phone it is hidden over the link). None of this has been tried with
+  a real call. Wi-Fi call audio is **experimental**: off by default, debug phone builds only, and whether a real phone
+  allows it is open.
 - **Messages (SMS).** Read conversations, search, and send texts from the desktop, with honest delivery status and
   new-message notifications (with a Reply action). Text only: no MMS, group or RCS.
 - **Contacts and calendar.** A searchable phonebook with Call, Message and Copy actions. Month, week, day and agenda
@@ -38,9 +41,10 @@ test peers.
 - **Auto-reconnect.** The phone's link service restarts at boot and reconnects with back-off; when you disconnect on
   the computer on purpose, the phone stays away for a few minutes instead of redialing at once.
 - **Updater.** The apps check GitHub for a newer release, download it, verify its SHA-256 against `SHA256SUMS`, and
-  then wait for you. Nothing installs by itself. Only final releases are offered, never prereleases.
-- **Pairing.** Scan a QR code (Android asks for the camera only on the scan screen, or use the phone's own camera app), or pick the phone from the nearby list and
-  compare a code on both screens. Both sides pin each other's certificate.
+  then wait for you. Nothing installs by itself, and on the desktop you unpack and copy the files yourself. Only final
+  releases are offered, never prereleases.
+- **Pairing.** Choose **Link a phone** on the computer and scan its QR code (Android asks for the camera only on the scan screen, or
+  use the phone's own camera app), or pick the phone from the nearby list and compare a code on both screens. Both sides pin each other's certificate.
 - **Design and access.** One look on Android and desktop (black or warm off-white, a single red accent, dot-matrix
   type), light and dark themes, keyboard navigation.
 
@@ -50,7 +54,7 @@ test peers.
   phones, and especially other manufacturers' battery and permission screens (Xiaomi, Huawei, OnePlus, OPPO, vivo), have
   not been tried.
 - **Not yet verified on hardware.** These work on an emulator and against scripted stand-in phones, and have not been
-  confirmed on a real phone: dialing from the computer, notification mirroring, recent photos, the Messages permission
+  confirmed on a real phone: the in-call card, Recents, Decline with message and the keypad, dialing from the computer, notification mirroring, recent photos, the Messages permission
   guidance for sideloaded Android 13+, the screen-off heartbeat and battery saving, the "why is it disconnected"
   wording, LAN discovery (an emulator drops broadcast packets), and the update check against the real GitHub. The
   README feature table says "not yet" for every row until a person has checked it on a phone.
@@ -58,9 +62,10 @@ test peers.
   answer a smoke test there. Nobody has run GeekBridge on a real Windows PC or Mac. The binaries are **unsigned** (no
   Authenticode, no Developer ID, not notarised), there is **no prebuilt Windows or macOS download in this release**,
   clipboard images and notification buttons are not supported there, and the macOS menu-bar icon is switched off.
-- **No call audio on the PC without Bluetooth.** Answer, decline, hang up and dial work over the Wi-Fi link, but the
-  voice stays on the phone unless the computer has a Bluetooth controller and acts as the phone's hands-free device.
-  Bluetooth audio itself has not been tested on any hardware.
+- **Call audio on the PC needs Bluetooth.** Answer, decline, hang up and dial work over the Wi-Fi link, but the voice
+  stays on the phone unless the computer has a Bluetooth controller and acts as the phone's hands-free device. That needs
+  a one-time pairing of the phone with the computer's Bluetooth, and it is unverified on real hardware by the maintainers.
+  Call audio over Wi-Fi is experimental and not part of the release APK; it is not a supported way to use the PC as a headset.
 - **Android 14 partial photo access.** If you give GeekBridge "selected photos" only, the Phone photos tab shows just
   those photos. The Android 14 permission dialog has not been exercised on a real phone.
 - **Phone to computer clipboard is on demand** (Android 10+ restriction), and MMS, group and RCS messages are not
@@ -68,8 +73,9 @@ test peers.
 - **Vendor battery guidance** for Samsung, Xiaomi, Huawei/Honor, OnePlus, OPPO/realme, vivo and Nothing is
   unit-tested for the order of settings screens only.
 - **Long-running behaviour.** A four-hour soak of the desktop service with a stand-in phone showed no linear leak, but
-  also unexplained short stalls of the local control API early in the run and a slow memory creep that was levelling
-  off. Real multi-day use has not been measured.
+  also short stalls of the local control API early in the run (since fixed; a later 45-minute soak with rings, Wi-Fi
+  listen sessions and re-pairing passed) and a slow memory creep that was levelling off. Real multi-day use has not been
+  measured.
 - **Linux is the main target.** It has been run on Arch/Omarchy with Hyprland. Other desktops should work but have had
   less attention (the clipboard needs `wl-clipboard` or `xclip`).
 

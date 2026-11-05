@@ -6,16 +6,6 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
-### Added
-- Calls: a keypad for the live call (`0-9 * #`) in the Calls window, a Keypad button on the in-call card and `geekbridge-ctl call tone KEYS`, for phone menus. Over Bluetooth hands-free it works where the backend accepts tones; over the phone link it is built (an extra `tone` request, a `canTones` capability, limits on both ends, nothing logged but a count) but Android only lets the default phone app play tones, so a stock phone does not offer it. Not run on a real phone.
-- Calls: **Decline with message.** The incoming-call card and the Linux banner can decline a call and send one of three short texts ("Can't talk now, I'll call you back", "I'm in a meeting", "Call me in a few minutes", editable under Settings > Decline with message, stored on this computer) to the caller through the phone's Messages. Offered only when Messages is allowed for the phone on both sides and the caller's number is known; shares Messages' send limit. Nothing is ever sent automatically.
-- Calls: a missed-call notification with Call back and Message, and a Recents list in the Calls window (calls since the service started, kept in memory only) with Call back and Message per row. Call back still asks for confirmation before dialling.
-- Calls: an opt-in **Respect Do Not Disturb for incoming calls** switch (Settings -> Privacy, off by default). When the desktop is in Do Not Disturb (mako, dunst, SwayNotificationCenter, KDE, GNOME) a ringing call shows no card or banner, but the tray and Recents still record it. Not supported on Windows and macOS, where Settings says so.
-- Calls: the dialer suggests contacts the phone shared while you type a name, or digits that match a stored number (Up/Down/Enter/Esc; one-number contacts are picked directly, several ask which). Dialing still goes through the confirmation sheet.
-- Calls: `geekbridge-ctl calls --trace` shows a redacted call-event trace; it is also part of `geekbridge-ctl report`.
-- Experimental, off by default, debug phone builds only: call audio over Wi-Fi, listen and speak (`geekbridge-ctl callwifi`). Whether a real phone allows it is open ([report](docs/reports/call-audio-wifi-realphone.md)).
-- Wording: "link" instead of "pair" in more places on the phone and the computer.
-
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android
@@ -200,6 +190,16 @@ builds have not been run on real hardware (see "Known limitations").
   and three install lines (no secrets), a copyable short address.
 - **Unlink** replaces Forget/Unpair wording on both sides; the phone's pair step has an Unlink button per computer.
 
+**Added after the first release candidate, 2026-11-05**
+- Calls: a keypad for the live call (`0-9 * #`) in the Calls window, a Keypad button on the in-call card and `geekbridge-ctl call tone KEYS`, for phone menus. Over Bluetooth hands-free it works where the backend accepts tones; over the phone link it is built (an extra `tone` request, a `canTones` capability, limits on both ends, nothing logged but a count) but Android only lets the default phone app play tones, so a stock phone does not offer it. Not run on a real phone.
+- Calls: **Decline with message.** The incoming-call card and the Linux banner can decline a call and send one of three short texts ("Can't talk now, I'll call you back", "I'm in a meeting", "Call me in a few minutes", editable under Settings > Decline with message, stored on this computer) to the caller through the phone's Messages. Offered only when Messages is allowed for the phone on both sides and the caller's number is known; shares Messages' send limit. Nothing is ever sent automatically.
+- Calls: a missed-call notification with Call back and Message, and a Recents list in the Calls window (calls since the service started, kept in memory only) with Call back and Message per row. Call back still asks for confirmation before dialling.
+- Calls: an opt-in **Respect Do Not Disturb for incoming calls** switch (Settings -> Privacy, off by default). When the desktop is in Do Not Disturb (mako, dunst, SwayNotificationCenter, KDE, GNOME) a ringing call shows no card or banner, but the tray and Recents still record it. Not supported on Windows and macOS, where Settings says so.
+- Calls: the dialer suggests contacts the phone shared while you type a name, or digits that match a stored number (Up/Down/Enter/Esc; one-number contacts are picked directly, several ask which). Dialing still goes through the confirmation sheet.
+- Calls: `geekbridge-ctl calls --trace` shows a redacted call-event trace; it is also part of `geekbridge-ctl report`.
+- Experimental, off by default, debug phone builds only: call audio over Wi-Fi, listen and speak (`geekbridge-ctl callwifi`). Whether a real phone allows it is open ([report](docs/reports/call-audio-wifi-realphone.md)).
+- Wording: "link" instead of "pair" in more places on the phone and the computer.
+
 ### Fixed
 - Desktop to phone file transfers no longer stall at "Waiting" with a secure-channel or timeout error when the link
   arrived on a network other than the phone's default: the phone dials the normal route first, and a route counts only
@@ -258,8 +258,10 @@ builds have not been run on real hardware (see "Known limitations").
 - One real phone (Samsung SM-F946B) has been paired, and only pairing and link behaviour were verified on it. Every other
   feature is verified against an Android 16 emulator and scripted peers; real-device steps are in [docs/real-device-quickstart.md](docs/real-device-quickstart.md). Emulator NAT drops UDP broadcast, so
   LAN discovery itself is covered by unit and integration tests only.
-- Call answering has only been tested with simulated signalling. Bluetooth hands-free audio (SCO, codecs) is unverified
-  on any hardware, and needs a Bluetooth controller on the computer.
+- Call answering has only been tested with simulated signalling. Bluetooth hands-free audio (SCO, codecs) needs a
+  Bluetooth controller on the computer and a one-time pairing of the phone with it, and is unverified on real hardware by the
+  maintainers. Call audio over Wi-Fi is experimental, off by default and debug phone builds only; whether a real phone lets
+  its helper reach call audio is open. The keypad, Decline with message, Recents and Do Not Disturb have not met a real call.
 - Windows and macOS binaries are unsigned and have never been run; they are type-checked and built in CI definitions
   only. Release builds are made on the maintainer's Linux machine (Linux and Android assets only).
 - Vendor battery screens (Samsung, Xiaomi, Huawei, OnePlus, OPPO, vivo) are unit-tested for intent order only, not run on
