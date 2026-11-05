@@ -2370,6 +2370,65 @@ mod tests {
     }
 
     #[test]
+    fn a_decline_the_phone_refused_ends_as_a_miss_that_is_announced() {
+        let misses = Arc::new(Mutex::new(Vec::new()));
+        let hub = CallHub::new();
+        hub.set_notifier(Arc::new(Misses(misses.clone())));
+        let mut rx = hub.link_up("dev-ref", "Pixel", true);
+        let state = |v: serde_json::Value| hub.on_packet("dev-ref", link::STATE, &body(v));
+        state(
+            json!({"state":"ringing","name":"Ada","number":"+1555","canAnswer":true,"canEnd":true}),
+        );
+        let target = hub.view().rows[0].reject.clone().unwrap();
+        hub.act(&target, CallAction::Reject).unwrap();
+        let id = rx.try_recv().unwrap().request_id;
+        hub.on_packet(
+            "dev-ref",
+            link::RESULT,
+            &link::result_body(&id, Err(LinkFailure::PermissionMissing)),
+        );
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        assert_eq!(
+            misses.lock().unwrap().len(),
+            1,
+            "the ring was never declined"
+        );
+        let kinds: Vec<_> = hub.status().view.recent.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, [bridge_core::calls_view::RecentKind::Missed]);
+    }
+
+    #[test]
+    fn a_ring_the_watchdog_clears_is_neither_missed_nor_listed() {
+        let misses = Arc::new(Mutex::new(Vec::new()));
+        let ms = Duration::from_millis;
+        let hub = CallHub::with_timings(Timings {
+            tick: ms(10),
+            ring_quiet: ms(0),
+            live_quiet: ms(0),
+            probe_grace: ms(0),
+            probes: 1,
+            flap_memory: ms(1),
+            overlay_linger: ms(1),
+        });
+        hub.set_notifier(Arc::new(Misses(misses.clone())));
+        let _rx = hub.link_up("dev-wd", "Pixel", true);
+        hub.on_packet(
+            "dev-wd",
+            link::STATE,
+            &body(json!({"state":"ringing","number":"+1555","canAnswer":true,"canEnd":true})),
+        );
+        assert!(hub.view().ringing().is_some());
+        hub.tick(); // asks the phone
+        hub.tick(); // never confirmed: cleared
+        assert!(hub.view().rows.is_empty());
+        assert!(
+            hub.status().view.recent.is_empty(),
+            "nobody knows how it ended"
+        );
+        assert!(misses.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn link_down_ends_the_call_view() {
         let hub = CallHub::new();
         let _rx = hub.link_up("dev", "Pixel", true);

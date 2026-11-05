@@ -623,4 +623,21 @@ mod tests {
             Err(KdeError::InsecurePermissions { .. })
         ));
     }
+    /// The cheap "file unchanged" path must not hide a permission loosening made after the first
+    /// read: chmod changes ctime and mode, so the stamp differs and the check runs again.
+    #[test]
+    fn loosening_after_a_cached_read_is_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = FileTrustStore::open(&tmp.path().join("s")).unwrap();
+        s.insert(peer('a')).unwrap();
+        assert_eq!(s.list().unwrap().len(), 1);
+        assert_eq!(s.list().unwrap().len(), 1); // second read hits the stamp skip
+        std::fs::set_permissions(s.path(), std::fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(
+            !matches!(s.list(), Ok(l) if !l.is_empty()),
+            "a world-writable trust file must not keep being trusted from the cache"
+        );
+        std::fs::set_permissions(s.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(s.list().unwrap().len(), 1, "restoring the mode recovers");
+    }
 }
