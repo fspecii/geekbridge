@@ -223,6 +223,10 @@ impl<R: AsyncRead + Unpin> LineReader<R> {
                 let mut line: Vec<u8> = self.buf.drain(..=end).collect();
                 line.pop();
                 self.scanned = 0;
+                // Do not keep a large packet's allocation for the whole connection.
+                if self.buf.capacity() > 256 * 1024 {
+                    self.buf.shrink_to(64 * 1024);
+                }
                 return Ok(line);
             }
             self.scanned = self.buf.len();
@@ -311,6 +315,18 @@ mod tests {
         let ok =
             r#"{"id":1,"type":"t","body":{},"payloadSize":-1,"payloadTransferInfo":{"port":1739}}"#;
         assert!(Packet::from_line(ok.as_bytes()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn line_reader_shrinks_after_large_packet() {
+        let mut data = vec![b'a'; 600 * 1024];
+        data.push(b'\n');
+        data.extend_from_slice(b"b\n");
+        let mut r = LineReader::new(&data[..]);
+        let big = r.read_line(1024 * 1024).await.unwrap();
+        assert_eq!(big.len(), 600 * 1024);
+        assert!(r.buf.capacity() <= 256 * 1024, "{}", r.buf.capacity());
+        assert_eq!(r.read_line(1024).await.unwrap(), b"b");
     }
 
     #[test]

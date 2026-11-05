@@ -99,6 +99,11 @@ pub fn parse_messages(body: &Map<String, Value>) -> Result<ParsedMessages, SmsWi
     Ok(out)
 }
 
+/// Whether the answer carries the `unread` map at all (an empty map means nothing is unread).
+pub fn has_unread_map(body: &Map<String, Value>) -> bool {
+    body.get("unread").is_some_and(Value::is_object)
+}
+
 /// Per-thread unread counts a GeekBridge phone adds to the conversation-list answer
 /// (`"unread": {"<thread id>": n}`), because the stock list carries only the newest message of each
 /// thread and the real unread count is otherwise unknowable. Bounded: <= 300 threads, counts

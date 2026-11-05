@@ -135,6 +135,8 @@ struct State {
     peers: BTreeMap<DeviceId, TrustedPeer>,
     /// Format of a file from a newer build, if that is what is on disk.
     newer: Option<u32>,
+    /// File identity when `raw` was last confirmed current; lets `refresh` skip the read.
+    stamp: Option<Stamp>,
 }
 
 impl State {
@@ -161,6 +163,7 @@ impl FileTrustStore {
             raw: None,
             peers: BTreeMap::new(),
             newer: None,
+            stamp: None,
         };
         refresh(&file, &mut state)?;
         Ok(Self {
@@ -213,6 +216,7 @@ impl FileTrustStore {
             }
             let mut guard = self.state.lock().unwrap();
             guard.raw = None; // re-read (and re-validated) on next use
+            guard.stamp = None;
             guard.peers = next;
         }
         Ok(out)
@@ -221,14 +225,45 @@ impl FileTrustStore {
 
 /// Bring `state` in line with the file on disk, parsing only if it changed.
 fn refresh(file: &PrivateStateFile, state: &mut State) -> Result<()> {
+    // Taken before reading, so a change racing the read is seen as a change next time.
+    let stamp = file_stamp(file.path());
+    if stamp.is_some() && stamp == state.stamp && state.raw.is_some() {
+        return Ok(());
+    }
     if let Ok(Some(bytes)) = fsutil::read_private_file(file.path())
         && state.raw.as_deref() == Some(bytes.as_slice())
     {
+        state.stamp = stamp;
         return Ok(());
     }
     let loaded = file.load()?;
     state.apply(&loaded);
+    state.stamp = stamp;
     Ok(())
+}
+
+/// Identity of the file as the filesystem reports it: inode, mtime, ctime (so a permission change
+/// counts), size and mode. Unchanged means the contents and the permission check still hold.
+type Stamp = (u64, i64, i64, i64, i64, u64, u32);
+
+#[cfg(unix)]
+fn file_stamp(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(path).ok()?;
+    Some((
+        m.ino(),
+        m.mtime(),
+        m.mtime_nsec(),
+        m.ctime(),
+        m.ctime_nsec(),
+        m.len(),
+        m.mode(),
+    ))
+}
+
+#[cfg(not(unix))]
+fn file_stamp(_path: &Path) -> Option<Stamp> {
+    None
 }
 
 /// Write `peers` into the document's `peers` array, keeping any fields of existing entries that
