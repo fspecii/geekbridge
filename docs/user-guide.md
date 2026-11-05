@@ -193,7 +193,9 @@ Switch the phone on under *Phone sync*. Copying on the computer then reaches the
 clipboard, press the shortcut (default **Ctrl+Shift+V**) or **Paste from phone**. Change the shortcut in the same
 section or with `geekbridge-ctl clipboard hotkey "Ctrl+Alt+P"`. Most desktops cannot register a system-wide key
 for the service: bind `geekbridge-ctl clipboard paste-from-phone --notify` in your keyboard settings (the window
-shows the line). Details: [clipboard-sync.md](clipboard-sync.md).
+shows the line). Text syncs on Linux, Windows and macOS; **images and HTML only on Linux** (and the phone): Windows and
+macOS carry text only. Files never travel through the clipboard: use Share. Details: [clipboard-sync.md](clipboard-sync.md);
+the full feature-by-system table is [platform-support.md](platform-support.md).
 
 On Omarchy / Hyprland, `geekbridge-ctl hotkey install` binds the key for you, floats the call and share windows and
 documents a waybar status line; see [omarchy.md](omarchy.md) (it also lists the GNOME, KDE and sway steps).
@@ -219,9 +221,9 @@ your computer" below for the voice). Technical detail: [call-control.md](call-co
   of three preset texts as an SMS; edit the presets in Settings. It needs Messages allowed for the phone on both ends, and the
   same SMS send limit as Messages applies.
 * **In a call.** The card shows the caller, a timer and **Hang up**. **Mute** appears only when the computer carries the
-  voice. A status line says where the audio is (this computer or the phone). When the call ends the card stays for a moment
+  voice (over Bluetooth hands-free on Windows only; there is no hold or swap yet). A status line says where the audio is (this computer or the phone). When the call ends the card stays for a moment
   with "Call ended".
-* **Keypad.** For phone menus. It works over Bluetooth hands-free. Over the phone link Android only lets the phone's default
+* **Keypad.** For phone menus. It works over Bluetooth hands-free on Linux and Windows (not on macOS). Over the phone link Android only lets the phone's default
   dialer app play tones, so on a normal phone the keypad is hidden there. Tones are never logged, only how many were sent.
 * **Dialer.** Type a number or a name: contacts from the phone (if you shared them) are suggested as you type. Dialing always
   asks you to confirm.
