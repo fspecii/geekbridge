@@ -39,7 +39,7 @@ On the Android side, `./gradlew` (in `android/`) is the documented entry point. 
 `scripts/build-android.sh` builds the phone's native libraries and the debug APK with the project-local toolchain from
 `scripts/bootstrap-android.sh`.
 
-Cross-platform type-checks: `scripts/xcheck.sh`. Emulator end-to-end scripts are described in [docs/reports/e2e-findings.md](docs/reports/e2e-findings.md).
+Cross-platform type-checks: `scripts/xcheck.sh`; without the rustup targets, `scripts/sim-nonlinux.sh` compiles the non-Linux code paths with clippy on a Linux host. Run it after touching anything gated on `target_os = "linux"`. Emulator end-to-end scripts are described in [docs/reports/e2e-findings.md](docs/reports/e2e-findings.md).
 
 ## Golden images
 
