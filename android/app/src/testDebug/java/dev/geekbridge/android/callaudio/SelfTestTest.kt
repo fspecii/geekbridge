@@ -92,7 +92,7 @@ class SelfTestTest {
         val conn = HelperConnection(fromHelper, toHelper, "tok12345")
         conn.start()
         try {
-            body(HelperCapturePort(conn), conn)
+            body(HelperCapturePort(conn, uplinkWaitMs = 30_000), conn)
         } finally {
             conn.close()
             t.join(5000)

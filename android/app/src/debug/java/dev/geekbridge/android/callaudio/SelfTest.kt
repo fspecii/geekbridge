@@ -53,6 +53,8 @@ class HelperCapturePort(
     private val conn: HelperConnection,
     private val sleep: (Long) -> Unit = { Thread.sleep(it) },
     private val now: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** How long to wait for the helper's answer to uplink_check; a test on a loaded machine passes a longer one. */
+    private val uplinkWaitMs: Long = 3_000,
 ) : CapturePort {
     private class Meter : HelperConnection.Listener {
         @Volatile var sumSq = 0.0
@@ -97,7 +99,7 @@ class HelperCapturePort(
         conn.listener = m
         try {
             conn.command("uplink_check")
-            val end = now() + 3_000
+            val end = now() + uplinkWaitMs
             while (now() < end && m.uplink == null && !conn.closed) sleep(20)
             return m.uplink ?: "none"
         } finally {
