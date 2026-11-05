@@ -193,6 +193,7 @@ mod tests {
             can_answer: true,
             can_end: true,
             can_dial: false,
+            can_tones: false,
         };
         let mut s = CallState::default();
         report.apply(&mut s);

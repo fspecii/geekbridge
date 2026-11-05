@@ -533,6 +533,7 @@ pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
         can_answer: true,
         can_end: true,
         can_dial: kind == "recents",
+        can_tones: kind == "keypad",
     };
     let mut state = CallState::default();
     report.apply(&mut state);

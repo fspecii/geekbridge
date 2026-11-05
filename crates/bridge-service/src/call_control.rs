@@ -15,7 +15,7 @@
 //! every control request is checked against the *current* view first, so a stale click cannot hit a
 //! different call. Link packets are honoured only for devices the user enabled ("Telephony" in the
 //! device permissions). Phone numbers and names live in memory only and are never logged.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::mpsc as std_mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
@@ -33,6 +33,10 @@ const LINK_PREFIX: &str = "link:";
 /// if it was killed in between).
 const PENDING_TTL: Duration = Duration::from_secs(20);
 const MAX_PENDING: usize = 4;
+/// Keypad tones the service accepts per [`TONE_WINDOW`]: a person typing a PIN fast stays well under it, a script
+/// pressing keys in a loop does not. The phone applies its own limit as well.
+pub const MAX_TONES: usize = 20;
+pub const TONE_WINDOW: Duration = Duration::from_secs(5);
 const HOST_COMMAND_TIMEOUT: Duration = Duration::from_secs(8);
 const HOST_POLL: Duration = Duration::from_millis(250);
 
@@ -290,6 +294,8 @@ pub struct LinkRequest {
     pub action: LinkAction,
     /// The number of a `dial` request.
     pub number: Option<Sensitive>,
+    /// The keypad character of a `tone` request. Never logged or traced: it may be a PIN.
+    pub tone: Option<char>,
 }
 
 struct LinkPhone {
@@ -342,6 +348,11 @@ struct Inner {
     /// user picked up by hand, the caller gave up); the next report that shows the call moved on
     /// explains it, so it is cleared then.
     race_notice: bool,
+    /// Recent keypad tones accepted here (the service's own rate limit, whatever the UI does).
+    tone_times: VecDeque<Instant>,
+    /// Tones sent to the live call so far: which call (its row key) and how many. Only the count is ever written to
+    /// the call trace.
+    tone_count: Option<(String, u64)>,
 }
 
 /// The phone often reports "ringing" a moment before the caller's number follows. A notification
@@ -645,6 +656,7 @@ impl CallHub {
                 request_id: format!("s{}", inner.next_request),
                 action: LinkAction::Report,
                 number: None,
+                tone: None,
             });
         }
     }
@@ -757,7 +769,21 @@ impl CallHub {
                                     _ => false,
                                 };
                             if !done {
-                                *notice = Some(reason.message().to_owned());
+                                *notice = Some(
+                                    match (action, reason) {
+                                        (LinkAction::Tone, LinkFailure::RateLimited) => {
+                                            "The phone is limiting keypad tones; wait a moment."
+                                        }
+                                        (LinkAction::Tone, LinkFailure::NoSuchCall) => {
+                                            "The call had changed, so the tone was not played."
+                                        }
+                                        (LinkAction::Tone, LinkFailure::Failed) => {
+                                            "The phone could not play that tone."
+                                        }
+                                        _ => reason.message(),
+                                    }
+                                    .to_owned(),
+                                );
                                 *race_notice = reason == LinkFailure::NoSuchCall
                                     && matches!(action, LinkAction::Answer | LinkAction::Reject);
                             }
@@ -1014,7 +1040,7 @@ impl CallHub {
                     CallAction::Reject => LinkAction::Reject,
                     CallAction::Hangup => LinkAction::Hangup,
                 };
-                self.send_link(&target.source, wire, None)
+                self.send_link(&target.source, wire, None, None)
             }
             ControlPath::Hfp => self.send_host(&target.source, &command),
         };
@@ -1052,6 +1078,78 @@ impl CallHub {
             return Err(err(ErrorCode::Unsupported, "muting is not available now"));
         }
         self.send_host(source, &CallCommand::SetMicrophoneMute { muted })
+    }
+
+    /// Send one keypad tone (DTMF) into the live call. `source` must be the `tones` target the current view offers
+    /// (a live, answered call and a source that takes tones); `tone` must be one of `0-9 * #`. Rate-limited here and
+    /// again on the phone. The character is never logged or traced (it may be a PIN); the trace gets the number
+    /// of tones sent to this call. Blocking.
+    pub fn tone(&self, source: &str, tone: &Sensitive) -> Result<(), ErrorBody> {
+        let result = self.tone_inner(source, tone);
+        let count = self.inner().tone_count.as_ref().map_or(0, |(_, n)| *n);
+        crate::call_trace::record(
+            "request",
+            &format!(
+                "keypad tones sent={count} src={}: {}",
+                crate::call_trace::hash(source),
+                outcome(&result)
+            ),
+        );
+        result
+    }
+
+    fn tone_inner(&self, source: &str, tone: &Sensitive) -> Result<(), ErrorBody> {
+        let mut chars = tone.expose().chars();
+        let c = match (chars.next(), chars.next()) {
+            (Some(c), None) if link::valid_tone(c) => c,
+            _ => {
+                return Err(err(
+                    ErrorCode::BadRequest,
+                    "that is not a keypad tone (one of 0-9, * and #)",
+                ));
+            }
+        };
+        let view = self.view();
+        let Some(offered) = view.tones.clone().filter(|t| t.source == source) else {
+            return Err(err(
+                ErrorCode::NotFound,
+                "keypad tones are not available now; nothing was sent",
+            ));
+        };
+        let key = view.live().map(|r| r.key.clone()).unwrap_or_default();
+        {
+            let mut inner = self.inner();
+            let now = Instant::now();
+            while inner
+                .tone_times
+                .front()
+                .is_some_and(|t| now.saturating_duration_since(*t) >= TONE_WINDOW)
+            {
+                inner.tone_times.pop_front();
+            }
+            if inner.tone_times.len() >= MAX_TONES {
+                return Err(err(ErrorCode::Busy, "too many keypad tones; wait a moment"));
+            }
+            inner.tone_times.push_back(now);
+        }
+        let result = match offered.path {
+            ControlPath::Link => self.send_link(source, LinkAction::Tone, None, Some(c)),
+            ControlPath::Hfp => self.send_host(
+                source,
+                &CallCommand::SendTones {
+                    tones: tone.clone(),
+                },
+            ),
+        };
+        let mut inner = self.inner();
+        if result.is_ok() {
+            match &mut inner.tone_count {
+                Some((k, n)) if *k == key => *n += 1,
+                other => *other = Some((key, 1)),
+            }
+        }
+        inner.notice = result.as_ref().err().map(|e| e.message.clone());
+        result
     }
 
     pub fn connect_audio(&self, source: &str) -> Result<(), ErrorBody> {
@@ -1110,7 +1208,7 @@ impl CallHub {
             ));
         };
         let result = match offered.path {
-            ControlPath::Link => self.send_link(source, LinkAction::Dial, Some(number)),
+            ControlPath::Link => self.send_link(source, LinkAction::Dial, Some(number), None),
             ControlPath::Hfp => self.send_host(
                 source,
                 &CallCommand::Dial {
@@ -1131,6 +1229,7 @@ impl CallHub {
         source: &str,
         wire: LinkAction,
         dial: Option<&Sensitive>,
+        tone: Option<char>,
     ) -> Result<(), ErrorBody> {
         let device_id = source
             .strip_prefix(LINK_PREFIX)
@@ -1145,12 +1244,26 @@ impl CallHub {
         phone
             .pending
             .retain(|(_, _, at)| at.elapsed() < PENDING_TTL);
-        if wire != LinkAction::Dial && phone.pending.iter().any(|(_, a, _)| *a == wire) {
+        if !matches!(wire, LinkAction::Dial | LinkAction::Tone)
+            && phone.pending.iter().any(|(_, a, _)| *a == wire)
+        {
             // A second Answer (double click, the banner after the card) while the first is on its
             // way: the phone is already doing it, so nothing more is sent.
             return Ok(());
         }
-        if phone.pending.len() >= MAX_PENDING {
+        // Keypad taps come faster than answers and have their own bound (the rate limit); they must neither fill the
+        // few slots Answer/Hang up/Dial need nor be refused by them.
+        let tones = phone
+            .pending
+            .iter()
+            .filter(|(_, a, _)| *a == LinkAction::Tone)
+            .count();
+        let full = if wire == LinkAction::Tone {
+            tones >= MAX_TONES
+        } else {
+            phone.pending.len() - tones >= MAX_PENDING
+        };
+        if full {
             return Err(err(ErrorCode::Busy, "the phone has not answered yet"));
         }
         phone
@@ -1159,6 +1272,7 @@ impl CallHub {
                 request_id: request_id.clone(),
                 action: wire,
                 number: dial.cloned(),
+                tone,
             })
             .map_err(|_| err(ErrorCode::NotConnected, "the phone link is busy or closed"))?;
         phone.pending.push((request_id, wire, Instant::now()));
@@ -1243,6 +1357,7 @@ impl CallHub {
                         request_id: format!("s{}", inner.next_request),
                         action: LinkAction::Report,
                         number: None,
+                        tone: None,
                     });
                     p.probe = Some((now, p.probe.map_or(1, |(_, n)| n + 1)));
                 }
@@ -2370,13 +2485,13 @@ mod tests {
         );
         // A source that is not a link source cannot be sent a link request.
         assert_eq!(
-            hub.send_link("hfp:x", LinkAction::Answer, None)
+            hub.send_link("hfp:x", LinkAction::Answer, None, None)
                 .unwrap_err()
                 .code,
             ErrorCode::BadRequest
         );
         assert_eq!(
-            hub.send_link("link:gone", LinkAction::Answer, None)
+            hub.send_link("link:gone", LinkAction::Answer, None, None)
                 .unwrap_err()
                 .code,
             ErrorCode::NotConnected

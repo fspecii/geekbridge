@@ -178,6 +178,10 @@ struct Model {
     last: Option<Map<String, Value>>,
     name: Option<&'static str>,
     can_dial: bool,
+    /// The phone says it can play keypad tones (an older app does not).
+    can_tones: bool,
+    /// Keypad tones the stand-in played into the live call, in order.
+    tones: Vec<char>,
     /// Sends nothing at all (a frozen app on a link that still looks up).
     silent: bool,
     /// How long the phone takes to act on a request (TelecomManager is not instant).
@@ -198,6 +202,7 @@ impl Model {
             can_answer: true,
             can_end: true,
             can_dial: self.can_dial,
+            can_tones: self.can_tones,
         }
         .body()
     }
@@ -258,7 +263,19 @@ impl Model {
                 .into_iter()
                 .collect();
         }
-        let (mut out, result) = match self.act(action) {
+        let (mut out, result) = match if action == LinkAction::Tone {
+            // The core already refused anything but one of 0-9 * # (parse_request above).
+            let tone = link::parse_tone(body).unwrap();
+            match self.merged {
+                Some(PhoneState::OffHook) if self.can_tones => {
+                    self.tones.push(tone);
+                    Ok(Vec::new())
+                }
+                _ => Err(LinkFailure::NoSuchCall),
+            }
+        } else {
+            self.act(action)
+        } {
             Ok(states) => (states, Ok(())),
             Err(f) => (Vec::new(), Err(f)),
         };
@@ -363,6 +380,8 @@ impl SimPhone {
             last: None,
             name: Some("Ada"),
             can_dial: false,
+            can_tones: true,
+            tones: Vec::new(),
             silent: false,
             slow: Duration::ZERO,
             requests: Vec::new(),
@@ -468,6 +487,8 @@ struct HfpWorld {
     routed: bool,
     /// Commands the hub sent the host.
     commands: Vec<&'static str>,
+    /// Keypad tones the host was asked to send.
+    tones: Vec<String>,
     /// Audio route changes the real host would make: "computer", "phone", "restore".
     routes: Vec<&'static str>,
     phone: Option<PhoneHandle>,
@@ -560,6 +581,10 @@ impl HostCalls for FakeHfp {
             CallCommand::Dial { .. } => ("dial", Some(LinkAction::Dial)),
             CallCommand::ConnectAudio => ("connect_audio", None),
             CallCommand::DisconnectAudio => ("disconnect_audio", None),
+            CallCommand::SendTones { tones } => {
+                w.tones.push(tones.expose().to_owned());
+                ("tones", None)
+            }
             _ => ("other", None),
         };
         w.commands.push(name);
@@ -608,6 +633,7 @@ async fn world(hfp: Option<(&str, Duration)>) -> World {
             lag,
             routed: false,
             commands: Vec::new(),
+            tones: Vec::new(),
             routes: Vec::new(),
             phone: None,
         }))
@@ -1184,4 +1210,154 @@ async fn a_card_that_cannot_start_leaves_the_banner_and_is_not_retried_in_a_loop
         w.cards.launches() == 1
     })
     .await;
+}
+
+// ---------------------------------------------------------------- keypad tones (DTMF)
+
+fn tone(source: &str, t: &str) -> Request {
+    Request::CallTone {
+        source: source.to_owned(),
+        tone: Sensitive::new(t),
+    }
+}
+
+/// A call that is answered and live on the phone.
+async fn live_call(w: &World, phone: &SimPhone) -> CallsStatus {
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "the ring", ringing).await;
+    w.act(
+        c.view.ringing().unwrap().answer.clone().unwrap(),
+        CallAction::Answer,
+    )
+    .await;
+    until(&w.rig, "the live call", live).await
+}
+
+fn trace_lines() -> Vec<String> {
+    bridge_service::call_trace::snapshot()
+        .into_iter()
+        .filter(|e| e.detail.contains("keypad tones"))
+        .map(|e| e.detail)
+        .collect()
+}
+
+#[tokio::test]
+async fn keypad_tones_reach_the_phone_over_the_link_in_order_and_only_while_the_call_is_live() {
+    let w = world(None).await;
+    let phone = w.phone("Fold").await;
+    // Ringing: no keypad yet.
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "the ring", ringing).await;
+    assert!(c.view.tones.is_none());
+    w.act(
+        c.view.ringing().unwrap().answer.clone().unwrap(),
+        CallAction::Answer,
+    )
+    .await;
+    let c = until(&w.rig, "the live call", live).await;
+    let t = c.view.tones.clone().expect("a keypad for the live call");
+    assert_eq!(t.path, ControlPath::Link);
+    for d in "1*0#9".chars() {
+        w.rig.ok(tone(&t.source, &d.to_string())).await;
+    }
+    eventually("the phone played them", || {
+        phone.model.lock().unwrap().tones.len() == 5
+    })
+    .await;
+    assert_eq!(phone.model.lock().unwrap().tones, ['1', '*', '0', '#', '9']);
+    // The trace has the count and never a tone.
+    let lines = trace_lines();
+    assert!(lines.iter().any(|l| l.contains("sent=5")), "{lines:?}");
+    // The call ends: the keypad goes with it, and a late tap reaches nobody.
+    phone.ring_all(PhoneState::Idle);
+    let c = until(&w.rig, "idle", idle).await;
+    assert!(c.view.tones.is_none());
+    let late = w.rig.call(tone(&t.source, "5")).await;
+    assert!(late.is_err());
+    sleep(Duration::from_millis(100)).await;
+    assert_eq!(phone.model.lock().unwrap().tones.len(), 5);
+}
+
+#[tokio::test]
+async fn an_older_phone_without_the_capability_gets_no_keypad_and_no_tones() {
+    let w = world(None).await;
+    let phone = w.phone("Fold").await;
+    phone.model.lock().unwrap().can_tones = false;
+    phone.source("default", PhoneState::Ringing);
+    let c = until(&w.rig, "the ring", ringing).await;
+    w.act(
+        c.view.ringing().unwrap().answer.clone().unwrap(),
+        CallAction::Answer,
+    )
+    .await;
+    let c = until(&w.rig, "the live call", live).await;
+    assert!(c.view.tones.is_none());
+    let source = c.view.live().unwrap().hangup.clone().unwrap().source;
+    assert!(w.rig.call(tone(&source, "1")).await.is_err());
+    sleep(Duration::from_millis(100)).await;
+    assert!(phone.model.lock().unwrap().tones.is_empty());
+}
+
+#[tokio::test]
+async fn hostile_tone_requests_are_refused_before_anything_leaves_the_computer() {
+    let w = world(None).await;
+    let phone = w.phone("Fold").await;
+    // No call at all: not offered, nothing sent, whatever the source says.
+    for src in ["link:nobody", "", "hfp:x"] {
+        assert!(w.rig.call(tone(src, "1")).await.is_err(), "{src:?}");
+    }
+    let c = live_call(&w, &phone).await;
+    let source = c.view.tones.clone().unwrap().source;
+    // Digits outside the keypad, several at once, empty, control characters, look-alike digits.
+    for bad in [
+        "", "12", "A", "D", "a", " ", "+", "\n", "\0", "1\n", "\u{0661}", "\u{ff11}", "*#", "11111",
+    ] {
+        assert!(w.rig.call(tone(&source, bad)).await.is_err(), "{bad:?}");
+    }
+    // A source the view does not offer.
+    assert!(w.rig.call(tone("link:someone-else", "1")).await.is_err());
+    sleep(Duration::from_millis(150)).await;
+    assert!(
+        phone.model.lock().unwrap().tones.is_empty(),
+        "nothing reached the phone"
+    );
+    // A flood of valid taps is cut off by the service itself.
+    let mut accepted = 0;
+    let mut refused = 0;
+    for _ in 0..(bridge_service::call_control::MAX_TONES * 3) {
+        match w.rig.call(tone(&source, "5")).await {
+            Ok(_) => accepted += 1,
+            Err(_) => refused += 1,
+        }
+    }
+    assert!(refused > 0, "no limit applied");
+    assert!(
+        accepted <= bridge_service::call_control::MAX_TONES + 2,
+        "{accepted}"
+    );
+    sleep(Duration::from_millis(200)).await;
+    assert!(phone.model.lock().unwrap().tones.len() <= bridge_service::call_control::MAX_TONES + 2);
+}
+
+#[tokio::test]
+async fn keypad_tones_use_bluetooth_when_it_is_there_and_the_call_is_live() {
+    let w = world(Some(("Fold", Duration::ZERO))).await;
+    let phone = w.phone("Fold").await;
+    phone.ring_all(PhoneState::Ringing);
+    let c = until(&w.rig, "the ring", ringing).await;
+    w.act(
+        c.view.ringing().unwrap().answer.clone().unwrap(),
+        CallAction::Answer,
+    )
+    .await;
+    let c = until(&w.rig, "the live call", live).await;
+    let t = c.view.tones.expect("keypad");
+    assert_eq!(t.path, ControlPath::Hfp);
+    w.rig.ok(tone(&t.source, "7")).await;
+    w.rig.ok(tone(&t.source, "#")).await;
+    assert_eq!(w.hfp().tones, ["7", "#"]);
+    assert!(
+        phone.model.lock().unwrap().tones.is_empty(),
+        "the link was not used"
+    );
 }

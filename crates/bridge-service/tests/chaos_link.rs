@@ -408,6 +408,7 @@ fn report(state: PhoneState) -> kde::Packet {
         can_answer: true,
         can_end: true,
         can_dial: false,
+        can_tones: false,
     };
     kde::Packet::new(calls_link::STATE, r.body())
 }

@@ -715,6 +715,7 @@ mod tests {
             can_answer: can,
             can_end: can,
             can_dial: false,
+            can_tones: true,
         };
         let mut s = CallState::default();
         r.apply(&mut s);

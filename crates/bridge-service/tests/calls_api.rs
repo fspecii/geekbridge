@@ -49,6 +49,7 @@ fn report(state: PhoneState, can_answer: bool) -> kde::Packet {
         can_answer,
         can_end: can_answer,
         can_dial: false,
+        can_tones: false,
     };
     kde::Packet::new(link::STATE, r.body())
 }

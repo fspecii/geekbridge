@@ -80,6 +80,7 @@ Commands:
                                       the audio route and why a control is missing (numbers masked)
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to confirm
+  call tone KEYS                      press keypad keys (0-9 * #) in the live call (phone menus)
   call mute on|off | call audio       mute the computer microphone / move the audio here (only where offered)
   call setup [--phone NAME]           pair this computer with the phone as its hands-free device for call audio
                                       (--fix-config fixes the WirePlumber settings; no sudo)

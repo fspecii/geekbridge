@@ -14,6 +14,7 @@ pub const USAGE: &str = "  calls --trace [--json] [--clear]    what the service 
   call answer|reject|hangup           act on the ringing (answer, reject) or live (hangup) call
   call dial NUMBER [--yes]            place a call from the phone (digits, optional leading +); asks to
                                       confirm unless --yes. Needs Telephony consent and the phone's permission
+  call tone KEYS                      press keypad keys (0-9 * #) in the live call, for phone menus
   call mute on|off                    mute or unmute the microphone the call uses on this computer
   call audio [computer] | audio phone move the live call's voice to this computer / back to the phone
   call setup [--phone NAME]           set up call audio: power Bluetooth on, pair this computer with the phone
@@ -410,6 +411,38 @@ pub fn run(args: &[String], port: u16, token: &Token) -> Result<(), String> {
                         .ok_or("nothing can end a call right now")?,
                     action: CallAction::Hangup,
                 },
+                ["tone", keys] => {
+                    let source = s
+                        .view
+                        .tones
+                        .as_ref()
+                        .ok_or("keypad tones are not available (no answered call, or the phone cannot play them)")?
+                        .source
+                        .clone();
+                    if keys.is_empty()
+                        || keys.chars().count() > 32
+                        || !keys.chars().all(bridge_core::calls_link::valid_tone)
+                    {
+                        return Err("keys are 0-9, * and # (at most 32)".into());
+                    }
+                    // One request per key (the phone counts them), in order, with the pause a person's finger has.
+                    for (i, k) in keys.chars().enumerate() {
+                        if i > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                        }
+                        let request = Request::CallTone {
+                            source: source.clone(),
+                            tone: Sensitive::new(k.to_string()),
+                        };
+                        match ipc::call(port, token, &request).map_err(|e| e.to_string())? {
+                            Response::Ack => {}
+                            Response::Error(e) => return Err(e.message),
+                            _ => return Err("unexpected reply from the service".into()),
+                        }
+                    }
+                    println!("ok");
+                    return Ok(());
+                }
                 ["mute", on] => Request::CallMute {
                     source: s
                         .view

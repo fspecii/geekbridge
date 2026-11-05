@@ -137,6 +137,7 @@ fn off_hook() -> kde::Packet {
             can_answer: true,
             can_end: true,
             can_dial: false,
+            can_tones: false,
         }
         .body(),
     )
