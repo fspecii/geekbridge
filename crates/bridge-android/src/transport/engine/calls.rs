@@ -36,6 +36,11 @@ const REQUEST_TTL: Duration = Duration::from_secs(20);
 /// matter what the computer's own screens do.
 pub(in crate::transport) const MAX_DIALS: usize = 3;
 pub(in crate::transport) const DIAL_WINDOW: Duration = Duration::from_secs(10 * 60);
+/// Keypad tones a computer may send in [`TONE_WINDOW`]. A person tapping a PIN stays far below it; a program
+/// pressing keys in a loop is stopped here whatever the computer's own screens do. Slightly above the computer's own
+/// limit so a legitimate burst is never cut by this one.
+pub(in crate::transport) const MAX_TONES: usize = 24;
+pub(in crate::transport) const TONE_WINDOW: Duration = Duration::from_secs(5);
 /// Computers remembered by the limiter (more than any phone pairs with).
 const MAX_DIAL_PEERS: usize = 16;
 
@@ -49,6 +54,17 @@ pub(in crate::transport) struct DialLimiter {
 impl DialLimiter {
     /// Record a request from `device`; false if it is over the limit (and then it is not recorded).
     pub(in crate::transport) fn admit(&mut self, device: &str, now: Instant) -> bool {
+        self.admit_within(device, now, MAX_DIALS, DIAL_WINDOW)
+    }
+
+    /// The same sliding window with its own size: at most `max` requests in `window`.
+    pub(in crate::transport) fn admit_within(
+        &mut self,
+        device: &str,
+        now: Instant,
+        max: usize,
+        window: Duration,
+    ) -> bool {
         if !self.seen.contains_key(device) && self.seen.len() >= MAX_DIAL_PEERS {
             // Forget the computer whose newest request is the oldest.
             if let Some(old) = self
@@ -63,11 +79,11 @@ impl DialLimiter {
         let q = self.seen.entry(device.to_owned()).or_default();
         while q
             .front()
-            .is_some_and(|t| now.saturating_duration_since(*t) >= DIAL_WINDOW)
+            .is_some_and(|t| now.saturating_duration_since(*t) >= window)
         {
             q.pop_front();
         }
-        if q.len() >= MAX_DIALS {
+        if q.len() >= max {
             return false;
         }
         q.push_back(now);
@@ -97,6 +113,7 @@ struct State {
     stopped: bool,
     last: Option<Map<String, Value>>,
     dials: DialLimiter,
+    tones: DialLimiter,
 }
 
 pub(in crate::transport) struct Hub {
@@ -115,6 +132,7 @@ impl Default for Hub {
                 stopped: false,
                 last: None,
                 dials: DialLimiter::default(),
+                tones: DialLimiter::default(),
             }),
             cv: Condvar::new(),
         }
@@ -245,6 +263,7 @@ pub(in crate::transport) struct ReportArgs {
     pub can_answer: bool,
     pub can_end: bool,
     pub can_dial: bool,
+    pub can_tones: bool,
 }
 
 impl Core {
@@ -279,6 +298,7 @@ impl Core {
         body.insert("canAnswer".into(), json!(a.can_answer));
         body.insert("canEnd".into(), json!(a.can_end));
         body.insert("canDial".into(), json!(a.can_dial));
+        body.insert("canTones".into(), json!(a.can_tones));
         // The same parser the computer uses, so what leaves is what it accepts (an idle report
         // drops number and name).
         let report = LinkCallReport::parse(&body)
@@ -361,6 +381,23 @@ impl Core {
                 }
                 return true;
             }
+            if action == wire::LinkAction::Tone
+                && !self.calls.lock().tones.admit_within(
+                    &device,
+                    Instant::now(),
+                    MAX_TONES,
+                    TONE_WINDOW,
+                )
+            {
+                // A flood of keypad taps: refused here, Kotlin never hears of it. Nothing is logged.
+                for ctl in self.trusted_ctls(Some(connection_id)) {
+                    let _ = ctl.try_send(Ctl::Calls(Out::Result(wire::result_body(
+                        &request_id,
+                        Err(LinkFailure::RateLimited),
+                    ))));
+                }
+                return true;
+            }
             let mut event = json!({
                 "kind": "request",
                 "connection_id": connection_id,
@@ -374,6 +411,12 @@ impl Core {
                     o.insert("number".into(), json!(n.expose()));
                     // Shown to the owner on the phone ("requested by <computer>").
                     o.insert("computer".into(), json!(computer));
+                }
+            }
+            if action == wire::LinkAction::Tone {
+                // parse_request already proved it is exactly one of 0-9 * #.
+                if let (Ok(t), Some(o)) = (wire::parse_tone(&p.body), event.as_object_mut()) {
+                    o.insert("tone".into(), json!(t.to_string()));
                 }
             }
             self.calls.push(event);
@@ -405,6 +448,39 @@ mod tests {
         assert!(!l.admit("a", t + DIAL_WINDOW - Duration::from_secs(1)));
         assert!(l.admit("b", t), "another computer has its own allowance");
         assert!(l.admit("a", t + DIAL_WINDOW), "the window slid past");
+    }
+
+    #[test]
+    fn tone_limiter_cuts_a_flood_but_not_a_person_and_recovers() {
+        let mut l = DialLimiter::default();
+        let t = Instant::now();
+        // Ten digits at human speed (about 6 a second) are all let through.
+        for i in 0..10u64 {
+            assert!(l.admit_within(
+                "a",
+                t + Duration::from_millis(i * 160),
+                MAX_TONES,
+                TONE_WINDOW
+            ));
+        }
+        // A loop pressing keys as fast as it can is stopped at the limit, then the window slides.
+        let mut ok = 10;
+        while l.admit_within("a", t + Duration::from_secs(2), MAX_TONES, TONE_WINDOW) {
+            ok += 1;
+            assert!(ok <= MAX_TONES, "never more than the limit");
+        }
+        assert_eq!(ok, MAX_TONES);
+        assert!(
+            l.admit_within("b", t, MAX_TONES, TONE_WINDOW),
+            "per computer"
+        );
+        assert!(l.admit_within("a", t + Duration::from_secs(8), MAX_TONES, TONE_WINDOW));
+        // Dials are counted apart from tones (a separate limiter instance), with their own small allowance.
+        let mut d = DialLimiter::default();
+        for _ in 0..MAX_DIALS {
+            assert!(d.admit("a", t));
+        }
+        assert!(!d.admit("a", t));
     }
 
     #[test]

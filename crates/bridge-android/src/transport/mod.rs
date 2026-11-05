@@ -904,6 +904,7 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
             let can_answer = f.take_opt_bool("can_answer")?.unwrap_or(false);
             let can_end = f.take_opt_bool("can_end")?.unwrap_or(false);
             let can_dial = f.take_opt_bool("can_dial")?.unwrap_or(false);
+            let can_tones = f.take_opt_bool("can_tones")?.unwrap_or(false);
             f.finish()?;
             let (core, _) = host.running()?;
             core.calls_report(engine::CallsReport {
@@ -913,6 +914,7 @@ pub(crate) fn handle(host: &Host, action: &str, mut f: Fields) -> Result<Value, 
                 can_answer,
                 can_end,
                 can_dial,
+                can_tones,
             })
         }
         "transport_calls_result" => {

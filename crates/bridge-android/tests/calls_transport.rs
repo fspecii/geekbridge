@@ -540,6 +540,109 @@ fn a_computer_that_dials_too_often_is_refused_on_the_phone_and_told_why() {
 }
 
 #[test]
+fn keypad_tones_reach_kotlin_as_one_character_and_hostile_ones_never_do() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    // can_tones travels in the state report; an app that never says it reports false.
+    phone.ok(
+        "transport_calls_report",
+        json!({"state": "offhook", "can_answer": true, "can_end": true, "can_tones": true}),
+    );
+    assert!(
+        wire::LinkCallReport::parse(&peer.recv_kind(STATE).body)
+            .unwrap()
+            .can_tones
+    );
+    phone.ok(
+        "transport_calls_report",
+        json!({"state": "idle", "can_answer": true, "can_end": true}),
+    );
+    assert!(
+        !wire::LinkCallReport::parse(&peer.recv_kind(STATE).body)
+            .unwrap()
+            .can_tones
+    );
+
+    peer.send(REQUEST, wire::tone_request_body("t-1", '#'));
+    let evs = phone.events(0, 1);
+    assert_eq!(
+        (evs[0]["action"].as_str(), evs[0]["tone"].as_str()),
+        (Some("tone"), Some("#"))
+    );
+    let mut since = evs[0]["seq"].as_u64().unwrap();
+
+    // Hostile bodies: not a keypad character, several, none, wrong type. None becomes an event, none gets an answer.
+    for (i, tone) in [
+        json!("A"),
+        json!("12"),
+        json!(""),
+        json!("\u{0661}"),
+        json!(5),
+        json!(null),
+        json!("*#"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut b = wire::request_body(&format!("h-{i}"), LinkAction::Tone);
+        b.insert("tone".into(), tone);
+        peer.send(REQUEST, b);
+    }
+    peer.send(REQUEST, wire::request_body("h-none", LinkAction::Tone));
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        phone.wait_events(since, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // A flood is cut by the phone itself: the limit lets through, the rest are told rate_limited and Kotlin never
+    // hears of them. (One tone is already counted.)
+    let extra = 6;
+    for i in 0..(MAX_TONES - 1 + extra) {
+        peer.send(REQUEST, wire::tone_request_body(&format!("f-{i}"), '5'));
+    }
+    let mut refused = 0;
+    for _ in 0..extra {
+        let p = peer.recv_kind(RESULT);
+        assert!(matches!(
+            wire::parse_result(&p.body),
+            Ok((_, Err(LinkFailure::RateLimited)))
+        ));
+        refused += 1;
+    }
+    assert_eq!(refused, extra);
+    std::thread::sleep(Duration::from_millis(200));
+    // The queue is bounded at 8; what Kotlin was handed never exceeds the limit.
+    let total = phone.wait_events(since, 0)["last_seq"].as_u64().unwrap();
+    assert_eq!(
+        total, MAX_TONES as u64,
+        "exactly the admitted tones became events"
+    );
+    since = total;
+
+    // Switched off in the app: refused at once, nothing for Kotlin.
+    phone.ok("transport_calls_config", json!({"enabled": false}));
+    peer.send(REQUEST, wire::tone_request_body("off-1", '1'));
+    let r = peer.recv_kind(RESULT);
+    assert_eq!(
+        wire::parse_result(&r.body),
+        Ok(("off-1".to_owned(), Err(LinkFailure::PermissionMissing)))
+    );
+    assert!(
+        phone.wait_events(since, 0)["events"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// The phone's keypad-tone allowance per window (engine/calls.rs `MAX_TONES`).
+const MAX_TONES: usize = 24;
+
+#[test]
 fn a_report_request_resends_the_current_state_to_that_computer_without_waking_kotlin() {
     let phone = Phone::start(Some(json!({"enabled": true})));
     let mut peer = Peer::full();
