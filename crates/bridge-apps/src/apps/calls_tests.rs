@@ -121,3 +121,44 @@ fn clicking_the_keypad_appends_digits_and_the_zero_long_press_adds_plus() {
     }
     assert!(c.number.chars().count() <= 64);
 }
+
+#[test]
+fn recents_lists_finished_calls_and_call_back_goes_through_the_confirmation_sheet() {
+    for (w, h) in [(420.0, 640.0), (320.0, 560.0), (900.0, 700.0)] {
+        let mut rig = Rig::new(AppKind::Calls, w, h);
+        let mut c = Calls::default();
+        c.feed = Some(fixture_feed("recents", rig.ctx.clone()));
+        c.tab = Tab::Recents;
+        settle_with_state(&mut c, &mut rig);
+        let out = rig.settle(&mut c, 3);
+        assert!(shapes(&out) > 20, "{w}x{h}: the list is drawn");
+    }
+    // The rows say what happened, in words.
+    let status = c_status("recents");
+    let details: Vec<String> = status
+        .view
+        .recent
+        .iter()
+        .map(call_ui::recent_detail)
+        .collect();
+    assert_eq!(details[0], "Missed · 4 min ago");
+    assert_eq!(details[1], "Incoming 03:05 · 1 h ago");
+    assert_eq!(details[2], "Outgoing 00:42 · 8 h ago");
+    assert_eq!(details[3], "Declined · 2 d ago");
+    // A number is offered for calling back only when it is a plain one.
+    assert_eq!(
+        status.view.recent[2].callback_number().as_deref(),
+        Some("+442079460958")
+    );
+    assert_eq!(status.view.recent[3].callback_number(), None);
+    // The service offered dialing, so the confirmation names the number and the phone.
+    let dial = status.view.dial.as_ref().expect("dial offered");
+    let (question, _) = call_ui::dial_confirmation(dial, "+15550100");
+    assert!(question.contains("+15550100") && question.contains("Pixel 9"));
+}
+
+fn c_status(kind: &str) -> bridge_core::ipc::CallsStatus {
+    let feed = fixture_feed(kind, egui::Context::default());
+    wait_until("fixture state", || feed.state().status.is_some());
+    feed.state().status.unwrap()
+}

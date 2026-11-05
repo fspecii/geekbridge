@@ -12,6 +12,7 @@ use crate::{
     shell::{AppView, Env, central},
     theme::{self, Palette},
 };
+use bridge_core::calls_view::{RecentCall, RecentKind};
 use eframe::egui::{self, Align2, FontFamily, FontId, Margin, Sense, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -374,32 +375,126 @@ impl Calls {
         }
     }
 
+    /// One row per finished call: who, how it went and when, with Call back and Message. Call back
+    /// never dials by itself: it opens the same confirmation sheet as the keypad, or, when dialing
+    /// is not offered, the keypad with the number in it and the reason under it.
+    fn recent_rows(&mut self, ui: &mut egui::Ui, pal: &Palette, recent: &[RecentCall]) {
+        let dial_offered = self
+            .sources
+            .status
+            .as_ref()
+            .is_some_and(|s| s.view.dial.is_some());
+        for (i, call) in recent.iter().enumerate() {
+            let number = call.callback_number();
+            let who = call.caller_label();
+            let detail = call_ui::recent_detail(call);
+            ui.push_id(("recent", i), |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let call_label = crate::i18n::tr_args(
+                            "recents.callback.named",
+                            &[("name", &who.as_str())],
+                        );
+                        if small_round(ui, pal, 40.0, Icon::Phone, number.is_some(), &call_label)
+                            .clicked()
+                            && let Some(n) = &number
+                        {
+                            self.number = n.clone();
+                            if dial_offered {
+                                self.confirming = Some(n.clone());
+                            } else {
+                                self.tab = Tab::Keypad;
+                            }
+                        }
+                        let msg_label = crate::i18n::tr_args(
+                            "recents.message.named",
+                            &[("name", &who.as_str())],
+                        );
+                        if small_round(ui, pal, 40.0, Icon::Chat, number.is_some(), &msg_label)
+                            .clicked()
+                            && let Some(n) = &number
+                        {
+                            // Best effort: a missing Messages binary is the same as in Contacts.
+                            let _ = crate::prefill::launch_with(
+                                "geekbridge-messages",
+                                crate::prefill::MESSAGE_VAR,
+                                n,
+                            );
+                        }
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.vertical(|ui| {
+                                let color = if call.kind == RecentKind::Missed {
+                                    pal.err
+                                } else {
+                                    pal.text
+                                };
+                                let name = ui.add(
+                                    egui::Label::new(theme::semibold(&who, 15.0).color(color))
+                                        .truncate(),
+                                );
+                                ui.add(egui::Label::new(theme::secondary(pal, &detail)).truncate());
+                                name.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Label,
+                                        true,
+                                        crate::i18n::tr_args(
+                                            "recents.row",
+                                            &[
+                                                ("name", &who.as_str()),
+                                                ("detail", &detail.as_str()),
+                                            ],
+                                        ),
+                                    )
+                                });
+                            });
+                        });
+                    });
+                });
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+            });
+        }
+    }
+
     fn recents(&mut self, ui: &mut egui::Ui, env: &Env) {
         let pal = env.pal;
         let sources = self.sources.clone();
+        let recent: Vec<RecentCall> = sources
+            .status
+            .as_ref()
+            .map(|s| s.view.recent.clone())
+            .unwrap_or_default();
         ui.add_space(6.0);
         ui.label(theme::semibold("Recent Calls", 20.0));
         ui.add_space(14.0);
-        ui.vertical_centered(|ui| {
-            ui.add_space(24.0);
-            let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-            ui.painter().circle_filled(rect.center(), 24.0, pal.control);
-            icons::paint(
-                ui.painter(),
-                egui::Rect::from_center_size(rect.center(), vec2(22.0, 22.0)),
-                Icon::Clock,
-                pal.text3,
-            );
-            ui.add_space(6.0);
-            ui.label(theme::semibold("No call history", 15.0));
-            ui.add(
-                egui::Label::new(theme::secondary(
-                    pal,
-                    "Nothing has been read from a phone, so there's nothing to list.",
-                ))
-                .wrap(),
-            );
-        });
+        if recent.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(24.0);
+                let (rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+                ui.painter().circle_filled(rect.center(), 24.0, pal.control);
+                icons::paint(
+                    ui.painter(),
+                    egui::Rect::from_center_size(rect.center(), vec2(22.0, 22.0)),
+                    Icon::Clock,
+                    pal.text3,
+                );
+                ui.add_space(6.0);
+                ui.label(theme::semibold("No call history", 15.0));
+                ui.add(
+                    egui::Label::new(theme::secondary(
+                        pal,
+                        "Nothing has been read from a phone, so there's nothing to list.",
+                    ))
+                    .wrap(),
+                );
+            });
+        } else {
+            self.recent_rows(ui, pal, &recent);
+            ui.add_space(8.0);
+            ui.add(egui::Label::new(theme::caption(pal, crate::i18n::tr("recents.note"))).wrap());
+        }
         ui.add_space(24.0);
         let banner_shown = self.audio.banner(ui, pal);
         if !banner_shown {
@@ -422,10 +517,11 @@ pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
         calls::{CallState, Sensitive},
         calls_link::{LinkCallReport, PhoneState},
         calls_view::{self, SourceSnapshot},
+        calls_view::{RecentCall, RecentKind},
         ipc::CallsStatus,
     };
     let report = LinkCallReport {
-        state: if kind == "ended" {
+        state: if matches!(kind, "ended" | "recents") {
             PhoneState::Idle
         } else if ringing {
             PhoneState::Ringing
@@ -436,16 +532,51 @@ pub(crate) fn fixture_feed(kind: &str, wake: egui::Context) -> CallFeed {
         name: Some(Sensitive::new("Ada Lovelace")),
         can_answer: true,
         can_end: true,
-        can_dial: false,
+        can_dial: kind == "recents",
     };
     let mut state = CallState::default();
     report.apply(&mut state);
-    let view = calls_view::build(&[SourceSnapshot {
+    let mut view = calls_view::build(&[SourceSnapshot {
         key: "link:fixture".into(),
         label: "Pixel 9".into(),
         caps: report.capabilities(),
         state,
     }]);
+    if kind == "recents" {
+        let call = |who: Option<&str>, number: Option<&str>, kind, ago, talk| RecentCall {
+            phone: "Pixel 9".into(), // i18n-ok: screenshot fixture
+            kind,
+            number: number.map(Sensitive::new),
+            name: who.map(Sensitive::new),
+            ended_secs_ago: ago,
+            talk_secs: talk,
+        };
+        let (ada, grace) = ("Ada Lovelace", "Grace Hopper"); // i18n-ok: screenshot fixture
+        view.recent = vec![
+            call(
+                Some(ada),
+                Some("+1 555 0100"),
+                RecentKind::Missed,
+                240,
+                None,
+            ),
+            call(
+                Some(grace),
+                Some("+1 555 0101"),
+                RecentKind::Incoming,
+                5400,
+                Some(185),
+            ),
+            call(
+                None,
+                Some("+44 20 7946 0958"),
+                RecentKind::Outgoing,
+                30_000,
+                Some(42),
+            ),
+            call(None, None, RecentKind::Declined, 200_000, None),
+        ];
+    }
     let status = CallsStatus {
         view,
         notice: None,
@@ -516,7 +647,7 @@ impl AppView for Calls {
             let wake = ctx.clone();
             match std::env::var("GEEKBRIDGE_CALLS_FIXTURE").as_deref() {
                 Ok(
-                    kind @ ("ringing" | "active" | "active-wifi" | "listening-wifi"
+                    kind @ ("ringing" | "active" | "recents" | "active-wifi" | "listening-wifi"
                     | "speaking-wifi"),
                 ) => fixture_feed(kind, wake),
                 _ => CallFeed::spawn(move || wake.request_repaint()),

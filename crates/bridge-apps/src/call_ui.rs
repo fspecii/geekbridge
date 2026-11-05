@@ -15,7 +15,10 @@ use bridge_core::{
     calls::CallPhase,
     calls::Sensitive,
     calls_link::valid_dial_number,
-    calls_view::{AudioRoute, AudioRouteView, CallRow, CallsView, ControlPath, DialView},
+    calls_view::{
+        AudioRoute, AudioRouteView, CallRow, CallsView, ControlPath, DialView, RecentCall,
+        RecentKind,
+    },
     ipc::{CallAction, CallsStatus, Request},
 };
 use eframe::egui::{self, Align2, Color32, Key, Margin, RichText, vec2};
@@ -119,6 +122,36 @@ pub fn route_text(a: &AudioRouteView) -> String {
             Some(h) => format!("Audio on the phone. {h}"),
             None => "Audio on the phone".to_owned(),
         },
+    }
+}
+
+/// "just now", "5 min ago", "3 h ago", "2 d ago".
+pub fn ago(secs: u64) -> String {
+    match secs {
+        0..=59 => tr("recents.ago.now").to_owned(),
+        60..=3599 => tr_args("recents.ago.min", &[("n", &(secs / 60))]),
+        3600..=86399 => tr_args("recents.ago.hour", &[("n", &(secs / 3600))]),
+        _ => tr_args("recents.ago.day", &[("n", &(secs / 86400))]),
+    }
+}
+
+/// The second line of a Recents row: "Missed · 5 min ago", "Incoming 01:05 · 2 h ago".
+pub fn recent_detail(c: &RecentCall) -> String {
+    let kind = tr(match c.kind {
+        RecentKind::Missed => "recents.kind.missed",
+        RecentKind::Declined => "recents.kind.declined",
+        RecentKind::Incoming => "recents.kind.incoming",
+        RecentKind::Outgoing => "recents.kind.outgoing",
+        RecentKind::OutgoingUnanswered => "recents.kind.outgoing_unanswered",
+        RecentKind::Connected => "recents.kind.connected",
+    });
+    let when = ago(c.ended_secs_ago);
+    match c.talk_secs {
+        Some(t) => tr_args(
+            "recents.detail.talk",
+            &[("kind", &kind), ("talk", &clock(t)), ("when", &when)],
+        ),
+        None => tr_args("recents.detail", &[("kind", &kind), ("when", &when)]),
     }
 }
 
