@@ -303,7 +303,11 @@ stage_sms() {
   sleep 62
   local ltag="gblim$RANDOM" n ph okn=0 held=0 lastphase="" lastwhy=""
   for n in $(seq 1 10); do
-    ctl messages-send "$PHONE_ID" "555700000$n" "number $ltag $n" >/dev/null 2>&1 || { rec sms_limiter_setup FAIL "computer refused text $n"; break; }
+    # The phone may redial between two texts (a dropped link comes back in a couple of seconds): wait for it, then send.
+    wait_for 40 is_connected
+    ctl messages-send "$PHONE_ID" "555700000$n" "number $ltag $n" >/dev/null 2>&1 \
+      || { wait_for 40 is_connected; ctl messages-send "$PHONE_ID" "555700000$n" "number $ltag $n" >/dev/null 2>&1; } \
+      || { rec sms_limiter_setup FAIL "computer refused text $n: $(ctl messages-send "$PHONE_ID" "555700000$n" "number $ltag $n" 2>&1 | tr '\n' ' ' | cut -c1-160)"; break; }
     ph="$(wait_phase "number $ltag $n" 40)"
     case "$ph" in failed) held=$((held + 1)); lastphase=$ph; lastwhy="$(send_reason "number $ltag $n")" ;; accepted_by_phone|sent|delivered) okn=$((okn + 1)) ;; esac
   done
@@ -316,6 +320,7 @@ stage_sms() {
   # ... and the computer's own minute limit: 11 quick texts to a number the phone already allows, the 11th is refused here.
   sleep 62
   local queued=0 refused=0 msg
+  wait_for 40 is_connected
   for n in $(seq 1 11); do
     msg="$(ctl messages-send "$PHONE_ID" 5557000001 "quick $ltag $n" 2>&1)" && queued=$((queued + 1)) || { refused=$((refused + 1)); lastwhy="$msg"; }
   done

@@ -276,7 +276,10 @@ XML
   rec case_edit_from_current_version_applies "$([[ "$title" == Mine ]] && echo PASS || echo FAIL)" "phone title=$title"
   # ---- invitation (not organiser): refused; read-only calendar: refused before anything is sent
   local INV; INV="$(python3 -c "import json;d=json.load(open('$CASES_OUT/jul.json'));print([e['event_id'] for e in d['events'] if e['title']=='CC Invitation'][0])")"
+  # A redial between two steps (it comes back in a couple of seconds) must not look like a refused edit: wait for the link first.
+  wait_for 40 is_connected
   local inv_out; inv_out="$(ctl calendar-update "$PHONE_ID" "$INV" "Hijack" "$(ms 2027 7 6 10 Europe/Stockholm)" 60 2>&1 | tr '\n' ' ')"
+  if [[ "$inv_out" == *NotConnected* ]]; then wait_for 40 is_connected; inv_out="$(ctl calendar-update "$PHONE_ID" "$INV" "Hijack" "$(ms 2027 7 6 10 Europe/Stockholm)" 60 2>&1 | tr '\n' ' ')"; fi
   for _ in $(seq 60); do agenda_to "" 2027-06-28 14 "$CASES_OUT/jul.json"; grep -q not_organizer "$CASES_OUT/jul.json" && break; sleep 1; done
   chk invitation_not_organiser_refused "any(x.get('reason')=='not_organizer' for x in d['edits'])" "$CASES_OUT/jul.json"
   say "invitation update: $inv_out"
