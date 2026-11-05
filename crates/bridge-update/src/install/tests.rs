@@ -755,17 +755,21 @@ fn recover_repoints_an_unusable_current_and_ignores_a_live_install() {
     );
     assert_eq!(sb.running(), "geekbridge-service 0.1.0");
     assert!(last_outcome(&st).unwrap().starts_with("recovered 0.1.0"));
-    // An install holding the lock (a live pid) is left alone.
-    let lockfile = sb.prefix.join("lib/geekbridge/.lock");
-    fs::write(&lockfile, "1").unwrap();
-    fs::create_dir(sb.prefix.join("lib/geekbridge/.staging-1")).unwrap();
+    // An install holding the lock (a live holder, not just a pid in a file) is left alone.
+    let root = sb.prefix.join("lib/geekbridge");
+    let lockfile = root.join(".lock");
+    let held = lock(&root).unwrap();
+    fs::create_dir(root.join(".staging-1")).unwrap();
     assert!(recover(&sb.prefix, None).is_empty());
-    assert!(sb.prefix.join("lib/geekbridge/.staging-1").exists());
+    assert!(root.join(".staging-1").exists());
     assert!(matches!(rollback(&sb.prefix, None), Err(Error::Busy)));
-    // A lock left by a dead process is taken over.
-    fs::write(&lockfile, "4000000000").unwrap();
+    assert!(matches!(lock(&root), Err(Error::Busy)));
+    drop(held);
+    assert!(!lockfile.exists(), "the lock file goes with the lock");
+    // A lock file nobody holds (a crashed installer, even one naming a live pid) is simply taken.
+    fs::write(&lockfile, std::process::id().to_string()).unwrap();
     assert!(!recover(&sb.prefix, None).is_empty());
-    assert!(!sb.prefix.join("lib/geekbridge/.staging-1").exists());
+    assert!(!root.join(".staging-1").exists());
 }
 
 // ---- who may update ------------------------------------------------------------------------------
@@ -971,4 +975,256 @@ fn real_binaries_pass_strict_validation_and_install() {
         String::from_utf8_lossy(&out.stdout).trim(),
         format!("geekbridge-service {version}")
     );
+}
+
+// ---- security review 9 ----------------------------------------------------------------------------
+
+#[test]
+fn a_second_top_directory_entry_and_signed_octal_fields_are_refused() {
+    let sb = Sandbox::new("0.1.0");
+    let t = with_extra(entry(&format!("{TOP}/"), b'5', 0o755, &[], ""));
+    expect_untouched(&sb, &t, "twice");
+    // Header numbers are octal digits: no '+', no letters, no sign.
+    for bad in ["+000644 ", "0x1a4   ", "-000644 "] {
+        let mut h = header(&format!("{TOP}/geekbridge-evil"), b'0', 0o644, 1, "");
+        h[100..108].copy_from_slice(&format!("{bad:<7}\0").as_bytes()[..8]);
+        h[148..156].fill(b' ');
+        let sum: u64 = h.iter().map(|b| u64::from(*b)).sum();
+        h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut e = h.to_vec();
+        e.extend_from_slice(&[b'x'; 1]);
+        e.resize(1024, 0);
+        expect_untouched(&sb, &with_extra(e), "octal");
+    }
+}
+
+#[test]
+fn flood_of_directory_entries_hits_the_entry_limit() {
+    let sb = Sandbox::new("0.1.0");
+    let mut t = Vec::new();
+    for _ in 0..200 {
+        t.extend(entry(&format!("{TOP}/"), b'5', 0o755, &[], ""));
+    }
+    expect_untouched(&sb, &finish(t), "twice");
+}
+
+#[test]
+fn sparse_gnu_and_contiguous_types_are_refused() {
+    let sb = Sandbox::new("0.1.0");
+    for (kind, word) in [
+        (b'S', "unsupported"),
+        (b'7', "unsupported"),
+        (b'D', "unsupported"),
+        (b'K', "extension"),
+        (b'g', "extension"),
+    ] {
+        let t = with_extra(entry(
+            &format!("{TOP}/geekbridge-evil"),
+            kind,
+            0o755,
+            b"x",
+            "",
+        ));
+        expect_untouched(&sb, &t, word);
+    }
+    // A setuid/setgid/sticky mode in a header never reaches the file.
+    let mut t = entry(&format!("{TOP}/"), b'5', 0o755, &[], "");
+    for n in BINARIES {
+        t.extend(entry(
+            &format!("{TOP}/{n}"),
+            b'0',
+            0o7755,
+            &fake_bin(n, "0.2.0"),
+            "",
+        ));
+    }
+    sb.install(&finish(t), "v0.2.0", "0.1.0").unwrap();
+    for n in BINARIES {
+        let mode = fs::metadata(sb.prefix.join("lib/geekbridge/current/bin").join(n))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o7000, 0, "{n} has special bits: {mode:o}");
+    }
+}
+
+#[test]
+fn trailing_garbage_and_second_gzip_members_are_refused() {
+    let sb = Sandbox::new("0.1.0");
+    let t = good_tar("0.2.0");
+    for extra in [gzip(&t), b"garbage".to_vec(), vec![0_u8; 3]] {
+        let mut g = gzip(&t);
+        g.extend(extra);
+        let p = sb.dir.path().join("download.tar.gz");
+        fs::write(&p, &g).unwrap();
+        let sha = {
+            use sha2::{Digest, Sha256};
+            bridge_core::ipc::encode_hex(&Sha256::digest(&g))
+        };
+        let st = sb.state();
+        let r = install(&sb.request(&(p, sha, g.len() as u64), "v0.2.0", "0.1.0", &st));
+        assert!(matches!(r, Err(Error::Archive(_))), "{r:?}");
+        assert_eq!(sb.running(), "geekbridge-service 0.1.0");
+    }
+}
+
+#[test]
+fn a_mutated_archive_never_panics_or_hangs() {
+    // Deterministic byte flips and cuts over a real gzip stream: every outcome is Ok or Err.
+    let g = gzip(&good_tar("0.2.0"));
+    let mut seed = 0x9E37_79B9_u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    for round in 0..400 {
+        let mut m = g.clone();
+        for _ in 0..=(round % 4) {
+            let i = next() as usize % m.len();
+            m[i] ^= 1 << (next() % 8);
+        }
+        if round % 5 == 0 {
+            m.truncate(next() as usize % m.len());
+        }
+        let reader = gz::Gunzip::new(&m[..], 64 << 20);
+        let limits = tar::Limits {
+            entries: 64,
+            file_bytes: 1 << 20,
+            total_bytes: 8 << 20,
+        };
+        let _ = tar::extract(reader, &limits, &mut |_| None);
+    }
+}
+
+#[test]
+fn staging_is_private_from_the_first_instant() {
+    let sb = Sandbox::new("0.1.0");
+    let a = sb.archive(&good_tar("0.2.0"));
+    let st = sb.state();
+    let mut seen = None;
+    let r = run(&sb.request(&a, "v0.2.0", "0.1.0", &st), &mut |step| {
+        if step == Step::Staged {
+            let dir = fs::read_dir(sb.prefix.join("lib/geekbridge"))
+                .unwrap()
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().starts_with(".staging-"))
+                .unwrap()
+                .path();
+            seen = Some(fs::metadata(dir).unwrap().permissions().mode() & 0o777);
+        }
+        step != Step::Staged
+    });
+    assert_eq!(r, Err(Error::Interrupted));
+    assert_eq!(seen, Some(0o700));
+}
+
+#[test]
+fn only_one_installer_runs_at_a_time() {
+    let sb = Sandbox::new("0.1.0");
+    let root = sb.prefix.join("lib/geekbridge");
+    let held = lock(&root).unwrap();
+    let e = sb
+        .install(&good_tar("0.2.0"), "v0.2.0", "0.1.0")
+        .unwrap_err();
+    assert_eq!(e, Error::Busy);
+    assert_eq!(sb.running(), "geekbridge-service 0.1.0");
+    drop(held);
+    sb.install(&good_tar("0.2.0"), "v0.2.0", "0.1.0").unwrap();
+}
+
+#[test]
+fn a_link_the_user_makes_after_the_first_update_survives_the_next_one() {
+    let sb = Sandbox::new("0.1.0");
+    sb.install(&good_tar("0.2.0"), "v0.2.0", "0.1.0").unwrap();
+    let own = sb.dir.path().join("my-build");
+    fs::write(&own, "mine").unwrap();
+    let bin = sb.prefix.join("bin/geekbridge-calls");
+    fs::remove_file(&bin).unwrap();
+    symlink(&own, &bin).unwrap();
+    let e = sb
+        .install(&good_tar("0.3.0"), "v0.3.0", "0.2.0")
+        .unwrap_err();
+    assert!(matches!(e, Error::Unsupported(_)), "{e:?}");
+    assert_eq!(fs::read_link(&bin).unwrap(), own);
+    assert_eq!(sb.link_name("current").as_deref(), Some("0.2.0"));
+    fs::remove_file(&bin).unwrap();
+    sb.install(&good_tar("0.3.0"), "v0.3.0", "0.2.0").unwrap();
+    fs::remove_file(&bin).unwrap();
+    symlink(&own, &bin).unwrap();
+    // Rolling back does not touch it either.
+    rollback(&sb.prefix, None).unwrap();
+    assert_eq!(fs::read_link(&bin).unwrap(), own);
+}
+
+#[test]
+fn recovery_removes_only_its_own_leftovers() {
+    let sb = Sandbox::new("0.1.0");
+    sb.install(&good_tar("0.2.0"), "v0.2.0", "0.1.0").unwrap();
+    let root = sb.prefix.join("lib/geekbridge");
+    let theirs = [
+        sb.prefix.join("bin/.fzf.tmp-keep"),
+        sb.prefix.join("bin/.staging-notes"),
+        root.join(".staging-"),
+    ];
+    for t in &theirs {
+        fs::write(t, "user").unwrap();
+    }
+    let ours = [
+        sb.prefix.join("bin/.geekbridge-ctl.tmp-4242"),
+        root.join(".current.tmp-4242"),
+    ];
+    for o in &ours {
+        symlink("x", o).unwrap();
+    }
+    fs::create_dir(root.join(".staging-mig-4242")).unwrap();
+    assert_eq!(recover(&sb.prefix, None).len(), 3);
+    assert!(theirs.iter().all(|t| t.exists()));
+    assert!(ours.iter().all(|o| fs::symlink_metadata(o).is_err()));
+}
+
+#[test]
+fn a_linked_or_world_writable_bin_is_not_a_user_install() {
+    let sb = Sandbox::new("0.1.0");
+    let bin = sb.prefix.join("bin");
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o777)).unwrap();
+    let s = support_for(&sb.prefix, None);
+    assert!(
+        matches!(&s, Support::DownloadOnly(w) if w.contains("writable by everyone")),
+        "{s:?}"
+    );
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    // bin -> elsewhere would make `../lib/geekbridge/...` resolve in the wrong place.
+    let elsewhere = sb.dir.path().join("dotfiles-bin");
+    fs::rename(&bin, &elsewhere).unwrap();
+    symlink(&elsewhere, &bin).unwrap();
+    assert!(!support_for(&sb.prefix, None).can_install());
+}
+
+#[test]
+fn last_outcome_shows_one_harmless_line_even_from_an_edited_file() {
+    let sb = Sandbox::new("0.1.0");
+    let st = sb.state();
+    record(
+        Some(&st),
+        "failed",
+        "0.2.0",
+        None,
+        "bad \u{1b}[31mred\nnext line",
+    );
+    let line = last_outcome(&st).unwrap();
+    assert!(!line.contains('\u{1b}') && !line.contains('\n'), "{line:?}");
+}
+
+#[test]
+fn a_fifo_is_not_an_archive() {
+    let sb = Sandbox::new("0.1.0");
+    let fifo = sb.dir.path().join("pipe.tar.gz");
+    let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: mkfifo on a path in the test's own temporary directory.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    let st = sb.state();
+    let r = install(&sb.request(&(fifo, "0".repeat(64), 10), "v0.2.0", "0.1.0", &st));
+    assert!(matches!(r, Err(Error::Archive(_))), "{r:?}");
 }

@@ -28,7 +28,9 @@ pub const BINARIES: [&str; 9] = [
     "geekbridge-contacts",
     "geekbridge-share",
 ];
+#[cfg(target_os = "linux")]
 const DOCS: [&str; 3] = ["README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"];
+#[cfg(target_os = "linux")]
 const SERVICE_UNIT: &str = "geekbridge-service.service";
 
 /// What this copy of GeekBridge may do about an update.
@@ -145,12 +147,31 @@ pub fn support_for(prefix: &Path, home: Option<&Path>) -> Support {
                     .find_map(|l| l.strip_prefix("Uid:"))
                     .and_then(|l| l.split_whitespace().nth(1)?.parse::<u32>().ok())
             });
+        if euid == Some(0) {
+            // Root would replace files other people run; a per-user install is the user's own business.
+            return Support::DownloadOnly(
+                "self-update does not run as root; use your own account or the package manager"
+                    .into(),
+            );
+        }
         let mine = |dir: &Path| {
             std::fs::metadata(dir)
                 .is_ok_and(|m| m.is_dir() && Some(m.uid()) == euid && m.mode() & 0o200 != 0)
         };
         if !mine(&real.join("bin")) || !(mine(&real.join("lib")) || mine(&real)) {
             return Support::PackageManaged(format!("{} is not writable by you", prefix.display()));
+        }
+        // The links in bin/ are relative (`../lib/geekbridge/...`): a bin/ that is itself a link
+        // would resolve them somewhere else. And a directory anyone can write to lets anyone swap
+        // the links that the user then runs.
+        let plain_dir = |dir: &Path| {
+            std::fs::symlink_metadata(dir).map_or(true, |m| m.is_dir() && m.mode() & 0o002 == 0)
+        };
+        if !plain_dir(&real.join("bin")) || !plain_dir(&real.join("lib/geekbridge")) {
+            return Support::DownloadOnly(format!(
+                "{}/bin or lib/geekbridge is a link or writable by everyone",
+                prefix.display()
+            ));
         }
         Support::UserInstall(real)
     }
@@ -168,7 +189,10 @@ mod linux {
         collections::BTreeSet,
         fs,
         io::{Read, Write},
-        os::unix::{fs::PermissionsExt, fs::symlink},
+        os::unix::{
+            fs::{DirBuilderExt, OpenOptionsExt, symlink},
+            process::CommandExt,
+        },
         path::{Path, PathBuf},
         process::{Command, Stdio},
         time::{Duration, Instant},
@@ -286,13 +310,13 @@ mod linux {
         }
     }
 
-    fn pid_alive(pid: u32) -> bool {
-        Path::new(&format!("/proc/{pid}")).exists()
-    }
-
-    pub(super) struct Lock(PathBuf);
+    /// The install lock: `flock(2)` on `lib/geekbridge/.lock`. The kernel drops it when the holder
+    /// dies, so there is no stale lock to take over (and no pid reuse or takeover race).
+    pub(super) struct Lock(PathBuf, #[allow(dead_code)] fs::File);
     impl Drop for Lock {
         fn drop(&mut self) {
+            // Unlink while still holding the lock; `lock` re-checks the path after locking, so a
+            // waiter that opened the old file does not end up holding a lock nobody else sees.
             let _ = fs::remove_file(&self.0);
             // A run that changed nothing leaves no empty directories behind either.
             if let Some(root) = self.0.parent()
@@ -304,28 +328,31 @@ mod linux {
         }
     }
     pub(super) fn lock(root: &Path) -> Result<Lock, Error> {
+        use std::os::unix::{fs::MetadataExt, io::AsRawFd};
         fs::create_dir_all(root).map_err(|e| io("cannot create the install directory", e))?;
         let path = root.join(".lock");
-        for _ in 0..2 {
-            match fs::OpenOptions::new()
+        for _ in 0..4 {
+            let mut f = fs::OpenOptions::new()
+                .read(true)
                 .write(true)
-                .create_new(true)
+                .create(true)
+                .truncate(false)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .mode(0o600)
                 .open(&path)
-            {
-                Ok(mut f) => {
-                    let _ = write!(f, "{}", std::process::id());
-                    return Ok(Lock(path));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let holder = fs::read_to_string(&path)
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u32>().ok());
-                    if holder.is_some_and(pid_alive) {
-                        return Err(Error::Busy);
-                    }
-                    let _ = fs::remove_file(&path);
-                }
-                Err(e) => return Err(io("cannot lock the install directory", e)),
+                .map_err(|e| io("cannot lock the install directory", e))?;
+            // SAFETY: plain flock(2) on a descriptor this function owns.
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(Error::Busy);
+            }
+            let same = match (f.metadata(), fs::symlink_metadata(&path)) {
+                (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+                _ => false,
+            };
+            if same {
+                f.set_len(0).ok();
+                let _ = write!(f, "{}", std::process::id());
+                return Ok(Lock(path, f));
             }
         }
         Err(Error::Busy)
@@ -350,6 +377,20 @@ mod linux {
         format!("../lib/geekbridge/current/bin/{name}")
     }
 
+    /// Is `bin/<name>` something this module may replace: missing, a plain file `install.sh` wrote
+    /// (already copied into the versioned layout), or one of its own links? Anything else (a link
+    /// to the user's own build, a directory) belongs to the user and is never overwritten.
+    fn replaceable(l: &Layout, name: &str) -> bool {
+        match fs::symlink_metadata(l.bin.join(name)) {
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            Ok(m) if m.is_file() => true,
+            Ok(m) if m.is_symlink() => {
+                fs::read_link(l.bin.join(name)).is_ok_and(|t| t.starts_with("../lib/geekbridge/"))
+            }
+            Ok(_) => false,
+        }
+    }
+
     fn safe_version(v: &str) -> bool {
         !v.is_empty()
             && v.bytes()
@@ -361,9 +402,11 @@ mod linux {
         fn new(root: &Path) -> Result<Stage, Error> {
             let p = root.join(format!(".staging-{}", std::process::id()));
             let _ = fs::remove_dir_all(&p);
-            fs::create_dir(&p).map_err(|e| io("cannot create the staging directory", e))?;
-            fs::set_permissions(&p, fs::Permissions::from_mode(0o700))
-                .map_err(|e| io("staging", e))?;
+            // Private from the first instant: nothing else may slip a file in beside ours.
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&p)
+                .map_err(|e| io("cannot create the staging directory", e))?;
             Ok(Stage(Some(p)))
         }
         fn path(&self) -> &Path {
@@ -411,12 +454,22 @@ mod linux {
 
     /// Copy `src` to `dst`, hashing on the way; both size and SHA-256 must match what was published.
     fn copy_verified(src: &Path, dst: &Path, sha256: &str, size: u64) -> Result<(), Error> {
-        let mut from =
-            fs::File::open(src).map_err(|e| io("cannot open the downloaded archive", e))?;
+        // Non-blocking open: a FIFO at this path must not hang the installer.
+        let mut from = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(src)
+            .map_err(|e| io("cannot open the downloaded archive", e))?;
+        // A pipe or device would block or never end; the size check below needs a regular file.
+        if !from.metadata().is_ok_and(|m| m.is_file()) {
+            return Err(Error::Archive(
+                "the downloaded archive is not a regular file".into(),
+            ));
+        }
         let mut to = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode_0600()
+            .mode(0o600)
             .open(dst)
             .map_err(|e| io("cannot copy the archive into staging", e))?;
         let (mut h, mut n, mut buf) = (Sha256::new(), 0_u64, vec![0_u8; 64 * 1024]);
@@ -449,15 +502,6 @@ mod linux {
         Ok(())
     }
 
-    trait Mode0600 {
-        fn mode_0600(&mut self) -> &mut Self;
-    }
-    impl Mode0600 for fs::OpenOptions {
-        fn mode_0600(&mut self) -> &mut Self {
-            std::os::unix::fs::OpenOptionsExt::mode(self, 0o600)
-        }
-    }
-
     fn elf_ok(path: &Path) -> bool {
         let mut head = [0_u8; 20];
         if !fs::File::open(path)
@@ -478,12 +522,20 @@ mod linux {
 
     /// `geekbridge-service --version` of the staged binary: "geekbridge-service X.Y.Z".
     fn staged_version(bin: &Path) -> Result<String, String> {
+        // Its own process group, so a timeout takes down whatever it started too; the working
+        // directory is the staging tree, not wherever the user happened to run ctl from.
+        let cwd = bin
+            .parent()
+            .and_then(Path::parent)
+            .unwrap_or(Path::new("/"));
         // ETXTBSY: another thread's fork can still hold the just-written file open for a moment.
         let mut tries = 0;
         let mut child = loop {
             let spawned = Command::new(bin)
                 .arg("--version")
                 .env_clear()
+                .current_dir(cwd)
+                .process_group(0)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -506,6 +558,8 @@ mod linux {
                     std::thread::sleep(Duration::from_millis(20))
                 }
                 _ => {
+                    // SAFETY: signalling the process group this function created.
+                    unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err("it did not answer within 10 seconds".into());
@@ -626,7 +680,7 @@ mod linux {
         Ok(true)
     }
 
-    fn record(
+    pub(super) fn record(
         state_file: Option<&Path>,
         outcome: &str,
         version: &str,
@@ -656,7 +710,16 @@ mod linux {
     pub fn last_outcome(state_file: &Path) -> Option<String> {
         let loaded = crate::state_file(state_file).load().ok()?;
         let e = loaded.body.get("last_install")?;
-        let s = |k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        // The file is plain JSON a person could edit: show it as one harmless line.
+        let s = |k: &str| {
+            e.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .chars()
+                .filter(|c| !c.is_control())
+                .take(300)
+                .collect::<String>()
+        };
         let detail = s("detail");
         Some(format!(
             "{} {}{}{}",
@@ -720,6 +783,12 @@ mod linux {
         }
         let _lock = lock(&l.root)?;
         recover_locked(&l, None);
+        if let Some(name) = BINARIES.iter().find(|n| !replaceable(&l, n)) {
+            return Err(Error::Unsupported(format!(
+                "{} is not a plain file that install.sh wrote (a link you made?), so it is left alone",
+                l.bin.join(name).display()
+            )));
+        }
         let mut stage = Stage::new(&l.root)?;
         let tree = stage.path().join("tree");
         let archive = stage.path().join("archive.tar.gz");
@@ -831,6 +900,7 @@ mod linux {
         sync_dir(&l.root);
         for name in BINARIES {
             if fs::read_link(l.bin.join(name)).map_or(true, |t| t != Path::new(&bin_target(name)))
+                && replaceable(&l, name)
                 && l.versions().join(&prev).join("bin").join(name).is_file()
             {
                 set_link(&l.bin, name, &bin_target(name))?;
@@ -859,6 +929,25 @@ mod linux {
         recover_locked(&l, state_file)
     }
 
+    /// `.staging-<pid>` and `.staging-mig-<pid>`: what this module creates, nothing else of the user's.
+    fn ours_staging(name: &str) -> bool {
+        name.strip_prefix(".staging-").is_some_and(|rest| {
+            let pid = rest.strip_prefix("mig-").unwrap_or(rest);
+            !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+        })
+    }
+
+    /// `.<current|previous|binary>.tmp-<pid>`, the half-made links of `set_link`.
+    fn ours_tmp_link(name: &str) -> bool {
+        name.strip_prefix('.')
+            .and_then(|r| r.split_once(".tmp-"))
+            .is_some_and(|(n, pid)| {
+                (n == "current" || n == "previous" || BINARIES.contains(&n))
+                    && !pid.is_empty()
+                    && pid.bytes().all(|b| b.is_ascii_digit())
+            })
+    }
+
     fn recover_locked(l: &Layout, state_file: Option<&Path>) -> Vec<String> {
         let mut notes = Vec::new();
         for dir in [&l.root, &l.bin] {
@@ -867,9 +956,9 @@ mod linux {
             };
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if name.starts_with(".staging-") {
+                if ours_staging(&name) {
                     let _ = fs::remove_dir_all(e.path());
-                } else if name.starts_with('.') && name.contains(".tmp-") {
+                } else if ours_tmp_link(&name) {
                     let _ = fs::remove_file(e.path());
                 } else {
                     continue;

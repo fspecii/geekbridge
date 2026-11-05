@@ -35,9 +35,13 @@ fn octal(field: &[u8]) -> Result<u64, String> {
         .take_while(|b| **b != 0)
         .map(|b| *b as char)
         .collect();
-    let text = text.trim();
+    let text = text.trim_matches(|c| c == ' ');
     if text.is_empty() {
         return Ok(0);
+    }
+    // `from_str_radix` would also take a leading '+'; a header field is octal digits only.
+    if !text.bytes().all(|b| matches!(b, b'0'..=b'7')) {
+        return Err("a number in the archive is not octal".to_owned());
     }
     u64::from_str_radix(text, 8).map_err(|_| "a number in the archive is not octal".to_owned())
 }
@@ -152,7 +156,13 @@ pub fn extract(
         }
         let size = octal(&header[124..136])?;
         match (kind, &file) {
-            (b'5', None) if size == 0 => continue,
+            (b'5', None) if size == 0 => {
+                // The top directory itself: once, and it counts like any other entry.
+                if !seen.insert(String::new()) || seen.len() > limits.entries {
+                    return Err(format!("entry '{}' appears twice", shown(&raw)));
+                }
+                continue;
+            }
             (b'0' | 0, Some(_)) if !raw.ends_with(b"/") => {}
             (b'0' | 0 | b'5', _) => {
                 return Err(format!("entry '{}' has an unexpected shape", shown(&raw)));
