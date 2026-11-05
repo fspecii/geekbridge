@@ -240,6 +240,7 @@ tasks_rest() { # theme
   echo "geekbridge-calls|$t|calls-keypad-no-bluetooth|-|GEEKBRIDGE_CALLAUDIO_FIXTURE=no-bluetooth"
   echo "geekbridge-calls|$t|calls-audio-setup|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLAUDIO_FIXTURE=connect"
   echo "geekbridge-calls|$t|calls-audio-confirm|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLAUDIO_FIXTURE=flow-confirm"
+  echo "geekbridge-calls|$t|calls-recents|-|GEEKBRIDGE_CALLS_TAB=recents GEEKBRIDGE_CALLS_FIXTURE=recents"
   echo "geekbridge-calls|$t|call-incoming|-|GEEKBRIDGE_CALLS_FIXTURE=ringing"
   echo "geekbridge-calls|$t|call-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
   grep -v '^#' "$ROOT/scripts/golden/tasks-call-wifi.txt" | sed "s/@THEME@/$t/"   # Wi-Fi call audio states
