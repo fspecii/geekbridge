@@ -6,6 +6,9 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Added
+- Calls: a missed-call notification with Call back and Message, and a Recents list in the Calls window (calls since the service started, kept in memory only) with Call back and Message per row. Call back still asks for confirmation before dialling.
+
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android

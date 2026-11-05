@@ -96,6 +96,15 @@ about to be placed; and an optional on-phone confirmation (a "Place this call?" 
 answer, **off by default**, switch in the Answer calls step; unanswerable counts as declined). The computer shows the
 refusals `rate_limited` and `declined` in its usual notice line. Details: [reports/followups-security-5.md](reports/followups-security-5.md).
 
+## Recents and missed calls
+
+`call_history.rs` folds the merged view into a list of finished calls (30, newest first, memory only, gone when the service
+restarts). A call whose source vanished (link flap, phone out of range) is dropped, not recorded. `CallsView.recent` carries
+it to the Calls window's Recents tab and `geekbridge-ctl calls`. A ring that ends unanswered and was not declined here
+raises a banner ("Call back", "Message", body click opens the Calls window); the number reaches the new window through its
+environment (`GEEKBRIDGE_DIAL`, `GEEKBRIDGE_MESSAGE_TO`) and Call back only fills the keypad, so the confirmation sheet still
+comes first. Missed and declined on the phone cannot be told apart. See [reports/call-ux-gap-analysis.md](reports/call-ux-gap-analysis.md).
+
 ## Android side (`CallControl.kt`, `CallControlAndroid.kt`)
 
 | Permission | Why | Needed for |
