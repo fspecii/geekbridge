@@ -88,7 +88,9 @@ pub fn dial_candidates(people: &[Person], query: &str) -> Vec<Candidate> {
 
 /// People for whom `hit` answers `Some(starts)`, merged by name and number, best first.
 fn gather(people: &[Person], hit: impl Fn(&Person) -> Option<bool>) -> Vec<Candidate> {
-    let mut out: Vec<(bool, String, Candidate)> = Vec::new();
+    // (starts, sort key, candidate, the (device, contact) records merged into it)
+    type Row<'a> = (bool, String, Candidate, Vec<(&'a str, &'a str)>);
+    let mut out: Vec<Row> = Vec::new();
     for p in people {
         if p.name.trim().is_empty() {
             continue;
@@ -104,8 +106,19 @@ fn gather(people: &[Person], hit: impl Fn(&Person) -> Option<bool>) -> Vec<Candi
         if numbers.is_empty() {
             continue;
         }
-        match out.iter_mut().find(|(_, _, c)| c.name == p.name) {
-            Some((_, _, c)) => {
+        let who = (p.device_id.as_str(), p.id.as_str());
+        // The same person (one record seen twice, or the same name sharing a number on two phones) is one
+        // row; two different contacts that merely have the same name stay two rows.
+        let same = out.iter_mut().find(|(_, _, c, ids)| {
+            c.name == p.name
+                && (ids.contains(&who)
+                    || numbers
+                        .iter()
+                        .any(|n| c.numbers.iter().any(|o| digits(o) == digits(n))))
+        });
+        match same {
+            Some((_, _, c, ids)) => {
+                ids.push(who);
                 for n in numbers {
                     if !c.numbers.iter().any(|o| digits(o) == digits(&n)) {
                         c.numbers.push(n);
@@ -119,11 +132,15 @@ fn gather(people: &[Person], hit: impl Fn(&Person) -> Option<bool>) -> Vec<Candi
                     name: p.name.clone(),
                     numbers,
                 },
+                vec![who],
             )),
         }
     }
     out.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    out.into_iter().map(|(_, _, c)| c).take(MAX_ROWS).collect()
+    out.into_iter()
+        .map(|(_, _, c, _)| c)
+        .take(MAX_ROWS)
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -483,5 +500,22 @@ mod tests {
         let found = dial_candidates(&p, "555");
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].name, "Zed", "starts the number, so first");
+    }
+
+    #[test]
+    fn two_contacts_with_one_name_stay_two_rows_but_one_person_on_two_phones_is_one() {
+        let mut a = person("John Smith", &["+1 555 0100"]);
+        a.id = "1".into();
+        let mut b = person("John Smith", &["+1 555 0199"]);
+        b.id = "2".into();
+        let c = candidates(&[a.clone(), b.clone()], "john");
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert_eq!(c[0].numbers.len(), 1);
+        // The same person on a second phone shares a number: one row with both numbers.
+        let mut a2 = person("John Smith", &["+1 (555) 0100", "+1 555 0123"]);
+        a2.device_id = "e".into();
+        let c = candidates(&[a, a2], "john");
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].numbers.len(), 2);
     }
 }

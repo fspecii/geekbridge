@@ -73,6 +73,11 @@ pub fn take(var: &str, flag: &AtomicBool) -> Option<String> {
 }
 
 pub fn clean_number(raw: &str) -> Option<String> {
+    // An e-mail gateway sender (`91234@txt.example.com`) or a name with digits is not a number: keeping
+    // only its digits would prefill a plausible but wrong recipient.
+    if raw.contains('@') || raw.chars().any(char::is_alphabetic) {
+        return None;
+    }
     let s: String = raw
         .chars()
         .filter(|c| c.is_ascii_digit() || "+()-. ".contains(*c))
@@ -107,12 +112,18 @@ mod tests {
             clean_number("+44 (20) 7946-0001").as_deref(),
             Some("+44 (20) 7946-0001")
         );
-        let odd = clean_number("; rm -rf / 555").unwrap();
+        let odd = clean_number("; $(1) / 555").unwrap();
         assert!(
             odd.chars()
                 .all(|c| c.is_ascii_digit() || "+()-. ".contains(c))
         );
         assert_eq!(clean_number("abc"), None);
+        assert_eq!(
+            clean_number("91234@txt.example.com"),
+            None,
+            "e-mail gateway"
+        );
+        assert_eq!(clean_number("Bank12345"), None, "a name with digits");
         assert_eq!(clean_number("1".repeat(80).as_str()).unwrap().len(), 32);
     }
 }

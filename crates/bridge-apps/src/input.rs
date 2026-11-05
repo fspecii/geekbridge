@@ -7,6 +7,14 @@ pub const MAX_CLIPBOARD_CHARS: usize = 65_536;
 
 /// Keep digits, `*`, `#`, and a leading `+`; bounded length.
 pub fn sanitize_dial(input: &str) -> String {
+    // `+44 (0)20 7946 0001` is written for people dialling locally; the `(0)` is not part of the number.
+    let trimmed;
+    let input = if input.trim_start().starts_with('+') && input.contains("(0)") {
+        trimmed = input.replacen("(0)", "", 1);
+        trimmed.as_str()
+    } else {
+        input
+    };
     let mut out = String::new();
     for c in input.chars() {
         let ok = c.is_ascii_digit() || c == '*' || c == '#' || (c == '+' && out.is_empty());
@@ -187,5 +195,16 @@ mod tests {
         assert_eq!(s, "héll");
         limit_chars(&mut s, 10);
         assert_eq!(s, "héll");
+    }
+
+    #[test]
+    fn a_bracketed_trunk_zero_after_the_country_code_is_not_dialled() {
+        assert_eq!(sanitize_dial("+44 (0)20 7946 0001"), "+442079460001");
+        assert_eq!(sanitize_dial("+44 (20) 7946 0001"), "+442079460001");
+        assert_eq!(
+            sanitize_dial("(0)20 7946 0001"),
+            "02079460001",
+            "no country code: untouched"
+        );
     }
 }
