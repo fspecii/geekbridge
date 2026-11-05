@@ -1,5 +1,7 @@
 # Real-device session script (Fold5 SM-F946B, Android 16, this Arch/Omarchy PC)
 
+Build (round 10): head `35b872a22`, APK versionCode 20393 (versionName 0.1.0), sha256 `5bd5e348a5935998e47159a31322c23aa1e6ca872b50302ede0d6c1c254dac10`, signer `4d711ab4...a3c3` (updates in place). PC binaries in `target/release` (sha256 starts: geekbridge `d4cc3cf4`, service `7d5417be`, ctl `04be4c35`, calls `6f7e06d6`, messages `e230e311`, clipboard `b5049103`, agenda `d8c0d24a`, contacts `3b7abbd7`, share `c2eaf375`); the running service was not restarted.
+
 One ordered script, about 90 minutes, copy-paste from the repository root in a terminal inside Hyprland. Each step has a
 **Send back** line; on any failure note the step, run the shown capture command, and move on (step 7 collects
 everything). Needs: the Fold5 on the home Wi-Fi, an iPhone (or any second phone) to call it, the HyperX USB headset on the
