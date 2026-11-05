@@ -9,6 +9,16 @@ What works, how it is wired, what it needs, and what has **not** been tried on a
   shortcuts: `Enter` / `A` answers, `Esc` / `D` declines. The window asks for attention and focus when a call starts
   to ring. Independently of any window, the service raises a desktop notification with the same two actions on
   Linux (`notify-send`, libnotify 0.8+ for actions; without it no notification is shown).
+- **Decline with message.** Below the caller the card offers *Decline with message*; it swaps the buttons for three
+  short texts (and *Back*). One press declines the call and sends that text to the caller through the phone's
+  Messages path; the banner gets one *Decline + text: ...* button per text. The texts are edited in **Settings ->
+  Decline with message** (blank fields are dropped, at most three of 70 characters, empty = the built-in ones "Can't talk
+  now, I'll call you back", "I'm in a meeting", "Call me in a few minutes") and stored in the service's `call-replies`
+  file. It is offered only when all of these hold: the call has a Decline control, it came over the phone link (the
+  Messages path needs the phone's id, so a Bluetooth-only call does not offer it), the caller's number is a plain number,
+  Messages is allowed for that phone on this computer, the phone's own Messages switch is on and the phone is
+  connected, and Messages' 10-a-minute limit has room (`CallsStatus.replies.offered`). Otherwise the action is not shown.
+  There is no automatic reply.
 - **Ongoing call.** A panel under the toolbar shows the caller, a timer, **Hang up** (`H`), **Mute** (`M`, only where a
   backend can really mute) and the **audio route**: "Audio on this computer (mSBC)", "Moving the audio to this
   computer…", or "Audio on the phone" with the reason. **Use computer audio** appears only when the Bluetooth
@@ -145,6 +155,22 @@ it to the Calls window's Recents tab and `geekbridge-ctl calls`. A ring that end
 raises a banner ("Call back", "Message", body click opens the Calls window); the number reaches the new window through its
 environment (`GEEKBRIDGE_DIAL`, `GEEKBRIDGE_MESSAGE_TO`) and Call back only fills the keypad, so the confirmation sheet still
 comes first. Missed and declined on the phone cannot be told apart. See [reports/call-ux-gap-analysis.md](reports/call-ux-gap-analysis.md).
+
+## Decline with message
+
+`Request::CallDeclineReply { target, reply }` carries the Decline target the last `Calls` view offered and the *index* of
+a text in `CallsStatus.replies.texts`; the text itself and the number never leave the service. `CallHub::decline_with_reply`
+re-checks everything first (the target is still the ringing call, the gate above, the index exists) and refuses with the
+call untouched, then declines through the ordinary Reject path, then hands the text to `PhoneData::send_text` (the same
+consent checks, 10-a-minute limiter and idempotent submission id as the Messages window). The decline is the point: once
+done it stays done, and a text the phone then refuses is reported in `CallsStatus.notice` ("Declined, but the text was
+not sent: ...") instead of failing the decline. A second request for the same ring does nothing, and a banner from an
+earlier ring cannot decline or text a later one. `Request::CallRepliesSet { texts }` saves the list (`ReplyTexts`,
+`call_replies.rs`; limits in `bridge_core::call_replies`). Tests: `bridge-core` `call_replies`, `bridge-service`
+`call_replies` and `phone_data::can_send_text_follows_the_same_gates_as_sending`, `tests/call_chain.rs` (`decline_with_message_*`,
+`the_banner_declines_with_a_text_*`, `saved_replies_*`), `tests/notify_send_stub.rs`, `call_overlay` and `call_replies_ui`
+unit tests; goldens `call-overlay-reply*`. Not available on the Windows and macOS banners (they have no extra buttons);
+the card has it on every desktop.
 
 ## Android side (`CallControl.kt`, `CallControlAndroid.kt`)
 

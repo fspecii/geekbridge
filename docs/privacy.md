@@ -218,6 +218,17 @@ For each: what travels, where it is kept, how long, what is logged, how it is er
   confirmation ([doc] CHANGELOG 0.1.0; tested with a stand-in phone only, **UNVERIFIED** on hardware).
 * Logged: the `diagnose` report and logs mask numbers ([code] `scrub` in `crates/bridge-service/src/diagnose.rs`).
 * Bluetooth hands-free audio is a separate path between phone and computer and is not part of this link.
+* **Decline with message.** On the incoming-call card and the banner, three short texts (yours, in **Settings ->
+  Decline with message**, else three built-in ones) decline the call and send the chosen one to the caller as an
+  ordinary text through the phone's Messages path. It is shown only when Messages is allowed for that phone on this
+  computer **and** the phone's own Messages switch is on (it then accepts text sends), the phone link is up, and the
+  caller's number is a plain one (digits, optional `+`). It shares Messages' limit of 10 texts a minute per phone and
+  its refusals; nothing is sent on a refusal. The service reads the number from its own call view and takes only the
+  *index* of a text from the apps, so the text and number never travel through a command line or the banner action
+  ([code] `crates/bridge-service/src/call_control.rs` `decline_with_reply`). Stored: only the texts you typed, in
+  `call-replies` (state folder, 0600). No history of what was sent is kept beyond Messages' own in-memory send list, and
+  the call trace records only "text after decline: handed to the phone / not sent" with no number or text. There is no
+  automatic reply: every text needs a press on that call.
 * **Call-event trace** (so a call that did nothing can be understood afterwards). The service records, with a time:
   call-state changes per source, the phone link going up or down, the Bluetooth hands-free state, card launches and
   stops, answer/decline/hang-up/mute/audio/dial requests and how they ended, the audio route, and the Wi-Fi call
@@ -381,7 +392,7 @@ Desktop state directory: `$XDG_DATA_HOME/geekbridge/service` (Linux, default `~/
 | --- | --- | --- | --- |
 | `identity.pem` (+`.bak`) | this computer's certificate and private key | yes (private key) | until purge |
 | `trusted_peers.json` | paired phones, pinned certificate, device name | yes | until unpair |
-| `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `privacy` (three display switches), `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
+| `consent.json`, `share.json`, `clipboard-settings.json`, `update-state.json`, `whats-new.json`, `privacy` (three display switches), `call-replies` (your own decline texts), `device-name`, `tray-paused`, markers | settings and per-phone opt-ins | low | until unpair (per-phone entries) or purge |
 | `ipc-token` | local control token | yes (local) | until purge; replaced if damaged |
 | `call-trace.log` | redacted call-event trace (hashed call ids, last two digits of numbers, no names) | low | emptied when the service starts, capped at 256 KiB, `geekbridge-ctl calls --trace --clear` empties it |
 | `phone-logs/<id>.log` | debug-build phone log (redacted) | medium | rotated at 5 MiB, 3 old files; removed on unpair and when `debug` consent is withdrawn |

@@ -66,6 +66,7 @@ overridden by `--state-dir` / `$GEEKBRIDGE_STATE_DIR`; owner-only (mode 0700 on 
 | `device-name` | UTF-8 text, the computer's chosen name | plain text, unversioned | configured name is kept | validated again on read; atomic write |
 | `ipc-token` | 64 hex chars, local control token | unversioned | replaced with a new token (clients re-read it), line logged | holds no pairing data |
 | `privacy` | `message_text=on|off`, `caller_number=…`, `phone_notification_text=…` lines: what banners and the call card may show | unversioned text | defaults (text hidden, caller number shown); unknown keys and bad lines skipped | atomic write; `sms-notify-content` and the old environment variables still force a value |
+| `call-replies` | up to three lines of text, the replies "Decline with message" offers | unversioned text | absent or any bad line (longer than 70 characters, control character, more than three) = the three built-in replies | atomic write, owner-only; removed when the standard replies are restored |
 | `tray-paused` | JSON list of device ids paused from the tray | unversioned list | treated as empty | atomic write |
 | `tray-disabled`, `sms-notify-content` | empty marker files | n/a | n/a | existence is the value |
 | `control-token.lock`, `*.lock` | lock files | n/a | n/a | never deleted |
