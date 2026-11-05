@@ -64,15 +64,27 @@ captured="$("$(bin geekbridge-ctl)" firewall 2>&1)" && grep -q 1716 <<<"$capture
 ok "token-path, autostart status, firewall help"
 
 if [ "$LIVE" = 1 ]; then
-    port=$((20000 + RANDOM % 20000))
-    "$(bin geekbridge-service)" --state-dir "$state" --api-port "$port" --control-port $((port + 1)) \
-        --discovery-port $((port + 2)) --listen-inbound "127.0.0.1:$((port + 3))" --no-announce --no-calling-probe \
-        >"$fresh/service.log" 2>&1 &
-    svc=$!
-    for _ in $(seq 1 50); do [ -s "$fresh/state/ipc-token" ] && break; sleep 0.2; done
-    [ -s "$fresh/state/ipc-token" ] || { cat "$fresh/service.log" >&2; fail "service did not create its control token"; }
-    ok "service started and created its token"
+    # Four consecutive ports below the kernel's ephemeral range (32768+), where another process may hold one;
+    # a port that is taken (the service exits with "Address already in use") gets another try.
     ctl() { "$(bin geekbridge-ctl)" --state-dir "$state" --control-port $((port + 1)) "$@"; }
+    up=0
+    for _attempt in 1 2 3 4 5; do
+        port=$((20000 + RANDOM % 12000))
+        rm -rf "$fresh/state"
+        "$(bin geekbridge-service)" --state-dir "$state" --api-port "$port" --control-port $((port + 1)) \
+            --discovery-port $((port + 2)) --listen-inbound "127.0.0.1:$((port + 3))" --no-announce --no-calling-probe \
+            >"$fresh/service.log" 2>&1 &
+        svc=$!
+        for _ in $(seq 1 50); do
+            kill -0 "$svc" 2>/dev/null || break
+            [ -s "$fresh/state/ipc-token" ] && ctl status >/dev/null 2>&1 && break
+            sleep 0.2
+        done
+        if kill -0 "$svc" 2>/dev/null && [ -s "$fresh/state/ipc-token" ]; then up=1; break; fi
+        wait "$svc" 2>/dev/null || true
+    done
+    [ "$up" = 1 ] || { cat "$fresh/service.log" >&2; fail "service did not create its control token"; }
+    ok "service started and created its token"
     ctl status >"$fresh/status.txt" 2>&1 || { cat "$fresh/status.txt" "$fresh/service.log" >&2; fail "ctl status against the live service"; }
     ok "ctl status against the live service"
     captured="$(ctl diagnose 2>&1)" && grep -qi version <<<"$captured" || fail "ctl diagnose against the live service"
