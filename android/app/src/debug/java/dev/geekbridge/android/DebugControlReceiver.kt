@@ -13,7 +13,7 @@ import android.content.Intent
  *   adb shell am broadcast ... --es what grant --es computer DEVICE_ID --es feature sms --ez on true
  *
  * `call_audio_experiment` arms the hidden VOICE_DOWNLINK probe and `call_audio_probe` runs it for 5 s (CallAudioProbe).
- * `grant` is the per-computer switch (ComputerGrantsRuntime); the others are the app-wide switches.
+ * `hold_cellular` keeps the cellular network FOREGROUND (DebugNetHold). `grant` is the per-computer switch (ComputerGrantsRuntime); the others are the app-wide switches.
  */
 class DebugControlReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -32,6 +32,7 @@ class DebugControlReceiver : BroadcastReceiver() {
             "call_audio_experiment" -> CallAudioProbe.setEnabled(context, on)
             "call_audio_probe" -> CallAudioProbe.runAsync(context)
             "bind_wifi" -> DebugDiagnostics.setBindWifi(on)
+            "hold_cellular" -> DebugNetHold.set(context, on)
             "grant" -> {
                 val computer = intent.getStringExtra("computer") ?: return
                 val feature = GrantFeature.entries.firstOrNull { it.key == intent.getStringExtra("feature") } ?: return

@@ -80,6 +80,7 @@ object DebugDiagnostics {
         app = ctx
         DebugHooks.streaming = DebugSettings.streaming(ctx)
         GbLog.sink = ::record
+        DebugNetHold.bootIfArmed(ctx)
         val s = DebugLogStreamer(ring, ::send, System::currentTimeMillis).also { it.enabled = DebugHooks.streaming }
         streamer = s
         reader = OwnLogReader(Process.myPid()) { raw -> onLogLine(raw) }.also { it.start() }

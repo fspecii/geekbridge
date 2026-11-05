@@ -31,7 +31,7 @@ done
 
 unzip -q -o "$apk" 'classes*.dex' -d "$work"
 for dex in "$work"/classes*.dex; do
-  if strings -n 4 "$dex" | grep -cE 'DebugDiagnostics|DebugScroll|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|HelperConnection|CallWifi|SelfTestVerdict|UplinkTest|UplinkRoutes|PcmInjector|TrackInjector|tx_interception|tx_music|getCallUplinkInjectionAudioTrack|dev/geekbridge/android/callaudio/|dev\.geekbridge\.callwifi|geekbridge\.callaudio|geekbridge-debug-|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.' >/dev/null; then
+  if strings -n 4 "$dex" | grep -cE 'DebugDiagnostics|DebugScroll|DebugLogStreamer|DebugRedactor|DebugControlReceiver|DebugNetHold|DebugBootProvider|ScaleSeedReceiver|DesignGallery|DebugStateCollector|CallAudioHelper|CallAudioProbe|HelperSession|HelperConnection|CallWifi|SelfTestVerdict|UplinkTest|UplinkRoutes|PcmInjector|TrackInjector|tx_interception|tx_music|getCallUplinkInjectionAudioTrack|dev/geekbridge/android/callaudio/|dev\.geekbridge\.callwifi|geekbridge\.callaudio|geekbridge-debug-|geekbridge\.debug\.(log|state)|dev\.geekbridge\.debug\.' >/dev/null; then
     bad "$(basename "$dex") contains debug-only code or packet names"
   fi
 done

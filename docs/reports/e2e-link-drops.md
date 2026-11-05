@@ -109,3 +109,41 @@ would show it on the Fold5.
   redials a down link on every round.
 * **Evidence next time.** `start_emulator` records the whole logcat (`dist/android/logs/logcat-full.txt`, uploaded with the
   failure artifacts); the post-run collector only ever saw a stub because the suite has already killed the emulator.
+
+## 6. Fix 2026-11-06: hold the cellular network FOREGROUND (debug build)
+
+Section 5 left the cause in place. What the emulator shows (`dumpsys connectivity`): the mobile network (netId 100, eth0 10.0.2.15) carries
+only a background request (`REQUEST:1 BACKGROUND_REQUEST:1`; Wi-Fi, wlan0 10.0.2.16, is the default network). It has the FOREGROUND
+capability only while some app holds a real request for it, and loses it, destroying its sockets, when the last such request goes
+(the Google app, after an SMS or at boot). The redirected link socket is accepted on eth0, so it is a member of that network.
+
+Options evaluated on a private AVD clone:
+
+| Option | Result |
+| --- | --- |
+| (a) Route the link over Wi-Fi | Not possible: the emulator's `redir` always delivers to 10.0.2.15 (eth0); nothing outside the guest can reach 10.0.2.16. |
+| `svc data disable` | Cuts the only inbound route (section 5). |
+| (c) Stop the app that releases the request | Not robust: it is a Google system component that comes back, and the releasing request is not tied to one app. |
+| (b) Hold a cellular request | Works. Chosen. |
+| (d) Faster redial | Not done: the 1.6 to 2.4 s product delay is deliberate. |
+
+Implementation (debug build only): `DebugNetHold` (src/debug) calls `ConnectivityManager.requestNetwork` for TRANSPORT_CELLULAR +
+INTERNET and keeps the callback for the life of the process. It is armed at process start when the global setting `gb_hold_cellular`
+is 1 (survives force-stop and `pm clear`) or through `DebugControlReceiver --es what hold_cellular --ez on true`. `start_emulator` in
+`scripts/e2e-android.sh` sets the setting after boot, so every suite that sources it gets it (`E2E_HOLD_CELLULAR=0` turns it off).
+`DebugNetHold` is in the `scripts/check-release-isolation.sh` class list; no release code references it.
+
+Measurement (private AVD, same APK in both arms, fresh emulator boot, setup plus pairing, then 8 minutes with an SMS arrival every
+minute; three boots per arm):
+
+| Arm | `conn_aborted` (3 boots) | `Destroyed N sockets` lines | FOREGROUND log lines per boot |
+| --- | --- | --- | --- |
+| Before (`E2E_HOLD_CELLULAR=0`) | 2, 2, 2 | 2 per boot | 18, 21, 25 |
+| After (hold) | 0, 0, 0 | 0, 1, 1 | 5, 11, 8 |
+
+(A remaining `Destroyed 1 sockets` line in the "after" arm has no `conn_aborted` next to it: it is the `InetDiagMessage` line for an unrelated socket, not a link drop.)
+With the hold, one 30-minute run (boot, pairing, then an SMS arrival every minute) had 0 `conn_aborted` and 0 link drops.
+A 30-minute steady-state run without the fix, after the early drops, showed 0 drops: the drops cluster in the first minutes after boot and
+pairing and on SMS-driven requests, which is where the suites run.
+
+Not changed: product timing, the wait-for-link patches in the suites (still correct for a real drop), and the real-device behaviour.

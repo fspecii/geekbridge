@@ -148,7 +148,15 @@ start_emulator() {
        "${envs[@]/#/--setenv=}" "$launcher" >/dev/null 2>&1; then :
   else (env "${envs[@]}" setsid nohup "$launcher" >"$LOGS/e2e-emulator.log" 2>&1 &); fi
   wait_for 300 bash -c "[[ \$($ADB shell getprop sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]" || return 1
+  hold_cellular_arm
   emu_logcat_start
+}
+# Every connection redirected with `adb emu redir` lands on the guest's mobile-data interface, and Android destroys the
+# sockets of a network that loses FOREGROUND (docs/reports/e2e-link-drops.md): the link then drops with conn_aborted and the
+# phone redials about 2 s later. The debug app holds one cellular network request while this global setting is 1 (read at
+# its process start, so it survives force-stop and pm clear), which keeps the network FOREGROUND. E2E_HOLD_CELLULAR=0 turns it off.
+hold_cellular_arm() {
+  $ADB shell settings put global gb_hold_cellular "${E2E_HOLD_CELLULAR:-1}" >/dev/null 2>&1 || true
 }
 build_all() {
   if [[ ! -x "$SVC" || "$BUILD" == yes ]]; then
