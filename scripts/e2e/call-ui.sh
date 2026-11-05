@@ -390,17 +390,26 @@ stage_overlay() {
   hang_up_all
   wait_for 12 overlay_gone && rec callui_overlay_autoclose PASS "the card closed itself when the call ended" || rec callui_overlay_autoclose FAIL "card still present after the call ended"
   # --- Answer
-  ring "$NUMBER_A" && wait_for 20 overlay_up || { rec callui_overlay_answer FAIL "no card for the second call"; return 1; }
-  sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"
-  # A click that lands while the card is still sliding in is lost on a slow runner: click again once.
-  wait_modem 2 6 || { [[ "$(modem_state)" == 1 ]] && click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"; }
-  if wait_modem 2 12; then rec callui_overlay_answer PASS "click on Answer -> modem off-hook"; else rec callui_overlay_answer FAIL "modem $(modem_state) after clicking Answer"; fi
+  # The emulator modem now and then drops an accepted call back to idle (run 42049065692: the service logged the
+  # answer as ok, the phone went ringing -> idle 30 ms later and off-hook 45 s later, the link up throughout),
+  # so an attempt that ends with the modem idle is cleared and repeated once with a fresh ring.
+  local attempt answered=0
+  for attempt in 1 2; do
+    ring "$NUMBER_A" && wait_for 20 overlay_up || { rec callui_overlay_answer FAIL "no card for the second call (attempt $attempt)"; return 1; }
+    sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"
+    # A click that lands while the card is still sliding in is lost on a slow runner: click again once.
+    wait_modem 2 6 || { [[ "$(modem_state)" == 1 ]] && click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"; }
+    if wait_modem 2 12; then answered=1; break; fi
+    log "overlay answer attempt $attempt: modem $(modem_state) after clicking Answer; clearing and retrying"
+    hang_up_all; sleep 3; hang_up_all; wait_for 12 overlay_gone
+  done
+  if ((answered)); then rec callui_overlay_answer PASS "click on Answer -> modem off-hook (attempt $attempt)"; else rec callui_overlay_answer FAIL "modem $(modem_state) after clicking Answer"; fi
   sleep 1; app_shot call-overlay-answered.png
   # The card stays up through the call as the in-call card (caller, timer, Hang up) and closes a few seconds after the call ends.
   local oc; oc="$(ocr call-overlay-answered.png)"
   grep -qiE "In ?call|Answered" <<<"$oc" && rec callui_overlay_confirm PASS "the card became the in-call card: $(head -c 80 <<<"$oc")" || rec callui_overlay_confirm FAIL "no in-call card after answering: $(head -c 120 <<<"$oc")"
   ctl call hangup >/dev/null 2>&1; wait_modem 0 8 || hang_up_all
-  wait_for 25 overlay_gone && rec callui_overlay_closed PASS "the card closed after the call ended" || rec callui_overlay_closed FAIL "card still present after the call ended"
+  hang_up_all; wait_for 25 overlay_gone && rec callui_overlay_closed PASS "the card closed after the call ended" || rec callui_overlay_closed FAIL "card still present after the call ended"
   # --- Reject
   ring "$NUMBER_B" && wait_for 20 overlay_up || { rec callui_overlay_reject FAIL "no card for the third call"; return 1; }
   sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_REJECT_Y"
