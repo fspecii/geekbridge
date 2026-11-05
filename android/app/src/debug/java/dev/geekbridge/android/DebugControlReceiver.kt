@@ -9,7 +9,7 @@ import android.content.Intent
  * Debug builds only: flips the phone's opt-in switches without driving the UI, for scripts/e2e-debug-diag.sh.
  *
  *   adb shell am broadcast -n dev.geekbridge.android/.DebugControlReceiver -a dev.geekbridge.debug.SET \
- *       --es what sms|contacts|calendar|calendar_edit|calls|stream|bind_wifi --ez on true
+ *       --es what sms|contacts|calendar|calendar_edit|calls|confirm_dial|stream|bind_wifi --ez on true
  *   adb shell am broadcast ... --es what grant --es computer DEVICE_ID --es feature sms --ez on true
  *
  * `call_audio_experiment` arms the hidden VOICE_DOWNLINK probe and `call_audio_probe` runs it for 5 s (CallAudioProbe).
@@ -27,6 +27,7 @@ class DebugControlReceiver : BroadcastReceiver() {
             "calendar" -> PhoneDataRuntime.setCalendar(on)
             "calendar_edit" -> PhoneDataRuntime.setCalendarEdit(on)
             "calls" -> CallControlRuntime.setEnabled(on)
+            "confirm_dial" -> CallControlRuntime.setConfirmDial(on)
             "stream" -> DebugDiagnostics.setStreaming(context, on)
             "call_audio_experiment" -> CallAudioProbe.setEnabled(context, on)
             "call_audio_probe" -> CallAudioProbe.runAsync(context)

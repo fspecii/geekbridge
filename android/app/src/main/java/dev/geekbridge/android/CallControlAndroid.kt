@@ -579,7 +579,10 @@ object CallControlRuntime {
         val a = app ?: return
         watch.reset()
         watch.changed(CallPermissionsReader.read(a)) // baseline for recheckPermissions
-        async { e.reset() }
+        // A listener that is already running will not report again: wiping the engine then would leave the line
+        // "unknown" (every answer or dial refused as "no such call") until the next call event. Found on the emulator
+        // when call control was switched on a second time.
+        if (monitor == null) async { e.reset() }
         async { core.transportAction(CallsProtocol.configRequest(true)) } // the core forgets the opt-in when the process dies
         val perms = CallPermissionsReader.read(a)
         ensureMonitor(e, "link or setting")
