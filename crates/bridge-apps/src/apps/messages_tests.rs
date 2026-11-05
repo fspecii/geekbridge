@@ -197,6 +197,21 @@ fn sends(log: &Log) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Opens a conversation the way a click does and drives frames until the service has delivered it, so
+/// the reply box is on screen and focused (until then the pane says "Loading the conversation").
+fn open_thread(m: &mut Messages, rig: &mut Rig, id: i64) {
+    m.thread = Some(("d".into(), id));
+    rig.settle(m, 1);
+    let feed = m.feed.as_ref().unwrap();
+    wait_until("conversation", || {
+        feed.state()
+            .view
+            .and_then(|v| v.selected.as_ref().map(|s| s.thread_id))
+            .is_some_and(|t| t == id)
+    });
+    rig.settle(m, 3);
+}
+
 fn ready(m: &mut Messages, rig: &mut Rig) {
     rig.settle(m, 2);
     let feed = m.feed.as_ref().unwrap();
@@ -404,8 +419,7 @@ fn every_conversation_keeps_its_own_unsent_reply() {
     let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
     ready(&mut m, &mut rig);
     rig.type_text(&mut m, "for Ann");
-    m.thread = Some(("d".into(), 2));
-    rig.settle(&mut m, 3);
+    open_thread(&mut m, &mut rig, 2);
     assert_eq!(m.reply, "", "another person's draft never carries over");
     // The box takes the cursor a frame or more after the switch (slower on busy runners): type until it took.
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -418,11 +432,9 @@ fn every_conversation_keeps_its_own_unsent_reply() {
         rig.settle(&mut m, 3);
     }
     assert_eq!(m.reply, "for two");
-    m.thread = Some(("d".into(), 1));
-    rig.settle(&mut m, 3);
+    open_thread(&mut m, &mut rig, 1);
     assert_eq!(m.reply, "for Ann");
-    m.thread = Some(("d".into(), 2));
-    rig.settle(&mut m, 3);
+    open_thread(&mut m, &mut rig, 2);
     assert_eq!(m.reply, "for two");
     rig.key(&mut m, Key::Enter);
     wait_until("send", || !sends(&log).is_empty());
@@ -430,12 +442,59 @@ fn every_conversation_keeps_its_own_unsent_reply() {
         sends(&log),
         vec![("+1 555 000 0002".into(), "for two".into())]
     );
-    m.thread = Some(("d".into(), 1));
-    rig.settle(&mut m, 3);
+    open_thread(&mut m, &mut rig, 1);
     assert_eq!(
         m.reply, "for Ann",
         "the draft of the other thread is untouched"
     );
+}
+
+#[test]
+fn the_cursor_request_waits_for_a_conversation_that_is_still_loading() {
+    let _clock = pin();
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1));
+    let mut m = Messages {
+        env_checked: true,
+        open_number_checked: true,
+        ..Messages::default()
+    };
+    let (view, gate) = (fixture(DataState::Ready, true), served.clone());
+    m.feed = Some(Feed::spawn_with(
+        Duration::from_millis(10),
+        Request::Status,
+        move |_| {
+            let mut v = view.clone();
+            if let Some(sel) = &mut v.selected {
+                sel.thread_id = gate.load(std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(v)
+        },
+        |_| Ok(None),
+        || {},
+    ));
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    // The service still answers with the old conversation: the pane loads, no box exists to focus.
+    m.thread = Some(("d".into(), 2));
+    rig.settle(&mut m, 3);
+    rig.type_text(&mut m, "early");
+    assert_eq!(m.reply, "", "no box yet, nothing to type into");
+    assert!(
+        m.focus_reply,
+        "the cursor request is kept, not spent on nothing"
+    );
+    served.store(2, std::sync::atomic::Ordering::SeqCst);
+    let feed = m.feed.as_ref().unwrap();
+    wait_until("conversation", || {
+        feed.state()
+            .view
+            .and_then(|v| v.selected.as_ref().map(|s| s.thread_id))
+            .is_some_and(|t| t == 2)
+    });
+    rig.settle(&mut m, 3);
+    assert!(!m.focus_reply);
+    rig.type_text(&mut m, "late");
+    assert_eq!(m.reply, "late", "the box has the cursor once it appears");
 }
 
 #[test]
