@@ -9,6 +9,7 @@ pub mod calendar_model;
 pub mod call_audio_ui;
 pub mod call_feed;
 pub mod call_overlay;
+pub mod call_replies_ui;
 pub mod call_ui;
 pub mod call_wifi_ui;
 pub mod cli;

@@ -58,6 +58,8 @@ struct Pending {
     choice: Choice,
     path: ControlPath,
     since: Instant,
+    /// A decline that also sends a saved text.
+    with_text: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -88,9 +90,13 @@ pub enum Body {
         status: Option<(String, bool)>,
         can_answer: bool,
         can_reject: bool,
+        /// "Decline with message" is offered (the service allows a text for this call).
+        can_reply: bool,
         /// Buttons drawn but off (the test card).
         disabled: bool,
     },
+    /// The three saved texts, one tap declines and sends it.
+    Reply { title: String, texts: Vec<String> },
     /// The call is going on (answered here or on the phone): the same card, now an in-call card.
     Live {
         title: String,
@@ -128,6 +134,8 @@ pub struct Card {
     /// When the card first saw this call going on (the timer's zero).
     live_since: Option<Instant>,
     live_secs: u64,
+    /// The list of texts replaces the buttons ("Decline with message" was pressed).
+    picking: bool,
 }
 
 /// Title (name, else number, else "Unknown caller") and, when allowed and different, the number.
@@ -155,7 +163,15 @@ impl Card {
             reveal,
             live_since: None,
             live_secs: 0,
+            picking: false,
         }
+    }
+
+    /// Screenshot aid: the card with the list of saved texts open.
+    pub fn picking_fixture(reveal: Reveal, now: Instant) -> Self {
+        let mut c = Self::new(reveal, now);
+        c.picking = true;
+        c
     }
 
     /// Screenshot aid: the card as it looks right after a call of 02:13 ended.
@@ -213,9 +229,53 @@ impl Card {
             choice,
             path: target.path,
             since: now,
+            with_text: false,
         });
         self.outcome = None;
+        self.picking = false;
         Some(request)
+    }
+
+    /// The service offers "Decline with message" for the ringing call.
+    fn reply_offered(&self, state: &FeedState) -> bool {
+        state.status.as_ref().is_some_and(|s| {
+            s.replies.offered
+                && !s.replies.texts.is_empty()
+                && s.view.ringing().is_some_and(|r| r.reject.is_some())
+        })
+    }
+
+    /// Open or close the list of saved texts.
+    pub fn pick(&mut self, open: bool) {
+        self.picking = open;
+    }
+
+    /// The user chose saved text number `index`: decline and send it. `None` if the service no
+    /// longer offers it (the card goes back to its buttons).
+    pub fn choose_reply(&mut self, state: &FeedState, index: u8, now: Instant) -> Option<Request> {
+        if self.pending.is_some() {
+            return None;
+        }
+        self.picking = false;
+        if !self.reply_offered(state) {
+            return None;
+        }
+        let status = state.status.as_ref()?;
+        let target = status.view.ringing()?.reject.clone()?;
+        if usize::from(index) >= status.replies.texts.len() {
+            return None;
+        }
+        self.pending = Some(Pending {
+            choice: Choice::Reject,
+            path: target.path,
+            since: now,
+            with_text: true,
+        });
+        self.outcome = None;
+        Some(Request::CallDeclineReply {
+            target,
+            reply: index,
+        })
     }
 
     /// Advance with the latest service state.
@@ -237,6 +297,7 @@ impl Card {
                     self.dismissed = false;
                     self.pending = None;
                     self.outcome = None;
+                    self.picking = false;
                 }
                 self.key = Some(row.key.clone());
                 self.parts = row.parts.clone();
@@ -317,7 +378,15 @@ impl Card {
                             .to_owned(),
                             true,
                         ),
-                        (Choice::Reject, _) => (tr("overlay.declined").to_owned(), true),
+                        (Choice::Reject, _) => (
+                            tr(if p.with_text {
+                                "overlay.declined.text"
+                            } else {
+                                "overlay.declined"
+                            })
+                            .to_owned(),
+                            true,
+                        ),
                         (Choice::Answer, false) => (tr("overlay.ended").to_owned(), true),
                     };
                     self.outcome = Some(Outcome {
@@ -387,12 +456,19 @@ impl Card {
                 .map(|_| (tr("overlay.no_control").to_owned(), false)),
         };
         let idle = self.pending.is_none();
+        if self.picking && idle && self.reply_offered(state) {
+            return Some(Body::Reply {
+                title,
+                texts: status_ref.replies.texts.clone(),
+            });
+        }
         Some(Body::Ringing {
             title,
             subtitle,
             status,
             can_answer: idle && row.answer.is_some(),
             can_reject: idle && row.reject.is_some(),
+            can_reply: idle && self.outcome.is_none() && self.reply_offered(state),
             disabled: false,
         })
     }
@@ -438,8 +514,20 @@ impl Card {
 #[derive(Default, Debug, PartialEq, Eq)]
 pub struct Action {
     pub choice: Option<Choice>,
+    pub reply: Option<ReplyChoice>,
     pub dismiss: bool,
     pub live: Option<LiveChoice>,
+}
+
+/// What was pressed for "Decline with message".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyChoice {
+    /// Show the saved texts.
+    Open,
+    /// Back to Answer / Decline.
+    Back,
+    /// Decline and send saved text number `n`.
+    Send(u8),
 }
 
 /// A button of the in-call card.
@@ -504,6 +592,35 @@ fn card_button(
     response
 }
 
+/// One saved text as a full-width pill on the reply list.
+fn reply_button(ui: &mut egui::Ui, pal: &theme::Palette, text: &str, width: f32) -> egui::Response {
+    let galley = ui.painter().layout(
+        text.to_owned(),
+        egui::FontId::new(12.5, theme::semibold_family()),
+        pal.text,
+        width - 20.0,
+    );
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 22.0), Sense::click());
+    let fill = if response.hovered() {
+        pal.control_hover
+    } else {
+        pal.control
+    };
+    ui.painter().rect_filled(rect, 11, fill);
+    if response.has_focus() {
+        theme::focus_ring(ui, pal, rect, 11);
+    }
+    ui.painter().with_clip_rect(rect).galley(
+        egui::pos2(
+            rect.left() + 10.0,
+            rect.center().y - galley.size().y.min(14.0) / 2.0,
+        ),
+        galley,
+        pal.text,
+    );
+    response
+}
+
 fn close_button(ui: &mut egui::Ui, pal: &theme::Palette) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
     if response.hovered() {
@@ -547,6 +664,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                 status,
                 can_answer,
                 can_reject,
+                can_reply,
                 disabled,
             } => {
                 ui.horizontal(|ui| {
@@ -587,6 +705,27 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                     );
                                 }
                             }
+                            if *can_reply {
+                                let name = tr_args("overlay.reply.name", &[("caller", title)]);
+                                let r = ui.add(
+                                    egui::Button::new(
+                                        egui::RichText::new(tr("overlay.reply"))
+                                            .size(12.5)
+                                            .color(pal.accent),
+                                    )
+                                    .frame(false),
+                                );
+                                r.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        name.clone(),
+                                    )
+                                });
+                                if r.clicked() {
+                                    action.reply = Some(ReplyChoice::Open);
+                                }
+                            }
                         },
                     );
                     ui.add_space(12.0 - ui.spacing().item_spacing.x.min(12.0));
@@ -625,6 +764,53 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                     ui,
                     card_rect,
                     &tr_args("overlay.announce", &[("caller", title)]),
+                );
+            }
+            Body::Reply { title, texts } => {
+                ui.horizontal(|ui| {
+                    let text_w = ui.available_width() - BUTTON_W - 12.0;
+                    ui.allocate_ui_with_layout(
+                        vec2(text_w, ui.available_height()),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.0;
+                            for (i, text) in texts.iter().enumerate().take(3) {
+                                let name = tr_args("overlay.reply.send", &[("text", text)]);
+                                let r = reply_button(ui, pal, text, text_w);
+                                r.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        true,
+                                        name.clone(),
+                                    )
+                                });
+                                if r.clicked() {
+                                    action.reply = Some(ReplyChoice::Send(i as u8));
+                                }
+                            }
+                        },
+                    );
+                    ui.add_space(12.0 - ui.spacing().item_spacing.x.min(12.0));
+                    ui.vertical(|ui| {
+                        ui.add_space(3.0);
+                        if card_button(
+                            false,
+                            ui,
+                            pal,
+                            tr("overlay.reply.back"),
+                            tr("overlay.reply.back.name"),
+                            pal.accent_fill,
+                        )
+                        .clicked()
+                        {
+                            action.reply = Some(ReplyChoice::Back);
+                        }
+                    });
+                });
+                announce(
+                    ui,
+                    card_rect,
+                    &tr_args("overlay.reply.announce", &[("caller", title)]),
                 );
             }
             Body::Live {
@@ -872,6 +1058,7 @@ impl eframe::App for OverlayApp {
                     status: Some((tr("overlay.test.note").to_owned(), true)),
                     can_answer: true,
                     can_reject: true,
+                    can_reply: false,
                     disabled: true,
                 },
             );
@@ -886,11 +1073,21 @@ impl eframe::App for OverlayApp {
             let kind = std::env::var("GEEKBRIDGE_CALLS_FIXTURE").unwrap_or_default();
             if matches!(
                 kind.as_str(),
-                "ringing" | "active" | "keypad" | "active-wifi" | "listening-wifi" | "ended"
+                "ringing"
+                    | "ringing-reply"
+                    | "ringing-reply-open"
+                    | "active"
+                    | "keypad"
+                    | "active-wifi"
+                    | "listening-wifi"
+                    | "ended"
             ) {
                 self.fixture = true;
                 if kind == "ended" {
                     self.card = Card::ended_fixture(self.card.reveal(), Instant::now());
+                }
+                if kind == "ringing-reply-open" {
+                    self.card = Card::picking_fixture(self.card.reveal(), Instant::now());
                 }
                 crate::apps::calls::fixture_feed(&kind, wake)
             } else {
@@ -943,6 +1140,16 @@ impl eframe::App for OverlayApp {
             if let Some(r) = request {
                 feed.send(r);
             }
+        }
+        match action.reply.take() {
+            Some(ReplyChoice::Open) => self.card.pick(true),
+            Some(ReplyChoice::Back) => self.card.pick(false),
+            Some(ReplyChoice::Send(i)) => {
+                if let Some(request) = self.card.choose_reply(&state, i, now) {
+                    feed.send(request);
+                }
+            }
+            None => {}
         }
         action.dismiss |= esc;
         if let Some(choice) = action.choice
@@ -1522,6 +1729,134 @@ mod tests {
             panic!("the new ring is shown, not the old outcome")
         };
         assert!(can_answer && can_reject && status.is_none());
+    }
+
+    fn with_replies(mut st: FeedState, offered: bool) -> FeedState {
+        let status = st.status.as_mut().unwrap();
+        status.replies.texts = bridge_core::call_replies::defaults();
+        status.replies.offered = offered;
+        st
+    }
+
+    #[test]
+    fn decline_with_message_shows_only_when_the_service_offers_it() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let plain = ringing();
+        c.update(&plain, t);
+        let Some(Body::Ringing { can_reply, .. }) = c.body(&plain) else {
+            panic!("ringing");
+        };
+        assert!(!can_reply, "texts without an offer are not shown");
+        let offered = with_replies(ringing(), true);
+        let Some(Body::Ringing { can_reply, .. }) = c.body(&offered) else {
+            panic!("ringing");
+        };
+        assert!(can_reply);
+        // Opening the list while the offer lapses (Messages switched off) goes back to the buttons.
+        c.pick(true);
+        assert!(matches!(c.body(&offered), Some(Body::Reply { .. })));
+        assert!(matches!(c.body(&plain), Some(Body::Ringing { .. })));
+        // No decline control, no reply.
+        let mut no_reject = with_replies(ringing(), true);
+        for r in &mut no_reject.status.as_mut().unwrap().view.rows {
+            r.reject = None;
+        }
+        let Some(Body::Ringing { can_reply, .. }) = c.body(&no_reject) else {
+            panic!("ringing");
+        };
+        assert!(!can_reply);
+    }
+
+    #[test]
+    fn a_chosen_text_declines_with_the_reply_request_and_confirms_with_its_own_line() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let st = with_replies(ringing(), true);
+        c.update(&st, t);
+        c.pick(true);
+        let Some(Body::Reply { texts, .. }) = c.body(&st) else {
+            panic!("the list");
+        };
+        assert_eq!(texts, bridge_core::call_replies::defaults());
+        // A number past the list is not sent.
+        assert!(c.choose_reply(&st, 3, t).is_none());
+        c.pick(true);
+        let Some(Request::CallDeclineReply { target, reply }) = c.choose_reply(&st, 1, t) else {
+            panic!("a reply request");
+        };
+        assert_eq!(reply, 1);
+        assert_eq!(
+            Some(target),
+            st.status
+                .as_ref()
+                .unwrap()
+                .view
+                .ringing()
+                .unwrap()
+                .reject
+                .clone()
+        );
+        // Pending: "Declining…", no second request, no list.
+        assert!(c.choose_reply(&st, 0, t).is_none());
+        assert!(c.choose(&st, Choice::Reject, t).is_none());
+        let Some(Body::Ringing {
+            status, can_reply, ..
+        }) = c.body(&st)
+        else {
+            panic!("ringing");
+        };
+        assert_eq!(status.unwrap().0, tr("overlay.declining"));
+        assert!(!can_reply);
+        // The ring ends: the card says the text is on its way.
+        let idle = idle();
+        assert_eq!(c.update(&idle, at(t, 100)), Verdict::Keep);
+        let Some(Body::Done { text, ok }) = c.body(&idle) else {
+            panic!("done");
+        };
+        assert_eq!((text.as_str(), ok), (tr("overlay.declined.text"), true));
+    }
+
+    #[test]
+    fn the_text_list_resets_for_the_next_call_and_the_back_button_returns() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let st = with_replies(ringing(), true);
+        c.update(&st, t);
+        c.pick(true);
+        c.pick(false);
+        assert!(matches!(c.body(&st), Some(Body::Ringing { .. })));
+        c.pick(true);
+        // A request the service no longer offers: back to the buttons, nothing sent.
+        let plain = ringing();
+        assert!(c.choose_reply(&plain, 0, t).is_none());
+        assert!(matches!(c.body(&plain), Some(Body::Ringing { .. })));
+    }
+
+    #[test]
+    fn the_reply_list_draws_inside_its_window_with_named_buttons() {
+        let mut rig = Rig::new(AppKind::Calls, geometry::CARD_WIDTH, geometry::CARD_HEIGHT);
+        let t = Instant::now();
+        let st = with_replies(ringing(), true);
+        let mut c = Card::picking_fixture(Reveal::Full, t);
+        c.update(&st, t);
+        let body = c.body(&st).unwrap();
+        let pal = theme::current(&rig.ctx, AppKind::Calls);
+        for _ in 0..3 {
+            let input = rig.input(vec![]);
+            let _ = rig.ctx.run(input, |ctx| {
+                assert_eq!(show(ctx, &pal, &body), Action::default());
+            });
+        }
+        let mut c = Card::new(Reveal::Full, t);
+        c.update(&st, t);
+        let body = c.body(&st).unwrap();
+        for _ in 0..3 {
+            let input = rig.input(vec![]);
+            let _ = rig.ctx.run(input, |ctx| {
+                assert_eq!(show(ctx, &pal, &body), Action::default());
+            });
+        }
     }
 
     #[test]

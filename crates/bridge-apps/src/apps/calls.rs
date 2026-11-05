@@ -521,7 +521,7 @@ pub(crate) fn fixture_feed_sending(
     wake: egui::Context,
     send: impl FnMut(&bridge_core::ipc::Request) -> Result<(), String> + Send + 'static,
 ) -> CallFeed {
-    let ringing = kind == "ringing";
+    let ringing = kind.starts_with("ringing");
     use bridge_core::{
         calls::{CallState, Sensitive},
         calls_link::{LinkCallReport, PhoneState},
@@ -593,7 +593,14 @@ pub(crate) fn fixture_feed_sending(
         sources: Vec::new(),
         audio_note: None,
         wifi: wifi_fixture(kind),
-        replies: Default::default(),
+        replies: bridge_core::ipc::DeclineReplies {
+            texts: if kind.starts_with("ringing-reply") {
+                bridge_core::call_replies::defaults()
+            } else {
+                Vec::new()
+            },
+            offered: kind.starts_with("ringing-reply"),
+        },
     };
     CallFeed::spawn_with(
         std::time::Duration::from_secs(3600),

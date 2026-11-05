@@ -109,6 +109,8 @@ pub struct HomeApp {
     /// Open "Report a problem" preview, and whether the diagnostics being collected are for it.
     report: Option<ReportPanel>,
     call_audio: crate::call_audio_ui::CallAudioPanel,
+    /// Settings: the texts of "Decline with message".
+    call_replies: crate::call_replies_ui::ReplyEditor,
     /// Screenshots: scroll Settings to the call audio section once (`GEEKBRIDGE_OPEN_CALLAUDIO`).
     scroll_to_call_audio: bool,
     /// Screenshots: the window size the scroll above was last applied for (a resize re-applies it).
@@ -315,6 +317,7 @@ impl HomeApp {
             notice: None,
             report: None,
             call_audio: crate::call_audio_ui::CallAudioPanel::new(),
+            call_replies: Default::default(),
             scroll_to_call_audio: false,
             shot_size: None,
             diagnostics_for_report: false,
@@ -1261,6 +1264,10 @@ impl HomeApp {
             }
         }
         nothing::card(ui, pal, |ui| self.call_audio.show(ui, pal, false));
+        nothing::section(ui, pal, crate::i18n::tr("overlay.reply.edit.title"));
+        nothing::card(ui, pal, |ui| {
+            crate::call_replies_ui::show(ui, pal, &mut self.call_replies, self.calls.as_ref())
+        });
         nothing::section(ui, pal, report_ui::section());
         if let Some(panel) = &mut self.report {
             if !panel.show(ui, pal) {
