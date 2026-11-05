@@ -15,7 +15,9 @@ test peers.
   on the computer (or run `geekbridge-ctl call dial NUMBER`) and the phone places the call after you confirm; the phone
   limits how often this can happen, shows a notice when it does, and can ask for its own confirmation. Answering and
   dialing need no Bluetooth. Hearing and speaking *on the computer* needs a Bluetooth controller in the PC (see
-  limitations).
+  limitations). The in-call card has a timer, Hang up and Mute; a Recents tab and a missed-call banner offer Call back and
+  Message; Decline can send one of three preset texts; a keypad for phone menus works over Bluetooth. Not yet tried with a
+  real call. An experimental, off-by-default Wi-Fi call audio option exists on debug phone builds only.
 - **Messages (SMS).** Read conversations, search, and send texts from the desktop, with honest delivery status and
   new-message notifications (with a Reply action). Text only: no MMS, group or RCS.
 - **Contacts and calendar.** A searchable phonebook with Call, Message and Copy actions. Month, week, day and agenda

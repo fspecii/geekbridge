@@ -74,35 +74,69 @@ Kotlin helper). Fixed, with a JVM regression test over the app's own client.
 ## 5. Real-phone procedure (do it now, about 15 minutes)
 
 You need: the Fold5 on the same Wi-Fi as the PC, a second phone to call it (the iPhone), and a person on that phone
-who agrees to hear a few beeps and your voice. Use a headset on the PC if you have one.
+who agrees to hear a few beeps and your voice (**warn them first: they will hear beeps and a 1 kHz tone, tell them to
+hold the phone a little away from the ear**). Use a wired or USB headset on the PC for the first run (a Bluetooth headset
+switches profile mid-call and can drop the playback). Before anything else, lower the PC output: 
+`wpctl set-volume @DEFAULT_AUDIO_SINK@ 25%` (or the sink you chose), and raise it only once you hear the call.
+On the Fold5 take every headphone off, keep the call and media volume near 30 %, phone not on speaker.
 
-**A. Build and install (PC terminal, repository root).**
+**Once per shell (PC, repository root).** Absolute paths, one isolated adb server:
 
 ```
-git pull
+export ADB="$PWD/.tools/android-sdk/platform-tools/adb"
+export PATH="$(dirname "$ADB"):$PATH"
+export ANDROID_ADB_SERVER_PORT=5038          # keeps this test away from any other adb server
+pw-cat --help | grep -E -- '--(raw|target|latency|media-role|volume|format)'   # all six must be listed
+$ADB devices                                 # starts the isolated server
+```
+
+Every `geekbridge-ctl callwifi setup` below is given `--adb "$ADB"`.
+
+**A. Build (PC terminal, repository root).** Do the service restart now, not during the call (it drops all links).
+
+```
+git pull --ff-only
 cargo build --release --locked -p bridge-apps -p bridge-service
 scripts/run-desktop.sh --restart && eval "$(scripts/run-desktop.sh --env)"
 scripts/build-android.sh --skip-host-tests            # debug APK with the helper
 ```
 
+Install caveats (step C does the install): the debug build has the **same application id** as the release build, so
+`adb install -r` over a release-signed or CI-signed GeekBridge fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE` (so does a
+lower versionCode). The only fix is `adb uninstall`, which deletes the app's pairing: the PC must pair again and the Wi-Fi
+call-audio consent is per paired computer. Decide on purpose; check first with
+`$ADB shell dumpsys package dev.geekbridge.android | grep -E 'versionName|versionCode|DEBUGGABLE'`.
+Samsung **Auto Blocker** (One UI 6.1+) and Play Protect can put a prompt on the phone that stalls the install: keep the
+phone unlocked, watch its screen, and switch Auto Blocker off for the test.
+
 **B. Phone switch.** GeekBridge > Settings > Experimental > *Call audio over Wi-Fi (ADB helper)*: switch on, *Turn on*.
-In "3. Which computers" tick this PC.
+In "3. Which computers" tick this PC. Also: GeekBridge battery "Unrestricted", Developer options > Stay awake on, the Fold5
+unfolded and kept unfolded, and the GeekBridge Experimental screen kept in front until K.
 
 **C. Pair and start the helper (PC).** On the phone: Developer options > *Wireless debugging* on, tap *Pair device
 with pairing code* and leave the dialog open. Then:
 
 ```
-geekbridge-ctl callwifi setup
+geekbridge-ctl callwifi setup --adb "$ADB"
 ```
 
 It asks to continue, to allow the phone on this PC, then for the pairing address (it usually finds it itself; press
-Enter) and the 6-digit code. Once it prints `Using the phone ...` the phone is connected over Wi-Fi; install this
-build's APK over that connection (pairings are kept), then run the setup once more so the helper of the new APK starts:
+Enter; if not, type the numbers from the phone) and the 6-digit code. Keep the pairing dialog in front: folding the
+phone or letting the screen turn off invalidates the code. The pairing port and the connect port differ, and the
+connect port changes each time Wireless debugging is toggled ("connection refused" = stale port). Tick "Always allow" on
+the first-connect prompt. Once it prints `Using the phone ...` the phone is connected over Wi-Fi; install this build's
+APK over that connection (pairings are kept), grant the notification permission (Android 13+ does not grant it on
+install; without it Listen fails after capture has already started), then run the setup once more so the helper of the
+new APK starts:
 
 ```
-.tools/android-sdk/platform-tools/adb install -r dist/android/geekbridge-debug.apk
-geekbridge-ctl callwifi setup
+$ADB install -r "$PWD/dist/android/geekbridge-debug.apk"      # watch the phone for a prompt
+$ADB shell pm grant dev.geekbridge.android android.permission.POST_NOTIFICATIONS
+geekbridge-ctl callwifi setup --adb "$ADB"
 ```
+
+If the installer reports a signature mismatch, stop and decide whether losing the app's pairing is acceptable. If
+`adb devices` lists the phone twice, `setup` asks "Which one (number)?" (either).
 
 **Look for:** `Helper started` and `[4/4] The phone reports its helper ready (self-test: ...)`; on the phone
 "Helper connected." **Report:** the last 6 lines it printed.
@@ -110,9 +144,10 @@ geekbridge-ctl callwifi setup
 **D. Raw facts, no call (PC).** One JSON line, about 10 s, nothing is heard by anyone:
 
 ```
-ADB=.tools/android-sdk/platform-tools/adb
 $ADB shell 'CLASSPATH=$(pm path dev.geekbridge.android | sed s/^package://) app_process /system/bin dev.geekbridge.android.callaudio.CallAudioHelper --probe'
 ```
+
+No Listen may be active; the phone's microphone indicator flashes; let it run to the end (8 to 12 s), no Ctrl-C.
 
 **Report the whole line.** The decisive fields: `pstnInterceptable` (true = the HAL declares the call TX/RX devices:
 speaking is possible in principle; false = the interception route is closed), `telephonyTxDevice`, and each source's
@@ -127,16 +162,24 @@ step 2 ends *Unsure* (= not working). **Report:** the sentence.
 the other person to talk for ten seconds. **Report:** the result sentence (*Works* / *Silent* / *Refused* / *Unsure*).
 
 **G. Raw facts in a call (PC, call still up).** Run the `--probe` line from D again. **Warning:** during a call it
-plays a 1 kHz tone for about one second into the call (its loop test); tell the other person. **Report:** the line,
+plays a quiet 1 kHz tone for about one second into the call (its loop test) and runs the voip-mix test for about 1.5 s;
+tell the other person. **Report:** the line,
 and whether they heard a beep.
 
-**H. Test speaking (phone, call still up).** Step 3 on the same screen: *Play the beeps now*. Ask the other person to
-count: 1 beep (route 1, interception), a pause, 2 beeps (route 2, in-call voice), a pause, 3 beeps (route 3, in-call
+**H. Test speaking (phone, call still up).** First: no headphones on the Fold5, phone not on speaker, call volume about
+30 %. Tell the other person: "you will hear groups of beeps with a pause between; tell me the size of each group".
+Step 3 on the same screen: *Play the beeps now*. Ask the other person to count: 1 beep (route 1, interception), a pause, 2 beeps (route 2, in-call voice), a pause, 3 beeps (route 3, in-call
 media). Tap what they heard (*They heard 1/2/3 beep(s)* or *They heard nothing*). **Report:** what they heard, and
 `$ADB shell am broadcast -n dev.geekbridge.android/.callaudio.CallWifiReceiver -a dev.geekbridge.callwifi.STATUS`
 (its `uplinkTest` field lists each route as `played` or `refused` with the reason, `written` frames and `loop`).
+A route whose preferred telephony device is refused is now reported `refused` and plays nothing (earlier builds played
+it out of the phone's own route); read the on-phone summary to the other person first, since a refused route changes
+what the groups mean. The field is clipped to 600 characters, so read the on-phone summary too.
 
 **I. Listen and speak from the PC (call still up).**
+
+Before Listen: the PC output is at about 25 % (see the top), play any sound for two seconds so the sink is awake, headset
+on the desk for the first seconds, then raise it. The PC plays the far party at 60 % stream volume with a 100 ms fade-in.
 
 ```
 geekbridge-ctl call-audio use --output NAME --input NAME   # optional: pick headset (no names = defaults); see `geekbridge-ctl call audio-devices`
@@ -158,9 +201,30 @@ delay in your estimate), they heard you (yes/no, which route, with Mute on/off),
 **J. Delay estimate.** While listening, tap the iPhone's microphone (or say "one") and note when you hear it on the
 PC; the other way, say "one" into the PC mic and ask them. Below about 0.3 s is fine for a conversation.
 
-**K. Stop.** `geekbridge-ctl callwifi stop`, hang up, then turn Wireless debugging off and run
-`geekbridge-ctl callwifi setup --status` (**report** whether the helper survived Wireless debugging off), then
-`geekbridge-ctl callwifi setup --stop`.
+**K. Stop, and does the helper survive Wireless debugging off?** With Wireless debugging off adb cannot reach the phone,
+so `--status` cannot answer then (it now says "phone not reachable over adb" and never starts pairing). Do it in this order:
+
+1. `geekbridge-ctl callwifi stop`, hang up.
+2. While Wireless debugging is still ON: `geekbridge-ctl callwifi setup --adb "$ADB" --status` (note the pid).
+3. Turn Wireless debugging OFF on the phone. Look at GeekBridge > Settings > Experimental: "Helper connected." still
+   shown = the helper survived (it talks only over the phone's loopback). Optionally start a new call and try Listen.
+4. To confirm with `ps`: turn Wireless debugging ON again (new connect port), `$ADB connect IP:NEWPORT`, then
+   `geekbridge-ctl callwifi setup --adb "$ADB" --status`. **Report** the result.
+5. Run the cleanup block below.
+
+**Cleanup (at the end, and after ANY aborted run).**
+
+```
+geekbridge-ctl callwifi stop                                   # PC side: stops listen/speak
+geekbridge-ctl callwifi setup --adb "$ADB" --stop              # kills the helper, sends the STOP broadcast
+$ADB shell am force-stop dev.geekbridge.android                # also clears a stuck "being shared" notification
+$ADB shell settings put global adb_wifi_enabled 0              # Wireless debugging off, from the PC (last device command)
+$ADB disconnect; $ADB kill-server
+```
+
+With no adb at all: Settings > Experimental on the phone, switch "Call audio over Wi-Fi" off (this ends the helper), Stop on
+the notification (or Settings > Apps > GeekBridge > Force stop), Wireless debugging off, and reboot if a helper is still
+listed.
 
 What the answers mean:
 

@@ -54,6 +54,11 @@ individually confirmed there.**
 | Clipboard | Text, links, HTML, images; computer to phone automatic, phone to computer on demand via hotkey | Scripted + emulator for the transport; hotkey/`wl-clipboard` on Linux | not yet |
 | Calls: answer, decline, hang up | Popup and notification on the computer; opt-in on the phone | Emulator (simulated GSM signalling through the link) and a fake `org.pipewire.Telephony` | not yet |
 | Call audio on the computer | Voice through the computer's headset over Bluetooth hands-free (HFP): **Linux** via PipeWire, **Windows** via Windows' own stack, **macOS not available** (answer on the Mac, talk on the phone). A guided checklist, a tone and microphone test, and per-OS guidance ([guide](docs/call-audio-options.md)) | Checklist, parsers and test logic: unit and service tests; Android Bluetooth status: JVM tests. Bluetooth voice, codecs and echo **not verified on any OS**; Windows detection never run on a real PC | not yet |
+| In-call card, Recents, missed calls | A small card with the caller, a timer, **Hang up**, **Mute** (only where the PC carries the voice), an audio status line and a short "Call ended" linger. A **Recents** tab (last 30 calls since the service started, memory only) and a missed-call banner with **Call back** and **Message**. Dialer suggests names from your contacts as you type | Unit and service tests, UI tests; card and banner never seen on a live desktop with a real call | not yet |
+| Decline with a message | **Decline with message** sends one of 3 preset texts (editable in Settings) as an SMS. Needs Messages allowed on both ends; the SMS limiter applies | Unit and service tests against a stand-in phone | not yet |
+| Keypad during a call | 12 keys for phone menus, in the Calls window and from the in-call card. Works over Bluetooth hands-free. Over the phone link it needs the phone's default dialer role, so on a stock phone it is normally hidden | Unit tests, stand-in phone | not yet |
+| Do Not Disturb | Optional switch in Settings > Privacy: calls and banners respect the desktop's Do Not Disturb. Linux notification daemons only | Unit tests | not yet |
+| Call audio over Wi-Fi (experimental) | Listen and speak without Bluetooth, through an ADB helper on a debug build of the phone app. **Off by default; not in release builds.** `geekbridge-ctl callwifi`; see [the real-phone report](docs/reports/call-audio-wifi-realphone.md) | Emulator and a private PipeWire; whether a real phone gives the helper call audio is open | not yet |
 | Messages (SMS) | Conversations, paging, send, notifications; no MMS, group or RCS | Emulator | not yet |
 | Contacts | Searchable phonebook, call / message / copy, read-only | Emulator | not yet |
 | Calendar | Month, week, day, agenda; Google calendars via the phone's own sync; optional two-way editing | Emulator (provider inserts, desktop create/edit/delete) | not yet |
@@ -98,8 +103,10 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    call shows a popup with Answer / Decline / Hang up in `geekbridge-calls`. To place a call from the computer, type a
    number there (or `geekbridge-ctl call dial +15550100`) and confirm; this needs *Allow placing calls from my
    computer* on the phone. Hearing and speaking on the computer needs Bluetooth (a controller in the PC, the phone paired as its
-   hands-free device; macOS: not available). Without it, control still works but the voice stays on the phone. There is no
-   call audio over Wi-Fi ([call audio options](docs/call-audio-options.md)).
+   hands-free device; macOS: not available). Without it, control still works but the voice stays on the phone. Wi-Fi call audio exists only as an
+   experimental, off-by-default option on debug phone builds ([call audio options](docs/call-audio-options.md),
+   [Wi-Fi report](docs/reports/call-audio-wifi-realphone.md)). A call shows a small card with a timer, Hang up and Mute;
+   the Recents tab and the missed-call banner offer Call back and Message; Decline can send a preset text.
 6. **Contacts and calendar.** Switch **Share contacts** / **Share calendar** on the phone, then open **Contacts** or
    **Calendar** on the computer. Editing the calendar is a separate opt-in. **Messages** and phone notifications on an APK you
    installed yourself (Android 13+): if the switch is greyed out or nothing happens, open Settings > Apps > GeekBridge, tap the

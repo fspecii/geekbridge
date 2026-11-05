@@ -216,7 +216,8 @@ To release with the optional workflow:
 4. Android signing: the job aligns the release APK and signs it with `apksigner` using the secrets
    `ANDROID_KEYSTORE_B64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD` (v1 + v2 + v3
    schemes), then runs `apksigner verify --print-certs`, requires v2 and v3 to verify and compares the signer
-   SHA-256 with the optional repository **variable** `ANDROID_SIGNER_SHA256`; a mismatch fails the release. The signer
+   SHA-256 with the repository **variable** `ANDROID_SIGNER_SHA256`, which is required (64 hex characters) when the release
+   keystore is used: a missing pin or a mismatch fails the release. The signer
    fingerprint is appended to the release notes. **A stable tag without the secrets fails** (a debug-signed APK could
    never be updated over); only prereleases fall back to the debug key, with a warning. See
    [First release: Android signing key](#first-release-android-signing-key).

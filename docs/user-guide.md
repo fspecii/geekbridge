@@ -199,6 +199,29 @@ Drop files on the GeekBridge window (they open in **Geekbridge Share** for the f
 Share and use **Choose files**. From the phone, use *Share → Send to computer*. Receiving on the computer is off per
 phone until you allow it; received files land in `~/Downloads/GeekBridge`. Details: [sharing.md](sharing.md).
 
+## Calls on the computer
+
+Switch on **Answer from computer** on the phone and allow *Calls* for it on the computer first (see "Hear and talk through
+your computer" below for the voice). Technical detail: [call-control.md](call-control.md).
+
+* **Ringing.** A small card (and a notification on Linux) with **Answer** and **Decline**. **Decline with message** sends one
+  of three preset texts as an SMS; edit the presets in Settings. It needs Messages allowed for the phone on both ends, and the
+  same SMS send limit as Messages applies.
+* **In a call.** The card shows the caller, a timer and **Hang up**. **Mute** appears only when the computer carries the
+  voice. A status line says where the audio is (this computer or the phone). When the call ends the card stays for a moment
+  with "Call ended".
+* **Keypad.** For phone menus. It works over Bluetooth hands-free. Over the phone link Android only lets the phone's default
+  dialer app play tones, so on a normal phone the keypad is hidden there. Tones are never logged, only how many were sent.
+* **Dialer.** Type a number or a name: contacts from the phone (if you shared them) are suggested as you type. Dialing always
+  asks you to confirm.
+* **Recents and missed calls.** The Recents tab lists the last 30 calls since the service started (memory only, gone on
+  restart). A missed call raises a banner with **Call back** (fills the keypad; you still confirm) and **Message**. A call
+  declined on the phone looks the same as a missed one.
+* **Do Not Disturb.** Settings > Privacy has an optional switch so calls respect the desktop's Do Not Disturb. It works with
+  Linux notification daemons only and is off by default.
+* **Call trace.** `geekbridge-ctl calls --trace` prints a redacted list of recent call events (`--clear` empties it). It is
+  also in `geekbridge-ctl report`.
+
 ## The command line
 
 `geekbridge-ctl --help` is the authoritative list. Groups: **link** (`status`, `connect`, `pair`, `pair-qr`,
@@ -206,7 +229,7 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
 `battery`, `photos`, `calendar_edit`, `calendar_alerts`); **phone data** (`agenda`,
 `agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `messages-resend`, `messages-read`, `notifications`, `photos [refresh|save|copy]`); **calls**
-(`calling`, `calls`, `call answer|reject|hangup|mute|audio|dial|setup|audio-devices`, `call-audio`); **clipboard and sharing** (`clipboard ...`,
+(`calling`, `calls [--trace]`, `call answer|reject|hangup|mute|audio|dial|tone|setup|audio-devices`, `call-audio`, `callwifi`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
 `autostart`, `tray`, `privacy [show|set KEY on|off]`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
 with a debug build of the phone app. `report` shows exactly what a prefilled bug report carries (the redacted `diagnose`
@@ -323,7 +346,7 @@ to a bug report). `geekbridge-ctl report` builds a prefilled bug report and show
   queue); the limit is 8 GiB per file. Received files go to `~/Downloads/GeekBridge` (phone: `Download/GeekBridge`).
 
 ### Hear and talk through your computer (call audio)
-Open **Settings > Call audio on this computer** (or the Recents tab of Calls). It lists what is in place and what is not, each
+Open **Settings > Call audio on this computer**. It lists what is in place and what is not, each
 failing step with a one-line fix and a **Copy command** button (GeekBridge never runs the command and never uses `sudo`).
 **Test call audio** plays a short tone through the chosen headphones and shows the microphone level for 5 seconds, no call
 needed. The full guide, with what to buy and the decision table per OS, is [call-audio-options.md](call-audio-options.md).
@@ -346,8 +369,10 @@ needed. The full guide, with what to buy and the decision table per OS, is [call
 * No Bluetooth controller is shown as a warning, never a failed check (`geekbridge-ctl doctor` still exits 0; see also
   `geekbridge-ctl call-audio`): the Calls window says "This computer has no Bluetooth. You can see and answer calls here, but
   talking needs Bluetooth", and Messages, contacts and the other features work normally.
-  Carrying call audio over Wi-Fi is not possible on a stock Android phone (release builds have no Wi-Fi call audio; debug
-  phone builds carry an experimental, off-by-default, listen-only option). Dialing was tested against a stand-in phone only.
+  Call audio over Wi-Fi is not possible on a stock Android phone without help. Release builds have none; debug phone builds
+  carry an experimental, off-by-default option to listen and to speak through an ADB helper (`geekbridge-ctl callwifi setup`,
+  then `callwifi listen` and `callwifi speak on`). Whether a real phone hands over call audio is not settled; see
+  [reports/call-audio-wifi-realphone.md](reports/call-audio-wifi-realphone.md). Dialing was tested against a stand-in phone only.
 * Call **audio** on the computer needs the computer to be the phone's Bluetooth hands-free device: a PC Bluetooth
   controller (many desktops have none; a USB adapter works), the phone paired as a hands-free device with *Calls*
   allowed, and PipeWire/WirePlumber (the defaults on Arch/Omarchy are right). `geekbridge-ctl calling` walks through

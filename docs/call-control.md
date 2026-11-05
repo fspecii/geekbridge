@@ -23,6 +23,17 @@ What works, how it is wired, what it needs, and what has **not** been tried on a
   backend can really mute) and the **audio route**: "Audio on this computer (mSBC)", "Moving the audio to this
   computer…", or "Audio on the phone" with the reason. **Use computer audio** appears only when the Bluetooth
   backend declares audio-link control.
+- **In-call card.** The small always-on-top card also covers the live call: caller, timer, **Hang up**, **Mute** (only when
+  the PC carries the voice), an audio status line, and a short "Call ended" linger after the call.
+- **Decline with message.** The ringing card can decline and send one of 3 preset SMS texts (editable in Settings). It uses
+  the Messages send path, so it needs Messages consent on both ends and is subject to the SMS send limiter.
+- **Dialer autocomplete.** The Calls keypad suggests names from the phone's shared contacts while you type (needs Contacts
+  allowed for the phone). Dialing still goes through the confirmation sheet.
+- **Do Not Disturb.** An opt-in switch in Settings > Privacy makes the card and banner respect the desktop's Do Not Disturb.
+  Linux notification daemons only; off by default.
+- **Wi-Fi call audio (experimental).** Listen and speak over the link through an ADB helper, off by default, debug phone
+  builds only: `geekbridge-ctl callwifi`. See [reports/call-audio-wifi-realphone.md](reports/call-audio-wifi-realphone.md).
+  Not a way to carry a call on a stock release phone.
 - **Keypad (phone menus).** While a call is live and answered, the panel has a **Keypad** button (the in-call card has one
   too; it opens the Calls window on the keypad, because the card is a small window that never takes the keyboard). The 12
   keys (`0-9 * #`) each play one tone into the call, and digits typed on the keyboard do the same while the keypad is
@@ -135,7 +146,12 @@ only on the `Call` objects Android hands to a bound `InCallService`, and Android
 as the phone (dialer) app. GeekBridge is not that and does not ask to be. `GeekBridgeInCallService` (no screen, reads nothing,
 declared with `BIND_INCALL_SERVICE` and `IN_CALL_SERVICE_UI=false`) is therefore only the plug: on a stock phone it is never
 bound, `canTones` stays false and the computer shows no keypad on the link path. The keypad works there when Bluetooth
-hands-free carries the call. Everything on the link path is built and tested against the stand-in phone and Kotlin fakes;
+hands-free carries the call. So normally the keypad needs Bluetooth hands-free: pair this computer with the phone as its
+hands-free device (`geekbridge-ctl call setup`) before relying on it. Where the link path is bound, the phone re-reports
+`canTones` when a call changes state (a call dialed from the computer starts as dialing and turns active later).
+`geekbridge-ctl call tone` presses keys about 3 per second so up to 32 keys stay under the 20-per-5-s limit; if the
+service still refuses part-way it says how many keys were already pressed. A Bluetooth command that waited longer than
+its 8 s deadline is dropped, not run late. Everything on the link path is built and tested against the stand-in phone and Kotlin fakes;
 it has not played a tone on any real phone.
 
 ### Phone-side dial protection

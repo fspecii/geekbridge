@@ -15,6 +15,8 @@ the head has not had a settled green CI cycle since 09:25 UTC on 2026-11-04, and
 
 ### Needs the user
 
+Copy-paste steps for every item below, with what to send back: [release-owner-steps](../release-owner-steps.md).
+
 1. **Release signing key and signer pin.** `~/secrets` and `~/.config/geekbridge/android-signer-sha256` do not exist.
    `scripts/release-local.sh v0.1.0` refuses without them. Back the key up in two offline places.
    ([stable-release-readiness](stable-release-readiness.md), owner actions 1-2.)

@@ -42,9 +42,24 @@ chats and RCS are not supported. See [Messages is off](user-guide.md#the-phone-d
 Answering, declining and hanging up work over the GeekBridge link with no Bluetooth, but **the voice stays on the phone**.
 To hear and speak on the computer, the computer must be the phone's Bluetooth hands-free device: a Bluetooth controller in the PC
 (a USB adapter works), the phone paired with it as hands-free with Phone calls allowed, and PipeWire plus WirePlumber on Linux.
-Open **Settings > Call audio on this computer** for a checklist with a fix for each step, or run `geekbridge-ctl calling`. There is
-no call audio over Wi-Fi, and on macOS it is not available yet. Bluetooth voice has not been tested on real hardware yet. See
+Open **Settings > Call audio on this computer** for a checklist with a fix for each step, or run `geekbridge-ctl calling`. Call
+audio over Wi-Fi exists only as an experimental, off-by-default option on debug phone builds (`geekbridge-ctl callwifi`;
+whether a real phone allows it is not settled, see [the report](reports/call-audio-wifi-realphone.md)). On macOS call audio
+is not available yet. Bluetooth voice has not been tested on real hardware yet. See
 [call audio](call-audio-options.md); when a step fails: [call audio troubleshooting](call-audio-troubleshooting.md).
+
+## Where are my missed calls, and can I decline with a text?
+
+The Calls window has a **Recents** tab with the last 30 calls since the service started (memory only, gone when it
+restarts). A missed call also raises a banner with **Call back** and **Message**. A call you declined on the phone looks
+like a missed one. **Decline with message** on the incoming-call card sends one of three preset texts (edit them in
+Settings); it needs Messages allowed for the phone on both ends. If a call misbehaves, `geekbridge-ctl calls --trace` shows
+a redacted event trace. See [Calls on the computer](user-guide.md#calls-on-the-computer).
+
+## The keypad is missing during a call
+
+The keypad (for phone menus) works over Bluetooth hands-free. Over the GeekBridge link Android only lets the phone's default
+dialer app play keypad tones, so on a normal phone it is hidden there. Nothing is wrong with your setup.
 
 ## Why do I need the phone unlocked to paste its clipboard?
 
