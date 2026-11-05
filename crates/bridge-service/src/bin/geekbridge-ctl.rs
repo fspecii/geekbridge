@@ -111,7 +111,8 @@ Commands:
                                       --dry-run checks everything and changes nothing. Package
                                       installs and the dev channel are download only.
   update rollback [--yes] [--no-restart]  go back to the previous version (again: forward)
-  update restart                      restart the service onto the installed version (not during a call)
+  update restart [--force]            restart the service onto the installed version (not during a call;
+                                      --force also while a file is moving)
   update support                      can this copy update itself? (user-install, package-managed,
                                       download-only)
   whats-new                           what changed in this version (the same text as the card Home shows

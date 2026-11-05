@@ -996,6 +996,11 @@ mod linux {
         fn calls_active(&self) -> Result<bool, String>;
         /// Version the service reports now; `None` when it does not answer.
         fn running_version(&self) -> Option<String>;
+        /// Restart the service unless a call is live. The default is the old two-step form (ask, then
+        /// `systemctl`), which a service that cannot decide for itself needs; the real probe asks the service.
+        fn restart_if_idle(&self) -> Result<(), Error> {
+            two_step_restart(self)
+        }
         /// The existing mechanism of install.sh: the systemd user unit.
         fn restart(&self) -> Result<(), String> {
             let ok = |args: &[&str]| {
@@ -1021,10 +1026,31 @@ mod linux {
         }
     }
 
+    /// Ask whether a call is live, then restart: a call can start in between, which is why the real probe
+    /// does not use this against a service that knows `RestartIfIdle`.
+    fn two_step_restart(probe: &(impl Probe + ?Sized)) -> Result<(), Error> {
+        match probe.calls_active() {
+            Ok(false) => {}
+            Ok(true) => {
+                return Err(Error::CallInProgress(
+                    "a call is in progress, so the service is not restarted; finish the call and try again".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(Error::CallInProgress(format!(
+                    "cannot tell whether a call is in progress ({e}), so the service is not restarted"
+                )));
+            }
+        }
+        probe.restart().map_err(Error::Unsupported)
+    }
+
     /// The real probe: the service's control API.
     pub struct IpcProbe {
         pub port: u16,
         pub token: bridge_core::ipc::Token,
+        /// Restart even while a file is moving (a call still refuses).
+        pub force: bool,
     }
     impl Probe for IpcProbe {
         fn calls_active(&self) -> Result<bool, String> {
@@ -1033,6 +1059,24 @@ mod linux {
                 Ok(Response::Calls(c)) => Ok(!c.view.rows.is_empty()),
                 Ok(_) => Err("unexpected reply".into()),
                 Err(e) => Err(e.to_string()),
+            }
+        }
+        /// The service decides and leaves in one step (`RestartIfIdle`), so no call can start in between.
+        /// An older service does not know the request (`BadRequest`) and gets the two-step form.
+        fn restart_if_idle(&self) -> Result<(), Error> {
+            use bridge_core::ipc::{ErrorCode, IpcError, Request, Response, call};
+            let ask = Request::RestartIfIdle { force: self.force };
+            match call(self.port, &self.token, &ask) {
+                Ok(Response::Ack) => Ok(()),
+                Ok(_) => Err(Error::Unsupported("unexpected reply".into())),
+                Err(IpcError::Service(e)) => match e.code {
+                    ErrorCode::BadRequest => two_step_restart(self),
+                    ErrorCode::Busy => Err(Error::CallInProgress(e.message)),
+                    _ => Err(Error::Unsupported(e.message)),
+                },
+                Err(e) => Err(Error::CallInProgress(format!(
+                    "cannot ask the service to restart ({e}), so it is not restarted"
+                ))),
             }
         }
         fn running_version(&self) -> Option<String> {
@@ -1065,20 +1109,7 @@ mod linux {
         if probe.running_version().is_none() {
             return Ok(Restarted::NotRunning);
         }
-        match probe.calls_active() {
-            Ok(false) => {}
-            Ok(true) => {
-                return Err(Error::CallInProgress(
-                    "a call is in progress, so the service is not restarted; finish the call and try again".into(),
-                ));
-            }
-            Err(e) => {
-                return Err(Error::CallInProgress(format!(
-                    "cannot tell whether a call is in progress ({e}), so the service is not restarted"
-                )));
-            }
-        }
-        probe.restart().map_err(Error::Unsupported)?;
+        probe.restart_if_idle()?;
         let step = (wait / 20).clamp(Duration::from_millis(10), Duration::from_millis(500));
         let deadline = Instant::now() + wait;
         loop {

@@ -46,9 +46,15 @@ non-goal); all nine are fixed with tests. Two items are accepted and documented.
 
 ## Accepted, documented
 
-* **Restart race.** `Calls` is read, then `systemctl --user try-restart` is run; a call that starts in between is
-  cut. There is no atomic "restart unless a call" in the service API. The window is the duration of one IPC round
-  trip plus a process spawn. A server-side `RestartIfIdle` request would close it.
+* **Restart race (closed).** `Calls` was read and then `systemctl --user try-restart` run, so a call that started in
+  between was cut. Now `geekbridge-ctl` sends one `RestartIfIdle` request; the service checks for calls and commits to
+  leaving under the call hub's lock, so a ring either is seen (refused) or waits for the lock and arrives after the
+  decision. A call state that is unknown (Calls allowed, connected under 10 s, no report) also refuses, as does a file
+  in flight unless `--force`. Not started by the systemd unit: nothing is stopped and ctl says to restart manually.
+  Tests: refusal on ring, active call and unknown state, success when idle, a deterministic race test on the hub
+  (a ring thread blocked behind the decision, a fake clock for the unknown-state grace), the old-service fallback, and the
+  old-client wire forms. Remaining: a service older than `RestartIfIdle` still gets the two-step form from a newer
+  ctl, and a call that starts on the phone after the commit is re-reported once the service is back.
 * **Staged `--version` is not sandboxed** (no network or filesystem namespace, same uid). It runs only after the hash
   matched, so it is exactly the code the user chose to install; a namespace sandbox needs `unshare`/seccomp that
   the project deliberately does not ship. The mitigations above (cleared environment, private cwd, process group,

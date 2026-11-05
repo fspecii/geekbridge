@@ -117,6 +117,41 @@ pub struct DaemonOptions {
     pub device_name_file: Option<std::path::PathBuf>,
     /// Setup and test for call audio on this computer. `None` (tests) answers that it is unavailable.
     pub call_audio: Option<Arc<crate::call_audio::CallAudioService>>,
+    /// `Ok` when this process is the one a systemd user unit restarts after it exits with an error (what
+    /// `RestartIfIdle` relies on); `Err` says why not. Tests replace it.
+    pub supervisor: fn() -> Result<(), String>,
+}
+
+/// Is this process the main process of `geekbridge-service.service`, and does that unit restart on failure?
+/// A launch by `run-desktop.sh` or `geekbridge-service` from a shell is not, and must not be made to exit.
+fn systemd_restarts_us() -> Result<(), String> {
+    const MANUAL: &str =
+        "this service was not started by the systemd user unit; restart it yourself";
+    if !cfg!(target_os = "linux") {
+        return Err(MANUAL.into());
+    }
+    let out = std::process::Command::new("systemctl")
+        .args([
+            "--user",
+            "show",
+            "-p",
+            "MainPID",
+            "-p",
+            "Restart",
+            "geekbridge-service.service",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|_| MANUAL)?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let has = |line: String| text.lines().any(|l| l == line);
+    let restarts = has("Restart=on-failure".into()) || has("Restart=always".into());
+    if out.status.success() && restarts && has(format!("MainPID={}", std::process::id())) {
+        Ok(())
+    } else {
+        Err(MANUAL.into())
+    }
 }
 
 impl DaemonOptions {
@@ -149,6 +184,7 @@ impl DaemonOptions {
             mirror_notifier: None,
             device_name_file: None,
             call_audio: None,
+            supervisor: systemd_restarts_us,
         }
     }
 }
@@ -245,6 +281,8 @@ pub struct Daemon {
     fallback: Mutex<crate::reconnect::Fallback>,
     /// When and where each paired phone last announced itself (see `why`).
     sightings: Mutex<crate::why::Sightings>,
+    /// Set when `RestartIfIdle` decided to leave; `run` then stops and exits with an error so the unit restarts it.
+    restart: Arc<tokio::sync::Notify>,
 }
 
 fn err(code: ErrorCode, message: impl Into<String>) -> ErrorBody {
@@ -446,6 +484,7 @@ impl Daemon {
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             fallback: Mutex::new(crate::reconnect::Fallback::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
+            restart: Arc::default(),
         });
         let weak = Arc::downgrade(&daemon);
         daemon.share.set_event_sink(Arc::new(move |device, kind| {
@@ -1234,6 +1273,7 @@ impl Daemon {
                 .data
                 .resend(&device_id, send_id, &submission_id)
                 .map(|send_id| Response::MessageQueued { send_id }),
+            Request::RestartIfIdle { force } => self.restart_if_idle(force).await,
             Request::UpdateStatus => Ok(self.update_response()),
             Request::UpdateCheck => {
                 self.options.updates.start_check(true);
@@ -1337,6 +1377,41 @@ impl Daemon {
             return Err(err(ErrorCode::Busy, "the link is busy or closing"));
         }
         Ok(id)
+    }
+
+    /// Resolves once `RestartIfIdle` has decided to leave.
+    pub async fn restart_wanted(&self) {
+        self.restart.notified().await;
+        // The Ack for the request that decided this is written by another task; let it leave first.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    async fn restart_if_idle(&self, force: bool) -> Result<Response, ErrorBody> {
+        let (hub, share, wake, supervisor) = (
+            self.calls.clone(),
+            self.share.clone(),
+            self.restart.clone(),
+            self.options.supervisor,
+        );
+        let decided = tokio::task::spawn_blocking(move || {
+            supervisor().map_err(|why| err(ErrorCode::Unsupported, why))?;
+            // The call check and the decision are one step under the hub's lock; the exit follows the lock.
+            hub.while_idle(|| {
+                if !force && share.transferring() {
+                    return Err("a file is being transferred (--force restarts anyway)".into());
+                }
+                wake.notify_one();
+                Ok(())
+            })
+            .and_then(|r| r)
+            .map_err(|why| err(ErrorCode::Busy, format!("not restarted: {why}")))
+        })
+        .await;
+        match decided {
+            Ok(Ok(())) => Ok(Response::Ack),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(err(ErrorCode::Failed, "the request was interrupted")),
+        }
     }
 
     fn update_response(&self) -> Response {

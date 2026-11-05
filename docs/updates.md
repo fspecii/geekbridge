@@ -193,7 +193,7 @@ analysis: [design/desktop-self-update.md](design/desktop-self-update.md).
 ```
 geekbridge-ctl update install [--yes] [--dry-run] [--no-restart] [--prefix DIR]
 geekbridge-ctl update rollback [--yes] [--no-restart]
-geekbridge-ctl update restart
+geekbridge-ctl update restart [--force]
 geekbridge-ctl update support
 ```
 
@@ -214,7 +214,7 @@ What happens, in order, and what stops it:
    `bin/` entry that is a link you made yourself stops it before anything changes). The previous version is kept;
    older ones are deleted.
 5. The service is **not** restarted unless you say so (`--yes`, the prompt, or the card's **Restart service now**), and
-   never while a call is in progress or when that cannot be determined (it asks the running service). If the restarted
+   never while a call is in progress or when that cannot be determined (the service itself checks and leaves in one step; a file in flight also waits unless `--force`; a service started by hand is left running and you are told to restart it).
    service does not report the new version within 20 s, GeekBridge goes back to the previous version and restarts it.
 6. The outcome (`installed`, `failed`, `rolled_back`, `recovered`, with version and time) is recorded as
    `last_install` in `update-state.json`; `geekbridge-ctl update status` prints it.

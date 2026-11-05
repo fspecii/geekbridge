@@ -36,7 +36,7 @@ Settings note and in [updates.md](../updates.md).
 | Downgrade, pre-release, odd tag | Tag must be exactly `vX.Y.Z`, not a pre-release, and strictly newer than the running version. Rolling back is a separate, explicit command. |
 | Package-managed files modified | The install is refused unless `bin/` is inside `$HOME`, owned and writable by the user, and the prefix has no `share/geekbridge/package-managed` marker (shipped by the `.deb` and the Arch package). It is also refused when run as root, when `bin/` or `lib/geekbridge` is a link (the relative links in `bin/` would resolve elsewhere) or writable by everyone. |
 | User's own links or files overwritten | A `bin/<name>` that is not a regular file or one of our own links (a link the user made) stops the install before anything changes, on the first update and on every later one; rollback skips such a name. Recovery deletes only leftovers named exactly like ours (`.staging-<pid>`, `.<name>.tmp-<pid>`). |
-| Restart during a call | The control API is asked (`Calls`); a ringing or live call, or any error asking, means no restart. |
+| Restart during a call | The service decides itself (`RestartIfIdle`): under the call hub's lock it refuses when any call row exists (ringing, dialing, active, held) or a phone with Calls allowed connected less than 10 s ago has not reported its state (unknown). The refusal and the decision to leave are one step, so a ring cannot start in between (it waits for the lock and finds a service that is already leaving). A file in flight also refuses unless `--force`. Any error reaching the service means no restart. |
 | New version does not start | After a restart the service must report the new version within 20 s; if not, GeekBridge goes back to the previous version and restarts it. |
 | Two installers at once | `flock(2)` on `lib/geekbridge/.lock` (non-blocking; the kernel drops it when the holder dies, so there is no stale-lock takeover race). |
 | Staged binary misbehaves when asked its version | It only runs after the archive's SHA-256 and size were verified; empty environment, no stdin, working directory in the private staging tree, its own process group, 10 s limit, whole group killed on timeout. No network or filesystem sandbox: it is code from the same release the user chose to install, running as the same user. |
@@ -90,10 +90,19 @@ Swapping the files never touches a running process. Restart is a separate decisi
 
 * `geekbridge-ctl update install` asks `Restart the GeekBridge service now?` (`--yes` answers yes, `--no-restart`
   skips it). The card installs with `--no-restart` and then offers **Restart service now**.
-* Before restarting, the service must be reachable (if it is not running there is nothing to restart) and `Calls` must
-  show no call. If asking fails, that counts as "cannot tell", not as "no call".
-* The mechanism is the one `install.sh` uses: `systemctl --user try-restart geekbridge-service.service`. Without systemd
-  user services the message says to restart the service yourself.
+* Before restarting, the service must be reachable (if it is not running there is nothing to restart). `geekbridge-ctl`
+  then sends `RestartIfIdle {force}`; there is no separate `Calls` check. The service answers `Ack` (it is leaving),
+  `Busy` with the reason (a call, an unknown call state, or a file in flight; nothing changed) or `Unsupported`.
+* The service leaves by itself: after the `Ack` it says goodbye to the phones and exits with an error status, which
+  the installed unit (`Restart=on-failure`, `RestartSec=5`) turns into a start of the new files. It does this only if
+  `systemctl --user show` reports that this process is the `MainPID` of `geekbridge-service.service` with
+  `Restart=on-failure` or `always`. A launch by `scripts/run-desktop.sh`, `geekbridge-service-launch` without a user
+  manager, or a shell is never made to exit: ctl prints `Restart manually: ...` and the service keeps running the old
+  version. Quitting from the tray still exits cleanly and is not restarted.
+* Compatibility: `force` defaults to false and the request is additive. An older service answers `BadRequest`
+  (unrecognised op), and a newer ctl then falls back to the former two steps (`Calls`, then
+  `systemctl --user try-restart`), so the old race remains only until the service itself is a version that has
+  `RestartIfIdle`. An older ctl never sends it.
 * Afterwards `UpdateStatus.current_version` must equal the new version within 20 s, otherwise the previous version is
   restored and the service restarted again (`last_install` records `rolled_back_unhealthy`). The manual
   `update rollback` and `update restart` do not auto-rollback: they report.

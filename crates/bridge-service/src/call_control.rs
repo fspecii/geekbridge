@@ -514,6 +514,9 @@ struct Inner {
 /// announced as "Unknown caller" (a private number never gets one).
 const UNNAMED_GRACE: Duration = Duration::from_millis(1500);
 
+/// How long a freshly connected phone may take for its first call report before a restart stops waiting for it.
+const UNREPORTED_GRACE: Duration = Duration::from_secs(10);
+
 pub struct CallHub {
     inner: Mutex<Inner>,
     host: Mutex<Option<HostHandle>>,
@@ -853,6 +856,7 @@ impl CallHub {
         } else if !was {
             // The phone's state was dropped while the consent was off and it only sends changes: ask for it again.
             // No result is expected, so it is not a pending request; a phone that does not know it ignores it.
+            phone.last_state = Instant::now();
             inner.next_request += 1;
             let _ = phone.tx.try_send(LinkRequest {
                 request_id: format!("s{}", inner.next_request),
@@ -1018,26 +1022,66 @@ impl CallHub {
     // -------------------------------------------------------------- view
 
     /// Every source's current snapshot (what the view is built from), without the status lines.
-    fn snapshots(&self) -> Vec<SourceSnapshot> {
+    fn link_snapshots(inner: &Inner) -> Vec<SourceSnapshot> {
         let mut snaps = Vec::new();
-        {
-            let inner = self.inner();
-            for (id, p) in &inner.links {
-                if let (true, Some(report)) = (p.enabled, &p.report) {
-                    snaps.push(SourceSnapshot {
-                        key: format!("{LINK_PREFIX}{id}"),
-                        label: p.name.clone(),
-                        caps: report.capabilities(),
-                        state: p.state.clone(),
-                    });
-                }
+        for (id, p) in &inner.links {
+            if let (true, Some(report)) = (p.enabled, &p.report) {
+                snaps.push(SourceSnapshot {
+                    key: format!("{LINK_PREFIX}{id}"),
+                    label: p.name.clone(),
+                    caps: report.capabilities(),
+                    state: p.state.clone(),
+                });
             }
         }
+        snaps
+    }
+
+    fn snapshots(&self) -> Vec<SourceSnapshot> {
+        let mut snaps = Self::link_snapshots(&self.inner());
         if let Some(host) = self.host.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let g = host.shared.lock().unwrap_or_else(|e| e.into_inner());
             snaps.extend(g.snapshots.iter().cloned());
         }
         snaps
+    }
+
+    /// Run `f` with the hub locked, but only if no call can be live; otherwise say why not. A ring that
+    /// arrives over a phone link waits for the lock, so it is either seen here (refused) or comes after `f`.
+    /// A call can be live when any call row exists, or when a phone with Calls allowed has been connected for
+    /// less than [`UNREPORTED_GRACE`] without a first report (its state is unknown). After that a phone that
+    /// never reports is not one whose calls this service could see at all.
+    pub fn while_idle<R>(&self, f: impl FnOnce() -> R) -> Result<R, String> {
+        self.while_idle_at(Instant::now(), f)
+    }
+
+    fn while_idle_at<R>(&self, now: Instant, f: impl FnOnce() -> R) -> Result<R, String> {
+        let host = {
+            let h = self.host.lock().unwrap_or_else(|e| e.into_inner());
+            h.as_ref()
+                .map(|h| {
+                    h.shared
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .snapshots
+                        .clone()
+                })
+                .unwrap_or_default()
+        };
+        let inner = self.inner();
+        if inner.links.values().any(|p| {
+            p.enabled
+                && p.report.is_none()
+                && now.saturating_duration_since(p.last_state) < UNREPORTED_GRACE
+        }) {
+            return Err("a phone just connected and has not reported its call state yet".into());
+        }
+        let mut snaps = Self::link_snapshots(&inner);
+        snaps.extend(host);
+        if !view::build(&snaps).rows.is_empty() {
+            return Err("a call is ringing or in progress".into());
+        }
+        Ok(f())
     }
 
     fn sources(&self) -> (Vec<SourceSnapshot>, Vec<String>) {
@@ -2426,6 +2470,77 @@ mod tests {
             "nobody knows how it ended"
         );
         assert!(misses.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn while_idle_refuses_a_live_call_and_an_unreported_phone_and_runs_otherwise() {
+        let hub = CallHub::new();
+        let now = Instant::now();
+        // Nothing connected: idle.
+        assert_eq!(hub.while_idle_at(now, || 7), Ok(7));
+        // A phone with Calls allowed that has not reported yet may be in a call: unknown, so refused ...
+        let _rx = hub.link_up("dev-idle", "Pixel", true);
+        let e = hub.while_idle_at(now, || ()).unwrap_err();
+        assert!(e.contains("not reported"), "{e}");
+        // ... until the grace is over (a phone that never reports shows no calls at all).
+        assert!(
+            hub.while_idle_at(now + UNREPORTED_GRACE + Duration::from_secs(1), || ())
+                .is_ok()
+        );
+        // Reported idle: fine. Ringing, then live: refused, and `f` never runs.
+        let state = |v: serde_json::Value| hub.on_packet("dev-idle", link::STATE, &body(v));
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        assert!(hub.while_idle_at(now, || ()).is_ok());
+        for st in ["ringing", "offhook"] {
+            state(json!({"state":st,"number":"+1555","canAnswer":true,"canEnd":true}));
+            let mut ran = false;
+            let e = hub.while_idle_at(now, || ran = true).unwrap_err();
+            assert!(e.contains("call"), "{st}: {e}");
+            assert!(!ran, "{st}: nothing may run during a call");
+        }
+        state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
+        assert!(hub.while_idle_at(now, || ()).is_ok());
+        // A phone without Calls consent is not a call source.
+        let _rx2 = hub.link_up("dev-off", "Other", false);
+        assert!(hub.while_idle_at(now, || ()).is_ok());
+    }
+
+    #[test]
+    fn a_ring_cannot_slip_in_between_the_idle_check_and_the_decision() {
+        let hub = CallHub::new();
+        let _rx = hub.link_up("dev-race", "Pixel", true);
+        hub.on_packet(
+            "dev-race",
+            link::STATE,
+            &body(json!({"state":"idle","canAnswer":true,"canEnd":true})),
+        );
+        let (entered_tx, entered) = std::sync::mpsc::channel();
+        let (go_tx, go) = std::sync::mpsc::channel::<()>();
+        let (h1, h2) = (hub.clone(), hub.clone());
+        let decision = std::thread::spawn(move || {
+            h1.while_idle(|| {
+                entered_tx.send(()).unwrap();
+                go.recv().unwrap();
+                "leaving"
+            })
+        });
+        entered.recv().unwrap();
+        // The ring arrives while the decision is being made: it waits for the hub lock.
+        let ring = std::thread::spawn(move || {
+            h2.on_packet(
+                "dev-race",
+                link::STATE,
+                &body(json!({"state":"ringing","number":"+1555","canAnswer":true,"canEnd":true})),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!ring.is_finished(), "the ring must wait for the decision");
+        go_tx.send(()).unwrap();
+        assert_eq!(decision.join().unwrap(), Ok("leaving"));
+        assert!(ring.join().unwrap());
+        // From here on the call is seen, and a second request is refused.
+        assert!(hub.view().ringing().is_some());
+        assert!(hub.while_idle(|| ()).is_err());
     }
 
     #[test]

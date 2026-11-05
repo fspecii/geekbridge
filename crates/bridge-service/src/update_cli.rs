@@ -2,13 +2,12 @@
 //! `geekbridge-ctl update install | rollback | restart | support`: the self-update commands for a
 //! per-user Linux install. The rules live in `bridge_update::install` and
 //! `docs/design/desktop-self-update.md`; this is only argument handling, prompts and wording.
-use bridge_core::ipc::{Request, Token, UpdateChannel, UpdateState, UpdateStatus};
+use bridge_core::ipc::{Request, Token, UpdateStatus};
 use bridge_update::install::{self, Support};
 use std::{
     ffi::OsString,
     io::{IsTerminal, Write},
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 #[derive(Default)]
@@ -16,6 +15,7 @@ struct Flags {
     yes: bool,
     dry_run: bool,
     no_restart: bool,
+    force: bool,
     prefix: Option<PathBuf>,
 }
 
@@ -27,6 +27,7 @@ fn flags(args: &[OsString]) -> Result<Flags, String> {
             "--yes" | "-y" => f.yes = true,
             "--dry-run" => f.dry_run = true,
             "--no-restart" => f.no_restart = true,
+            "--force" => f.force = true,
             "--prefix" => {
                 let p = PathBuf::from(it.next().ok_or("--prefix expects a directory")?);
                 if !p.is_absolute() || p == Path::new("/") {
@@ -76,7 +77,9 @@ fn ask(question: &str) -> bool {
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
+    use bridge_core::ipc::{UpdateChannel, UpdateState};
     use install::{Error, IpcProbe, Restarted};
+    use std::time::Duration;
 
     fn prefix_of(s: Support) -> Result<PathBuf, String> {
         match s {
@@ -131,6 +134,12 @@ mod imp {
             // The files are in place; only the restart waits.
             Err(e @ Error::CallInProgress(_)) => {
                 println!("{e}\nTry again with: geekbridge-ctl update restart")
+            }
+            // Not started by the systemd unit (run-desktop.sh, a shell): the service is left alone.
+            Err(Error::Unsupported(why)) => {
+                println!(
+                    "Restart manually: {why}. v{version} runs after you restart geekbridge-service."
+                )
             }
             Err(e) => return Err(e.to_string()),
         }
@@ -239,6 +248,7 @@ mod imp {
         let probe = IpcProbe {
             port,
             token: token.clone(),
+            force: f.force,
         };
         restart_flow(&f, &probe, &prefix, &report.version, true, state_dir)
     }
@@ -261,6 +271,7 @@ mod imp {
         let probe = IpcProbe {
             port,
             token: token.clone(),
+            force: f.force,
         };
         restart_flow(&f, &probe, &prefix, &report.version, false, state_dir)
     }
@@ -279,6 +290,7 @@ mod imp {
         let probe = IpcProbe {
             port,
             token: token.clone(),
+            force: f.force,
         };
         restart_flow(
             &Flags { yes: true, ..f },

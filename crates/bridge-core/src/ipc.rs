@@ -524,6 +524,15 @@ pub enum Request {
     },
     /// Update-check state (never contacts the network by itself).
     UpdateStatus,
+    /// Restart the service now unless a call could be live (ringing, dialing, active, or a connected phone that has not
+    /// yet reported its call state), or a file is moving unless `force`. The check and the decision to leave are one step
+    /// under the call hub's lock. Answers `Ack` (the service is leaving and its supervisor starts it again),
+    /// `Error(Busy)` with the reason (nothing was changed) or `Error(Unsupported)` (not started by the systemd user unit:
+    /// restart it yourself). An older service answers `Error(BadRequest)`.
+    RestartIfIdle {
+        #[serde(default)]
+        force: bool,
+    },
     /// Start a check of the latest GitHub Release now; poll `UpdateStatus` for the result.
     UpdateCheck,
     /// Start downloading and SHA-256-verifying the offered installer; poll `UpdateStatus`.

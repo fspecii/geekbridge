@@ -691,8 +691,15 @@ pub async fn run(config: config::Config) -> io::Result<()> {
         }
         _ => None,
     };
+    let restart = async {
+        match &*control {
+            control::Control::Ready { daemon, .. } => daemon.restart_wanted().await,
+            _ => std::future::pending().await,
+        }
+    };
     let result = tokio::select! {
         result = serve_api(api, state) => result,
+        () = restart => Err(io::Error::other("leaving so the service manager restarts the service (update)")),
         result = control::serve_control(control_listener, control.clone()) => result,
         result = shutdown => result,
         () = tray::quit_requested() => Ok(()),

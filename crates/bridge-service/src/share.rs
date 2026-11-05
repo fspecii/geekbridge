@@ -698,6 +698,14 @@ impl ShareManager {
 
     // ------------------------------------------------------------ queries
 
+    /// A file is being sent or received, or an outgoing one waits for its phone.
+    pub fn transferring(&self) -> bool {
+        self.inner()
+            .items
+            .iter()
+            .any(|t| matches!(t.info.state, TransferState::Waiting | TransferState::Active))
+    }
+
     pub fn status(&self, paired: &[String]) -> ShareStatus {
         self.expire();
         let settings = self.settings();
