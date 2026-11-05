@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package dev.geekbridge.android.callaudio
 
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -82,10 +80,12 @@ class SelfTestTest {
 
     /** The real HelperSession on the other end of pipes: the port measures a tone, sees a refusal, reads the uplink route. */
     private fun withHelper(open: (String) -> PcmCapture?, inject: (String) -> PcmInjector, body: (HelperCapturePort, HelperConnection) -> Unit) {
-        val toHelper = PipedOutputStream()
-        val helperIn = PipedInputStream(toHelper, 1 shl 16)
-        val fromHelper = PipedInputStream(1 shl 20)
-        val helperOut = PipedOutputStream(fromHelper)
+        val a = TestPipe(1 shl 16)
+        val b = TestPipe()
+        val toHelper = a.output
+        val helperIn = a.input
+        val fromHelper = b.input
+        val helperOut = b.output
         val session = HelperSession(helperIn, helperOut, "tok12345", "{\"v\":1}", open, inject, { "{}" })
         val t = Thread { session.run() }
         t.start()

@@ -4,8 +4,6 @@ package dev.geekbridge.android.callaudio
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -60,10 +58,12 @@ class HelperProtocolTest {
 
     @Test
     fun aSessionNeedsTheTokenThenRelaysBothWays() {
-        val toHelper = PipedOutputStream()
-        val helperIn = PipedInputStream(toHelper, 1 shl 16)
-        val fromHelper = PipedInputStream(1 shl 20)
-        val helperOut = PipedOutputStream(fromHelper)
+        val a = TestPipe(1 shl 16)
+        val b = TestPipe()
+        val toHelper = a.output
+        val helperIn = a.input
+        val fromHelper = b.input
+        val helperOut = b.output
         val inj = FakeInjector()
         val s = HelperSession(
             helperIn, helperOut, "tok12345", "{\"v\":1}",
@@ -95,10 +95,12 @@ class HelperProtocolTest {
     /** The app's own client (HelperConnection.inject, the Speak path) must produce frames the helper accepts. */
     @Test
     fun theAppsInjectFramesReachTheRouteAndAFailingRouteDoesNotEndTheSession() {
-        val toHelper = PipedOutputStream()
-        val helperIn = PipedInputStream(toHelper, 1 shl 16)
-        val fromHelper = PipedInputStream(1 shl 20)
-        val helperOut = PipedOutputStream(fromHelper)
+        val a = TestPipe(1 shl 16)
+        val b = TestPipe()
+        val toHelper = a.output
+        val helperIn = a.input
+        val fromHelper = b.input
+        val helperOut = b.output
         var writes = 0
         val inj = object : PcmInjector {
             override val route = "tx_interception"
