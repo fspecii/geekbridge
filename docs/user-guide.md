@@ -55,6 +55,11 @@ open **GeekBridge** from Applications.
 
 ## Pair a phone
 
+<p align="center">
+  <img src="img/shot-android-setup-link.png" width="200" alt="Android setup wizard, step 1 of 9: Link to your computer, with a Scan QR code button and Other ways to link">
+  <img src="img/shot-desktop-home.png" width="360" alt="Desktop Home with the paired phone, link status tiles and a what-is-new notice, light theme">
+</p>
+
 Requirements: Android 8 or newer, phone and computer on the same network (not a guest network), the background service running, and the
 computer's firewall open for TCP and UDP **1716-1764** from your LAN (see Troubleshooting). Two names, one job: the computer says
 **Link a phone**, the phone says **Pair a computer**; the result is a pairing, and **Unlink** removes it on either side.
@@ -201,6 +206,12 @@ phone until you allow it; received files land in `~/Downloads/GeekBridge`. Detai
 
 ## Calls on the computer
 
+<p align="center">
+  <img src="img/shot-desktop-calls.png" width="170" alt="Desktop Calls tab with the in-call card (caller, timer, Hang up) above the keypad, light theme">
+  <img src="img/shot-desktop-recents.png" width="170" alt="Desktop Calls tab, Recents list with missed, incoming and outgoing calls, light theme">
+  <img src="img/shot-android-answer-calls.png" width="200" alt="Android setup wizard, step 7 of 9: Answer calls, optional, with an Allow button">
+</p>
+
 Switch on **Answer from computer** on the phone and allow *Calls* for it on the computer first (see "Hear and talk through
 your computer" below for the voice). Technical detail: [call-control.md](call-control.md).
 
@@ -237,6 +248,10 @@ output) and sends nothing itself.
 
 ## Privacy switches
 
+<p align="center">
+  <img src="img/shot-desktop-privacy.png" width="400" alt="Desktop Settings, Privacy section with the four privacy switches, light theme">
+</p>
+
 Settings -> Privacy has four switches: **Show message text in notifications** (off), **Show caller number on the call
 card** (on), **Show phone notification text** (off) and **Respect Do Not Disturb for incoming calls** (off; Linux
 only: with mako, dunst, SwayNotificationCenter, KDE or GNOME in Do Not Disturb a ringing call shows no card or banner,
@@ -247,6 +262,10 @@ page says when one of them fixes a value. The tray tooltip and the waybar module
 (`geekbridge-ctl waybar` has an `unread` field); reading a conversation on this computer lowers it.
 
 ## Updates
+
+<p align="center">
+  <img src="img/shot-android-update.png" width="200" alt="Android app updates card: a newer version is available, with Download and verify, Check for updates and channel choice">
+</p>
 
 A banner appears when a newer release exists: **Download** (checked against the published SHA-256), **Show file**,
 then install it yourself. Nothing installs automatically. Checks run shortly after the service starts and then daily;
