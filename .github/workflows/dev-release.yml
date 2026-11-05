@@ -28,10 +28,9 @@ on:
         type: boolean
         default: false
 
-# A newer push replaces a running older build: the rolling release only ever needs the newest.
-concurrency:
-  group: dev-release
-  cancel-in-progress: true
+# A newer push replaces a running older BUILD (desktop and android jobs have their own cancellable group below): the
+# rolling release only ever needs the newest. The publish job has a separate group that never cancels, so a newer push
+# cannot stop it halfway and leave a new APK and SHA256SUMS beside the old manifest; a second publish waits in the queue.
 
 permissions:
   contents: read
@@ -47,6 +46,9 @@ jobs:
           - { name: windows-x86_64, os: windows-latest, target: x86_64-pc-windows-msvc, archive: zip }
           - { name: macos-aarch64, os: macos-latest, target: aarch64-apple-darwin, archive: zip }
           - { name: macos-x86_64, os: macos-latest, target: x86_64-apple-darwin, archive: zip }
+    concurrency:
+      group: dev-release-build-desktop-${{ matrix.name }}
+      cancel-in-progress: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -100,6 +102,12 @@ jobs:
     # branch has it, so this line alone does not protect the secret: also give the secret to an environment that only
     # main may deploy to (docs/updates.md#dev-channel, "Protecting the dev key").
     if: github.ref == 'refs/heads/main'
+    # Environment secrets reach only a job that names the environment. The environment `dev-signing` must exist
+    # (docs/release-owner-steps.md, 3a); if it holds no DEV_KEYSTORE_B64 the job skips cleanly below.
+    environment: dev-signing
+    concurrency:
+      group: dev-release-build-android
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -221,6 +229,11 @@ jobs:
     if: >-
       needs.desktop.result == 'success' && needs.android.outputs.built == 'true' &&
       (vars.DEV_AUTOPUBLISH == 'true' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    # Never cancelled: scripts/release-dev.sh replaces assets with --clobber and uploads dev-manifest.json LAST, then moves
+    # the tag. Cancelling in between would leave a new APK and SHA256SUMS beside the old manifest. Newer runs queue.
+    concurrency:
+      group: dev-release-publish
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

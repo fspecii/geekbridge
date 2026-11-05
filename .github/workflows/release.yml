@@ -208,8 +208,8 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          # Optional repo variable: lowercase hex SHA-256 of the release certificate (scripts/make-keystore.sh
-          # prints it). When set, a release signed by any other key fails.
+          # Required repo variable when the release keystore is used: lowercase hex SHA-256 of the release certificate
+          # (scripts/make-keystore.sh prints it). A missing pin or any other signer fails the job.
           ANDROID_SIGNER_SHA256: ${{ vars.ANDROID_SIGNER_SHA256 }}
         run: |
           set -euo pipefail
@@ -248,11 +248,15 @@ jobs:
             echo "$verify" | grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" || { echo "::error::APK is not v2-signed"; exit 1; }
             echo "$verify" | grep -q "Verified using v3 scheme (APK Signature Scheme v3): true" || { echo "::error::APK is not v3-signed"; exit 1; }
             want="$(echo "${ANDROID_SIGNER_SHA256:-}" | tr -d ': ' | tr 'A-F' 'a-f')"
-            if [[ -n "$want" && "$signer" != "$want" ]]; then
+            # The pin is mandatory: this workflow only ever publishes, so there is no dry run that may go without it.
+            if [[ ! "$want" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::the repository variable ANDROID_SIGNER_SHA256 is missing or not 64 hex characters, so the release key is not pinned; refusing to publish. Set it to the signer you created with scripts/make-keystore.sh (this build is signed by $signer)."
+              exit 1
+            fi
+            if [[ "$signer" != "$want" ]]; then
               echo "::error::signer SHA-256 $signer does not match the repository variable ANDROID_SIGNER_SHA256 ($want): wrong keystore. Phones that have the app installed would refuse this update."
               exit 1
             fi
-            [[ -n "$want" ]] || echo "::warning::ANDROID_SIGNER_SHA256 is not set, so the signing key is not pinned. Set it to $signer."
             echo "signer_note=Android APK signer certificate SHA-256: \`$signer\`" >> "${GITHUB_OUTPUT:-/dev/null}"
           else
             echo "signer_note=Android APK is DEBUG-signed (prerelease only; not updatable from or to a release build). Signer SHA-256: \`$signer\`" >> "${GITHUB_OUTPUT:-/dev/null}"

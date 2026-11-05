@@ -32,6 +32,17 @@ if "github.ref == 'refs/heads/main'" in str(job.get("if", "")):
     ok("dev-release android job runs from main only")
 else:
     bad("dev-release android job has no main-only guard")
+if job.get("environment") == "dev-signing":
+    ok("dev-release android job names the dev-signing environment")
+else:
+    bad("dev-release android job does not name environment: dev-signing")
+if "concurrency" in wf:
+    bad("dev-release has a workflow-level concurrency group (it would cancel the publish job)")
+pc = wf["jobs"]["publish"].get("concurrency", {})
+if isinstance(pc, dict) and pc.get("cancel-in-progress") is False:
+    ok("dev-release publish job queues instead of being cancelled")
+else:
+    bad("dev-release publish job must have its own concurrency with cancel-in-progress: false")
 for step in job["steps"]:
     run = step.get("run", "") or ""
     env = step.get("env", {}) or {}
