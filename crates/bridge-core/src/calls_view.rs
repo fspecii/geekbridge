@@ -140,6 +140,15 @@ pub struct DialView {
     pub phone: String,
 }
 
+/// Where keypad tones (DTMF, for "press 1 for...") can be sent right now. Present only while a call is live and
+/// answered, and a source that sees it accepts tones ([`CallState::check_command`], the check execution uses):
+/// Bluetooth hands-free first, else the phone link when the phone said it can play tones.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TonesView {
+    pub source: String,
+    pub path: ControlPath,
+}
+
 /// How a finished call went, as the history shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -216,6 +225,9 @@ pub struct CallsView {
     /// Present only when a number can really be dialed from this computer right now.
     #[serde(default)]
     pub dial: Option<DialView>,
+    /// Present only when keypad tones can really be sent to the live call (see [`TonesView`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tones: Option<TonesView>,
     /// Calls that ended since the service started, newest first (filled by the service, not by [`build`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<RecentCall>,
@@ -232,6 +244,7 @@ impl CallsView {
             mute: None,
             sources_up: 0,
             dial: None,
+            tones: None,
             recent: Vec::new(),
         }
     }
@@ -293,12 +306,14 @@ pub fn build(sources: &[SourceSnapshot]) -> CallsView {
     } else {
         None
     };
+    let tones = tones_target(&rows);
     CallsView {
         rows: out,
         audio,
         mute,
         sources_up,
         dial,
+        tones,
         recent: Vec::new(),
     }
 }
@@ -363,6 +378,28 @@ fn dial_target(sources: &[SourceSnapshot]) -> Option<DialView> {
                 phone: s.label.clone(),
             })
     })
+}
+
+/// The first part of the live call (HFP first) whose own pre-flight accepts a keypad tone.
+fn tones_target(rows: &[Vec<Part>]) -> Option<TonesView> {
+    let probe = CallCommand::SendTones {
+        tones: Sensitive::new("1"),
+    };
+    let live = rows.iter().find(|parts| {
+        !parts[0].source.state.calls[&parts[0].call]
+            .phase
+            .is_ringing()
+    })?;
+    live.iter()
+        .find(|p| p.source.state.check_command(&p.source.caps, &probe).is_ok())
+        .map(|p| TonesView {
+            source: p.source.key.clone(),
+            path: if p.source.is_hfp() {
+                ControlPath::Hfp
+            } else {
+                ControlPath::Link
+            },
+        })
 }
 
 fn row_for(parts: &[Part], sources: &[SourceSnapshot]) -> CallRow {
@@ -586,6 +623,7 @@ mod tests {
             can_answer,
             can_end: can_answer,
             can_dial: false,
+            can_tones: true,
         };
         let mut state = CallState::default();
         report.apply(&mut state);
@@ -624,6 +662,35 @@ mod tests {
         );
         assert!(live.mute.is_none());
         assert!(live.live().unwrap().hangup.is_some());
+    }
+
+    #[test]
+    fn the_keypad_exists_only_for_a_live_call_and_a_source_that_takes_tones() {
+        // Ringing, nothing connected: no keypad.
+        assert!(
+            build(&[link(PhoneState::Ringing, true, None)])
+                .tones
+                .is_none()
+        );
+        assert!(build(&[]).tones.is_none());
+        // A live call on the phone link that said it can play tones.
+        let live = link(PhoneState::OffHook, true, None);
+        let t = build(std::slice::from_ref(&live)).tones.unwrap();
+        assert_eq!((t.source.as_str(), t.path), ("link:dev", ControlPath::Link));
+        // The same phone without the capability (an older app): none.
+        let mut old = live.clone();
+        old.caps.set(
+            CallFeature::SendTones,
+            Support::Unsupported {
+                reason: UnsupportedReason::RemoteDoesNotAdvertise,
+            },
+        );
+        assert!(build(&[old]).tones.is_none());
+        // Bluetooth hands-free wins when it can, because it is the path the user's audio takes.
+        let t = build(&[live, hfp(false, true)]).tones.unwrap();
+        assert_eq!(t.path, ControlPath::Hfp);
+        // A held-only or ended call is not a place for tones.
+        assert!(build(&[link(PhoneState::Idle, true, None)]).tones.is_none());
     }
 
     #[test]

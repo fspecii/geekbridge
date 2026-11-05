@@ -11,7 +11,7 @@
 //! | packet | direction | body |
 //! | --- | --- | --- |
 //! | [`STATE`] | phone to computer | `state` (`idle`, `ringing`, `offhook`), optional `number`/`name`, `canAnswer`, `canEnd`, `canDial` |
-//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`, `dial` with a `number`, `report` = send the state again, answered by a STATE and no RESULT) |
+//! | [`REQUEST`] | computer to phone | `requestId`, `action` (`answer`, `reject`, `hangup`, `dial` with a `number`, `tone` with one `tone` character `0-9 * #`, `report` = send the state again, answered by a STATE and no RESULT) |
 //! | [`RESULT`] | phone to computer | `requestId`, `ok`, optional `reason` |
 //!
 //! The phone decides what it may do: `canAnswer` and `canEnd` are true only while Android's
@@ -92,6 +92,9 @@ pub struct LinkCallReport {
     pub can_end: bool,
     /// The phone can place a call (Android `CALL_PHONE` granted). Absent on older phones: false.
     pub can_dial: bool,
+    /// The phone can play a keypad tone into the live call (DTMF). Absent on older phones: false, and
+    /// then the computer sends no `tone` request and shows no keypad for this path.
+    pub can_tones: bool,
 }
 impl std::fmt::Debug for LinkCallReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,6 +105,7 @@ impl std::fmt::Debug for LinkCallReport {
             .field("can_answer", &self.can_answer)
             .field("can_end", &self.can_end)
             .field("can_dial", &self.can_dial)
+            .field("can_tones", &self.can_tones)
             .finish()
     }
 }
@@ -136,6 +140,7 @@ impl LinkCallReport {
             can_answer,
             can_end,
             can_dial: false,
+            can_tones: false,
         }
     }
 
@@ -151,6 +156,7 @@ impl LinkCallReport {
         m.insert("canAnswer".into(), json!(self.can_answer));
         m.insert("canEnd".into(), json!(self.can_end));
         m.insert("canDial".into(), json!(self.can_dial));
+        m.insert("canTones".into(), json!(self.can_tones));
         m
     }
 
@@ -167,6 +173,7 @@ impl LinkCallReport {
             can_answer: opt_bool(body, "canAnswer")?,
             can_end: opt_bool(body, "canEnd")?,
             can_dial: opt_bool(body, "canDial")?,
+            can_tones: opt_bool(body, "canTones")?,
         };
         if state == PhoneState::Idle {
             // An idle phone has no party; never keep a stale number around.
@@ -201,6 +208,7 @@ impl LinkCallReport {
         caps.set(CallFeature::Answer, allowed(self.can_answer));
         caps.set(CallFeature::Hangup, allowed(self.can_end));
         caps.set(CallFeature::Dial, allowed(self.can_dial));
+        caps.set(CallFeature::SendTones, allowed(self.can_tones));
         caps
     }
 
@@ -258,6 +266,9 @@ pub enum LinkAction {
     Hangup,
     /// Place a call. The request also carries a `number` ([`dial_request_body`]).
     Dial,
+    /// Play one keypad tone into the live call (DTMF, for phone menus). The request also carries a `tone`
+    /// ([`tone_request_body`]); one character per request, so the phone can rate-limit by count.
+    Tone,
     /// Send the current call state again. The computer asks when its Telephony consent is switched on: the
     /// phone sent its state while that was off and the computer dropped it. Answered with a state packet
     /// (no result), only if the phone allows calls for this computer.
@@ -270,6 +281,7 @@ impl LinkAction {
             Self::Reject => "reject",
             Self::Hangup => "hangup",
             Self::Dial => "dial",
+            Self::Tone => "tone",
             Self::Report => "report",
         }
     }
@@ -279,6 +291,7 @@ impl LinkAction {
             "reject" => Self::Reject,
             "hangup" => Self::Hangup,
             "dial" => Self::Dial,
+            "tone" => Self::Tone,
             "report" => Self::Report,
             _ => return None,
         })
@@ -324,6 +337,32 @@ pub fn parse_dial_number(body: &Map<String, Value>) -> Result<Sensitive, WireErr
     }
 }
 
+/// A keypad tone the link will send: one of `0-9 * #`. The `A-D` tones some Bluetooth stacks accept are not
+/// on a phone's keypad and are not carried.
+pub fn valid_tone(c: char) -> bool {
+    c.is_ascii_digit() || c == '*' || c == '#'
+}
+
+/// A `tone` request: [`request_body`] plus the character. The caller has already validated it.
+pub fn tone_request_body(request_id: &str, tone: char) -> Map<String, Value> {
+    let mut m = request_body(request_id, LinkAction::Tone);
+    m.insert("tone".into(), json!(tone.to_string()));
+    m
+}
+
+/// The character of a `tone` request: exactly one of `0-9 * #`, nothing else.
+pub fn parse_tone(body: &Map<String, Value>) -> Result<char, WireError> {
+    let t = body
+        .get("tone")
+        .and_then(Value::as_str)
+        .ok_or(WireError::Malformed)?;
+    let mut chars = t.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if valid_tone(c) => Ok(c),
+        _ => Err(WireError::Invalid),
+    }
+}
+
 pub fn parse_request(body: &Map<String, Value>) -> Result<(String, LinkAction), WireError> {
     let id = body
         .get("requestId")
@@ -339,6 +378,9 @@ pub fn parse_request(body: &Map<String, Value>) -> Result<(String, LinkAction), 
     let action = LinkAction::parse(action).ok_or(WireError::Invalid)?;
     if action == LinkAction::Dial {
         parse_dial_number(body)?;
+    }
+    if action == LinkAction::Tone {
+        parse_tone(body)?;
     }
     Ok((id.to_owned(), action))
 }
@@ -466,6 +508,7 @@ mod tests {
             can_answer: true,
             can_end: true,
             can_dial: false,
+            can_tones: true,
         };
         assert_eq!(LinkCallReport::parse(&r.body()), Ok(r.clone()));
         assert!(!format!("{r:?}").contains("5550100"));
@@ -490,6 +533,57 @@ mod tests {
         ] {
             assert!(LinkCallReport::parse(&obj(bad.clone())).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn tone_requests_carry_exactly_one_keypad_character() {
+        for c in "0123456789*#".chars() {
+            let body = tone_request_body("t-1", c);
+            assert_eq!(parse_request(&body), Ok(("t-1".into(), LinkAction::Tone)));
+            assert_eq!(parse_tone(&body), Ok(c));
+        }
+        let with = |tone: Value| {
+            let mut m = request_body("t-1", LinkAction::Tone);
+            m.insert("tone".into(), tone);
+            m
+        };
+        for bad in [
+            "", "12", "A", "d", "+", " ", "\n", "\u{0661}", "\u{ff11}", "1\u{0}", "*#",
+        ] {
+            assert_eq!(
+                parse_tone(&with(json!(bad))),
+                Err(WireError::Invalid),
+                "{bad:?}"
+            );
+            assert!(parse_request(&with(json!(bad))).is_err(), "{bad:?}");
+        }
+        for bad in [json!(1), json!(null), json!(["1"]), json!({"a": 1})] {
+            assert_eq!(parse_tone(&with(bad)), Err(WireError::Malformed));
+        }
+        // No tone at all.
+        assert!(parse_request(&request_body("t-1", LinkAction::Tone)).is_err());
+    }
+
+    #[test]
+    fn tones_are_declared_only_when_the_phone_says_it_can() {
+        let mut r = LinkCallReport::idle(true, true);
+        assert_eq!(
+            r.capabilities().support(CallFeature::SendTones),
+            Support::Unsupported {
+                reason: UnsupportedReason::RemoteDoesNotAdvertise
+            }
+        );
+        // An older phone never sends the field.
+        assert!(
+            !LinkCallReport::parse(&obj(json!({"state":"offhook"})))
+                .unwrap()
+                .can_tones
+        );
+        r.can_tones = true;
+        assert_eq!(
+            r.capabilities().support(CallFeature::SendTones),
+            Support::Declared
+        );
     }
 
     #[test]
@@ -570,6 +664,7 @@ mod tests {
             can_answer: true,
             can_end: true,
             can_dial: false,
+            can_tones: false,
         };
         assert_eq!(ring.apply(&mut s), Applied::Changed);
         assert_eq!(ring.apply(&mut s), Applied::Unchanged);

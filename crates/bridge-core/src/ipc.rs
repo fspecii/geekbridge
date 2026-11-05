@@ -468,6 +468,13 @@ pub enum Request {
         source: String,
         number: crate::calls::Sensitive,
     },
+    /// Send one keypad tone (`0-9 * #`, DTMF) into the live call through `source` (the `tones` the latest `Calls` view
+    /// offered). One character per request; the service re-checks that it is still offered, rate-limits, and neither
+    /// logs nor traces the character (it may be a PIN). Bluetooth hands-free and the phone link both carry it.
+    CallTone {
+        source: String,
+        tone: crate::calls::Sensitive,
+    },
     /// Mute or unmute the computer's microphone for the live call (only where offered).
     CallMute {
         source: String,
