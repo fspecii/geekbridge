@@ -1051,7 +1051,8 @@ async fn ring_round(
     }
     // In a call: sometimes listen over Wi-Fi for a while.
     if matches!(kind, 0 | 2) && !skip("wifi") && rng.below(10) < 7 {
-        if f.wait_calls(Duration::from_secs(6), |c| c.view.live().is_some())
+        if f
+            .wait_calls(Duration::from_secs(6), |c| c.view.live().is_some())
             .await
         {
             f.send(Cmd::Call("offhook")).await; // the phone's own state after an answer from here
@@ -1773,9 +1774,7 @@ async fn soak_real_service() {
                 }
             }
         }
-        if skip("slow") {
-            sleep(Duration::from_millis(1500 + rng.below(2500) as u64)).await;
-        } else if std::env::var("GEEKBRIDGE_SOAK_FAST").is_ok() {
+        if !skip("slow") && std::env::var("GEEKBRIDGE_SOAK_FAST").is_ok() {
             sleep(Duration::from_millis(100 + rng.below(150) as u64)).await;
         } else {
             sleep(Duration::from_millis(1500 + rng.below(2500) as u64)).await;

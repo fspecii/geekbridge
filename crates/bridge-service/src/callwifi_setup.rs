@@ -148,8 +148,16 @@ pub fn find_adb(explicit: Option<&str>) -> Option<PathBuf> {
     }
     c.extend(env("HOME").map(|h| h.join("Android/Sdk/platform-tools/adb")));
     // A build from the repository: target/<profile>/geekbridge-ctl → <repo>/.tools/android-sdk/platform-tools/adb.
+    const REL: &str = ".tools/android-sdk/platform-tools/adb";
     if let Some(root) = exe.as_deref().and_then(|e| e.ancestors().nth(3)) {
-        c.push(root.join(".tools/android-sdk/platform-tools/adb"));
+        c.push(root.join(REL));
+    }
+    // Also next to the executable's parents (a copy elsewhere) and the current directory and its parents.
+    if let Some(dir) = exe.as_deref().and_then(Path::parent) {
+        c.extend(dir.ancestors().take(5).map(|d| d.join(REL)));
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        c.extend(cwd.ancestors().take(5).map(|d| d.join(REL)));
     }
     c.into_iter().find(|p| is_executable(p))
 }
@@ -273,7 +281,8 @@ impl Walk<'_> {
     }
 
     /// Pick the phone: the one given, the only one connected, or pair and connect over Wi-Fi now.
-    fn choose_phone(&mut self, o: &Opts) -> Result<(), String> {
+    /// `pairing` false (status/stop): never start the interactive pairing walk.
+    fn choose_phone(&mut self, o: &Opts, pairing: bool) -> Result<(), String> {
         if let Some((hp, code)) = &o.pair {
             self.pair(hp, code)?;
         }
@@ -291,6 +300,11 @@ impl Walk<'_> {
                     self.io.say(&format!("Using the phone {one}."));
                     self.serial = Some(one.clone());
                     return Ok(());
+                }
+                [] if !pairing => {
+                    return Err("phone not reachable over adb (no pairing is started for --status/--stop). \
+                         Turn Wireless debugging on and connect it, or use the phone's own switch."
+                        .into());
                 }
                 [] if round == 0 => self.pair_interactively()?,
                 [] => break,
@@ -480,11 +494,14 @@ pub fn setup(
         serial: o.serial.clone(),
     };
     if o.status || o.stop {
-        w.choose_phone(&Opts {
-            pair: None,
-            connect: None,
-            ..o.clone()
-        })?;
+        w.choose_phone(
+            &Opts {
+                pair: None,
+                connect: None,
+                ..o.clone()
+            },
+            false,
+        )?;
         if o.stop {
             for p in w.pids() {
                 w.shell(&format!("kill {p}"));
@@ -551,7 +568,7 @@ pub fn setup(
 
     // 2. adb and the phone.
     w.io.say("\n[2/4] Connecting to the phone with adb (Wireless debugging)...");
-    w.choose_phone(o)?;
+    w.choose_phone(o, true)?;
     w.check_phone()?;
     let uid = w.app_uid()?;
 
@@ -984,5 +1001,24 @@ mod tests {
         .unwrap();
         assert!(!phone.helper);
         assert!(phone.log.iter().any(|l| l.contains("callwifi.STOP")));
+    }
+
+    #[test]
+    fn status_without_a_phone_does_not_start_the_pairing_walk() {
+        let mut phone = FakePhone::default();
+        let mut io = Script::default();
+        let e = setup(
+            &Opts {
+                status: true,
+                ..Default::default()
+            },
+            &mut phone,
+            &mut io,
+            None,
+        )
+        .unwrap_err();
+        assert!(e.contains("not reachable over adb"), "{e}");
+        assert!(io.said.is_empty(), "{:?}", io.said);
+        assert!(!phone.log.iter().any(|l| l.starts_with("pair") || l.starts_with("mdns")));
     }
 }

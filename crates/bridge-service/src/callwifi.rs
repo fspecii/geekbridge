@@ -163,6 +163,45 @@ fn have_pw_cat() -> bool {
         .is_ok()
 }
 
+/// pw-cat stream volume for the far party's audio.
+#[cfg(target_os = "linux")]
+const PLAYBACK_VOLUME: &str = "0.6";
+/// Linear fade-in at the start of a playback session: 100 ms at 16 kHz.
+#[cfg(target_os = "linux")]
+const FADE_IN_SAMPLES: usize = 1600;
+
+/// Scales the first [`FADE_IN_SAMPLES`] samples of a session; `done` counts samples already passed.
+#[cfg(target_os = "linux")]
+fn fade_in(pcm: &mut [i16], done: &mut usize) {
+    for s in pcm.iter_mut() {
+        if *done >= FADE_IN_SAMPLES {
+            return;
+        }
+        *s = (i32::from(*s) * (*done as i32) / FADE_IN_SAMPLES as i32) as i16;
+        *done += 1;
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+#[allow(clippy::items_after_test_module)]
+mod fade_tests {
+    use super::*;
+
+    #[test]
+    fn the_start_of_a_session_ramps_up_and_then_passes_through() {
+        let mut done = 0;
+        let mut a = [10_000i16; 800];
+        fade_in(&mut a, &mut done);
+        assert_eq!(a[0], 0);
+        assert!(a[799] < 5_100 && a[799] > 4_900, "{}", a[799]);
+        let mut b = [10_000i16; 1600];
+        fade_in(&mut b, &mut done);
+        assert_eq!(b[799], 10_000 * 1599 / 1600);
+        assert_eq!(b[800], 10_000);
+        assert_eq!(done, FADE_IN_SAMPLES);
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn pw_cat(mode: &str, target: &str) -> Result<Child, String> {
     let mut c = Command::new("pw-cat");
@@ -178,7 +217,12 @@ fn pw_cat(mode: &str, target: &str) -> Result<Child, String> {
         "--latency",
         "40ms",
     ])
-    .args(["--media-role", "Communication", "--target", target, "-"]);
+    .args(["--media-role", "Communication", "--target", target]);
+    if mode == "-p" {
+        // Far-party audio is never louder than 60 % of the stream volume (a shout, a DTMF burst, a ring-back).
+        c.args(["--volume", PLAYBACK_VOLUME]);
+    }
+    c.arg("-");
     c.stderr(Stdio::null());
     if mode == "-p" {
         c.stdin(Stdio::piped()).stdout(Stdio::null());
@@ -225,6 +269,7 @@ impl Audio for PipeWireAudio {
         Ok(Box::new(PwPlayback {
             child,
             stdin: Some(stdin),
+            faded: 0,
         }))
     }
     #[cfg(not(target_os = "linux"))]
@@ -279,13 +324,17 @@ fn set_nonblocking(w: &std::process::ChildStdin) {
 struct PwPlayback {
     child: Child,
     stdin: Option<std::process::ChildStdin>,
+    /// Samples already passed through the start-of-session fade-in.
+    faded: usize,
 }
 
 #[cfg(target_os = "linux")]
 impl Playback for PwPlayback {
     fn write(&mut self, pcm: &[i16]) -> std::io::Result<()> {
+        let mut pcm = pcm.to_vec();
+        fade_in(&mut pcm, &mut self.faded);
         let mut bytes = Vec::with_capacity(pcm.len() * 2);
-        for s in pcm {
+        for s in &pcm {
             bytes.extend_from_slice(&s.to_le_bytes());
         }
         match self.stdin.as_mut() {

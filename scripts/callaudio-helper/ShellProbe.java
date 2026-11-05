@@ -168,10 +168,15 @@ public final class ShellProbe {
         Thread t = new Thread(() -> {
             short[] b = new short[rate / 50 * 2];
             long n = 0;
-            long end = System.nanoTime() + (ms + 1500) * 1_000_000L;
-            while (System.nanoTime() < end) {
+            // Quiet (about -17 dBFS) with a 10 ms fade in and out: this may reach a real call's recorders.
+            final double amp = 0.14 * 32767;
+            final double fade = rate / 100.0;
+            final long total = (long) (ms + 1500) * rate / 1000;
+            while (n < total) {
                 for (int i = 0; i < b.length; i += 2) {
-                    short v = (short) (12000 * Math.sin(2 * Math.PI * hz * (n++) / rate));
+                    double g = n >= total ? 0 : Math.min(1.0, Math.min(n / fade, (total - 1 - n) / fade));
+                    short v = (short) (amp * g * Math.sin(2 * Math.PI * hz * n / rate));
+                    n++;
                     b[i] = v; b[i + 1] = v;
                 }
                 if (track.write(b, 0, b.length) < 0) break;

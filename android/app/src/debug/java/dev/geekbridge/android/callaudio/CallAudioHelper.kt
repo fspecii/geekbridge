@@ -231,7 +231,13 @@ object CallAudioHelper {
                 lastError = "track not initialised"
                 return null
             }
-            if (!t.setPreferredDevice(dev)) lastError = "preferred device refused"
+            if (!t.setPreferredDevice(dev)) {
+                // Without the preferred device the track would play out of the phone's own route (speaker, earpiece
+                // or headphones at media volume): never use it.
+                t.release()
+                lastError = "preferred device refused"
+                return null
+            }
             TrackInjector(name, t)
         } catch (e: RuntimeException) {
             note(e)
@@ -381,7 +387,7 @@ object CallAudioHelper {
             val track = if (withTone) (callInterception("getCallUplinkInjectionAudioTrack") as? AudioTrack ?: return null) else null
             val rec = openCapture("VOICE_UPLINK") ?: return null.also { track?.release() }
             track?.play()
-            val tone = ToneCapture(1000.0, paced = false)
+            val tone = ToneCapture(1000.0, paced = false, amplitude = 0.12, lengthSamples = RATE * 85L / 100)
             val out = ShortArray(HelperProtocol.FRAME_SAMPLES)
             val window = ShortArray(RATE)
             var w = 0
@@ -421,7 +427,7 @@ object CallAudioHelper {
     private fun voipMixSelfTest(): String {
         lastError = ""
         val (inj, _) = voipMix() ?: return "{\"route\":\"voip_mix\",\"outcome\":\"refused\",\"error\":${q(lastError)}}"
-        val tone = ToneCapture(1000.0, paced = false)
+        val tone = ToneCapture(1000.0, paced = false, amplitude = 0.12, lengthSamples = RATE * 14L / 10)
         val rec = openCapture("VOICE_COMMUNICATION")
         if (rec == null) {
             inj.close()

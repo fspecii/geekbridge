@@ -42,7 +42,14 @@ object NoInjector : PcmInjector {
 }
 
 /** A sine wave, paced to real time unless [paced] is false (tests). Stands in for call audio. */
-class ToneCapture(private val hz: Double = 440.0, private val paced: Boolean = true) : PcmCapture {
+class ToneCapture(
+    private val hz: Double = 440.0,
+    private val paced: Boolean = true,
+    /** Fraction of full scale. */
+    private val amplitude: Double = 0.3,
+    /** > 0: a 10 ms fade in at the start and out at the end of this many samples, silence after it (0 = endless). */
+    private val lengthSamples: Long = 0,
+) : PcmCapture {
     override val name = "TONE"
     private var n = 0L
     private var next = System.nanoTime()
@@ -53,7 +60,12 @@ class ToneCapture(private val hz: Double = 440.0, private val paced: Boolean = t
             if (wait > 0) Thread.sleep(wait / 1_000_000, (wait % 1_000_000).toInt())
         }
         for (i in buf.indices) {
-            buf[i] = (sin(2 * PI * hz * n / HelperProtocol.RATE) * 0.3 * 32767).toInt().toShort()
+            var g = 1.0
+            if (lengthSamples > 0) {
+                val fade = HelperProtocol.RATE / 100.0
+                g = if (n >= lengthSamples) 0.0 else minOf(1.0, n / fade, (lengthSamples - 1 - n) / fade)
+            }
+            buf[i] = (sin(2 * PI * hz * n / HelperProtocol.RATE) * amplitude * g * 32767).toInt().toShort()
             n++
         }
         return buf.size

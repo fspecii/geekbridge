@@ -38,6 +38,13 @@ class UplinkTest(
 ) {
     private val rate = HelperProtocol.RATE
     private val frame = HelperProtocol.FRAME_SAMPLES
+    private val FADE = HelperProtocol.RATE / 100 // 10 ms in, 10 ms out per beep
+
+    private companion object {
+        /** Full scale fraction of a beep: quiet for someone's ear on a real call (-17 dBFS). */
+        const val AMPLITUDE = 0.14
+        const val BEEP_FRAMES = 15
+    }
 
     /** One JSON object: {"uplinkTest":[{route, beeps, outcome, written, loop, error}...]}. */
     fun run(): String {
@@ -65,15 +72,23 @@ class UplinkTest(
         var n = 0L
         try {
             // Each beep 300 ms on, 300 ms off; 200 ms of silence first so the track has started.
-            val plan = ArrayList<Boolean>()
-            repeat(10) { plan.add(false) }
+            // The plan holds -1 for a silent frame and 0..14 for the frame's index inside a beep (for the fades).
+            val plan = ArrayList<Int>()
+            repeat(10) { plan.add(-1) }
             repeat(beeps) {
-                repeat(15) { plan.add(true) }
-                repeat(15) { plan.add(false) }
+                repeat(BEEP_FRAMES) { plan.add(it) }
+                repeat(15) { plan.add(-1) }
             }
-            for (on in plan) {
+            for (idx in plan) {
+                val on = idx >= 0
                 for (k in 0 until frame) {
-                    out[k] = if (on) (sin(2 * PI * 1000.0 * n / rate) * 0.3 * 32767).toInt().toShort() else 0
+                    out[k] = if (on) {
+                        val p = idx * frame + k
+                        val g = minOf(1.0, p.toDouble() / FADE, (BEEP_FRAMES * frame - 1 - p).toDouble() / FADE)
+                        (sin(2 * PI * 1000.0 * n / rate) * AMPLITUDE * g * 32767).toInt().toShort()
+                    } else {
+                        0
+                    }
                     n++
                 }
                 if (inj.write(out)) written++
