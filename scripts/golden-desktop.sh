@@ -249,6 +249,7 @@ tasks_rest() { # theme
   echo "geekbridge-calls+overlay|$t|call-overlay-active|-|GEEKBRIDGE_CALLS_FIXTURE=active"
   echo "geekbridge-calls+overlay|$t|call-overlay-keypad|-|GEEKBRIDGE_CALLS_FIXTURE=keypad"
   echo "geekbridge-calls+overlay|$t|call-overlay-ended|-|GEEKBRIDGE_CALLS_FIXTURE=ended"
+  grep -v '^#' "$ROOT/scripts/golden/tasks-call-reply.txt" | sed "s/@THEME@/$t/"   # Decline with message
   echo "geekbridge-contacts|$t|contacts|-|"
   echo "geekbridge-contacts|$t|contacts-service-off|-|GEEKBRIDGE_STATE_DIR=$RUN/nostate"
   echo "geekbridge-contacts|$t|contacts-details|-|GEEKBRIDGE_CONTACTS_SELECT_FIRST=1"

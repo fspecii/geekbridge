@@ -1,0 +1,5 @@
+# Golden screens for "Decline with message" on the incoming-call card: the extra action, and the list of saved texts.
+# One task per line, "app|theme|name|keys|ENV=VAL ..."; @THEME@ becomes light or dark.
+# Read by tasks_rest in scripts/golden-desktop.sh (see docs/golden-images.md, "Extra screen lists").
+geekbridge-calls+overlay|@THEME@|call-overlay-reply|-|GEEKBRIDGE_CALLS_FIXTURE=ringing-reply
+geekbridge-calls+overlay|@THEME@|call-overlay-reply-list|-|GEEKBRIDGE_CALLS_FIXTURE=ringing-reply-open
