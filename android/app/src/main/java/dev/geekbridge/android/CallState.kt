@@ -214,7 +214,7 @@ class CallStateMonitor(
     private val onRawSeen: (Int) -> Unit = {},
 ) {
     private var handle: AutoCloseable? = null
-    private var generation = 0
+    @Volatile private var generation = 0
 
     val isRunning: Boolean get() = handle != null
 
@@ -225,7 +225,9 @@ class CallStateMonitor(
             handle = registrar.register(executor) { raw ->
                 onRawSeen(raw)
                 val s = CallStateMapping.fromRaw(raw) ?: return@register
-                postToMain(Runnable { if (gen == generation && handle != null) onState(s) })
+                // Not gated on `handle`: when start() runs on a worker the first report can reach the main thread before
+                // start() has stored the handle, and must not be lost. stop() and a failed start bump the generation.
+                postToMain(Runnable { if (gen == generation) onState(s) })
             }
             MonitorStart.Started
         } catch (e: SecurityException) {

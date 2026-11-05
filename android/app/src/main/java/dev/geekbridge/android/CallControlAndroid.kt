@@ -85,10 +85,16 @@ object InCallBridge {
     /** How long a tone sounds. Long enough for a phone menu to hear it, short enough to type a PIN quickly. */
     private const val TONE_MS = 150L
 
+    /** Silence between queued tones, so two equal digits are heard as two. */
+    private const val GAP_MS = 60L
+
     fun added(c: android.telecom.Call) {
         synchronized(lock) { calls.add(c) }
         onChange()
     }
+
+    /** A tracked call changed state (for example dialing -> active): the report may now differ. */
+    fun changed() = onChange()
 
     fun removed(c: android.telecom.Call) {
         synchronized(lock) { calls.remove(c) }
@@ -109,26 +115,52 @@ object InCallBridge {
     fun play(tone: Char): Boolean {
         if (!CallRules.validTone(tone)) return false
         val c = active() ?: return false
-        return try {
-            c.playDtmfTone(tone)
-            main.postDelayed({
-                try {
-                    c.stopDtmfTone()
-                } catch (_: RuntimeException) {
-                }
-            }, TONE_MS)
-            true
-        } catch (_: RuntimeException) {
-            false
-        }
+        // Queued: each tone starts after the previous one has stopped, so fast typing is played in order, not garbled.
+        val now = android.os.SystemClock.uptimeMillis()
+        val start = schedule.reserve(now)
+        main.postAtTime({
+            try {
+                c.playDtmfTone(tone)
+                main.postDelayed({
+                    try {
+                        c.stopDtmfTone()
+                    } catch (_: RuntimeException) {
+                    }
+                }, TONE_MS)
+            } catch (_: RuntimeException) {
+            }
+        }, start)
+        return true
     }
+
+    private val schedule = ToneSchedule(TONE_MS, GAP_MS)
 }
 
 /** See [InCallBridge]. Has no screen; only hands the calls it is given to the bridge. */
 class GeekBridgeInCallService : android.telecom.InCallService() {
-    override fun onCallAdded(call: android.telecom.Call) = InCallBridge.added(call)
-    override fun onCallRemoved(call: android.telecom.Call) = InCallBridge.removed(call)
+    // A call placed from the computer is added while still dialing and turns ACTIVE later; without a re-report the
+    // phone would keep saying it cannot play tones for the whole call. Each call's callback is dropped with the call.
+    private val watchers = HashMap<android.telecom.Call, android.telecom.Call.Callback>()
+
+    override fun onCallAdded(call: android.telecom.Call) {
+        val cb = object : android.telecom.Call.Callback() {
+            override fun onStateChanged(c: android.telecom.Call, state: Int) = InCallBridge.changed()
+        }
+        watchers[call] = cb
+        call.registerCallback(cb)
+        InCallBridge.added(call)
+    }
+
+    override fun onCallRemoved(call: android.telecom.Call) {
+        watchers.remove(call)?.let { call.unregisterCallback(it) }
+        InCallBridge.removed(call)
+    }
+
     override fun onDestroy() {
+        for ((c, cb) in watchers) {
+            try { c.unregisterCallback(cb) } catch (_: RuntimeException) { }
+        }
+        watchers.clear()
         InCallBridge.clear()
         super.onDestroy()
     }
@@ -284,13 +316,28 @@ class AndroidCallSources(
         onSource: (String, Int) -> Unit,
         onGone: (String) -> Unit,
     ): AutoCloseable {
+        val base = registrar.telephony ?: throw IllegalStateException("No telephony service")
+        val defaultHandle = registrar.registerOn(base, executor) { onSource("default", it) }
+        // If anything after this point throws, the default callback must not stay registered with no one to close it.
+        try {
+            return registerRest(base, defaultHandle, executor, onSource, onGone)
+        } catch (t: Throwable) {
+            try { defaultHandle.close() } catch (_: RuntimeException) { }
+            throw t
+        }
+    }
+
+    private fun registerRest(
+        base: TelephonyManager,
+        defaultHandle: AutoCloseable,
+        executor: java.util.concurrent.Executor,
+        onSource: (String, Int) -> Unit,
+        onGone: (String) -> Unit,
+    ): AutoCloseable {
         val lock = Any()
         var closed = false
         val subs = LinkedHashMap<Int, Pair<String, AutoCloseable>>()
         val slots = HashMap<Int, Int>() // subId -> slot, to drop that slot's broadcast state with its SIM
-        val base = registrar.telephony ?: throw IllegalStateException("No telephony service")
-
-        val defaultHandle = registrar.registerOn(base, executor) { onSource("default", it) }
 
         fun closeQuietly(c: AutoCloseable) = try { c.close() } catch (_: RuntimeException) { }
 
@@ -411,6 +458,7 @@ object CallControlRuntime {
     private val core: CoreClient by lazy { CoreClient.native() }
     private var monitor: CallStateMonitor? = null
     private var monitorExecutor: java.util.concurrent.ExecutorService? = null
+    private var monitorStarting = false
 
     /** Debug aid: what the call-state listener did (registration, callbacks, reports). Codes and counts only. */
     val ledger = CallListenerLedger()
@@ -539,14 +587,36 @@ object CallControlRuntime {
         ensureWaiter(e)
     }
 
-    @Synchronized
+    /**
+     * Registering telephony callbacks can block on the telephony service, so from API 30 (where listeners take an
+     * executor) it runs on the worker thread, not the main thread. Below 30 the subscription listener is bound to the
+     * creating thread's Looper, so it stays on the main thread there.
+     */
     private fun ensureMonitor(e: CallControlEngine, why: String) {
+        if (Build.VERSION.SDK_INT >= 30) async { ensureMonitorNow(e, why) } else ensureMonitorNow(e, why)
+    }
+
+    /**
+     * The registration itself (which can block on the telephony service) runs outside the object's lock, so the main
+     * thread's [onLinkChanged] never waits behind it; only the checks before and the publishing after hold the lock.
+     */
+    private fun ensureMonitorNow(e: CallControlEngine, why: String) {
         val a = app ?: return
-        if (monitor != null) return
-        if (!CallPermissionsReader.read(a).readPhoneState) {
-            ledger.notRegistered("no_read_phone_state")
-            return
+        val go = synchronized(this) {
+            when {
+                // Queued earlier, run later: do nothing if the feature or the link went away in between.
+                monitor != null || monitorStarting || !settings.enabled || !linkRunning -> false
+                !CallPermissionsReader.read(a).readPhoneState -> {
+                    ledger.notRegistered("no_read_phone_state")
+                    false
+                }
+                else -> {
+                    monitorStarting = true
+                    true
+                }
+            }
         }
+        if (!go) return
         val exec = CallStateExecutor.create()
         val m = CallStateMonitor(
             registrar = MergingCallRegistrar(AndroidCallSources(a, ledger = ledger)) { name, raw -> ledger.source(name, raw) },
@@ -559,16 +629,32 @@ object CallControlRuntime {
             },
             onRawSeen = { ledger.raw(it) },
         )
-        when (val r = m.start()) {
-            is MonitorStart.Failed -> {
-                exec.shutdownNow()
-                ledger.notRegistered(r.code)
-            }
-            else -> {
-                monitor = m
-                monitorExecutor = exec
-                ledger.registered(ListenerStrategy.forSdk(Build.VERSION.SDK_INT))
-                GbLog.i("calls", "registration trigger: $why")
+        val r = try {
+            m.start()
+        } catch (t: Throwable) {
+            synchronized(this) { monitorStarting = false }
+            exec.shutdownNow()
+            throw t
+        }
+        synchronized(this) {
+            monitorStarting = false
+            when {
+                r is MonitorStart.Failed -> {
+                    exec.shutdownNow()
+                    ledger.notRegistered(r.code)
+                }
+                !settings.enabled || !linkRunning -> {
+                    // Turned off while registering: undo it.
+                    m.stop()
+                    exec.shutdownNow()
+                    ledger.notRegistered("stopped_while_starting")
+                }
+                else -> {
+                    monitor = m
+                    monitorExecutor = exec
+                    ledger.registered(ListenerStrategy.forSdk(Build.VERSION.SDK_INT))
+                    GbLog.i("calls", "registration trigger: $why")
+                }
             }
         }
     }

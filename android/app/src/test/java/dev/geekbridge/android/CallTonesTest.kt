@@ -137,6 +137,46 @@ class CallTonesTest {
         assertEquals(0, r.tel.other)
     }
 
+    @Test fun toneRequestsAreLimitedTo24PerFiveSeconds() {
+        var now = 1_000L
+        val sent = ArrayList<JSONObject>()
+        val tel = Tel()
+        val engine = CallControlEngine(
+            core = { sent += JSONObject(it); CoreOutcome.Ok(JSONObject()) },
+            telecom = tel,
+            permissions = { all },
+            settings = { CallLinkSettings(true) },
+            lookup = { null },
+            sdk = 34,
+            strings = TestStrings,
+            clock = { now },
+        )
+        engine.onState(CallState.OffHook)
+        engine.onRequests((1..30).map { CallRequest(it.toLong(), 9, "l$it", CallAction.Tone, tone = '1') })
+        val res = sent.filter { it.getString("action") == "transport_calls_result" }
+        assertEquals(24, res.count { !it.has("failure") })
+        assertEquals(6, res.count { it.optString("failure") == "rate_limited" })
+        assertEquals(24, tel.played.size)
+        // Once the window has passed, tones flow again.
+        now += 5_000L
+        engine.onRequests(listOf(CallRequest(31, 9, "l31", CallAction.Tone, tone = '2')))
+        assertFalse(sent.last().has("failure"))
+    }
+
+    @Test fun slidingLimitAndToneScheduleBehave() {
+        val l = SlidingLimit(2, 100)
+        assertTrue(l.tryAcquire(0))
+        assertTrue(l.tryAcquire(10))
+        assertFalse(l.tryAcquire(50))
+        assertTrue(l.tryAcquire(100))
+        // Tones queue one after another, never overlapping.
+        val s = ToneSchedule(150, 50)
+        assertEquals(1000L, s.reserve(1000))
+        assertEquals(1200L, s.reserve(1010))
+        assertEquals(1400L, s.reserve(1020))
+        assertEquals(5000L, s.reserve(5000))
+    }
+
     @Test fun aFloodOfValidTonesStillOnlyPlaysIntoTheLiveCall() {
         val r = Rig(Tel(), all)
         r.engine.onState(CallState.Ringing)

@@ -612,8 +612,6 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         query("${Telephony.Sms.TYPE} = 1 AND ${Telephony.Sms.ADDRESS} = ?", arrayOf(address), 5).firstOrNull { it.body == body }
 }
 
-/** `SmsManager` behind [SmsSender]. Requires SEND_SMS (a SecurityException is mapped by the engine). */
-@SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
 /** An unguessable part of a status action name: below API 33 the receivers cannot be marked not-exported. */
 internal fun smsActionToken(random: java.security.SecureRandom = java.security.SecureRandom()): String {
     val b = ByteArray(12)
@@ -624,6 +622,8 @@ internal fun smsActionToken(random: java.security.SecureRandom = java.security.S
 /** `getSystemService(SmsManager::class.java)` exists from Android 12 (API 31); earlier releases return null. */
 internal fun smsManagerIsSystemService(sdk: Int = Build.VERSION.SDK_INT): Boolean = sdk >= 31
 
+/** `SmsManager` behind [SmsSender]. Requires SEND_SMS (a SecurityException is mapped by the engine). */
+@SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
 class AndroidSmsSender(context: Context) : SmsSender {
     private val app = context.applicationContext
     // Status callbacks run here, never on the main thread: the listener takes the engine lock, which the
@@ -660,10 +660,7 @@ class AndroidSmsSender(context: Context) : SmsSender {
             if (Build.VERSION.SDK_INT >= 33) app.registerReceiver(r, filter, null, callbacks, Context.RECEIVER_NOT_EXPORTED)
             else app.registerReceiver(r, filter, null, callbacks)
         }
-        register(sentAction) { tracker.onSent(it) }
-        register(deliveredAction) { tracker.onDelivered(it) }
-        // Never leave receivers behind if a report never comes (delivery reports are optional for carriers).
-        callbacks.postDelayed({ receivers.forEach { try { app.unregisterReceiver(it) } catch (_: IllegalArgumentException) { } } }, 15 * 60_000L)
+        fun releaseAll() = receivers.forEach { try { app.unregisterReceiver(it) } catch (_: IllegalArgumentException) { } }
         fun intents(action: String) = ArrayList<PendingIntent>(parts.size).also { l ->
             repeat(parts.size) {
                 l += PendingIntent.getBroadcast(
@@ -671,7 +668,17 @@ class AndroidSmsSender(context: Context) : SmsSender {
                 )
             }
         }
-        manager.sendMultipartTextMessage(address, null, parts, intents(sentAction), intents(deliveredAction))
+        try {
+            register(sentAction) { tracker.onSent(it) }
+            register(deliveredAction) { tracker.onDelivered(it) }
+            // Never leave receivers behind if a report never comes (delivery reports are optional for carriers).
+            callbacks.postDelayed({ releaseAll() }, 15 * 60_000L)
+            manager.sendMultipartTextMessage(address, null, parts, intents(sentAction), intents(deliveredAction))
+        } catch (t: Throwable) {
+            // The send never started, so no report will come: do not leave the receivers registered until the timer.
+            releaseAll()
+            throw t
+        }
         listener.onStatus("accepted")
     }
 }
@@ -732,8 +739,20 @@ class SmsReceivedReceiver : BroadcastReceiver() {
         val address = msgs[0].originatingAddress ?: return
         val body = msgs.joinToString("") { it.messageBody.orEmpty() }
         val pending = goAsync()
+        // finish() may only run once, and a receiver held past ~10 s is an ANR: the provider polling below can queue
+        // behind a long read on the shared worker, so a failsafe releases the broadcast after 8 s.
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val finish: () -> Unit = {
+            if (finished.compareAndSet(false, true)) {
+                try {
+                    pending.finish()
+                } catch (_: RuntimeException) {
+                }
+            }
+        }
+        Handler(Looper.getMainLooper()).postDelayed({ finish() }, 8_000L)
         PhoneDataRuntime.init(context)
-        PhoneDataRuntime.onIncomingBroadcast(address, body) { pending.finish() }
+        PhoneDataRuntime.onIncomingBroadcast(address, body, finish)
     }
 }
 
@@ -968,6 +987,23 @@ object PhoneDataRuntime {
         } else if (!f.sms) {
             stopMmsObserver()
         }
+        // Reading a conversation on the phone (or a new text) changes the SMS table: re-send the list with its unread
+        // map so the computer's badge follows. f.sms means READ_SMS is granted. Same debounced refresh as pictures.
+        if (f.sms && smsObserver == null) {
+            val o = object : ContentObserver(main) {
+                override fun onChange(selfChange: Boolean) {
+                    main.removeCallbacks(mmsRefresh)
+                    main.postDelayed(mmsRefresh, SMS_REFRESH_DELAY_MS)
+                }
+            }
+            try {
+                a.contentResolver.registerContentObserver(Telephony.Sms.CONTENT_URI, true, o)
+                smsObserver = o
+            } catch (_: SecurityException) {
+            }
+        } else if (!f.sms) {
+            stopSmsObserver()
+        }
         if (f.battery) startBatteryReceiver(a) else stopBatteryReceiver()
         if (waiter?.isAlive != true) {
             waiter = Thread({ waitLoop(e) }, "geekbridge-data-wait").apply { isDaemon = true; start() }
@@ -994,6 +1030,13 @@ object PhoneDataRuntime {
     private var mmsObserver: ContentObserver? = null
     private val mmsRefresh = Runnable { engine?.let { e -> worker.execute { e.refreshConversations() } } }
     private const val MMS_REFRESH_DELAY_MS = 3_000L
+    private var smsObserver: ContentObserver? = null
+    private const val SMS_REFRESH_DELAY_MS = 1_500L
+
+    private fun stopSmsObserver() {
+        smsObserver?.let { try { app?.contentResolver?.unregisterContentObserver(it) } catch (_: RuntimeException) { } }
+        smsObserver = null
+    }
 
     private fun stopMmsObserver() {
         main.removeCallbacks(mmsRefresh)
@@ -1010,6 +1053,7 @@ object PhoneDataRuntime {
     private fun stopObserving() {
         stopObserver()
         stopMmsObserver()
+        stopSmsObserver()
         stopBatteryReceiver()
     }
 
@@ -1083,7 +1127,14 @@ object PhoneDataRuntime {
             odd = 0
             if (r.stopped) return
             since = PhoneDataProtocol.nextSince(since, r)
-            if (r.events.isNotEmpty()) e.onEvents(r.events)
+            if (r.events.isNotEmpty()) {
+                try {
+                    e.onEvents(r.events)
+                } catch (_: RuntimeException) {
+                    // A provider failure while serving one event must not end this daemon thread: an uncaught
+                    // exception here would take the whole process down.
+                }
+            }
             if (!linkRunning || (!active().any && !DebugHooks.streaming)) return
         }
     }

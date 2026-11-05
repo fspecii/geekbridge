@@ -264,6 +264,32 @@ interface DialPrompts {
     fun withdraw(requestId: String)
 }
 
+/** At most [max] events in any [windowMs] window (sliding). Not thread-safe by itself; callers synchronize. */
+class SlidingLimit(private val max: Int, private val windowMs: Long) {
+    private val times = ArrayDeque<Long>()
+
+    /** True and counted if one more is allowed at [now]; false (not counted) if the window is full. */
+    fun tryAcquire(now: Long): Boolean {
+        while (times.isNotEmpty() && now - times.first() >= windowMs) times.removeFirst()
+        if (times.size >= max) return false
+        times.addLast(now)
+        return true
+    }
+}
+
+/** Keypad tones sound one after another: each starts when the previous one (plus a short gap) is over. */
+class ToneSchedule(private val toneMs: Long, private val gapMs: Long) {
+    private var freeAt = 0L
+
+    /** When a tone requested at [now] starts; reserves its slot. */
+    @Synchronized
+    fun reserve(now: Long): Long {
+        val start = maxOf(now, freeAt)
+        freeAt = start + toneMs + gapMs
+        return start
+    }
+}
+
 /** Notices a runtime permission granted or revoked while the app runs (Settings, another screen). */
 class PermissionWatch {
     private var last: CallPermissions? = null
@@ -390,6 +416,9 @@ class CallControlEngine(
     private class PendingDial(val request: CallRequest, val atMs: Long)
 
     private val pendingDials = LinkedHashMap<String, PendingDial>()
+
+    /** Keypad tones the phone accepts from computers: at most 24 per 5 s. */
+    private val toneLimit = SlidingLimit(24, 5_000L)
     private var state: CallState? = null
     private var number: String? = null
     private var name: String? = null
@@ -488,7 +517,11 @@ class CallControlEngine(
                 dial(r)
                 continue
             }
-            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number, r.tone)
+            val failure = if (r.action == CallAction.Tone && state == CallState.OffHook && !toneLimit.tryAcquire(clock())) {
+                CallFailure.RateLimited
+            } else {
+                CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number, r.tone)
+            }
             core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
         }
     }
