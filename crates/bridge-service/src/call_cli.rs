@@ -34,7 +34,9 @@ fn tone_refusal(sent: usize, total: usize, message: &str) -> String {
     if sent == 0 {
         message.to_owned()
     } else {
-        format!("{message} (stopped after {sent} of {total} keys; they were already pressed in the call)")
+        format!(
+            "{message} (stopped after {sent} of {total} keys; they were already pressed in the call)"
+        )
     }
 }
 

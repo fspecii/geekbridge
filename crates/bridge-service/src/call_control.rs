@@ -401,7 +401,6 @@ const RING_BANNER_LIMIT: std::time::Duration = std::time::Duration::from_secs(35
 /// The missed-call banner asks for 60 s.
 const MISSED_BANNER_LIMIT: std::time::Duration = std::time::Duration::from_secs(65);
 
-
 // ------------------------------------------------------------------ decline with a message
 
 /// What "Decline with message" needs from the rest of the service: the saved texts and the
@@ -2250,7 +2249,9 @@ mod tests {
         let _rx = hub.link_up("dev-forget", "Pixel", true);
         let state = |v: serde_json::Value| hub.on_packet("dev-forget", link::STATE, &body(v));
         let missed_call = || {
-            state(json!({"state":"ringing","name":"Ada","number":"+1555","canAnswer":true,"canEnd":true}));
+            state(
+                json!({"state":"ringing","name":"Ada","number":"+1555","canAnswer":true,"canEnd":true}),
+            );
             state(json!({"state":"idle","canAnswer":true,"canEnd":true}));
         };
         missed_call();

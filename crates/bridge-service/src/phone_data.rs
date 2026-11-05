@@ -2484,9 +2484,11 @@ mod tests {
         let mut rx = up(&h, (false, false, true));
         drain(&mut rx);
         let now = now_ms();
-        let first = obj(json!({"version": 2, "unread": {"4": 2, "5": 1}, "messages": [
+        let first = obj(
+            json!({"version": 2, "unread": {"4": 2, "5": 1}, "messages": [
             msg(4, 1, 1, "a", now - 3000), msg(4, 2, 1, "b", now - 2000),
-            msg(5, 3, 1, "c", now - 1000)]}));
+            msg(5, 3, 1, "c", now - 1000)]}),
+        );
         h.on_packet(ID, sms::MESSAGES, &first);
         assert_eq!(h.unread_total(), 3);
         // The phone read thread 4: it drops out of the map, the older rows stay flagged unread here.

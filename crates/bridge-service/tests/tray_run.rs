@@ -66,7 +66,7 @@ async fn pairing_a_phone_updates_the_tray_and_quit_stops_the_service() {
         .unwrap();
     let first = labels(&menu).await;
     assert_eq!(first[0].1, "GeekBridge");
-    assert_eq!(first[1].1, "No phone paired yet");
+    assert_eq!(first[1].1, "No phone linked yet");
 
     // A phone pairs and connects: the link events poke the tray, which redraws without being polled.
     let phone = Phone::new();

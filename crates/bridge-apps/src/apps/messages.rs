@@ -1794,8 +1794,8 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                     }
                     ui.label(
                         RichText::new(local_clock(m.date_ms))
-                        .color(fg.gamma_multiply(0.7))
-                        .size(12.0),
+                            .color(fg.gamma_multiply(0.7))
+                            .size(12.0),
                     );
                 });
             });

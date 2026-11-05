@@ -155,7 +155,7 @@ fn autostart_off_with_a_running_service_explains_how_to_turn_it_on() {
     let mut f = facts();
     f.autostart = Autostart::Off;
     let t = tree(&f);
-    assert!(t.has_name_starting("The background service does not start at login yet."));
+    assert!(t.has_name_starting("The background service does not start when you log in yet."));
     assert!(has(&t, "Copy start command"));
     f.autostart = Autostart::Unknown;
     let t = tree(&f);

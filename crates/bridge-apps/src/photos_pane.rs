@@ -458,7 +458,7 @@ fn offered_fixture() -> PhotosView {
 impl Worker {
     fn spawn(wake: impl Fn() + Send + 'static, active: Arc<AtomicBool>) -> Self {
         let (tx, rx) = mpsc::sync_channel::<Cmd>(16);
-        let latest = Arc::new(Mutex::new(None));
+        let latest: Arc<Mutex<Option<Model>>> = Arc::new(Mutex::new(None));
         let out = latest.clone();
         let fixture = std::env::var(FIXTURE_ENV).is_ok_and(|v| v == "offered");
         std::thread::Builder::new()

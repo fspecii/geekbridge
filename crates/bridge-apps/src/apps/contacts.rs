@@ -112,7 +112,12 @@ fn avatar(ui: &mut egui::Ui, pal: &Palette, name: &str, diameter: f32) {
 }
 
 impl Contacts {
-    fn view(&self) -> (phone_feed::FeedState<AgendaView>, AgendaView) {
+    fn view(
+        &self,
+    ) -> (
+        phone_feed::FeedState<AgendaView>,
+        std::sync::Arc<AgendaView>,
+    ) {
         let state = self.feed.as_ref().map(Feed::state).unwrap_or_default();
         let view = state.view.clone().unwrap_or_default();
         (state, view)
@@ -689,7 +694,7 @@ mod tests {
             ..AgendaView::default()
         };
         let state = phone_feed::FeedState {
-            view: Some(view.clone()),
+            view: Some(std::sync::Arc::new(view.clone())),
             problem: None,
             notice: None,
             acted: 0,

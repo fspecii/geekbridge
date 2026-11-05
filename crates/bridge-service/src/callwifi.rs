@@ -196,7 +196,7 @@ mod fade_tests {
         assert!(a[799] < 5_100 && a[799] > 4_900, "{}", a[799]);
         let mut b = [10_000i16; 1600];
         fade_in(&mut b, &mut done);
-        assert_eq!(b[799], 10_000 * 1599 / 1600);
+        assert_eq!(b[799], (10_000_i32 * 1599 / 1600) as i16);
         assert_eq!(b[800], 10_000);
         assert_eq!(done, FADE_IN_SAMPLES);
     }

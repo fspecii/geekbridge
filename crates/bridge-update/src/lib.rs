@@ -1432,7 +1432,10 @@ mod tests {
         };
         let back: Persisted =
             serde_json::from_value(serde_json::to_value(&saved).unwrap()).unwrap();
-        assert_eq!((back.backoff_until, back.last_attempt_unix), (Some(123), Some(45)));
+        assert_eq!(
+            (back.backoff_until, back.last_attempt_unix),
+            (Some(123), Some(45))
+        );
         // An older state file has neither field.
         let old: Persisted = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
         assert_eq!((old.backoff_until, old.last_attempt_unix), (None, None));

@@ -1019,6 +1019,11 @@ mod tests {
         .unwrap_err();
         assert!(e.contains("not reachable over adb"), "{e}");
         assert!(io.said.is_empty(), "{:?}", io.said);
-        assert!(!phone.log.iter().any(|l| l.starts_with("pair") || l.starts_with("mdns")));
+        assert!(
+            !phone
+                .log
+                .iter()
+                .any(|l| l.starts_with("pair") || l.starts_with("mdns"))
+        );
     }
 }

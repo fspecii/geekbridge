@@ -1592,10 +1592,7 @@ mod tests {
             assert_eq!(c.update(&down, t + Duration::from_secs(s)), Verdict::Keep);
         }
         // The service is back and the call still goes on: the timer kept counting.
-        assert_eq!(
-            c.update(&live, t + Duration::from_secs(133)),
-            Verdict::Keep
-        );
+        assert_eq!(c.update(&live, t + Duration::from_secs(133)), Verdict::Keep);
         let Some(Body::Live { header, .. }) = c.body(&live) else {
             panic!("an in-call card")
         };

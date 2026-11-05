@@ -285,6 +285,8 @@ pub struct Supervisor {
     noted_live: bool,
     /// When a card was last started for a live call (a card that keeps dying is not restarted in a loop).
     live_launch: Option<Instant>,
+    /// A card was started for the ring of the call going on (a call placed here never has one).
+    carded: bool,
 }
 
 /// The least time between two card starts for the same live call.
@@ -304,6 +306,7 @@ impl Supervisor {
             linger,
             noted_live: false,
             live_launch: None,
+            carded: false,
         }
     }
 
@@ -326,6 +329,7 @@ impl Supervisor {
                 match self.launcher.launch() {
                     Ok(card) => {
                         crate::call_trace::record("card", "launched for a ring");
+                        self.carded = true;
                         self.card = Some(card);
                     }
                     Err(why) => {
@@ -341,7 +345,9 @@ impl Supervisor {
                 self.noted_live = true;
                 crate::call_trace::record("card", "live call but no card is running");
             }
+            // Only a call that had a card (a ring) gets a new one; a call placed from this computer has none.
             if !running
+                && self.carded
                 && self
                     .live_launch
                     .is_none_or(|t| now.saturating_duration_since(t) >= LIVE_RELAUNCH)
@@ -361,6 +367,7 @@ impl Supervisor {
         }
         self.noted_live = false;
         self.live_launch = None;
+        self.carded = false;
         if running
             && self
                 .last_ring

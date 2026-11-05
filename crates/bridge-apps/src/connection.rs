@@ -118,10 +118,7 @@ impl Config {
     }
     /// Run `op` with the cached token; on an authentication failure (the service may have
     /// regenerated it) re-read the file once and retry.
-    fn with_token<T>(
-        &self,
-        op: impl Fn(&Token) -> Result<T, ipc::IpcError>,
-    ) -> Result<T, String> {
+    fn with_token<T>(&self, op: impl Fn(&Token) -> Result<T, ipc::IpcError>) -> Result<T, String> {
         let cached = self.cached.lock().ok().and_then(|g| g.clone());
         if let Some(token) = cached {
             match op(&token) {

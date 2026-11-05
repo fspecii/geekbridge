@@ -663,7 +663,7 @@ impl Sampler {
         let g = |a: &AtomicU64| a.load(Relaxed);
         let _ = write!(
             row,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},",
             g(&stats.reconnect_ok),
             g(&stats.reconnect_fail),
             g(&stats.pairs),
@@ -682,7 +682,6 @@ impl Sampler {
             smaps.0,
             smaps.1,
             smaps.2,
-            "",
         );
         row.truncate(row.rfind(',').map_or(row.len(), |i| i + 1));
         let kids = children(pid);
@@ -1051,8 +1050,7 @@ async fn ring_round(
     }
     // In a call: sometimes listen over Wi-Fi for a while.
     if matches!(kind, 0 | 2) && !skip("wifi") && rng.below(10) < 7 {
-        if f
-            .wait_calls(Duration::from_secs(6), |c| c.view.live().is_some())
+        if f.wait_calls(Duration::from_secs(6), |c| c.view.live().is_some())
             .await
         {
             f.send(Cmd::Call("offhook")).await; // the phone's own state after an answer from here
@@ -1298,8 +1296,8 @@ async fn feature_round(
     if !skip("data") && round % 5 == 1 {
         data_requests(f, rng, p0).await;
     }
-    if !skip("rings") && round % 3 == 0 {
-        ring_round(f, rng, server, p0, ev, round % 9 == 0).await;
+    if !skip("rings") && round.is_multiple_of(3) {
+        ring_round(f, rng, server, p0, ev, round.is_multiple_of(9)).await;
     }
 }
 

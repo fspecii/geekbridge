@@ -72,7 +72,7 @@ pub struct Feed<V> {
 /// What an action returned: a notice to show, or a refusal.
 pub type ActionResult = Result<Option<String>, String>;
 
-impl<V: Clone + PartialEq + Send + 'static> Feed<V> {
+impl<V: Clone + PartialEq + Send + Sync + 'static> Feed<V> {
     /// `fetch` asks for the view described by the current parameters; `act` runs one action.
     pub fn spawn_with(
         interval: Duration,
