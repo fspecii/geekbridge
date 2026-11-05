@@ -1269,10 +1269,10 @@ impl CallHub {
                 .chain(std::iter::once(&row.key))
                 .find_map(|p| inner.rings.get(p).copied())
         };
-        if let Some(ring) = ring {
-            if !self.inner().replied.insert(ring) {
-                return Ok(());
-            }
+        if let Some(ring) = ring
+            && !self.inner().replied.insert(ring)
+        {
+            return Ok(());
         }
         if let Err(e) = self.act(target, CallAction::Reject) {
             if let Some(ring) = ring {
