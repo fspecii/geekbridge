@@ -46,10 +46,17 @@ pub fn open_app_with_env(name: &str, var: &str, value: &str) {
     detach(cmd);
 }
 
+/// The helper `name` next to this executable (with the platform's `.exe` suffix, which a bare
+/// `name.is_file()` check would miss on Windows), else the bare name for a `PATH` search.
 pub(crate) fn app_path(name: &str) -> PathBuf {
-    std::env::current_exe()
+    let beside = std::env::current_exe()
         .ok()
-        .and_then(|e| e.parent().map(|d| d.join(name)))
+        .and_then(|e| e.parent().map(Path::to_path_buf));
+    app_path_in(beside.as_deref(), name, std::env::consts::EXE_SUFFIX)
+}
+
+fn app_path_in(dir: Option<&Path>, name: &str, exe_suffix: &str) -> PathBuf {
+    dir.map(|d| d.join(format!("{name}{exe_suffix}")))
         .filter(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from(name))
 }
@@ -186,6 +193,26 @@ pub fn spawn_update_watcher(updates: std::sync::Arc<bridge_update::Updater>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_helper_beside_the_service_is_found_with_the_windows_exe_suffix() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("geekbridge-calls.exe"), b"x").unwrap();
+        // Windows: the file is `geekbridge-calls.exe`, so the full path is used rather than a PATH search.
+        assert_eq!(
+            app_path_in(Some(d.path()), "geekbridge-calls", ".exe"),
+            d.path().join("geekbridge-calls.exe")
+        );
+        // Unix: no suffix, no such file, so the bare name is left to the PATH search.
+        assert_eq!(
+            app_path_in(Some(d.path()), "geekbridge-calls", ""),
+            PathBuf::from("geekbridge-calls")
+        );
+        assert_eq!(
+            app_path_in(None, "geekbridge-share", ".exe"),
+            PathBuf::from("geekbridge-share")
+        );
+    }
 
     #[test]
     fn uri_encodes_spaces_unicode_and_quotes() {

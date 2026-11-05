@@ -248,6 +248,12 @@ mod tests {
     }
 
     #[test]
+    fn the_reader_and_the_setting_agree_on_which_systems_are_supported() {
+        use bridge_core::privacy::PrivacyKey;
+        assert_eq!(SUPPORTED, PrivacyKey::RespectDnd.supported());
+    }
+
+    #[test]
     fn a_missing_tool_is_not_dnd() {
         assert!(run("geekbridge-no-such-tool-xyz", &[], TOOL_LIMIT).is_none());
     }

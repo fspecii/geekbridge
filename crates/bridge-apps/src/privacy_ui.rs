@@ -44,6 +44,9 @@ pub struct Row {
     pub on: bool,
     /// Why the switch cannot be moved here, when an older switch decides the value.
     pub forced_note: Option<String>,
+    /// This system can honour the choice at all; when not, the switch is shown off and disabled and
+    /// the detail line says "Not supported on this system".
+    pub supported: bool,
 }
 
 fn title_key(key: PrivacyKey) -> &'static str {
@@ -60,7 +63,9 @@ fn detail_key(key: PrivacyKey) -> &'static str {
         PrivacyKey::MessageText => "privacy.message_text.detail",
         PrivacyKey::CallerNumber => "privacy.caller_number.detail",
         PrivacyKey::PhoneNotificationText => "privacy.phone_notification_text.detail",
-        PrivacyKey::RespectDnd if cfg!(target_os = "linux") => "privacy.respect_dnd.detail",
+        PrivacyKey::RespectDnd if PrivacyKey::RespectDnd.supported() => {
+            "privacy.respect_dnd.detail"
+        }
         PrivacyKey::RespectDnd => "privacy.respect_dnd.detail_other",
     }
 }
@@ -76,13 +81,20 @@ fn forced_key(key: PrivacyKey, by: ForcedBy) -> &'static str {
 
 /// The rows for a view; `pending` holds clicks the service has not answered yet.
 pub fn rows(view: &PrivacyView, pending: &HashMap<PrivacyKey, bool>) -> Vec<Row> {
+    rows_on(view, pending, std::env::consts::OS)
+}
+
+fn rows_on(view: &PrivacyView, pending: &HashMap<PrivacyKey, bool>, os: &str) -> Vec<Row> {
     view.items
         .iter()
         .map(|i| Row {
             key: i.key,
             title: tr(title_key(i.key)).to_owned(),
             detail: tr(detail_key(i.key)).to_owned(),
-            on: if i.forced.is_some() {
+            supported: i.key.supported_on(os),
+            on: if !i.key.supported_on(os) {
+                false
+            } else if i.forced.is_some() {
                 i.on
             } else {
                 pending.get(&i.key).copied().unwrap_or(i.on)
@@ -209,7 +221,7 @@ pub fn show(ui: &mut egui::Ui, pal: &Palette, link: &mut PrivacyLink) {
     for row in rows {
         ui.add_space(S1);
         let mut on = row.on;
-        let enabled = row.forced_note.is_none();
+        let enabled = row.forced_note.is_none() && row.supported;
         let response = ui
             .add_enabled_ui(enabled, |ui| ui.checkbox(&mut on, row.title.as_str()))
             .inner;
@@ -289,6 +301,31 @@ mod tests {
         assert!(rows(&view(None), &pending)[0].on);
         let pending = HashMap::from([(PrivacyKey::MessageText, false)]);
         assert!(rows(&view(Some(ForcedBy::Environment)), &pending)[0].on);
+    }
+
+    #[test]
+    fn do_not_disturb_is_off_and_disabled_where_the_system_cannot_be_read() {
+        let mut v = view(None);
+        v.items.push(PrivacyItem {
+            key: PrivacyKey::RespectDnd,
+            on: true, // even a stale "on" from a copied file
+            forced: None,
+        });
+        let pending = HashMap::from([(PrivacyKey::RespectDnd, true)]);
+        for os in ["windows", "macos"] {
+            let r = rows_on(&v, &pending, os);
+            let dnd = r.iter().find(|r| r.key == PrivacyKey::RespectDnd).unwrap();
+            assert!(!dnd.supported && !dnd.on, "{os}");
+            assert!(
+                r.iter()
+                    .filter(|r| r.key != PrivacyKey::RespectDnd)
+                    .all(|r| r.supported)
+            );
+        }
+        let r = rows_on(&v, &HashMap::new(), "linux");
+        assert!(r[3].supported && r[3].on);
+        // The text beside the switch (Windows build) says why.
+        assert!(tr("privacy.respect_dnd.detail_other").starts_with("Not supported on this system"));
     }
 
     #[test]

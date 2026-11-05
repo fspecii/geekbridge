@@ -35,6 +35,7 @@ Documents under [reports/](reports/) are dated snapshots, not living documentati
 - [Test coverage](coverage.md): measured line/function/region coverage, targets and how to regenerate
 - [Fuzzing](fuzzing.md), [supply chain](supply-chain.md), [SBOM and reproducible builds](reproducible-builds.md), [CI dry run](ci-dry-run.md), [emulator end-to-end suites in CI](emulator-ci.md)
 - [Emulated calls](emulated-calls.md) and [updater end to end](updater-e2e.md): development test setups
+- [What works on which system](platform-support.md): feature by Linux / Windows / macOS / Android
 - [Platform status](platform-status.md): what is verified on which OS
 
 ## Maintainers: releasing

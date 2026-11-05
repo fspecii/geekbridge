@@ -208,6 +208,18 @@ pub fn safe_file_name(name: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
         && !name.contains("..")
+        // Windows drops a trailing dot, and treats `CON.zip`, `nul.txt`, `COM1` ... as devices.
+        && !name.ends_with('.')
+        && !is_windows_device_name(name)
+}
+
+/// `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, in any letter case, with or without an extension.
+fn is_windows_device_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 /// A release URL we may fetch or show: https GitHub hosts, or the one configured test origin.
@@ -335,6 +347,33 @@ mod tests {
             Some("geekbridge-windows-x86_64.zip")
         );
         assert_eq!(pick("freebsd", "x86_64"), None);
+    }
+
+    #[test]
+    fn asset_names_that_windows_would_turn_into_devices_or_other_files_are_refused() {
+        for bad in [
+            "CON",
+            "con.zip",
+            "NUL.tar.gz",
+            "Aux.txt",
+            "prn",
+            "COM1.zip",
+            "lpt9.zip",
+            "geekbridge.zip.",
+            "geekbridge.",
+        ] {
+            assert!(!safe_file_name(bad), "{bad}");
+        }
+        for good in [
+            "geekbridge-0.1.0-x86_64-pc-windows-msvc.zip",
+            "geekbridge-macos.tar.gz",
+            "console.zip",
+            "COM0.zip",
+            "COM10.zip",
+            "com.zip",
+        ] {
+            assert!(safe_file_name(good), "{good}");
+        }
     }
 
     #[test]

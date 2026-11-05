@@ -52,7 +52,25 @@ impl PrivacyKey {
     pub fn default_on(self) -> bool {
         matches!(self, Self::CallerNumber)
     }
+
+    /// Whether the choice can have any effect on the operating system `os` (`std::env::consts::OS`).
+    /// Do Not Disturb can only be read on Linux; on Windows (Focus Assist) and macOS (Focus) the
+    /// switch would be silently ineffective, so it is shown as unsupported and refused.
+    pub fn supported_on(self, os: &str) -> bool {
+        match self {
+            Self::RespectDnd => os == "linux",
+            _ => true,
+        }
+    }
+
+    /// [`Self::supported_on`] for the running system.
+    pub fn supported(self) -> bool {
+        self.supported_on(std::env::consts::OS)
+    }
 }
+
+/// What the service and the command line answer to switching on a choice this system cannot honour.
+pub const NOT_SUPPORTED: &str = "not supported on this system";
 
 /// `on`/`off` (and the usual synonyms) for the command line.
 pub fn parse_switch(word: &str) -> Option<bool> {
@@ -149,6 +167,16 @@ mod tests {
             PrivacyKey::CallerNumber.default_on(),
             "today's behaviour is kept"
         );
+    }
+
+    #[test]
+    fn only_do_not_disturb_depends_on_the_system_and_only_linux_can_read_it() {
+        for k in PrivacyKey::ALL {
+            for os in ["linux", "windows", "macos"] {
+                let want = k != PrivacyKey::RespectDnd || os == "linux";
+                assert_eq!(k.supported_on(os), want, "{} on {os}", k.name());
+            }
+        }
     }
 
     #[test]

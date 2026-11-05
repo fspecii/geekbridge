@@ -311,6 +311,21 @@ mod imp {
     }
 }
 
+/// What `update install | rollback | restart` print where GeekBridge does not install updates.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn refusal(os: &str, support: &str) -> String {
+    let system = match os {
+        "windows" => "Windows",
+        "macos" => "macOS",
+        other => other,
+    };
+    format!(
+        "GeekBridge does not install or roll back updates itself on {system}; nothing was changed. \
+         It downloads the new version and checks its SHA-256, then you install it yourself \
+         (geekbridge-ctl update download, or the Download button in Settings or Home).\n{support}"
+    )
+}
+
 #[cfg(target_os = "linux")]
 pub use imp::*;
 
@@ -318,7 +333,7 @@ pub use imp::*;
 mod imp {
     use super::*;
     fn download_only() -> Result<(), String> {
-        Err(describe_support())
+        Err(refusal(std::env::consts::OS, &describe_support()))
     }
     pub fn install_command(
         _: &[OsString],
@@ -341,3 +356,19 @@ mod imp {
 }
 #[cfg(not(target_os = "linux"))]
 pub use imp::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_refusal_names_the_system_says_nothing_changed_and_points_at_download() {
+        for (os, name) in [("windows", "Windows"), ("macos", "macOS")] {
+            let r = refusal(os, "Download only: x.");
+            assert!(r.contains(&format!("on {name}")), "{r}");
+            assert!(r.contains("nothing was changed"), "{r}");
+            assert!(r.contains("update download"), "{r}");
+            assert!(r.ends_with("Download only: x."), "{r}");
+        }
+    }
+}

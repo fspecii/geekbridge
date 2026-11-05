@@ -29,6 +29,8 @@ pub struct Privacy {
     /// Serialises writers; `chosen` is held only to copy and to publish, never across the file write, so a slow
     /// fsync cannot freeze the readers (`Daemon::status`, the notification paths).
     writer: Mutex<()>,
+    /// `std::env::consts::OS`; a field so the Windows and macOS answers are tested on Linux.
+    os: &'static str,
 }
 
 impl Privacy {
@@ -44,7 +46,14 @@ impl Privacy {
             env,
             chosen: Mutex::new(chosen),
             writer: Mutex::new(()),
+            os: std::env::consts::OS,
         }
+    }
+
+    #[cfg(test)]
+    fn on_os(mut self, os: &'static str) -> Self {
+        self.os = os;
+        self
     }
 
     fn forced(&self, key: PrivacyKey) -> Option<(bool, ForcedBy)> {
@@ -94,7 +103,10 @@ impl Privacy {
 
     pub fn item(&self, key: PrivacyKey) -> PrivacyItem {
         let chosen = self.lock().iter().find(|(k, _)| *k == key).map(|(_, v)| *v);
-        privacy::resolve(key, self.forced(key), chosen)
+        let mut item = privacy::resolve(key, self.forced(key), chosen);
+        // A choice this system cannot honour is never reported as on, whatever an old file says.
+        item.on &= key.supported_on(self.os);
+        item
     }
 
     pub fn view(&self) -> PrivacyView {
@@ -123,6 +135,9 @@ impl Privacy {
         on: bool,
         write: impl FnOnce(&str) -> Result<(), String>,
     ) -> Result<(), String> {
+        if on && !key.supported_on(self.os) {
+            return Err(format!("{}: {}", key.name(), privacy::NOT_SUPPORTED));
+        }
         let _writer = self.writer.lock().unwrap_or_else(|e| e.into_inner());
         let mut next = self.lock().clone();
         next.retain(|(k, _)| *k != key);
@@ -196,6 +211,30 @@ mod tests {
             p.on(PrivacyKey::MessageText),
             "the choice is published afterwards"
         );
+    }
+
+    #[test]
+    fn do_not_disturb_cannot_be_switched_on_where_it_cannot_be_read() {
+        let d = tempfile::tempdir().unwrap();
+        let state = d.path().join("state");
+        bridge_kde::fsutil::ensure_private_dir(&state).unwrap();
+        for os in ["windows", "macos"] {
+            // An old or copied file that says on does not make it on.
+            bridge_kde::fsutil::atomic_write_private(&state.join(FILE), b"respect_dnd=on\r\n")
+                .unwrap();
+            let p = Privacy::with_env(Some(state.clone()), env(&[])).on_os(os);
+            assert!(!p.on(PrivacyKey::RespectDnd), "{os}");
+            let e = p.set(PrivacyKey::RespectDnd, true).unwrap_err();
+            assert!(e.contains("not supported on this system"), "{e}");
+            assert!(!p.on(PrivacyKey::RespectDnd));
+            p.set(PrivacyKey::RespectDnd, false).unwrap();
+            // The other choices are unaffected.
+            p.set(PrivacyKey::MessageText, true).unwrap();
+            assert!(p.on(PrivacyKey::MessageText));
+        }
+        let p = Privacy::with_env(Some(state), env(&[])).on_os("linux");
+        p.set(PrivacyKey::RespectDnd, true).unwrap();
+        assert!(p.on(PrivacyKey::RespectDnd));
     }
 
     #[test]

@@ -757,6 +757,11 @@ fn privacy_command(
                     Some(ForcedBy::Environment) => " (forced by an environment variable)".into(),
                     Some(ForcedBy::File) => " (forced by a file in the state folder)".into(),
                 };
+                let forced = if i.key.supported() {
+                    forced
+                } else {
+                    format!(" ({})", bridge_core::privacy::NOT_SUPPORTED)
+                };
                 println!(
                     "{:<24} {}{forced}",
                     i.key.name(),

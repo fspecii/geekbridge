@@ -174,6 +174,31 @@ impl TrayInput {
         (self.headline(), body)
     }
 
+    /// The tooltip as the Windows notification icon shows it, which holds 127 UTF-16 units. The full
+    /// text is used when it fits; otherwise the least useful parts go first (the product prefix, the
+    /// call audio and "try" lines) so the status and the unread count are what survive a long
+    /// phone name. Never longer than the buffer takes.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn windows_tooltip(&self) -> String {
+        let (title, body) = self.tooltip();
+        let mut short = self.status_line();
+        if self.unread > 0 {
+            short.push('\n');
+            short.push_str(&tr_n("tray.unread", u64::from(self.unread), &[]));
+        }
+        let candidates = [
+            format!("GeekBridge \u{2013} {title}: {body}"),
+            format!("{title}: {body}"),
+            format!("{title}: {short}"),
+            short,
+        ];
+        let fits = |t: &String| t.encode_utf16().count() <= 127;
+        match candidates.iter().find(|t| fits(t)) {
+            Some(t) => t.clone(),
+            None => candidates[3].clone(),
+        }
+    }
+
     /// The StatusNotifierItem `Status`: only a ringing call asks for attention. A disconnected
     /// icon stays `Active` (not `Passive`) because many bars hide passive items, and a hidden
     /// icon could not open the app.
@@ -441,6 +466,28 @@ mod tests {
                 assert!(!mac.contains('\0'));
             }
         }
+    }
+
+    #[test]
+    fn the_windows_tooltip_keeps_the_unread_count_when_the_phone_name_is_long() {
+        let mut i = phone();
+        i.connected = vec!["A very long phone name that goes on and on and on and on".into()];
+        i.call_audio = CallAudioHint::Ready;
+        i.unread = 3;
+        let t = i.windows_tooltip();
+        assert!(t.encode_utf16().count() <= 127, "{t}");
+        assert!(t.ends_with("3 unread messages"), "{t}");
+        // A short name keeps everything.
+        i.connected = vec!["Pixel".into()];
+        let t = i.windows_tooltip();
+        assert!(t.starts_with("GeekBridge \u{2013} Pixel: "), "{t}");
+        assert!(
+            t.contains("Call audio ready") && t.ends_with("3 unread messages"),
+            "{t}"
+        );
+        // Nothing unread: nothing about it, and still within the buffer.
+        i.unread = 0;
+        assert!(!i.windows_tooltip().contains("unread"));
     }
 
     #[test]

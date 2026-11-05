@@ -3,6 +3,8 @@
 Written 2026-11-02, updated 2026-11-03. The author machine is Linux; Windows and macOS code has never run on a real Windows or Mac by
 us. This table says, per capability, how far each OS has been checked. Do not read more into a row than its level.
 
+For what each feature does on each system (not how far it was checked), see [platform-support.md](platform-support.md).
+
 Levels (a row can have several):
 
 * **type-check**: compiles and passes `clippy -D warnings` for `x86_64-pc-windows-msvc`, `aarch64-apple-darwin`,

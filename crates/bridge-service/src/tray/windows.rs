@@ -181,8 +181,7 @@ fn tray_thread(
 }
 
 fn tip(input: &TrayInput) -> [u16; 128] {
-    let (title, body) = input.tooltip();
-    super::model::tip_units(&format!("GeekBridge \u{2013} {title}: {body}"))
+    super::model::tip_units(&input.windows_tooltip())
 }
 
 /// `NIM_ADD` / `NIM_MODIFY` / `NIM_DELETE` for our one icon.
