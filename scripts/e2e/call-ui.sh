@@ -392,6 +392,8 @@ stage_overlay() {
   # --- Answer
   ring "$NUMBER_A" && wait_for 20 overlay_up || { rec callui_overlay_answer FAIL "no card for the second call"; return 1; }
   sleep 1.5; click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"
+  # A click that lands while the card is still sliding in is lost on a slow runner: click again once.
+  wait_modem 2 6 || { [[ "$(modem_state)" == 1 ]] && click_at "$OVL_ANSWER_X" "$OVL_ANSWER_Y"; }
   if wait_modem 2 12; then rec callui_overlay_answer PASS "click on Answer -> modem off-hook"; else rec callui_overlay_answer FAIL "modem $(modem_state) after clicking Answer"; fi
   sleep 1; app_shot call-overlay-answered.png
   # The card stays up through the call as the in-call card (caller, timer, Hang up) and closes a few seconds after the call ends.

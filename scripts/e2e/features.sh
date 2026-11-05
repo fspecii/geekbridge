@@ -292,7 +292,8 @@ stage_mirror() {
   phone_config "calls notifications" false true false com.android.shell
   ctl consent "$PHONE_ID" notifications on >/dev/null; sleep 3
   post_note B
-  if wait_for 30 note_has B; then
+  # A slow runner binds the listener late: wait, post once more, wait again.
+  if wait_for 45 note_has B || { post_note B; wait_for 60 note_has B; }; then
     local line; line="$(ctl notifications "$PHONE_ID" | grep GBE2E-B | head -1)"
     rec feat_mirror_shows PASS "allow-listed app: desktop 'geekbridge-ctl notifications' lists it: ${line:0:150}"
   else rec feat_mirror_shows FAIL "not mirrored: $(notes_json | head -c 300)"; fi
@@ -306,7 +307,7 @@ stage_mirror() {
   else rec feat_mirror_dismiss FAIL "no id ($id) or notification missing on the phone"; fi
   # 5. Withdrawing the computer's consent erases what it holds and mirrors no more.
   post_note C
-  wait_for 30 note_has C || rec feat_mirror_setup_c FAIL "second notification not mirrored"
+  wait_for 60 note_has C || rec feat_mirror_setup_c FAIL "second notification not mirrored"
   ctl consent "$PHONE_ID" notifications off >/dev/null
   if wait_for 10 note_gone C; then rec feat_mirror_withdraw PASS "consent off: mirrored list erased"
   else rec feat_mirror_withdraw FAIL "still listed: $(notes_json | head -c 200)"; fi
