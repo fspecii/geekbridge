@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// Only the Linux commands read these; the other platforms print a fixed message.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Default)]
 struct Flags {
     yes: bool,
@@ -19,6 +21,7 @@ struct Flags {
     prefix: Option<PathBuf>,
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn flags(args: &[OsString]) -> Result<Flags, String> {
     let mut f = Flags::default();
     let mut it = args.iter();
@@ -64,6 +67,7 @@ pub fn support_command() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ask(question: &str) -> bool {
     if !std::io::stdin().is_terminal() {
         return false;
