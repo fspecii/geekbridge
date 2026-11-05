@@ -88,6 +88,12 @@ sway_env() { env -u LD_LIBRARY_PATH XDG_RUNTIME_DIR="$XRT" WAYLAND_DISPLAY="$(ca
 hang_up_all() { $ADB emu gsm cancel "$NUMBER_A" >/dev/null 2>&1; for n in $NUMBER_B $NUMBER_C $NUMBER_D $NUMBER_E; do $ADB emu gsm cancel "$n" >/dev/null 2>&1; done; wait_modem 0 8; }
 ring() { # number -> waits until the desktop sees the call ringing
   $ADB emu gsm call "$1" >/dev/null
+  wait_for 25 call_ringing && return 0
+  # Once more after renegotiating: the link can come back without the calls capability on a slow runner.
+  $ADB emu gsm cancel "$1" >/dev/null 2>&1; grant_calls_perms
+  ctl consent "$PHONE_ID" telephony off >/dev/null 2>&1; sleep 2; ctl consent "$PHONE_ID" telephony on >/dev/null 2>&1
+  local i; for ((i = 0; i < 60; i++)); do ctl status | jget '",".join(d["links"][0]["negotiated"])' 2>/dev/null | grep -q geekbridge.calls && break; sleep 1; done
+  $ADB emu gsm call "$1" >/dev/null
   wait_for 25 call_ringing
 }
 
@@ -176,16 +182,27 @@ write_calls_prefs() {
 </map>
 XML
 }
+# A slow emulator can drop a `pm grant` right after `pm clear`; the phone then answers the computer's call request with
+# "permissionmissing" and no ring ever arrives. Grant, check, and try again.
+grant_calls_perms() {
+  local i p
+  for i in 1 2 3 4 5; do
+    for p in READ_PHONE_STATE ANSWER_PHONE_CALLS READ_CALL_LOG READ_CONTACTS POST_NOTIFICATIONS; do $ADB shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done
+    $ADB shell dumpsys package $PKG 2>/dev/null | grep -q "android.permission.READ_PHONE_STATE: granted=true" && return 0
+    sleep 3
+  done
+  return 1
+}
 stage_pair() {
   desk_id; PHONE_ID="$(cat "$RUN/phone-id" 2>/dev/null)"
   wake
-  for p in READ_PHONE_STATE ANSWER_PHONE_CALLS READ_CALL_LOG READ_CONTACTS POST_NOTIFICATIONS; do $ADB shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done
+  grant_calls_perms
   if [[ -n "$PHONE_ID" ]] && is_paired; then
     write_calls_prefs; goto_home; sleep 3
   else
     for id in $(paired_ids); do ctl unpair "$id" >/dev/null; done
     $ADB shell pm clear $PKG >/dev/null; wake
-    for p in READ_PHONE_STATE ANSWER_PHONE_CALLS READ_CALL_LOG READ_CONTACTS POST_NOTIFICATIONS; do $ADB shell pm grant $PKG android.permission.$p >/dev/null 2>&1; done
+    grant_calls_perms
     local qr; qr="$(ctl pair-qr 2>/dev/null | grep -m1 "^geekbridge://")"; echo "${qr:0:60}..." >"$RUN/qr-prefix.txt"
     [[ "$qr" == geekbridge://* ]] || { rec callui_pair FAIL "pair-qr gave: ${qr:0:120}"; return 1; }
     scan "$qr"
@@ -196,7 +213,7 @@ stage_pair() {
     ui wait "Linked ✓ with" 40 >/dev/null || { rec callui_pair FAIL "QR pairing did not finish: $(ui dump | cut -f1 | head -8 | tr '\n' '|')"; return 1; }
     PHONE_ID="$(ctl status | jget 'd["paired"][0]["device_id"]')"; echo "$PHONE_ID" >"$RUN/phone-id"
     tap "Back to home" >/dev/null 2>&1 || tap "Done" >/dev/null 2>&1
-    write_calls_prefs; goto_home
+    grant_calls_perms; write_calls_prefs; goto_home
     for _ in $(seq 1 14); do ui dump | cut -f1 | grep -q "^Step " || break; tap Skip >/dev/null 2>&1 || tap Next >/dev/null 2>&1 || tap Finish >/dev/null 2>&1; sleep 1; done
   fi
   sleep 2; desk_dial >/dev/null 2>&1
