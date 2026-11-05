@@ -161,6 +161,19 @@
             </intent-filter>
         </service>
 
+        <!-- Keypad tones for phone menus (docs/call-control.md). Android binds an in-call service only to the app the
+             user chose as the phone app; for every other app this is never started and the phone tells the computer it
+             cannot play tones, so no keypad is offered for the link path. It has no screen and reads nothing. -->
+        <service
+            android:name=".GeekBridgeInCallService"
+            android:exported="true"
+            android:permission="android.permission.BIND_INCALL_SERVICE">
+            <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI" android:value="false" />
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

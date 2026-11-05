@@ -63,6 +63,75 @@ class AndroidTelecom(context: Context) : TelecomPort {
         val t = telecom ?: throw IllegalStateException("No telecom service")
         return t.endCall()
     }
+
+    override fun canPlayTones(): Boolean = InCallBridge.active() != null
+
+    override fun playTone(tone: Char): Boolean = InCallBridge.play(tone)
+}
+
+/**
+ * The live call as the in-call service sees it, for keypad tones. `TelecomManager` has no tone call; `Call.playDtmfTone`
+ * exists only on the `Call` objects Android hands to the bound [GeekBridgeInCallService], and Android binds that only
+ * for the app the user made the phone app. Nothing is kept but the `Call` handle; tones are never logged.
+ */
+object InCallBridge {
+    private val main = Handler(Looper.getMainLooper())
+    private val lock = Any()
+    private val calls = LinkedHashSet<android.telecom.Call>()
+
+    /** Told (off the main thread is not guaranteed) when a call appears or goes, so the report can change. */
+    @Volatile var onChange: () -> Unit = {}
+
+    /** How long a tone sounds. Long enough for a phone menu to hear it, short enough to type a PIN quickly. */
+    private const val TONE_MS = 150L
+
+    fun added(c: android.telecom.Call) {
+        synchronized(lock) { calls.add(c) }
+        onChange()
+    }
+
+    fun removed(c: android.telecom.Call) {
+        synchronized(lock) { calls.remove(c) }
+        onChange()
+    }
+
+    fun clear() {
+        synchronized(lock) { calls.clear() }
+        onChange()
+    }
+
+    /** The one call tones go to: the active one, and only if it is the only one that is. */
+    @Suppress("DEPRECATION") // Call.getState: still the plain answer on every API level
+    fun active(): android.telecom.Call? = synchronized(lock) {
+        calls.filter { it.state == android.telecom.Call.STATE_ACTIVE }.singleOrNull()
+    }
+
+    fun play(tone: Char): Boolean {
+        if (!CallRules.validTone(tone)) return false
+        val c = active() ?: return false
+        return try {
+            c.playDtmfTone(tone)
+            main.postDelayed({
+                try {
+                    c.stopDtmfTone()
+                } catch (_: RuntimeException) {
+                }
+            }, TONE_MS)
+            true
+        } catch (_: RuntimeException) {
+            false
+        }
+    }
+}
+
+/** See [InCallBridge]. Has no screen; only hands the calls it is given to the bridge. */
+class GeekBridgeInCallService : android.telecom.InCallService() {
+    override fun onCallAdded(call: android.telecom.Call) = InCallBridge.added(call)
+    override fun onCallRemoved(call: android.telecom.Call) = InCallBridge.removed(call)
+    override fun onDestroy() {
+        InCallBridge.clear()
+        super.onDestroy()
+    }
 }
 
 /**
@@ -372,6 +441,7 @@ object CallControlRuntime {
             onReport = { ledger.reported(it) },
             prompts = AndroidDialPrompts(a),
         )
+        InCallBridge.onChange = { engine?.let { e -> async { e.tonesChanged() } } }
     }
 
     /** The user chose whether the phone asks before placing a call a computer requested. Main thread. */

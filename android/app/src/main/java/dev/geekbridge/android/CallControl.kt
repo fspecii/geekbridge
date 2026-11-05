@@ -41,7 +41,10 @@ enum class CallAction(val wire: String) {
     Answer("answer"),
     Reject("reject"),
     Hangup("hangup"),
-    Dial("dial");
+    Dial("dial"),
+
+    /** One keypad tone (DTMF) into the live call, for phone menus. */
+    Tone("tone");
 
     companion object {
         fun parse(s: String): CallAction? = entries.firstOrNull { it.wire == s }
@@ -58,8 +61,10 @@ data class CallRequest(
     val number: String? = null,
     /** Only for [CallAction.Dial]: the name the computer gave itself (untrusted text, cleaned before display). */
     val computer: String? = null,
+    /** Only for [CallAction.Tone]: exactly one of `0-9 * #`. Never printed or logged: it may be a PIN. */
+    val tone: Char? = null,
 ) {
-    override fun toString() = "CallRequest($seq, ${action.wire})" // never the number
+    override fun toString() = "CallRequest($seq, ${action.wire})" // never the number or the tone
 }
 
 data class CallWait(val requests: List<CallRequest>, val lastSeq: Long, val stopped: Boolean, val enabled: Boolean)
@@ -72,8 +77,9 @@ data class CallReport(
     val canAnswer: Boolean,
     val canEnd: Boolean,
     val canDial: Boolean = false,
+    val canTones: Boolean = false,
 ) {
-    override fun toString() = "CallReport($state, answer=$canAnswer, end=$canEnd, dial=$canDial)" // never the party
+    override fun toString() = "CallReport($state, answer=$canAnswer, end=$canEnd, dial=$canDial, tones=$canTones)" // never the party
 }
 
 /** Why the phone did not do a request. Fixed vocabulary shared with the computer (`LinkFailure`). */
@@ -101,6 +107,15 @@ object CallRules {
      * because a dial is only placed from a phone known to be idle; without READ_PHONE_STATE every dial would fail.
      */
     fun canDial(p: CallPermissions) = p.callPhone && p.readPhoneState
+
+    /**
+     * Keypad tones need a live in-call session to play them into (see [TelecomPort.canPlayTones]: Android gives
+     * `Call.playDtmfTone` only to the app bound as the phone's in-call service) and the call state.
+     */
+    fun canTones(p: CallPermissions, sessionAvailable: Boolean) = sessionAvailable && p.readPhoneState
+
+    /** The only keypad characters this phone plays for a computer: `0-9 * #`. No letters, no look-alike digits. */
+    fun validTone(c: Char?) = c != null && (c in '0'..'9' || c == '*' || c == '#')
 
     /** The only numbers this phone dials for a computer: digits, optional leading +. No USSD/MMI (`*`, `#`). */
     private val dialNumber = Regex("\\+?[0-9]{1,20}")
@@ -153,11 +168,11 @@ object CallRules {
         return s.takeIf { Bounds.utf8Size(it) <= MAX_FIELD_BYTES }
     }
 
-    fun report(state: CallState, number: String?, name: String?, sdk: Int, p: CallPermissions): CallReport {
+    fun report(state: CallState, number: String?, name: String?, sdk: Int, p: CallPermissions, tones: Boolean = false): CallReport {
         val party = state != CallState.Idle
         val n = if (party && p.readCallLog) cleanField(number) else null
         val nm = if (party && n != null && p.readContacts) cleanField(name) else null
-        return CallReport(state, n, nm, canAnswer(sdk, p), canEnd(sdk, p), canDial(p))
+        return CallReport(state, n, nm, canAnswer(sdk, p), canEnd(sdk, p), canDial(p), canTones(p, tones))
     }
 
     /**
@@ -171,11 +186,13 @@ object CallRules {
         p: CallPermissions,
         telecom: TelecomPort,
         number: String? = null,
+        tone: Char? = null,
     ): CallFailure? {
         val allowed = when (action) {
             CallAction.Answer -> canAnswer(sdk, p)
             CallAction.Reject, CallAction.Hangup -> canEnd(sdk, p)
             CallAction.Dial -> canDial(p)
+            CallAction.Tone -> canTones(p, telecom.canPlayTones())
         }
         if (!allowed) return CallFailure.PermissionMissing
         val fits = when (action) {
@@ -183,8 +200,11 @@ object CallRules {
             CallAction.Hangup -> state == CallState.OffHook
             // Only from a known idle phone: never a second call on top of a ringing or live one.
             CallAction.Dial -> state == CallState.Idle
+            // Only into a call that is up: not while ringing, not on an idle phone, not when the state is unknown.
+            CallAction.Tone -> state == CallState.OffHook
         }
         if (!fits) return CallFailure.NoSuchCall
+        if (action == CallAction.Tone && !validTone(tone)) return CallFailure.Failed
         if (action == CallAction.Dial && !dialable(number)) return CallFailure.Failed
         return try {
             when (action) {
@@ -197,6 +217,7 @@ object CallRules {
                     null
                 }
                 CallAction.Reject, CallAction.Hangup -> if (telecom.endCall()) null else CallFailure.Failed
+                CallAction.Tone -> if (telecom.playTone(tone!!)) null else CallFailure.Failed
             }
         } catch (e: SecurityException) {
             CallFailure.PermissionMissing
@@ -216,6 +237,16 @@ interface TelecomPort {
 
     /** Places a call to a plain number. Throws [SecurityException] without CALL_PHONE. */
     fun placeCall(number: String)
+
+    /**
+     * Whether keypad tones can be played right now: an in-call session for the live call exists. Android gives
+     * `Call.playDtmfTone` only to the app bound as the in-call service (the default phone app), so on a stock setup
+     * this is false and the computer shows no keypad for this path.
+     */
+    fun canPlayTones(): Boolean = false
+
+    /** Plays one `0-9 * #` tone into the live call; false if there is none or Android did not play it. */
+    fun playTone(tone: Char): Boolean = false
 }
 
 /**
@@ -296,7 +327,7 @@ object CallsProtocol {
         val o = base("transport_calls_report").put("state", wire(r.state))
         if (r.number != null) o.put("number", r.number)
         if (r.name != null) o.put("name", r.name)
-        return o.put("can_answer", r.canAnswer).put("can_end", r.canEnd).put("can_dial", r.canDial).toString()
+        return o.put("can_answer", r.canAnswer).put("can_end", r.canEnd).put("can_dial", r.canDial).put("can_tones", r.canTones).toString()
     }
 
     fun resultRequest(connectionId: Long, requestId: String, failure: CallFailure?): String {
@@ -327,8 +358,10 @@ object CallsProtocol {
             if (!idPattern.matches(id)) continue
             val number = e.optString("number", "").takeIf { it.isNotEmpty() }
             if (action == CallAction.Dial && !CallRules.dialable(number)) continue
+            val tone = if (action == CallAction.Tone) (e.opt("tone") as? String)?.singleOrNull() else null
+            if (action == CallAction.Tone && !CallRules.validTone(tone)) continue
             val computer = if (action == CallAction.Dial) e.optString("computer", "").takeIf { it.isNotEmpty() } else null
-            out += CallRequest(seq, conn, id, action, if (action == CallAction.Dial) number else null, computer)
+            out += CallRequest(seq, conn, id, action, if (action == CallAction.Dial) number else null, computer, tone)
         }
         return CallWait(out, o.optLong("last_seq", 0), o.optBoolean("stopped", false), o.optBoolean("enabled", false))
     }
@@ -429,6 +462,10 @@ class CallControlEngine(
         send()
     }
 
+    /** The in-call session appeared or went away: report whether keypad tones can be played now. */
+    @Synchronized
+    fun tonesChanged() = send()
+
     /** Forget everything (link stopped, feature turned off). */
     @Synchronized
     fun reset() {
@@ -451,7 +488,7 @@ class CallControlEngine(
                 dial(r)
                 continue
             }
-            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number)
+            val failure = CallRules.handle(r.action, state, sdk, permissions(), telecom, r.number, r.tone)
             core(CallsProtocol.resultRequest(r.connectionId, r.requestId, failure))
         }
     }
@@ -527,7 +564,7 @@ class CallControlEngine(
     private fun send() {
         val s = state ?: return
         if (!settings().enabled) return onReport("skipped_calls_off")
-        val report = CallRules.report(s, number, name, sdk, permissions())
+        val report = CallRules.report(s, number, name, sdk, permissions(), telecom.canPlayTones())
         if (report == lastSent) return onReport("unchanged")
         val outcome = core(CallsProtocol.reportRequest(report))
         onReport("${CallsProtocol.wire(report.state)} -> ${outcomeCode(outcome)}")
