@@ -184,12 +184,17 @@ mod tests {
                 done_tx.send(()).unwrap();
             })
         };
-        let answered = done_rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
+        let answered = done_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
         release_tx.send(()).unwrap();
         writer.join().unwrap().unwrap();
         reader.join().unwrap();
         assert!(answered, "a reader waited for the writer's file I/O");
-        assert!(p.on(PrivacyKey::MessageText), "the choice is published afterwards");
+        assert!(
+            p.on(PrivacyKey::MessageText),
+            "the choice is published afterwards"
+        );
     }
 
     #[test]

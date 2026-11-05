@@ -22,10 +22,9 @@ use bridge_callwifi::{
     wire::{self as cw, Dir, Frame, Msg, Offer, Ready, Uplink},
 };
 use bridge_core::{
-    photos_link,
     battery_link, calls_link, clipboard_wire,
     ipc::{self, Feature, LinkPhase, PairMode, Request, Response, Token},
-    notification_link,
+    notification_link, photos_link,
 };
 use bridge_kde::{self as kde, Packet, share as kshare};
 use bridge_service::gate;
@@ -170,7 +169,10 @@ struct Stats {
 
 enum Cmd {
     Send(Packet),
-    Offer { name: String, size: u64 },
+    Offer {
+        name: String,
+        size: u64,
+    },
     Unpair,
     /// The handset's call state: "ringing", "offhook" or "idle".
     Call(&'static str),
@@ -179,8 +181,10 @@ enum Cmd {
 fn call_packet(state: &str) -> Packet {
     Packet::new(
         calls_link::STATE,
-        obj(json!({"state": state, "number": "+15551230000", "name": "Alice",
-                   "canAnswer": true, "canEnd": true, "canDial": false})),
+        obj(
+            json!({"state": state, "number": "+15551230000", "name": "Alice",
+                   "canAnswer": true, "canEnd": true, "canDial": false}),
+        ),
     )
 }
 
@@ -210,8 +214,15 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
         let mut tick = tokio::time::interval(Duration::from_millis(20));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         if features {
-            let ready = Msg::Ready(Ready { ready: true, listen: true, speak: false, test: Verdict::Works });
-            let _ = link.send(&Packet::new(ready.kind(), cw::body(&ready))).await;
+            let ready = Msg::Ready(Ready {
+                ready: true,
+                listen: true,
+                speak: false,
+                test: Verdict::Works,
+            });
+            let _ = link
+                .send(&Packet::new(ready.kind(), cw::body(&ready)))
+                .await;
             let _ = link.send(&call_packet("idle")).await;
         }
         loop {
@@ -516,7 +527,9 @@ fn stall_diagnostics(pid: u32) -> String {
                 };
                 threads.push((
                     ticks,
-                    format!("  tid {tid} {name} state {state} wchan {wchan}{sys} cpu_ticks {ticks}"),
+                    format!(
+                        "  tid {tid} {name} state {state} wchan {wchan}{sys} cpu_ticks {ticks}"
+                    ),
                 ));
             }
         }
@@ -567,9 +580,13 @@ fn tree_size(dir: &Path) -> (u64, u64) {
 /// Direct children of the service: (pid, command line with NULs as spaces).
 fn children(pid: u32) -> Vec<(u32, String)> {
     let mut out = Vec::new();
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else { return out };
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return out;
+    };
     for t in tasks.flatten() {
-        let Ok(c) = std::fs::read_to_string(t.path().join("children")) else { continue };
+        let Ok(c) = std::fs::read_to_string(t.path().join("children")) else {
+            continue;
+        };
         for c in c.split_whitespace().filter_map(|c| c.parse::<u32>().ok()) {
             let cmd = std::fs::read(format!("/proc/{c}/cmdline"))
                 .map(|b| String::from_utf8_lossy(&b).replace('\0', " "))
@@ -580,7 +597,10 @@ fn children(pid: u32) -> Vec<(u32, String)> {
     out
 }
 fn count_children(pid: u32, needle: &str) -> usize {
-    children(pid).iter().filter(|(_, c)| c.contains(needle)).count()
+    children(pid)
+        .iter()
+        .filter(|(_, c)| c.contains(needle))
+        .count()
 }
 
 struct Sampler {
@@ -677,9 +697,15 @@ impl Sampler {
         let _ = write!(
             row,
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            kids.iter().filter(|(_, c)| !c.starts_with("notify-send")).count(),
-            kids.iter().filter(|(_, c)| c.starts_with("notify-send")).count(),
-            kids.iter().filter(|(_, c)| c.contains("geekbridge-calls")).count(),
+            kids.iter()
+                .filter(|(_, c)| !c.starts_with("notify-send"))
+                .count(),
+            kids.iter()
+                .filter(|(_, c)| c.starts_with("notify-send"))
+                .count(),
+            kids.iter()
+                .filter(|(_, c)| c.contains("geekbridge-calls"))
+                .count(),
             kids.iter().filter(|(_, c)| c.contains("pw-cat")).count(),
             errs,
             g(&stats.rings),
@@ -732,9 +758,16 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
         let copy = bin.join("geekbridge-service");
         std::fs::copy(&exe, &copy).unwrap();
         let stub = bin.join("geekbridge-calls");
-        std::fs::write(&stub, "#!/bin/sh\nexec -a geekbridge-calls-stub sleep 600\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\nexec -a geekbridge-calls-stub sleep 600\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         exe = copy;
         if let Ok(r) = std::env::var("GEEKBRIDGE_SOAK_AUDIO_RUN") {
             runtime = PathBuf::from(r);
@@ -743,18 +776,29 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
     let mut cmd = Command::new(&exe);
     cmd.env_clear();
     if features {
-        cmd.env("GEEKBRIDGE_CALL_OVERLAY", "on").env("DISPLAY", ":99");
+        cmd.env("GEEKBRIDGE_CALL_OVERLAY", "on")
+            .env("DISPLAY", ":99");
         // No notification daemon in the sandbox: a bus address that refuses at once keeps notify-send from
         // autolaunching a bus and waiting on it.
-        cmd.env("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}/no-bus", runtime.display()));
+        cmd.env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}/no-bus", runtime.display()),
+        );
         if std::env::var("GEEKBRIDGE_SOAK_AUDIO_RUN").is_ok() {
-            cmd.env("PULSE_SERVER", format!("unix:{}/pulse/native", runtime.display()))
-                .env("PIPEWIRE_RUNTIME_DIR", &runtime);
+            cmd.env(
+                "PULSE_SERVER",
+                format!("unix:{}/pulse/native", runtime.display()),
+            )
+            .env("PIPEWIRE_RUNTIME_DIR", &runtime);
         }
     }
     cmd.envs(preload.as_deref().map(|lib| ("LD_PRELOAD", lib)))
         .env("PATH", "/usr/bin:/bin")
-        .envs(std::env::var("FSYNC_SHIM_LOG").ok().map(|l| ("FSYNC_SHIM_LOG", l)))
+        .envs(
+            std::env::var("FSYNC_SHIM_LOG")
+                .ok()
+                .map(|l| ("FSYNC_SHIM_LOG", l)),
+        )
         .env("HOME", home)
         .env("XDG_RUNTIME_DIR", &runtime)
         .env("XDG_STATE_HOME", home.join("state"))
@@ -788,7 +832,6 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
         .expect("start geekbridge-service")
 }
 
-
 // ------------------------------------------------------------------ feature rounds
 
 async fn set_consents(ctl: &Ctl, id: &str, features: bool) -> bool {
@@ -804,7 +847,11 @@ async fn set_consents(ctl: &Ctl, id: &str, features: bool) -> bool {
     }
     for f in all {
         if !ctl
-            .ok(Request::SetConsent { device_id: id.into(), feature: f, enabled: true })
+            .ok(Request::SetConsent {
+                device_id: id.into(),
+                feature: f,
+                enabled: true,
+            })
             .await
         {
             return false;
@@ -836,7 +883,9 @@ impl Feat<'_> {
     /// Press the card's button: the target comes from the latest `Calls` view, as in the apps.
     async fn act(&self, action: ipc::CallAction) {
         let Some(c) = self.calls().await else { return };
-        let Some(row) = c.view.rows.first() else { return };
+        let Some(row) = c.view.rows.first() else {
+            return;
+        };
         let target = match action {
             ipc::CallAction::Answer => row.answer.clone(),
             ipc::CallAction::Reject => row.reject.clone(),
@@ -862,7 +911,12 @@ impl Feat<'_> {
         }
         false
     }
-    async fn wait_children(&self, needle: &str, within: Duration, cond: impl Fn(usize) -> bool) -> bool {
+    async fn wait_children(
+        &self,
+        needle: &str,
+        within: Duration,
+        cond: impl Fn(usize) -> bool,
+    ) -> bool {
         let end = Instant::now() + within;
         loop {
             if cond(count_children(self.pid, needle)) {
@@ -874,7 +928,10 @@ impl Feat<'_> {
             sleep(Duration::from_millis(100)).await;
         }
     }
-    async fn wifi(&self, action: bridge_core::call_wifi_view::CallWifiAction) -> Option<bridge_core::call_wifi_view::CallWifiView> {
+    async fn wifi(
+        &self,
+        action: bridge_core::call_wifi_view::CallWifiAction,
+    ) -> Option<bridge_core::call_wifi_view::CallWifiView> {
         match self.ctl.call(Request::CallWifi { action }).await {
             Ok(Response::CallWifi(v)) => Some(*v),
             _ => None,
@@ -893,7 +950,13 @@ async fn ring_round(
 ) {
     use bridge_core::call_wifi_view::CallWifiAction as W;
     let kind = rng.below(5);
-    let what = ["answer-pc", "decline-pc", "answer-phone", "miss", "drop-link"][kind];
+    let what = [
+        "answer-pc",
+        "decline-pc",
+        "answer-phone",
+        "miss",
+        "drop-link",
+    ][kind];
     let st = f.stats;
     st.rings.fetch_add(1, Relaxed);
     if during_transfer {
@@ -901,31 +964,53 @@ async fn ring_round(
         let _ = std::fs::write(&file, vec![0x3cu8; 24_000_000]);
         let _ = f
             .ctl
-            .call(Request::ShareSendFile { device_id: p0.id(), path: file.display().to_string() })
+            .call(Request::ShareSendFile {
+                device_id: p0.id(),
+                path: file.display().to_string(),
+            })
             .await;
     }
     f.send(Cmd::Call("ringing")).await;
-    let mut seen = f.wait_calls(Duration::from_secs(6), |c| c.view.ringing().is_some()).await;
+    let mut seen = f
+        .wait_calls(Duration::from_secs(6), |c| c.view.ringing().is_some())
+        .await;
     if !seen {
         // Evidence first (what the service says about its call sources), then one more ring: a ring that is
         // missed once and seen the second time is logged as a retry, one missed twice is a failure.
-        let why = f.calls().await.map(|c| c.sources.join(" | ")).unwrap_or_default();
-        let _ = writeln!(ev, "{:.1}\tring-missed\t{why}\t\t", f.t0.elapsed().as_secs_f64());
+        let why = f
+            .calls()
+            .await
+            .map(|c| c.sources.join(" | "))
+            .unwrap_or_default();
+        let _ = writeln!(
+            ev,
+            "{:.1}\tring-missed\t{why}\t\t",
+            f.t0.elapsed().as_secs_f64()
+        );
         st.ring_retry.fetch_add(1, Relaxed);
         f.send(Cmd::Call("idle")).await;
         sleep(Duration::from_secs(1)).await;
         f.send(Cmd::Call("ringing")).await;
-        seen = f.wait_calls(Duration::from_secs(6), |c| c.view.ringing().is_some()).await;
+        seen = f
+            .wait_calls(Duration::from_secs(6), |c| c.view.ringing().is_some())
+            .await;
     }
     if !seen {
         st.ring_not_seen.fetch_add(1, Relaxed);
-    } else if !f.wait_children("geekbridge-calls", Duration::from_secs(5), |n| n >= 1).await {
+    } else if !f
+        .wait_children("geekbridge-calls", Duration::from_secs(5), |n| n >= 1)
+        .await
+    {
         st.card_missing.fetch_add(1, Relaxed);
     }
     let mut wifi_used = false;
     match kind {
         0 | 1 if seen => {
-            let a = if kind == 0 { ipc::CallAction::Answer } else { ipc::CallAction::Reject };
+            let a = if kind == 0 {
+                ipc::CallAction::Answer
+            } else {
+                ipc::CallAction::Reject
+            };
             f.act(a).await;
             if kind == 1 {
                 st.declined.fetch_add(1, Relaxed);
@@ -948,7 +1033,13 @@ async fn ring_round(
             server.proxy.reset_all();
             sleep(Duration::from_millis(200 + rng.below(1500) as u64)).await;
             let _ = f.ctl.call(Request::Disconnect { device_id: p0.id() }).await;
-            let _ = f.ctl.ok(Request::Connect { device_id: p0.id(), endpoint: Some(server.endpoint()) }).await;
+            let _ = f
+                .ctl
+                .ok(Request::Connect {
+                    device_id: p0.id(),
+                    endpoint: Some(server.endpoint()),
+                })
+                .await;
             f.ctl
                 .wait(Duration::from_secs(25), |s| {
                     link_of(s, &p0.id()).is_some_and(|l| l.phase == LinkPhase::Connected)
@@ -960,7 +1051,9 @@ async fn ring_round(
     }
     // In a call: sometimes listen over Wi-Fi for a while.
     if matches!(kind, 0 | 2) && !skip("wifi") && rng.below(10) < 7 {
-        if f.wait_calls(Duration::from_secs(6), |c| c.view.live().is_some()).await {
+        if f.wait_calls(Duration::from_secs(6), |c| c.view.live().is_some())
+            .await
+        {
             f.send(Cmd::Call("offhook")).await; // the phone's own state after an answer from here
             let _ = f.wifi(W::Listen { device_id: p0.id() }).await;
             wifi_used = true;
@@ -1000,17 +1093,23 @@ async fn ring_round(
         }
     }
     let t = Instant::now();
-    let cleared = f.wait_calls(Duration::from_secs(15), |c| c.view.rows.is_empty()).await;
+    let cleared = f
+        .wait_calls(Duration::from_secs(15), |c| c.view.rows.is_empty())
+        .await;
     if !cleared {
         st.ring_stuck.fetch_add(1, Relaxed);
     }
-    let cards_gone = f.wait_children("geekbridge-calls", Duration::from_secs(10), |n| n == 0).await;
+    let cards_gone = f
+        .wait_children("geekbridge-calls", Duration::from_secs(10), |n| n == 0)
+        .await;
     if !cards_gone {
         st.card_orphan.fetch_add(1, Relaxed);
     }
     let mut pw_ok = true;
     if wifi_used {
-        pw_ok = f.wait_children("pw-cat", Duration::from_secs(8), |n| n == 0).await;
+        pw_ok = f
+            .wait_children("pw-cat", Duration::from_secs(8), |n| n == 0)
+            .await;
         if !pw_ok {
             st.pwcat_orphan.fetch_add(1, Relaxed);
         }
@@ -1025,7 +1124,11 @@ async fn ring_round(
         f.t0.elapsed().as_secs_f64(),
         if during_transfer { "+transfer" } else { "" },
         if wifi_used { "+wifi" } else { "" },
-        if seen && cleared && cards_gone && pw_ok { "ok" } else { "FAIL" },
+        if seen && cleared && cards_gone && pw_ok {
+            "ok"
+        } else {
+            "FAIL"
+        },
         t.elapsed().as_secs_f64()
     );
     let _ = std::fs::remove_file(f.scratch.join("call-xfer.bin"));
@@ -1035,13 +1138,32 @@ async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
     use bridge_core::privacy::PrivacyKey;
     let id = p0.id();
     let reqs = [
-        Request::PhotosRefresh { device_id: id.clone() },
+        Request::PhotosRefresh {
+            device_id: id.clone(),
+        },
         Request::Photos { device_id: None },
-        Request::PhotoThumb { device_id: id.clone(), id: "p1".into() },
+        Request::PhotoThumb {
+            device_id: id.clone(),
+            id: "p1".into(),
+        },
         Request::AgendaRefresh { device_id: None },
-        Request::AgendaView { query: String::new(), day: "2026-11-04".into(), utc_offset_minutes: 0, days: 7, people_limit: 50 },
-        Request::MessagesRefresh { device_id: id.clone(), thread_id: None },
-        Request::MessagesView { device_id: None, thread_id: Some(1), query: None, message_limit: 20 },
+        Request::AgendaView {
+            query: String::new(),
+            day: "2026-11-04".into(),
+            utc_offset_minutes: 0,
+            days: 7,
+            people_limit: 50,
+        },
+        Request::MessagesRefresh {
+            device_id: id.clone(),
+            thread_id: None,
+        },
+        Request::MessagesView {
+            device_id: None,
+            thread_id: Some(1),
+            query: None,
+            message_limit: 20,
+        },
         Request::PrivacyStatus,
     ];
     for r in reqs {
@@ -1055,38 +1177,99 @@ async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
         }
     }
     for k in PrivacyKey::ALL {
-        let _ = f.ctl.call(Request::PrivacySet { key: k, on: rng.below(2) == 0 }).await;
+        let _ = f
+            .ctl
+            .call(Request::PrivacySet {
+                key: k,
+                on: rng.below(2) == 0,
+            })
+            .await;
         f.stats.feature_req.fetch_add(1, Relaxed);
     }
 }
 
-async fn repair_p0(f: &Feat<'_>, server: &mut PhoneServer, p0: &Arc<Phone>, ev: &mut std::fs::File) {
+async fn repair_p0(
+    f: &Feat<'_>,
+    server: &mut PhoneServer,
+    p0: &Arc<Phone>,
+    ev: &mut std::fs::File,
+) {
     let t = Instant::now();
     let id = p0.id();
-    let _ = f.ctl.call(Request::Unpair { device_id: id.clone() }).await;
-    f.ctl.wait(Duration::from_secs(15), |s| !s.paired.iter().any(|d| d.device_id == id)).await;
+    let _ = f
+        .ctl
+        .call(Request::Unpair {
+            device_id: id.clone(),
+        })
+        .await;
+    f.ctl
+        .wait(Duration::from_secs(15), |s| {
+            !s.paired.iter().any(|d| d.device_id == id)
+        })
+        .await;
     *f.current.lock().await = None;
     server.proxy.reset_all();
     let mut ok = false;
     for _ in 0..3 {
-        let _ = f.ctl.call(Request::Disconnect { device_id: id.clone() }).await;
-        if f.ctl.ok(Request::Connect { device_id: id.clone(), endpoint: Some(server.endpoint()) }).await
-            && f.ctl.wait(Duration::from_secs(20), |s| link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Unpaired)).await
-            && f.ctl.ok(Request::Pair { device_id: id.clone(), mode: PairMode::Request }).await
-            && f.ctl.wait(Duration::from_secs(20), |s| !s.challenges.is_empty()).await
+        let _ = f
+            .ctl
+            .call(Request::Disconnect {
+                device_id: id.clone(),
+            })
+            .await;
+        if f.ctl
+            .ok(Request::Connect {
+                device_id: id.clone(),
+                endpoint: Some(server.endpoint()),
+            })
+            .await
+            && f.ctl
+                .wait(Duration::from_secs(20), |s| {
+                    link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Unpaired)
+                })
+                .await
+            && f.ctl
+                .ok(Request::Pair {
+                    device_id: id.clone(),
+                    mode: PairMode::Request,
+                })
+                .await
+            && f.ctl
+                .wait(Duration::from_secs(20), |s| !s.challenges.is_empty())
+                .await
         {
-            if let Some(c) = f.ctl.status().await.and_then(|s| s.challenges.first().map(|c| c.challenge_id.clone())) {
+            if let Some(c) = f
+                .ctl
+                .status()
+                .await
+                .and_then(|s| s.challenges.first().map(|c| c.challenge_id.clone()))
+            {
                 let _ = f.ctl.ok(Request::Approve { challenge_id: c }).await;
             }
-            if f.ctl.wait(Duration::from_secs(25), |s| link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Connected)).await {
+            if f.ctl
+                .wait(Duration::from_secs(25), |s| {
+                    link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Connected)
+                })
+                .await
+            {
                 ok = set_consents(f.ctl, &id, true).await;
                 break;
             }
         }
         sleep(Duration::from_secs(2)).await;
     }
-    if ok { f.stats.pairs.fetch_add(1, Relaxed); } else { f.stats.pair_fail.fetch_add(1, Relaxed); }
-    let _ = writeln!(ev, "{:.1}\trepair-p0\t\t{}\t{:.1}", f.t0.elapsed().as_secs_f64(), if ok { "ok" } else { "FAIL" }, t.elapsed().as_secs_f64());
+    if ok {
+        f.stats.pairs.fetch_add(1, Relaxed);
+    } else {
+        f.stats.pair_fail.fetch_add(1, Relaxed);
+    }
+    let _ = writeln!(
+        ev,
+        "{:.1}\trepair-p0\t\t{}\t{:.1}",
+        f.t0.elapsed().as_secs_f64(),
+        if ok { "ok" } else { "FAIL" },
+        t.elapsed().as_secs_f64()
+    );
 }
 
 async fn feature_round(
@@ -1571,7 +1754,14 @@ async fn soak_real_service() {
             }
         }
         if features {
-            let f = Feat { ctl: &ctl, stats: &stats, current: &current, pid, scratch: &scratch, t0 };
+            let f = Feat {
+                ctl: &ctl,
+                stats: &stats,
+                current: &current,
+                pid,
+                scratch: &scratch,
+                t0,
+            };
             feature_round(&f, round, &mut rng, &mut server, &p0, &mut events_log).await;
         }
         if round.is_multiple_of(10)
@@ -1614,8 +1804,16 @@ async fn soak_real_service() {
                 let comm = read_trim(&format!("{}/comm", base.display()));
                 let wchan = read_trim(&format!("{}/wchan", base.display()));
                 let stat = std::fs::read_to_string(base.join("stat")).unwrap_or_default();
-                let state = stat.rsplit(") ").next().and_then(|r| r.split_whitespace().next()).unwrap_or("?");
-                let _ = writeln!(dump, "{} {comm} state {state} wchan {wchan}", t.file_name().to_string_lossy());
+                let state = stat
+                    .rsplit(") ")
+                    .next()
+                    .and_then(|r| r.split_whitespace().next())
+                    .unwrap_or("?");
+                let _ = writeln!(
+                    dump,
+                    "{} {comm} state {state} wchan {wchan}",
+                    t.file_name().to_string_lossy()
+                );
             }
         }
         let _ = std::fs::write(out.join("threads-idle.txt"), dump);
