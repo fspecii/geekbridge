@@ -256,7 +256,7 @@ impl Phone {
     pub fn answer(self: &Arc<Self>, listener: TcpListener) -> JoinHandle<kde::TrustedLink> {
         let phone = self.clone();
         tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
+            let stream = accept_kde_peer(&listener).await;
             match phone.endpoint.accept(stream).await.unwrap() {
                 kde::Handshake::Trusted(link) => link,
                 kde::Handshake::Pending(pending) => pending
@@ -266,6 +266,27 @@ impl Phone {
             }
         })
     }
+}
+
+/// Accept the next connection that opens like a KDE-style peer (an identity packet is a JSON line). Anything else is a
+/// stray from the machine running the tests (a local port prober sending an HTTP request to a random loopback port)
+/// and is skipped, so a test never mistakes it for the service's dial.
+pub async fn accept_kde_peer(listener: &TcpListener) -> tokio::net::TcpStream {
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        if opens_like_kde_peer(&stream).await {
+            return stream;
+        }
+    }
+}
+
+/// True when the first byte sent on `stream` is the start of a JSON packet; waits briefly for the first byte.
+pub async fn opens_like_kde_peer(stream: &tokio::net::TcpStream) -> bool {
+    let mut b = [0u8; 1];
+    matches!(
+        timeout(Duration::from_secs(5), stream.peek(&mut b)).await,
+        Ok(Ok(1)) if b[0] == b'{'
+    )
 }
 
 pub async fn listener() -> TcpListener {

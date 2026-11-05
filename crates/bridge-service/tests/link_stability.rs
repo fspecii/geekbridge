@@ -47,8 +47,14 @@ async fn counting_refuser() -> (SocketAddr, Arc<AtomicUsize>) {
     let c = n.clone();
     tokio::spawn(async move {
         while let Ok((s, _)) = l.accept().await {
-            c.fetch_add(1, Ordering::SeqCst);
-            drop(s);
+            // Count only the service's dial; a stray local probe of this port is not a dial.
+            let c = c.clone();
+            tokio::spawn(async move {
+                if opens_like_kde_peer(&s).await {
+                    c.fetch_add(1, Ordering::SeqCst);
+                }
+                drop(s);
+            });
         }
     });
     (addr, n)
