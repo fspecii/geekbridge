@@ -10,7 +10,7 @@
 //! Windows (Focus Assist) and macOS (Focus) have no documented, cheap, permission-free way to read the
 //! state, so there this answers "no" and the setting says it is not supported on this system.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 /// Whether this build can tell at all.
@@ -186,6 +186,26 @@ impl Detector {
     }
 }
 
+/// Keeps `detector` fresh every `every`, but only while `enabled()` says the setting is on. The thread
+/// ends by itself once the detector is dropped.
+pub fn keep_warm(
+    detector: Weak<Detector>,
+    enabled: impl Fn() -> bool + Send + 'static,
+    every: Duration,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("gb-dnd-warm".into())
+        .spawn(move || {
+            while let Some(d) = detector.upgrade() {
+                if enabled() {
+                    d.refresh_in_background();
+                }
+                drop(d);
+                std::thread::sleep(every);
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,5 +326,38 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
+    }
+
+    #[test]
+    fn keep_warm_probes_only_while_the_option_is_on_and_ends_with_the_detector() {
+        use std::sync::atomic::AtomicU32;
+        static PROBES: AtomicU32 = AtomicU32::new(0);
+        let d = Arc::new(Detector::with_probe(|| {
+            PROBES.fetch_add(1, Ordering::SeqCst);
+            false
+        }));
+        let on = Arc::new(AtomicBool::new(false));
+        let flag = on.clone();
+        let thread = keep_warm(
+            Arc::downgrade(&d),
+            move || flag.load(Ordering::SeqCst),
+            Duration::from_millis(5),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(PROBES.load(Ordering::SeqCst), 0, "option off: no tool runs");
+        on.store(true, Ordering::SeqCst);
+        wait_until(|| PROBES.load(Ordering::SeqCst) >= 1);
+        on.store(false, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(100)); // let an in-flight refresh finish
+        let settled = PROBES.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            PROBES.load(Ordering::SeqCst),
+            settled,
+            "off again: it stops"
+        );
+        drop(d);
+        thread.join().unwrap();
     }
 }

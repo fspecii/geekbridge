@@ -1586,6 +1586,19 @@ async fn a_banner_button_never_sends_other_words_than_it_was_labelled_with() {
 }
 
 #[tokio::test]
+async fn a_banner_button_past_the_end_of_the_list_sends_nothing() {
+    let w = world(None).await;
+    let phone = texting_phone(&w).await;
+    phone.ring_all(PhoneState::Ringing);
+    until(&w.rig, "ringing", ringing).await;
+    eventually("the banner", || w.banners.count() == 1).await;
+    w.banners.press(0, RingChoice::DeclineWith(200)).await;
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!((phone.controls(), phone.texts()), (vec![], vec![]));
+    assert!(ringing(&w.calls().await), "the call still rings");
+}
+
+#[tokio::test]
 async fn saved_replies_replace_the_defaults_and_a_bad_list_is_refused() {
     let w = world(None).await;
     let phone = texting_phone(&w).await;

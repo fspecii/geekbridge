@@ -363,19 +363,13 @@ impl Daemon {
             let dnd = Arc::new(crate::dnd::Detector::default());
             let keep_warm = Arc::downgrade(&dnd);
             let warm_dir = dir.clone();
-            let _ = std::thread::Builder::new()
-                .name("gb-dnd-warm".into())
-                .spawn(move || {
-                    while let Some(d) = keep_warm.upgrade() {
-                        if crate::privacy::stored_choice(&warm_dir, PrivacyKey::RespectDnd)
-                            == Some(true)
-                        {
-                            d.refresh_in_background();
-                        }
-                        drop(d);
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                    }
-                });
+            let _ = crate::dnd::keep_warm(
+                keep_warm,
+                move || {
+                    crate::privacy::stored_choice(&warm_dir, PrivacyKey::RespectDnd) == Some(true)
+                },
+                std::time::Duration::from_secs(2),
+            );
             calls.set_quiet(Arc::new(move || {
                 crate::privacy::stored_choice(&dir, PrivacyKey::RespectDnd) == Some(true)
                     && dnd.active()

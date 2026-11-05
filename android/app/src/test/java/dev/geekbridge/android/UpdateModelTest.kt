@@ -38,6 +38,8 @@ class UpdateModelTest {
         assertFalse(UpdateModel.attemptDue(now - 60_000, now))
         assertTrue(UpdateModel.attemptDue(now - UpdateModel.RETRY_GAP_MS, now))
         assertTrue("clock moved back", UpdateModel.attemptDue(now + 60_000, now))
+        assertFalse("one millisecond early", UpdateModel.attemptDue(now - UpdateModel.RETRY_GAP_MS + 1, now))
+        assertTrue(UpdateModel.attemptDue(now - UpdateModel.RETRY_GAP_MS - 1, now))
     }
 
     @Test

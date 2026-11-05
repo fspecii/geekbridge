@@ -799,6 +799,138 @@ mod tests {
                 .contains("Can't send")
         );
     }
+
+    // ---- the token cache
+
+    fn token_of(byte: u8) -> Token {
+        Token::from_bytes([byte; 32])
+    }
+
+    /// A config whose state folder holds `file` (or nothing), with `cached` already in memory.
+    fn config(dir: &tempfile::TempDir, file: Option<&Token>, cached: Option<Token>) -> Config {
+        let state = dir.path().join("state");
+        bridge_kde::fsutil::ensure_private_dir(&state).unwrap();
+        if let Some(t) = file {
+            bridge_kde::fsutil::atomic_write_private(
+                &ipc::token_path(&state),
+                t.to_file_contents().as_bytes(),
+            )
+            .unwrap();
+        }
+        Config {
+            state_dir: Some(state),
+            port: 1,
+            cached: Arc::new(Mutex::new(cached)),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cached_token_is_used_without_reading_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(&dir, None, Some(token_of(1))); // no file at all
+        let seen = std::cell::RefCell::new(Vec::new());
+        let out = c.with_token(|t| {
+            seen.borrow_mut().push(t.clone());
+            Ok(7)
+        });
+        assert_eq!(out, Ok(7));
+        assert!(*seen.borrow() == [token_of(1)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_first_call_reads_the_file_once_and_keeps_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(&dir, Some(&token_of(2)), None);
+        let calls = std::cell::Cell::new(0);
+        assert_eq!(
+            c.with_token(|_| {
+                calls.set(calls.get() + 1);
+                Ok(())
+            }),
+            Ok(())
+        );
+        assert_eq!(calls.get(), 1);
+        // Gone from disk, still usable from memory.
+        std::fs::remove_file(ipc::token_path(&dir.path().join("state"))).unwrap();
+        assert_eq!(c.with_token(|_| Ok(())), Ok(()));
+        assert!(c.cached.lock().unwrap().as_ref() == Some(&token_of(2)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unauthorized_or_protocol_answer_rereads_the_file_once_and_retries_once() {
+        for stale_error in [
+            || ipc::IpcError::Unauthorized,
+            || ipc::IpcError::Protocol("bad hello".into()),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            // The service regenerated its token: the file has the new one, memory the old.
+            let c = config(&dir, Some(&token_of(9)), Some(token_of(1)));
+            let tried = std::cell::RefCell::new(Vec::new());
+            let out = c.with_token(|t| {
+                tried.borrow_mut().push(t.clone());
+                if *t == token_of(1) {
+                    Err(stale_error())
+                } else {
+                    Ok("fine")
+                }
+            });
+            assert_eq!(out, Ok("fine"));
+            assert!(*tried.borrow() == [token_of(1), token_of(9)]);
+            assert!(c.cached.lock().unwrap().as_ref() == Some(&token_of(9)));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_token_that_stays_refused_is_tried_twice_at_most() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(&dir, Some(&token_of(9)), Some(token_of(1)));
+        let calls = std::cell::Cell::new(0);
+        let out: Result<(), String> = c.with_token(|_| {
+            calls.set(calls.get() + 1);
+            Err(ipc::IpcError::Unauthorized)
+        });
+        assert!(out.is_err());
+        assert_eq!(
+            calls.get(),
+            2,
+            "the cached token, then the re-read one: no loop"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn other_errors_neither_reread_nor_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = config(&dir, Some(&token_of(9)), Some(token_of(1)));
+        let calls = std::cell::Cell::new(0);
+        let out: Result<(), String> = c.with_token(|_| {
+            calls.set(calls.get() + 1);
+            Err(ipc::IpcError::Io(std::io::Error::other("down")))
+        });
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 1);
+        assert!(c.cached.lock().unwrap().as_ref() == Some(&token_of(1)));
+    }
+
+    #[test]
+    fn without_a_state_folder_nothing_is_tried() {
+        let c = Config {
+            state_dir: None,
+            port: 1,
+            cached: Arc::default(),
+        };
+        let calls = std::cell::Cell::new(0);
+        let out: Result<(), String> = c.with_token(|_| {
+            calls.set(calls.get() + 1);
+            Ok(())
+        });
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 0);
+    }
 }
 
 #[cfg(test)]
