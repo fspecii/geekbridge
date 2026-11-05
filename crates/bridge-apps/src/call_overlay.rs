@@ -297,7 +297,10 @@ impl Card {
                     self.dismissed = false;
                     self.pending = None;
                     self.outcome = None;
-                    self.picking = false;
+                    // A card that has not seen a call yet keeps what it was started with.
+                    if self.key.is_some() {
+                        self.picking = false;
+                    }
                 }
                 self.key = Some(row.key.clone());
                 self.parts = row.parts.clone();
@@ -542,6 +545,7 @@ pub enum LiveChoice {
 }
 
 const GREEN: Color32 = Color32::from_rgb(0x1B, 0x7F, 0x46); // white text on it is 5.1:1
+const BACK: Color32 = Color32::from_rgb(0x55, 0x5B, 0x66); // white text on it is 7.2:1
 const BUTTON_W: f32 = 104.0;
 const BUTTON_H: f32 = 30.0;
 
@@ -673,6 +677,10 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                         vec2(text_w, ui.available_height()),
                         Layout::top_down(Align::Min),
                         |ui| {
+                            if *can_reply {
+                                // Room for the descenders of the line that carries the link.
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                            }
                             ui.horizontal(|ui| {
                                 nothing::dot_text(
                                     ui,
@@ -700,30 +708,42 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                                     );
                                 }
                                 None => {
-                                    ui.add(
-                                        egui::Label::new(theme::caption(pal, subtitle)).truncate(),
-                                    );
-                                }
-                            }
-                            if *can_reply {
-                                let name = tr_args("overlay.reply.name", &[("caller", title)]);
-                                let r = ui.add(
-                                    egui::Button::new(
-                                        egui::RichText::new(tr("overlay.reply"))
-                                            .size(12.5)
-                                            .color(pal.accent),
-                                    )
-                                    .frame(false),
-                                );
-                                r.widget_info(|| {
-                                    egui::WidgetInfo::labeled(
-                                        egui::WidgetType::Button,
-                                        true,
-                                        name.clone(),
-                                    )
-                                });
-                                if r.clicked() {
-                                    action.reply = Some(ReplyChoice::Open);
+                                    // The number and, at the right of the same line, the way to
+                                    // decline with a text (the card has no room for another line).
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if *can_reply {
+                                            let name =
+                                                tr_args("overlay.reply.name", &[("caller", title)]);
+                                            ui.spacing_mut().button_padding = vec2(0.0, 0.0);
+                                            let r = ui.add(
+                                                egui::Button::new(
+                                                    egui::RichText::new(tr("overlay.reply"))
+                                                        .size(11.5)
+                                                        .color(pal.accent),
+                                                )
+                                                .frame(false),
+                                            );
+                                            r.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::WidgetType::Button,
+                                                    true,
+                                                    name.clone(),
+                                                )
+                                            });
+                                            if r.clicked() {
+                                                action.reply = Some(ReplyChoice::Open);
+                                            }
+                                        }
+                                        ui.with_layout(
+                                            Layout::left_to_right(Align::Center),
+                                            |ui| {
+                                                ui.add(
+                                                    egui::Label::new(theme::caption(pal, subtitle))
+                                                        .truncate(),
+                                                );
+                                            },
+                                        );
+                                    });
                                 }
                             }
                         },
@@ -799,7 +819,7 @@ pub fn show(ctx: &egui::Context, pal: &theme::Palette, body: &Body) -> Action {
                             pal,
                             tr("overlay.reply.back"),
                             tr("overlay.reply.back.name"),
-                            pal.accent_fill,
+                            BACK,
                         )
                         .clicked()
                         {
