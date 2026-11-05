@@ -521,8 +521,29 @@ fn start_reports_identity_listener_and_only_ping() {
     let mut incoming = caps.to_vec();
     incoming.push("geekbridge.goodbye");
     incoming.push("geekbridge.share.result");
-    assert_eq!(hs.info().peer.incoming_capabilities, incoming);
-    assert_eq!(hs.info().peer.outgoing_capabilities, caps);
+    // The experimental Wi-Fi call audio build (`--features callwifi`, the debug APK) adds its own packet kinds;
+    // the base set must come first and stay exactly as listed, and nothing but callaudio kinds may follow.
+    let (inc, out) = (
+        hs.info().peer.incoming_capabilities.clone(),
+        hs.info().peer.outgoing_capabilities.clone(),
+    );
+    if cfg!(feature = "callwifi") {
+        let (inc_base, inc_extra) = inc.split_at(incoming.len());
+        let (out_base, out_extra) = out.split_at(caps.len());
+        assert_eq!(inc_base, incoming);
+        assert_eq!(out_base, caps);
+        assert!(
+            !inc_extra.is_empty()
+                && inc_extra
+                    .iter()
+                    .chain(out_extra)
+                    .all(|k| k.starts_with("geekbridge.callaudio.")),
+            "extra capabilities: {inc_extra:?} / {out_extra:?}"
+        );
+    } else {
+        assert_eq!(inc, incoming);
+        assert_eq!(out, caps);
+    }
 }
 
 #[cfg(unix)]

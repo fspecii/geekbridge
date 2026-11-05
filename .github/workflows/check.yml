@@ -68,6 +68,11 @@ jobs:
         env:
           GEEKBRIDGE_REQUIRE_DBUS: '1'
         run: cargo test --workspace --locked --no-fail-fast
+      - name: Phone core with the experimental Wi-Fi call audio feature (the debug APK build; clippy and tests)
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy -p bridge-android --features callwifi --all-targets --locked -- -D warnings
+          cargo test -p bridge-android --features callwifi --locked
       - name: Tests on Windows and macOS (Unix-only, D-Bus and Linux-tool tests are cfg-gated or skip with a reason)
         if: runner.os != 'Linux'
         timeout-minutes: 20
