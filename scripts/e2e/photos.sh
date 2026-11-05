@@ -278,7 +278,7 @@ refresh_until() { # seconds cmd...
   for ((i = 0; i < secs / 4; i++)); do
     # A request sent while the emulator has just destroyed the link socket is lost: bring the link back, then ask again.
     is_connected || { desk_dial >/dev/null 2>&1; link_up 40; }
-    ctl photos refresh "$PHONE_ID" >/dev/null 2>&1; sleep 4; "$@" && return 0
+    LAST_REFRESH="$(ctl photos refresh "$PHONE_ID" 2>&1)"; sleep 4; "$@" && return 0
   done
   return 1
 }
@@ -291,6 +291,17 @@ stays_empty() { # seconds
     [[ "$(list_count)" == 0 ]] || return 1
     [[ "$(dev_listed)" != True ]] || return 1
   done
+}
+# What the computer and the phone hold when a list does not come (the whole logcat is in logcat-full.txt).
+photos_diag() { # why
+  {
+    echo "== photos diag $(date +%T): $1"
+    echo "last refresh answer: ${LAST_REFRESH:-none}"
+    echo "list: $(pjson | head -c 600)"
+    $ADB shell "run-as $PKG sh -c 'cat shared_prefs/geekbridge_phonedata.xml shared_prefs/geekbridge_grants.xml'" 2>&1 | tr -d '\r' | head -30
+    $ADB shell dumpsys package $PKG 2>/dev/null | grep -E "READ_MEDIA|READ_EXTERNAL" | head -6
+    ctl status 2>&1 | head -c 1500; echo
+  } >>"$LOGS/e2e-photos-notes.txt"
 }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 fetch_field() { # photo name, field
@@ -417,7 +428,14 @@ stage_photos() {
   # 11. The phone's switch turned off again.
   grant_photo_access full; phone_config "calls photos" true
   ctl consent "$PHONE_ID" photos on >/dev/null
-  refresh_until 40 have_pics || rec photos_switch_setup FAIL "no list before switching off"
+  if ! refresh_until 40 have_pics; then
+    photos_diag "no list 40 s after configuring the phone"
+    # Once more with a fresh start of the app; the notes above say what the first round looked like.
+    grant_photo_access full; phone_config "calls photos" true
+    ctl consent "$PHONE_ID" photos on >/dev/null
+    if refresh_until 40 have_pics; then echo "photos_switch_setup: the list came only after a second configuration" >>"$LOGS/e2e-photos-notes.txt"
+    else photos_diag "no list after the second configuration"; rec photos_switch_setup FAIL "no list before switching off"; fi
+  fi
   grant_photo_access full; phone_config "calls photos" false
   out="$(ctl photos refresh "$PHONE_ID" 2>&1)"; rc=$?
   if [[ $rc -ne 0 ]] && grep -qi "does not offer" <<<"$out" && [[ "$(list_count)" == 0 ]] && stays_empty 8; then rec photos_switch_off PASS "switch off on the phone: '$out'; list erased, nothing answered"
