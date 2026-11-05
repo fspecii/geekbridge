@@ -135,7 +135,7 @@ stage_env() {
   start_desktop_service || { rec share_env FAIL "desktop service did not start: $(tail -3 "$SERVICE_LOG" | tr '\n' '|')"; return 1; }
   start_emulator || { rec share_env FAIL "emulator did not boot"; return 1; }
   $ADB shell svc power stayon true; wake
-  $ADB install -r "$APK" 2>&1 | tail -1 | grep -q Success || { rec share_env FAIL "adb install failed"; return 1; }
+  adb_install_retry "$APK" || { rec share_env FAIL "adb install failed: $GB_INSTALL_ERR"; return 1; }
   $ADB install -r "$SENDER_APK" 2>&1 | grep -q Success || { rec share_env FAIL "installing the test sender app failed"; return 1; }
   desk_id
   rec share_env PASS "own AVD $AVD on $SERIAL, own service on control port $CTRL_PORT; desktop $DESK_ID; APK $(sha256sum "$APK" | cut -c1-12); sender app installed"

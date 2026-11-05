@@ -154,7 +154,7 @@ stage_env() {
   start_desktop_service || { rec callui_env FAIL "desktop service did not start: $(tail -3 "$SERVICE_LOG" | tr '\n' '|')"; return 1; }
   start_emulator || { rec callui_env FAIL "emulator did not boot"; return 1; }
   $ADB shell svc power stayon true; wake
-  $ADB install -r "$APK" 2>&1 | tail -1 | grep -q Success || { rec callui_env FAIL "adb install failed"; return 1; }
+  adb_install_retry "$APK" || { rec callui_env FAIL "adb install failed: $GB_INSTALL_ERR"; return 1; }
   desk_id
   local owner; owner="$(env XDG_RUNTIME_DIR="$XRT" busctl --user --no-pager status org.freedesktop.Notifications 2>/dev/null | grep -m1 '^Comm=')"
   rec callui_env PASS "private bus $DBUS_SESSION_BUS_ADDRESS; notification daemon: ${owner:-mako}; desktop $DESK_ID; emulator $SERIAL"

@@ -150,7 +150,7 @@ stage_env() {
   if gb_avd_ensure "$AVD"; then _gb_avd_clones=(); _gb_avd_hooks=(); fi
   start_emulator || { rec env FAIL "emulator did not boot"; return 1; }
   $ADB shell svc power stayon true; wake
-  $ADB install -r -t "$APK" 2>&1 | tail -1 | grep -q Success || { rec env FAIL "adb install failed"; return 1; }
+  adb_install_retry "$APK" -t || { rec env FAIL "adb install failed: $GB_INSTALL_ERR"; return 1; }
   printf '' | DISPLAY="$XDISP" xclip -selection clipboard -i
   desk_id
   rec env PASS "debug APK $(sha256sum "$APK" | cut -c1-12) on $SERIAL; service $DESK_ID; private PipeWire sinks: $(pw_env pactl list short sinks | awk '{print $2}' | tr '\n' ' ')"

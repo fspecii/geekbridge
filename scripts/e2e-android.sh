@@ -93,6 +93,23 @@ wait_for() { # seconds cmd...  -> 0 when cmd succeeds
   for ((i = 0; i < n; i++)); do "$@" && return 0; sleep 1; done; return 1
 }
 
+# Right after boot_completed the emulator's adb transport can still flap ("adb: device offline", seen on a loaded
+# runner in update-install and call-ui): wait for a steady transport and package manager, then install with a bounded
+# retry of transient transport errors. A real refusal (INSTALL_FAILED_*) is reported at once. Extra args go to adb install.
+adb_ready() { [[ "$($ADB get-state 2>/dev/null)" == device ]] && $ADB shell pm path android 2>/dev/null | grep -q '^package:'; }
+GB_INSTALL_ERR=""
+adb_install_retry() { # apk [adb install flags...]; 0 on Success, else GB_INSTALL_ERR holds the adb text
+  local apk="$1" ins="" try; shift
+  wait_for 120 adb_ready || { $ADB reconnect offline >/dev/null 2>&1; wait_for 60 adb_ready; }
+  for try in 1 2 3; do
+    ins="$($ADB install -r "$@" "$apk" 2>&1)"
+    grep -q Success <<<"$ins" && return 0
+    grep -q 'INSTALL_FAILED\|INSTALL_PARSE' <<<"$ins" && break
+    $ADB reconnect offline >/dev/null 2>&1; wait_for 60 adb_ready
+  done
+  GB_INSTALL_ERR="$(tr '\n\t' '  ' <<<"$ins" | cut -c1-300)"; return 1
+}
+
 # ---------------------------------------------------------------- env
 start_xvfb() {
   [[ -S /tmp/.X11-unix/X${XDISP#:} ]] && return 0
@@ -154,7 +171,7 @@ stage_env() {
   start_service || { rec env FAIL "desktop service did not start"; return 1; }
   start_emulator || { rec env FAIL "emulator did not boot"; return 1; }
   $ADB shell svc power stayon true; wake
-  $ADB install -r "$APK" 2>&1 | tail -1 | grep -q Success || { rec env FAIL "adb install failed"; return 1; }
+  adb_install_retry "$APK" || { rec env FAIL "adb install failed: $GB_INSTALL_ERR"; return 1; }
   # Dedicated desktop clipboard starts empty.
   printf '' | DISPLAY="$XDISP" xclip -selection clipboard -i
   desk_id
