@@ -651,7 +651,12 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = service(d.path());
         let first = s.start_test().unwrap();
-        assert_eq!(first.test.phase, TestPhase::Tone);
+        // The stand-in host finishes at once, so on a fast runner the worker may
+        // already be Done by the time the snapshot is read.
+        assert!(matches!(
+            first.test.phase,
+            TestPhase::Tone | TestPhase::Done
+        ));
         for _ in 0..100 {
             if s.setup().test.phase == TestPhase::Done {
                 break;
