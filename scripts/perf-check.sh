@@ -140,6 +140,20 @@ while ((waited < WINDOW)); do
     if ((s > rss_max)); then rss_max=$s; fi
 done
 c1=$(ctxt "$SVC"); t1=$(ticks "$SVC")
+# Where the resident set sits (information only): per mapping kind, Rss/Pss/Anonymous in kB, largest first, plus what
+# differs between machines (kernel, libc, page-fault read-around, huge pages), so a CI figure can be compared with a local one.
+rss_breakdown() {
+    echo "== geekbridge-service resident set by mapping (kB) =="
+    echo "kernel $(uname -r), $(getconf GNU_LIBC_VERSION 2>/dev/null || echo libc?), fault_around_bytes $(cat /sys/kernel/debug/fault_around_bytes 2>/dev/null || echo n/a), THP $(sed 's/.*\[\(.*\)\].*/\1/' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
+    awk '
+        /^[0-9a-f]+-[0-9a-f]+ / { name = ($6 == "" ? "[anon]" : $6); sub(".*/", "", name); key = $2 " " name; cur = key }
+        /^Rss:/ { r[cur] += $2 } /^Pss:/ { p[cur] += $2 } /^Anonymous:/ { a[cur] += $2 }
+        /^FilePmdMapped:/ { f[cur] += $2 }
+        END { for (k in r) if (r[k] > 0) printf "%7d rss %7d pss %7d anon %7d pmd  %s\n", r[k], p[k], a[k], f[k], k }' \
+        "/proc/$SVC/smaps" 2>/dev/null | sort -rn | head -14
+    grep -E '^(Rss|Pss|Pss_Anon|Pss_File|Anonymous|Private_Clean|Shared_Clean):' "/proc/$SVC/smaps_rollup" 2>/dev/null | tr -s ' ' | paste -sd' '
+    awk '/^(Name|Threads|VmRSS|RssAnon|RssFile|VmStk):/ {printf "%s ", $0} END {print ""}' "/proc/$SVC/status" | tr -s ' \t' ' '
+}
 threads=$(status "$SVC" Threads); fds=$(find "/proc/$SVC/fd" -mindepth 1 | wc -l)
 wakeups=$(((c1 - c0 + WINDOW - 1) / WINDOW))
 
@@ -153,6 +167,7 @@ row "wakeups" "$wakeups" "$BUDGET_WAKEUPS_PER_S" "/s"
 row "cpu ticks in window" "$((t1 - t0))" "$BUDGET_CPU_TICKS" "x10ms"
 row "geekbridge-service size" "$(stat -c %s "$BIN_DIR/geekbridge-service")" "$BUDGET_SERVICE_BYTES" B
 [[ -f "$BIN_DIR/geekbridge-ctl" ]] && row "geekbridge-ctl size" "$(stat -c %s "$BIN_DIR/geekbridge-ctl")" "$BUDGET_CTL_BYTES" B
+rss_breakdown
 
 if ((UI)); then
     if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" || ! -x "$BIN_DIR/geekbridge-messages" ]]; then
