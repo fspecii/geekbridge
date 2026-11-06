@@ -9,7 +9,7 @@ description = "EXPERIMENTAL call audio over the GeekBridge link (geekbridge.call
 
 [dependencies]
 serde_json.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 # Pure-Rust Opus (RFC 6716), BSD-3-Clause, no C, no build script, no dependencies. Evaluated in
 # docs/reports/call-audio-wifi-prototype.md (size, speed, licence).
 opus-pure = "=0.2.2"
