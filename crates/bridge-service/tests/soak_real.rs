@@ -167,6 +167,24 @@ struct Stats {
     poll_max_ms: AtomicU64,
 }
 
+/// The stand-in phone's message history: 100 conversations of 200 messages (served 20 a page).
+const HIST_THREADS: u64 = 100;
+const HIST_DEPTH: u64 = 200;
+const HIST_FIRST: i64 = 100;
+static HIST_GEN: AtomicU64 = AtomicU64::new(0);
+
+fn hist_date(epoch: u64, thread: u64, k: u64) -> u64 {
+    1_700_000_000_000 + epoch * 50_000_000 + thread * 1_000 + (HIST_DEPTH - k) * 60_000
+}
+
+fn hist_msg(epoch: u64, thread: u64, k: u64) -> Value {
+    json!({
+        "addresses": [{"address": format!("+1555{:07}", thread)}], "body": format!("history {epoch}/{thread}/{k} hello there"),
+        "date": hist_date(epoch, thread, k), "type": 1 + (k % 2), "read": 1,
+        "thread_id": HIST_FIRST as u64 + thread, "_id": epoch * 1_000_000 + thread * 1_000 + k, "event": 1,
+    })
+}
+
 enum Cmd {
     Send(Packet),
     Offer {
@@ -206,6 +224,8 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
     let task = tokio::spawn(async move {
         let ctx = link.payload_context();
         let features = std::env::var("GEEKBRIDGE_SOAK_FEATURES").is_ok_and(|v| v == "1");
+        // A new history each link, so reconnects bring new messages instead of the ones already held.
+        let epoch = HIST_GEN.fetch_add(1, Relaxed);
         let mut call = "idle";
         // (session, next seq) of a live Wi-Fi listen session.
         let mut live: Option<(u64, u32)> = None;
@@ -240,6 +260,7 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
                         stats.packets_recv.fetch_add(1, Relaxed);
                         if features && p.kind == calls_link::REQUEST {
                             if let Ok((id, action)) = calls_link::parse_request(&p.body) {
+                                eprintln!("pump: {action:?} while {call}");
                                 use calls_link::{LinkAction as A, LinkFailure};
                                 let next = match (action, call) {
                                     (A::Answer, "ringing") => Ok(Some("offhook")),
@@ -286,6 +307,24 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
                                     live = None;
                                 }
                                 _ => {}
+                            }
+                        }
+                        if features && p.kind == kde::sms::REQUEST_CONVERSATIONS {
+                            // The thread list: the newest message of each of 100 conversations.
+                            let msgs: Vec<Value> = (0..HIST_THREADS).map(|t| hist_msg(epoch, t, 0)).collect();
+                            let _ = link.send(&Packet::new(kde::sms::MESSAGES, obj(json!({"version": 2, "messages": msgs})))).await;
+                        } else if features && p.kind == kde::sms::REQUEST_CONVERSATION {
+                            // One history page: up to 20 messages at or before the given date, newest first.
+                            let tid = p.body.get("threadID").and_then(Value::as_i64).unwrap_or(0);
+                            let start = p.body.get("rangeStartTimestamp").and_then(Value::as_u64);
+                            let t = (tid - HIST_FIRST) as u64;
+                            let msgs: Vec<Value> = (0..HIST_DEPTH)
+                                .filter(|k| start.is_none_or(|s| hist_date(epoch, t, *k) <= s))
+                                .take(20)
+                                .map(|k| hist_msg(epoch, t, k))
+                                .collect();
+                            if tid >= HIST_FIRST && t < HIST_THREADS {
+                                let _ = link.send(&Packet::new(kde::sms::MESSAGES, obj(json!({"version": 2, "messages": msgs})))).await;
                             }
                         }
                         if p.kind == battery_link::REQUEST {
@@ -370,17 +409,16 @@ fn burst(rng: &mut Rng, n: u64) -> Vec<Packet> {
             "date": 1700000000000u64 + n, "type": 1, "read": 0, "thread_id": 1 + (n % 5), "_id": n, "event": 1,
         }]})),
     ));
-    out.push(Packet::new(
-        calls_link::STATE,
-        obj(
-            json!({"state": "ringing", "number": "+15551230000", "name": "Alice",
-                   "canAnswer": true, "canEnd": true, "canDial": false}),
-        ),
-    ));
-    out.push(Packet::new(
-        calls_link::STATE,
-        obj(json!({"state": "idle", "canAnswer": false, "canEnd": false, "canDial": false})),
-    ));
+    // With ring rounds running the call storms come from `ring_round` instead (see there).
+    let ring_rounds =
+        std::env::var("GEEKBRIDGE_SOAK_FEATURES").is_ok_and(|v| v == "1") && !skip("rings");
+    if !ring_rounds {
+        out.push(call_packet("ringing"));
+        out.push(Packet::new(
+            calls_link::STATE,
+            obj(json!({"state": "idle", "canAnswer": false, "canEnd": false, "canDial": false})),
+        ));
+    }
     let text = format!("clip {n} {}", "x".repeat(rng.below(4000)));
     out.push(Packet::new(
         clipboard_wire::CLIPBOARD,
@@ -729,7 +767,27 @@ impl Sampler {
     }
 }
 
+static PORTS_TAKEN: std::sync::Mutex<Vec<u16>> = std::sync::Mutex::new(Vec::new());
+
 fn free_port() -> u16 {
+    // `GEEKBRIDGE_SOAK_PORT_BASE=27000`: pick from base..base+999 instead of the kernel's ephemeral range.
+    if let Some(base) = std::env::var("GEEKBRIDGE_SOAK_PORT_BASE")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+    {
+        for p in base..base + 1000 {
+            if let Ok(l) = std::net::TcpListener::bind(("127.0.0.1", p))
+                && std::net::UdpSocket::bind(("127.0.0.1", p)).is_ok()
+            {
+                drop(l);
+                if !PORTS_TAKEN.lock().unwrap().contains(&p) {
+                    PORTS_TAKEN.lock().unwrap().push(p);
+                    return p;
+                }
+            }
+        }
+        panic!("no free port in {base}..+1000");
+    }
     loop {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let p = l.local_addr().unwrap().port();
@@ -828,7 +886,10 @@ fn spawn_service(out: &Path, state: &Path, home: &Path, ports: [u16; 4]) -> Chil
         .env("XDG_CACHE_HOME", home.join("cache"))
         .env("TMPDIR", home.join("tmp"))
         .env("GEEKBRIDGE_CLIPBOARD", "memory")
-        .env("GEEKBRIDGE_NO_UPDATE_CHECK", "1")
+        .envs(match std::env::var("GEEKBRIDGE_SOAK_UPDATE_URL") {
+            Ok(u) => vec![("GEEKBRIDGE_UPDATE_BASE_URL", u)],
+            Err(_) => vec![("GEEKBRIDGE_NO_UPDATE_CHECK", "1".to_string())],
+        })
         .env("GEEKBRIDGE_NO_TRAY", "1")
         .arg("--state-dir")
         .arg(state)
@@ -913,7 +974,17 @@ impl Feat<'_> {
             ipc::CallAction::Hangup => row.hangup.clone(),
         };
         if let Some(target) = target {
-            let _ = self.ctl.call(Request::CallAction { target, action }).await;
+            let r = self.ctl.call(Request::CallAction { target, action }).await;
+            eprintln!(
+                "act {action:?}: {}",
+                if matches!(r, Ok(Response::Ack)) {
+                    "ack".to_string()
+                } else {
+                    format!("{r:?}")
+                }
+            );
+        } else {
+            eprintln!("act {action:?}: no target on the row");
         }
     }
     /// Whether the stub `makoctl` currently says Do Not Disturb.
@@ -998,6 +1069,15 @@ async fn ring_round(
             })
             .await;
     }
+    // A call event storm first, ordered with the ring itself: the phone flips ringing / idle quickly, then settles.
+    // (Raw call packets from the burst generator are left out while rings run: they cannot be told apart from the
+    // ring under test and made the driver act on a ring that was not its own.)
+    for _ in 0..8 {
+        f.send(Cmd::Send(call_packet("ringing"))).await;
+        f.send(Cmd::Send(call_packet("idle"))).await;
+    }
+    f.send(Cmd::Call("idle")).await;
+    sleep(Duration::from_millis(300)).await;
     f.send(Cmd::Call("ringing")).await;
     let mut seen = f
         .wait_calls(Duration::from_secs(6), |c| c.view.ringing().is_some())
@@ -1151,6 +1231,28 @@ async fn ring_round(
         .await;
     if !cleared {
         st.ring_stuck.fetch_add(1, Relaxed);
+        // What the call list still shows: rows, sources, and the trace tail of the service.
+        if let Ok(Response::CallTrace { events }) =
+            f.ctl.call(Request::CallTrace { clear: false }).await
+        {
+            let tail = events.len().saturating_sub(60);
+            let text: String = events[tail..]
+                .iter()
+                .map(|e| format!("{}\t{}\t{}\n", e.ms, e.kind, e.detail))
+                .collect();
+            let _ = std::fs::write(
+                f.scratch
+                    .join(format!("stuck-{:.0}.trace", f.t0.elapsed().as_secs_f64())),
+                text,
+            );
+        }
+        if let Some(c) = f.calls().await {
+            let _ = std::fs::write(
+                f.scratch
+                    .join(format!("stuck-{:.0}.json", f.t0.elapsed().as_secs_f64())),
+                format!("{c:#?}"),
+            );
+        }
     }
     let cards_gone = f
         .wait_children("geekbridge-calls", Duration::from_secs(10), |n| n == 0)
@@ -1219,6 +1321,38 @@ async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
         },
         Request::PrivacyStatus,
     ];
+    // Message history burst: the thread list, then every conversation asked for older pages (100 x 20 and more).
+    let _ = f
+        .ctl
+        .call(Request::MessagesRefresh {
+            device_id: id.clone(),
+            thread_id: None,
+        })
+        .await;
+    sleep(Duration::from_millis(300)).await;
+    for t in 0..HIST_THREADS as i64 {
+        let _ = f
+            .ctl
+            .call(Request::MessagesRefresh {
+                device_id: id.clone(),
+                thread_id: Some(HIST_FIRST + t),
+            })
+            .await;
+    }
+    f.stats.feature_req.fetch_add(HIST_THREADS, Relaxed);
+    // Update checks against the local mock release server.
+    if std::env::var("GEEKBRIDGE_SOAK_UPDATE_URL").is_ok() {
+        for _ in 0..2 {
+            let t = Instant::now();
+            let _ = f.ctl.call(Request::UpdateCheck).await;
+            let _ = f.ctl.call(Request::UpdateStatus).await;
+            let ms = t.elapsed().as_millis() as u64;
+            f.stats.poll_max_ms.fetch_max(ms, Relaxed);
+            if ms > 1000 {
+                f.stats.polls_slow.fetch_add(1, Relaxed);
+            }
+        }
+    }
     for r in reqs {
         let t = Instant::now();
         let _ = f.ctl.call(r).await;
@@ -1272,6 +1406,8 @@ async fn repair_p0(
     *f.current.lock().await = None;
     server.proxy.reset_all();
     let mut ok = false;
+    // The step that stopped the last attempt, written to the event line.
+    let mut why = "";
     for _ in 0..3 {
         let _ = f
             .ctl
@@ -1279,44 +1415,78 @@ async fn repair_p0(
                 device_id: id.clone(),
             })
             .await;
-        if f.ctl
+        why = "connect";
+        if !f
+            .ctl
             .ok(Request::Connect {
                 device_id: id.clone(),
                 endpoint: Some(server.endpoint()),
             })
             .await
-            && f.ctl
-                .wait(Duration::from_secs(20), |s| {
-                    link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Unpaired)
-                })
-                .await
-            && f.ctl
-                .ok(Request::Pair {
-                    device_id: id.clone(),
-                    mode: PairMode::Request,
-                })
-                .await
-            && f.ctl
-                .wait(Duration::from_secs(20), |s| !s.challenges.is_empty())
-                .await
         {
-            if let Some(c) = f
-                .ctl
-                .status()
-                .await
-                .and_then(|s| s.challenges.first().map(|c| c.challenge_id.clone()))
-            {
-                let _ = f.ctl.ok(Request::Approve { challenge_id: c }).await;
-            }
-            if f.ctl
-                .wait(Duration::from_secs(25), |s| {
-                    link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Connected)
-                })
-                .await
-            {
-                ok = set_consents(f.ctl, &id, true).await;
-                break;
-            }
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        why = "unpaired-phase";
+        if !f
+            .ctl
+            .wait(Duration::from_secs(20), |s| {
+                link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Unpaired)
+            })
+            .await
+        {
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        why = "pair";
+        if !f
+            .ctl
+            .ok(Request::Pair {
+                device_id: id.clone(),
+                mode: PairMode::Request,
+            })
+            .await
+        {
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        why = "challenge";
+        if !f
+            .ctl
+            .wait(Duration::from_secs(20), |s| !s.challenges.is_empty())
+            .await
+        {
+            sleep(Duration::from_secs(2)).await;
+            continue;
+        }
+        if let Some(c) = f
+            .ctl
+            .status()
+            .await
+            .and_then(|s| s.challenges.first().map(|c| c.challenge_id.clone()))
+        {
+            let _ = f.ctl.ok(Request::Approve { challenge_id: c }).await;
+        }
+        why = "connected";
+        if f.ctl
+            .wait(Duration::from_secs(25), |s| {
+                link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Connected)
+            })
+            .await
+        {
+            ok = set_consents(f.ctl, &id, true).await;
+            why = "consents";
+            break;
+        }
+        if let Some(st) = f.ctl.status().await {
+            // What the service thought of the link when the pairing did not reach "connected".
+            let _ = std::fs::write(
+                f.scratch.join(format!(
+                    "repair-fail-{:.0}.json",
+                    f.t0.elapsed().as_secs_f64()
+                )),
+                serde_json::to_string_pretty(&st).unwrap_or_default(),
+            );
         }
         sleep(Duration::from_secs(2)).await;
     }
@@ -1327,8 +1497,9 @@ async fn repair_p0(
     }
     let _ = writeln!(
         ev,
-        "{:.1}\trepair-p0\t\t{}\t{:.1}",
+        "{:.1}\trepair-p0\t{}\t{}\t{:.1}",
         f.t0.elapsed().as_secs_f64(),
+        if ok { "" } else { why },
         if ok { "ok" } else { "FAIL" },
         t.elapsed().as_secs_f64()
     );

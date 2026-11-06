@@ -72,11 +72,21 @@ PIDS+=("$(cat "$SBX/bus.pid")")
   pactl info | grep -E 'Server Name|Default'
 ) || true
 mapfile -t -O "${#PIDS[@]}" PIDS < "$SBX/pw.pids"
+# Optional (SOAK_UPDATE_MOCK=1): a loopback mock release server the service's update checker talks to.
+if [[ "${SOAK_UPDATE_MOCK:-0}" == 1 ]]; then
+  UPORT="${SOAK_UPDATE_PORT:-27990}"
+  head -c 4096 /dev/zero >"$OUT/mock.apk"
+  python3 -I scripts/e2e/mock_release_server.py "$UPORT" "$OUT/mock.apk" v99.0.0 >"$SBX/log/mock-update.log" 2>&1 &
+  PIDS+=("$!")
+  export GEEKBRIDGE_SOAK_UPDATE_URL="http://127.0.0.1:$UPORT"
+  sleep 0.5
+fi
 echo "df before:"; df -h "$GB_TMP" | tail -1
 GEEKBRIDGE_SOAK_FEATURES=1 GEEKBRIDGE_SOAK_AUDIO_RUN="$SBX/xdg" GEEKBRIDGE_SOAK_OUT="$OUT/run" GEEKBRIDGE_SOAK_SECS="$SECS" \
   XDG_RUNTIME_DIR= bash -c 'mkdir -p "$GEEKBRIDGE_SOAK_OUT" && exec cargo test --release --locked -p bridge-service --test soak_real -- --ignored --nocapture'
 rc=$?
 R="$OUT/run"
+cp "$R"/*.json "$R"/*.trace "$DIST"/ 2>/dev/null
 cp "$R"/samples.csv "$R"/events.tsv "$R"/threads-idle.txt "$R"/service.log "$R"/poll-errors.log "$R"/poll-diag.log "$DIST"/ 2>/dev/null
 cp "$SBX/log"/*.log "$DIST"/ 2>/dev/null
 python3 -I scripts/soak-fit.py "$DIST/samples.csv" --events "$DIST/events.tsv" --poll-errors "$DIST/poll-errors.log" | tee "$DIST/verdict.md"
