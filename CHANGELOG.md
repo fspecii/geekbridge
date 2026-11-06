@@ -7,6 +7,11 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Busy disk: connecting to a phone that is still being unpaired now shows "Still removing the old link..." and retries by
+  itself for up to a minute instead of an error; a pairing that waits on the (durable) trust-record write shows "Saving the
+  link... (your disk is busy)" after 3 seconds (new `saving` list in the service status). On the phone, the QR pairing screen
+  says "Waiting for the computer to finish..." after 5 seconds, keeps waiting up to 60 seconds after you approved, and the last
+  address gets the full 20 second handshake window. Durability is unchanged.
 - Messages: the search box now finds every matching message across all conversations, not just the conversation it
   belongs to. Results are grouped by conversation, newest first, each with a snippet and its date, and clicking one opens
   the conversation at that message. It covers the messages already loaded on the computer and keeps no index.
