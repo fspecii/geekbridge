@@ -614,18 +614,40 @@ pub fn run(
         bz.set(&adapter, ADAPTER, "Powered", Value::from(true))
             .map_err(|e| format!("could not turn Bluetooth on ({e}); try: rfkill unblock bluetooth; bluetoothctl power on"))?;
     }
+    // If any of the three changes is refused, put back what was already changed: the computer's Bluetooth
+    // settings must not stay altered by a setup that never got going.
+    let make_visible = || -> Result<(), String> {
+        bz.set(&adapter, ADAPTER, "Pairable", Value::from(true))?;
+        bz.set(
+            &adapter,
+            ADAPTER,
+            "DiscoverableTimeout",
+            Value::from(opts.discoverable_for.as_secs() as u32),
+        )?;
+        bz.set(&adapter, ADAPTER, "Discoverable", Value::from(true))
+    };
+    if let Err(e) = make_visible() {
+        let _ = bz.set(
+            &adapter,
+            ADAPTER,
+            "Discoverable",
+            Value::from(ad.discoverable),
+        );
+        let _ = bz.set(
+            &adapter,
+            ADAPTER,
+            "DiscoverableTimeout",
+            Value::from(ad.discoverable_timeout),
+        );
+        let _ = bz.set(&adapter, ADAPTER, "Pairable", Value::from(ad.pairable));
+        return Err(format!(
+            "could not make this computer visible over Bluetooth ({e}); check that Bluetooth is on and not blocked (rfkill list)"
+        ));
+    }
     events(Event::Step(format!(
         "This computer is visible as a Bluetooth device for {} s",
         opts.discoverable_for.as_secs()
     )));
-    bz.set(&adapter, ADAPTER, "Pairable", Value::from(true))?;
-    bz.set(
-        &adapter,
-        ADAPTER,
-        "DiscoverableTimeout",
-        Value::from(opts.discoverable_for.as_secs() as u32),
-    )?;
-    bz.set(&adapter, ADAPTER, "Discoverable", Value::from(true))?;
 
     // The agent lives on its own connection. `Pair()` is sent from that connection too, so
     // BlueZ uses this agent for it even when another one is the default.

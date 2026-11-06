@@ -58,14 +58,24 @@ if [[ $uninstall -eq 1 ]]; then
   rm -f "$unitdir/geekbridge-service.service" "$autostart/geekbridge-service.desktop"
   rm -f "$docdir/LICENSE" "$docdir/THIRD_PARTY_NOTICES.md"; rmdir "$docdir" 2>/dev/null || true
   user_systemd && systemctl --user daemon-reload || true
+  # Let the desktop forget the removed menu entries and icons now rather than at its next cache rebuild.
+  command -v gtk-update-icon-cache >/dev/null && [[ -f "$icondir/icon-theme.cache" ]] && gtk-update-icon-cache -q -t "$icondir" 2>/dev/null || true
+  command -v update-desktop-database >/dev/null && [[ -d "$appdir" ]] && update-desktop-database -q "$appdir" 2>/dev/null || true
+  # Same for the icon cache when no icon is left in the theme directory.
+  if [[ -f "$icondir/icon-theme.cache" && -z "$(find "$icondir" -type f ! -name icon-theme.cache -print -quit)" ]]; then rm -f "$icondir/icon-theme.cache"; fi
+  # The tool leaves a header-only index behind when the last entry goes; that file is ours only if it is that empty.
+  if [[ -f "$appdir/mimeinfo.cache" && "$(tr -d '\n' <"$appdir/mimeinfo.cache")" == "[MIME Cache]" ]]; then rm -f "$appdir/mimeinfo.cache"; fi
   if [[ $purge -eq 1 ]]; then
     # Only ever the one directory this program owns; never an empty or relative path.
     if [[ "$updatedir" == /*/geekbridge && -d "$updatedir" ]]; then rm -rf -- "$updatedir"; fi
     if [[ "$statedir" == /*/geekbridge && -d "$statedir" ]]; then rm -rf -- "$statedir"; echo "Removed. Pairing data and settings in $statedir were deleted (--purge-data)."
     else echo "Removed. No pairing data found in $statedir."; fi
   else
-    echo "Removed. Pairing data and settings in $statedir were left in place (add --purge-data to delete them)."
+    if [[ -d "$statedir" ]]; then echo "Removed. Pairing data and settings in $statedir were left in place (add --purge-data to delete them)."
+    else echo "Removed. No pairing data found in $statedir."; fi
   fi
+  # Files you received are yours; the uninstaller never deletes them.
+  [[ $mode == user && -d "$HOME/Downloads/GeekBridge" ]] && echo "Files you received stay in $HOME/Downloads/GeekBridge (delete that folder yourself if you want them gone)."
   exit 0
 fi
 

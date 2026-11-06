@@ -415,7 +415,17 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
             feature: serde_json::from_value::<Feature>(serde_json::Value::String(arg(
                 2, "FEATURE",
             )?))
-            .map_err(|_| "unknown feature")?,
+            .map_err(|_| {
+                format!(
+                    "unknown feature; use one of: {}",
+                    Feature::ALL
+                        .iter()
+                        .filter_map(|f| serde_json::to_value(f).ok())
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })?,
             enabled: match arg(3, "on|off")?.as_str() {
                 "on" => true,
                 "off" => false,

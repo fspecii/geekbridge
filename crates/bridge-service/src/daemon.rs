@@ -342,7 +342,12 @@ fn dev_wire_tap(endpoint: kde::Endpoint, dev_loopback: bool) -> kde::Endpoint {
 }
 
 fn parse_id(id: &str) -> Result<kde::DeviceId, ErrorBody> {
-    kde::DeviceId::parse(id).map_err(|_| err(ErrorCode::BadRequest, "invalid device id"))
+    kde::DeviceId::parse(id).map_err(|_| {
+        err(
+            ErrorCode::BadRequest,
+            "invalid device id (copy it from `geekbridge-ctl status`)",
+        )
+    })
 }
 
 impl Daemon {
@@ -1135,9 +1140,11 @@ impl Daemon {
                     Err(_) => Err(err(ErrorCode::Failed, "the choice could not be saved")),
                 }
             }
-            Request::ClipboardStatus => self
-                .clipboard_status()
-                .map(|s| Response::ClipboardStatus(Box::new(s))),
+            Request::ClipboardStatus => {
+                crate::coexist::refresh_if_stale().await; // the "other sync app" line must not be hours old
+                self.clipboard_status()
+                    .map(|s| Response::ClipboardStatus(Box::new(s)))
+            }
             Request::ClipboardPull { device_id } => self
                 .clipboard_pull(device_id.as_deref())
                 .map(|()| Response::Ack),
@@ -1715,7 +1722,19 @@ impl Daemon {
         {
             crate::reconnect::BUSY_EVERY
         } else {
-            crate::reconnect::IDLE_EVERY
+            // Nothing to dial, but a phone whose history is kept (budget used up, a pause) is forgotten after
+            // `DEVICE_TTL_MS` of silence: be awake then, not up to a full idle wait later.
+            let known = self
+                .reconnect
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ids();
+            let ages: Vec<u64> = all
+                .iter()
+                .filter(|d| known.contains(&d.0))
+                .map(|d| age(d.3))
+                .collect();
+            crate::reconnect::idle_wait(&ages, crate::DEVICE_TTL_MS)
         }
     }
 

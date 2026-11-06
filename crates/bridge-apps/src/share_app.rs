@@ -688,7 +688,7 @@ impl ShareApp {
             None => {
                 ui.add(egui::Label::new(theme::secondary(
                     pal,
-                    "No phone is paired yet. Open the GeekBridge window and choose Link a phone.",
+                    "No phone is linked yet. Open the GeekBridge window and choose Link a phone.",
                 )).wrap());
             }
             Some(t) => {

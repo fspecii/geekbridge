@@ -314,9 +314,9 @@ fn phones_checks(status: &Status, fw_blocks: bool) -> Vec<Check> {
         return vec![check(
             Level::Warn,
             title,
-            "No phone is paired yet.",
+            "No phone is linked yet.",
             Some(
-                "open GeekBridge on the computer and scan its QR code from the phone (Home > Pair a computer); or: geekbridge-ctl pair-qr",
+                "open GeekBridge on the computer and scan its QR code from the phone (Home > Link a computer); or: geekbridge-ctl pair-qr",
             ),
         )];
     }
@@ -793,9 +793,14 @@ pub fn hint_for_error(message: &str) -> Option<&'static str> {
         } else {
             "Is geekbridge-service running? Start it (run geekbridge-service; `geekbridge-ctl autostart enable` starts it at every login), then run `geekbridge-ctl doctor`. A service started with another --state-dir or --control-port needs the same flags here."
         })
-    } else if message.contains("rejected the control token")
-        || message.contains("no control token yet")
-    {
+    } else if message.contains("no control token yet") {
+        // A first run: nothing has started the service yet. The mismatch advice would send a new user hunting.
+        Some(if cfg!(target_os = "linux") {
+            "Start the service (systemctl --user start geekbridge-service, or log out and in again), then try again. If you started it yourself with another --state-dir, pass the same one here."
+        } else {
+            "Start the service (run geekbridge-service), then try again. If you started it with another --state-dir, pass the same one here."
+        })
+    } else if message.contains("rejected the control token") {
         Some(
             "The ctl and the service use different state directories. Pass the service's --state-dir, or run `geekbridge-ctl doctor` for a full check.",
         )
@@ -1069,7 +1074,7 @@ mod tests {
     fn phone_states() {
         let c = phones_checks(&status(), false);
         assert_eq!(c[0].level, Level::Warn);
-        assert!(c[0].detail.contains("No phone is paired"));
+        assert!(c[0].detail.contains("No phone is linked"));
         let mut s = status();
         phone(&mut s, false);
         let c = phones_checks(&s, false);
@@ -1870,7 +1875,7 @@ mod tests {
         assert!(
             hint_for_error("no control token yet")
                 .unwrap()
-                .contains("state director")
+                .contains("Start the service")
         );
         assert!(
             hint_for_error("rejected the control token")

@@ -66,8 +66,8 @@ pub fn set_enabled(state_dir: &Path, on: bool) -> std::io::Result<()> {
             _ => Ok(()),
         }
     } else {
-        std::fs::create_dir_all(state_dir)?;
-        std::fs::write(marker, b"")
+        // Owner-only like everything else in the state directory (a plain write follows the umask).
+        bridge_core::statefile::write_atomic_plain(&marker, b"")
     }
 }
 

@@ -196,7 +196,7 @@ impl ConsentStore {
             entry.sort();
         }
         next.debug_defaulted.insert(device_id.to_owned());
-        self.persist(&next.enabled, &next.debug_defaulted)?;
+        self.persist(&next.enabled, &next.debug_defaulted, false)?;
         *self.view() = next;
         Ok(!already)
     }
@@ -224,7 +224,7 @@ impl ConsentStore {
         if next.enabled.len() > MAX_CONSENT_DEVICES {
             return Err(KdeError::Store("consent store is full".into()));
         }
-        self.persist(&next.enabled, &next.debug_defaulted)?;
+        self.persist(&next.enabled, &next.debug_defaulted, false)?;
         *self.view() = next;
         Ok(())
     }
@@ -237,7 +237,7 @@ impl ConsentStore {
         }
         next.enabled.remove(device_id);
         next.debug_defaulted.remove(device_id);
-        self.persist(&next.enabled, &next.debug_defaulted)?;
+        self.persist(&next.enabled, &next.debug_defaulted, true)?;
         *self.view() = next;
         Ok(())
     }
@@ -246,6 +246,8 @@ impl ConsentStore {
         &self,
         devices: &BTreeMap<String, Vec<Feature>>,
         defaulted: &BTreeSet<String>,
+        // A forgotten phone must not come back from the `.bak` copy (and its id must not linger there).
+        refresh_backup: bool,
     ) -> Result<(), KdeError> {
         let locked = self.file.lock()?;
         let loaded = locked.load()?;
@@ -287,7 +289,11 @@ impl ConsentStore {
         } else {
             body.insert("debug_defaulted".into(), serde_json::json!(defaulted));
         }
-        locked.save(&body)?;
+        if refresh_backup {
+            locked.save_and_refresh_backup(&body)?;
+        } else {
+            locked.save(&body)?;
+        }
         Ok(())
     }
 }
@@ -599,5 +605,8 @@ mod tests {
                 .unwrap()
                 .is_enabled(&id, Feature::Clipboard)
         );
+        // The one-generation backup must not keep the forgotten phone either.
+        let bak = std::fs::read_to_string(dir.join("consent.json.bak")).unwrap();
+        assert!(!bak.contains(&id), "backup still names the phone: {bak}");
     }
 }
