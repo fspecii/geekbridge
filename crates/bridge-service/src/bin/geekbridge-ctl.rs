@@ -1837,7 +1837,12 @@ fn describe_update(s: &UpdateStatus) {
         }
         // A check finished but offered nothing (only drafts or prereleases exist): not "unknown".
         (None, _) if s.last_checked_unix.is_some() => {
-            println!("latest:   no stable release published - you are up to date");
+            let what = if s.channel == ipc::UpdateChannel::Dev {
+                "dev build"
+            } else {
+                "stable release"
+            };
+            println!("latest:   no {what} published - you are up to date");
         }
         (None, _) => println!("latest:   unknown (no check has completed)"),
     }

@@ -398,7 +398,20 @@ fn unreachable_err(host: &str, e: io::Error) -> Error {
 pub(crate) fn io_err(e: io::Error) -> Error {
     match e.kind() {
         io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Error::Timeout,
-        _ => Error::Io(e.to_string()),
+        _ => {
+            let message = e.to_string();
+            // A wrong clock is the usual reason a certificate of a well-known host is refused.
+            if message.contains("certificate expired")
+                || message.contains("certificate not valid yet")
+            {
+                Error::Tls(
+                    "The secure connection was refused because this computer's date or time looks wrong. Check the clock."
+                        .into(),
+                )
+            } else {
+                Error::Io(message)
+            }
+        }
     }
 }
 
@@ -686,6 +699,33 @@ mod tests {
         assert!(!ok("https://github.com:8443/x"));
         assert!(ok("https://github.com:443/x"));
         assert!(!Policy::default().allows(&Url::parse("http://127.0.0.1:4000/").unwrap()));
+    }
+
+    #[test]
+    fn certificate_time_errors_point_at_the_clock() {
+        use rustls::{CertificateError as C, pki_types::UnixTime};
+        let t = |s| UnixTime::since_unix_epoch(Duration::from_secs(s));
+        for cert in [
+            C::ExpiredContext {
+                time: t(2),
+                not_after: t(1),
+            },
+            C::NotValidYetContext {
+                time: t(1),
+                not_before: t(2),
+            },
+        ] {
+            let e = io::Error::new(
+                io::ErrorKind::InvalidData,
+                rustls::Error::InvalidCertificate(cert),
+            );
+            assert!(matches!(io_err(e), Error::Tls(m) if m.contains("clock")));
+        }
+        let other = io::Error::new(
+            io::ErrorKind::InvalidData,
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        );
+        assert!(matches!(io_err(other), Error::Io(m) if m.contains("invalid peer certificate")));
     }
 
     #[test]

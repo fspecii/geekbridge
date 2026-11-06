@@ -1264,6 +1264,9 @@ fn make_private_dir(root: &Path) -> Result<PathBuf, Error> {
 }
 
 #[cfg(test)]
+mod realnet;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

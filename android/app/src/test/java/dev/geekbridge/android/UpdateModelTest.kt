@@ -170,6 +170,40 @@ class UpdateModelTest {
         }
     }
 
+    /** GitHub API shape changes the checker must survive: tag spellings, empty or missing assets, JSON nulls. */
+    @Test
+    fun tagSpellingsAndApiShapeVariants() {
+        fun eval(raw: String) = UpdateModel.evaluate(UpdateModel.parseRelease(raw), "0.1.0", 1_000, sums)
+        val apk = """{"name":"geekbridge-android.apk","browser_download_url":"https://github.com/fspecii/geekbridge/releases/download/t/geekbridge-android.apk","size":2048}"""
+        for (tag in listOf("v0.2.0", "0.2.0", "V0.2.0", " v0.2.0 ", "v0.2.0+build.7")) {
+            val r = eval("""{"tag_name":"$tag","assets":[$apk]}""")
+            assertEquals("0.2.0", (r as UpdateCheckResult.Available).offer.version)
+        }
+        for (tag in listOf("v0.2.0-rc.1", "0.2.0-rc.1", "v0.1.0-rc.1")) {
+            assertTrue(tag, eval("""{"tag_name":"$tag","assets":[$apk]}""") is UpdateCheckResult.UpToDate)
+        }
+        for (tag in listOf("release-0.2.0", "v0.2", "0.2.0.1", "latest")) {
+            assertTrue(tag, eval("""{"tag_name":"$tag","assets":[$apk]}""") is UpdateCheckResult.Failed)
+        }
+        // Empty list, missing key and null: a newer release with nothing to install is a message, not a crash.
+        for (assets in listOf("\"assets\":[]", "\"x\":1", "\"assets\":null")) {
+            assertTrue(assets, eval("""{"tag_name":"v0.2.0",$assets}""") is UpdateCheckResult.Failed)
+        }
+        // draft true with prerelease false, and the reverse, are both unpublished.
+        for (flags in listOf("\"draft\":true,\"prerelease\":false", "\"draft\":false,\"prerelease\":true")) {
+            assertTrue(flags, eval("""{"tag_name":"v0.2.0",$flags,"assets":[$apk]}""") is UpdateCheckResult.UpToDate)
+        }
+        // "body": null (a release without a description), null digest and null names.
+        val r = UpdateModel.parseRelease(
+            """{"tag_name":"v0.2.0","html_url":null,"body":null,"assets":[{"name":null,"browser_download_url":null,"digest":null,"size":null},$apk]}""",
+        )
+        assertEquals("", r.body)
+        assertEquals("", r.htmlUrl)
+        assertTrue(r.digests.isEmpty())
+        val offer = (UpdateModel.evaluate(r, "0.1.0", 1_000, sums) as UpdateCheckResult.Available).offer
+        assertEquals("", offer.notes)
+    }
+
     @Test
     fun draftsAndPrereleasesAreUpToDateNotErrors() {
         for (flag in listOf("draft", "prerelease")) {

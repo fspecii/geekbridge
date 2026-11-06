@@ -253,6 +253,12 @@ object UpdateModel {
         val draft: Boolean = false,
     )
 
+    /**
+     * A string field, or "" when it is missing or JSON null. Android's `optString` turns a JSON null into the
+     * text "null" (GitHub sends `"body": null` for a release without a description).
+     */
+    private fun JSONObject.text(key: String): String = if (isNull(key)) "" else optString(key, "")
+
     class ReleaseFormatException(val text: UpdateText) : IllegalArgumentException("malformed release")
 
     fun parseRelease(json: String): Release {
@@ -261,7 +267,7 @@ object UpdateModel {
         } catch (_: JSONException) {
             throw ReleaseFormatException(UpdateText(R.string.upd_err_release_unclear))
         }
-        val tag = o.optString("tag_name", "")
+        val tag = o.text("tag_name")
         if (!(tag.isNotEmpty() && tag.length <= 64)) throw ReleaseFormatException(UpdateText(R.string.upd_err_no_tag))
         val arr: JSONArray = o.optJSONArray("assets") ?: JSONArray()
         if (arr.length() > 200) throw ReleaseFormatException(UpdateText(R.string.upd_err_too_many_files))
@@ -269,13 +275,13 @@ object UpdateModel {
         val digests = HashMap<String, String>()
         for (i in 0 until arr.length()) {
             val a = arr.optJSONObject(i) ?: continue
-            val name = a.optString("name", "")
-            assets += Triple(name, a.optString("browser_download_url", ""), a.optLong("size", 0))
-            val digest = a.optString("digest", "").removePrefix("sha256:")
-            if (a.optString("digest", "").startsWith("sha256:") && isHex64(digest)) digests[name] = digest.lowercase(Locale.ROOT)
+            val name = a.text("name")
+            assets += Triple(name, a.text("browser_download_url"), a.optLong("size", 0))
+            val digest = a.text("digest").removePrefix("sha256:")
+            if (a.text("digest").startsWith("sha256:") && isHex64(digest)) digests[name] = digest.lowercase(Locale.ROOT)
         }
         val unpublished = o.optBoolean("draft", false) || o.optBoolean("prerelease", false)
-        return Release(tag, o.optString("html_url", ""), o.optString("body", ""), assets, unpublished, digests, o.optBoolean("draft", false))
+        return Release(tag, o.text("html_url"), o.text("body"), assets, unpublished, digests, o.optBoolean("draft", false))
     }
 
     /**
@@ -331,12 +337,12 @@ object UpdateModel {
         } catch (_: JSONException) {
             throw bad
         }
-        val commit = o.optString("commit", "").trim().lowercase(Locale.ROOT)
+        val commit = o.text("commit").trim().lowercase(Locale.ROOT)
         if (commit.length !in 7..40 || !commit.all { it in '0'..'9' || it in 'a'..'f' }) throw bad
         val code = o.optLong("versionCode", 0)
         if (code <= DEV_CODE_BASE || code > 2_000_000_000L) throw bad
-        val builtAt = o.optString("builtAt", "").filter { !Character.isISOControl(it) && !Bounds.isInvisibleFormat(it) }.take(40)
-        return DevManifest(commit, code.toInt(), builtAt, o.optString("notes", ""))
+        val builtAt = o.text("builtAt").filter { !Character.isISOControl(it) && !Bounds.isInvisibleFormat(it) }.take(40)
+        return DevManifest(commit, code.toInt(), builtAt, o.text("notes"))
     }
 
     /**
