@@ -63,6 +63,14 @@ opt-level = "z"
 [profile.release.package.webpki-roots]
 opt-level = "z"
 
+# The protocol crate at "z" too: it is wire types, view models and text rules, and its serde derives (about 40
+# Deserialize impls, instantiated for every reply type) were the largest block of geekbridge-ctl. Measured on
+# 2026-11-06, x86_64 Linux: ctl 1 781 328 -> 1 723 848 B (-57.5 kB), service 7 512 088 -> 7 511 704 B (-0.4 kB).
+# serde_json itself stays "s" (at "z" the service grew +24 kB for -1.4 kB on the ctl), and so does bridge-update
+# (-7.7 kB on the service, +0.3 kB on the ctl, left alone: it is the self-update download path).
+[profile.release.package.bridge-core]
+opt-level = "z"
+
 # Size-optimised profile for the Android shared library (scripts/build-android.sh uses it). panic stays
 # "unwind": the JNI boundary (jni_export.rs, dispatch.rs) catches panics and turns them into error replies;
 # with panic=abort one bad request would kill the whole app process instead.

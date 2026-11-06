@@ -63,7 +63,7 @@ numbers taken in the same environment.
 | CPU over a 20 s idle window | 0 ticks | 0 ticks | 2 ticks (20 ms) |
 | Startup to "discovery API" line | 8-20 ms warm (614 ms first run, cold cache) | 7-14 ms | 300 ms |
 | `geekbridge-service` size | 10 722 896 B | 5 502 392 B (2026-11-02); 7 512 088 B on 2026-11-06 (release build of 6a1614bf5, stripped; features since: calls, Wi-Fi call audio, Messages, self-update, proxy and IPv6 for the update client) | 7 560 000 B. The step-by-step history of each raise is in the comment in `scripts/perf-check.sh` |
-| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02); 1 771 688 B on 2026-11-06 (release build of 6a1614bf5; `update install` and the call, photo and Messages commands added since) | 1 790 000 B. History: comment in `scripts/perf-check.sh` |
+| `geekbridge-ctl` size | 1 555 944 B | 1 117 360 B (2026-11-02); 1 771 688 B on 2026-11-06 (release build of 6a1614bf5; `update install` and the call, photo and Messages commands added since) | 1 745 000 B (1 723 848 B locally on 2026-11-06 after opt-level "z" for bridge-core, -57.5 kB). History: comment in `scripts/perf-check.sh` |
 | `geekbridge-messages` (UI) size | 11 870 224 B | 5 744 760 B (2026-11-02); 7 868 672 B on 2026-11-03 (AccessKit, i18n, onboarding, mirroring UI) | not budgeted |
 | UI idle RSS (`--ui`, warm GL shader cache) | 67-68 MB | 65.1 MB (2026-11-02, was 68.5 MB on the same machine) | 75 MB |
 | GUI binaries with AccessKit (2026-11-02, `accesskit` feature, default) | n/a | messages 6.16 -> 8.05 MB (+1.9 MB), idle RSS +1.5-2.5 MB, +3 threads, ~+2 wakeups/s | not budgeted. On the 2026-11-02 machine the UI idle RSS is 105-124 MB with or without it (budget 90 MB exceeded by the GL stack, not AccessKit); see `docs/accessibility.md` |
@@ -227,7 +227,7 @@ raw numbers: [reports/final-footprint.md](reports/final-footprint.md).
 | Service idle RSS, settled (min of samples every 5 s) | 3.4-3.6 MB (11-03, round 3) | 3.7-3.8 MB (peak sample 4.4-5.3 MB) | 6000 kB |
 | Service threads / fds / wakeups per s / CPU | 5 / 12-20 / 2-3 / 0 | 4-5 (tray 5) / 18-19 / 2-3 / 0-1 ticks | 8 / 20 / 3 / 2 |
 | Service startup to discovery line | 7-14 ms | 10-11 ms | 300 ms |
-| `geekbridge-service` / `geekbridge-ctl` | 5 846 328 B / 1 249 056 B (11-03) | 6 600 376 B / 1 455 512 B | 7 560 000 B / 1 790 000 B |
+| `geekbridge-service` / `geekbridge-ctl` | 5 846 328 B / 1 249 056 B (11-03) | 6 600 376 B / 1 455 512 B | 7 560 000 B / 1 745 000 B |
 | GUI binaries (home, calls, messages, agenda, contacts) | messages 7 868 672 B (11-03) | 8.26, 8.08, 8.00, 8.03, 7.92 MB | not budgeted |
 | GUI idle RSS under Xvfb + llvmpipe (home / calls / messages / agenda / contacts) | 66.3 / 64.1 MB (round 3) | 66.2 / 62.3 / 64.5 / 65.5 / 63.2 MB (anon 33-35 MB, 58-59 threads) | `--ui` messages 75 MB: 64.7 MB, 3 wakeups/s (budget 12) |
 | Android release APK, arm64 only (unsigned, R8) | 3 194 339 B (11-03) | 3 498 723 B (+304 384 B) | none |
