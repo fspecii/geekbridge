@@ -2375,6 +2375,17 @@ impl Daemon {
         let info = handshake.info().clone();
         let id = info.peer.device_id.to_string();
         let trusted = matches!(handshake, kde::Handshake::Trusted(_));
+        // The phone is being unpaired: its record is deleted (slowly, on a busy disk) and the phone told. A link
+        // that came in now would be trusted by the record that is about to go, and stay "connected" without
+        // one (soak 5: re-pair stuck until the next round). Turn it away; the phone's redial comes after.
+        if self
+            .unpairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&id)
+        {
+            return;
+        }
         let mut core = self.core();
         // Strangers must not starve the table (docs/reports/security-review-2.md S2-1): one address holds
         // only a few unpaired links, and a paired phone takes the place of the oldest stranger.
