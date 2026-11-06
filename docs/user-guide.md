@@ -6,11 +6,12 @@
 | --- | --- | --- |
 | Debian/Ubuntu | `geekbridge_<version>_amd64.deb` | `sudo apt install ./geekbridge_*.deb` |
 | Other Linux | `geekbridge-<version>-linux-x86_64-installer.tar.gz` | extract, run `./install.sh` (per user, no root) or `sudo ./install.sh --system`; `./install.sh --uninstall` removes it |
-| Windows | `geekbridge-<version>-windows-x86_64-setup.exe` | run it; keep "Start the background service when I sign in" ticked |
-| macOS | `geekbridge-<version>-macos-<arch>.dmg` | drag GeekBridge to Applications and open it once (right-click, Open: the app is unsigned) |
+| Arch | `geekbridge-<version>-1-x86_64.pkg.tar.zst` | `sudo pacman -U geekbridge-*.pkg.tar.zst` |
+| Windows | not published yet (build from source; the installer script makes `geekbridge-<version>-windows-x86_64-setup.exe`) | run it; keep "Start the background service when I sign in" ticked |
+| macOS | not published yet (build from source; the script makes `geekbridge-<version>-macos-<arch>.dmg`) | drag GeekBridge to Applications and open it once (right-click, Open: the app is unsigned) |
 | Android | `geekbridge-android.apk` | sideload it on the phone |
 
-All of these are on the GitHub release page. The installers start the background service
+The Linux and Android files are on the [GitHub Releases page](https://github.com/fspecii/geekbridge/releases); so far the only release is the pre-release `v0.1.0-rc.1` (GitHub's "latest" link skips pre-releases). Check them against `SHA256SUMS`. The installers start the background service
 (`geekbridge-service`) at every login: a systemd user unit plus an XDG autostart entry on Linux, a Run key on
 Windows, a LaunchAgent (written the first time the app opens) on macOS. Check with `geekbridge-ctl status`.
 
@@ -240,11 +241,11 @@ your computer" below for the voice). Technical detail: [call-control.md](call-co
 `geekbridge-ctl --help` is the authoritative list. Groups: **link** (`status`, `connect`, `pair`, `pair-qr`,
 `test-connection`, `approve`, `deny`, `disconnect`, `unpair`, `rename`, `ping`, `events`); **permissions** (`consent DEVICE
 FEATURE on|off` with FEATURE one of `sms`, `contacts`, `calendar`, `clipboard`, `notifications`, `telephony`, `debug`,
-`battery`, `photos`, `calendar_edit`, `calendar_alerts`); **phone data** (`agenda`,
-`agenda-refresh`, `calendar-add|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `messages-resend`, `messages-read`, `notifications`, `photos [refresh|save|copy]`); **calls**
+`battery`, `photos`, `calendar_edit`, `calendar_alerts`, `call_audio_wifi`); **phone data** (`agenda`,
+`agenda-refresh`, `calendar-add|update|delete|retry`, `messages`, `messages-refresh`, `messages-send`, `messages-resend`, `messages-read`, `notifications`, `photos [refresh|save|copy]`); **calls**
 (`calling`, `calls [--trace]`, `call answer|reject|hangup|mute|audio|dial|tone|setup|audio-devices`, `call-audio`, `callwifi`); **clipboard and sharing** (`clipboard ...`,
 `send-file|text|url`, `share ...`); **this computer** (`doctor`, `diagnose`, `report [--preview|--open|--copy]`,
-`autostart`, `tray`, `privacy [show|set KEY on|off]`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`). `phone-log` and `phone-state` only work
+`autostart`, `tray`, `privacy [show|set KEY on|off]`, `firewall`, `hotkey`, `update`, `whats-new`, `token-path`, `about`). `phone-log` and `phone-state` only work
 with a debug build of the phone app. `report` shows exactly what a prefilled bug report carries (the redacted `diagnose`
 output) and sends nothing itself.
 
@@ -269,8 +270,11 @@ page says when one of them fixes a value. The tray tooltip and the waybar module
   <img src="img/shot-android-update.png" width="200" alt="Android app updates card: a newer version is available, with Download and verify, Check for updates and channel choice">
 </p>
 
-A banner appears when a newer release exists: **Download** (checked against the published SHA-256), **Show file**,
-then install it yourself. Nothing installs automatically. Checks run shortly after the service starts and then daily;
+A banner appears when a newer release exists: **Download** (checked against the published SHA-256), then **Show file**.
+Nothing installs automatically. On the Linux per-user install (`install.sh` without `--system`) **Install update** (or
+`geekbridge-ctl update install`) unpacks and switches it in for you and keeps the old version; a `.deb` or Arch package is
+updated with your package manager, and on Windows and macOS you install the downloaded file yourself (download only). On
+Android you tap Install in the system installer. Checks run shortly after the service starts and then daily;
 **Check for updates** forces one. The Android app only accepts an update signed with the same key as the installed one, so
 a debug build never updates to a release (debug builds follow the *dev* channel, releases the *stable* one: `geekbridge-ctl update channel`). Turn checks off under *Settings*, or
 `geekbridge-ctl update disable`. Details: [updates.md](updates.md).
@@ -435,6 +439,6 @@ real phone ([reports/android-battery-audit-2.md](reports/android-battery-audit-2
 ### Other
 * *"Service not running"*: `systemctl --user status geekbridge-service` (Linux), start it with
   `systemctl --user start geekbridge-service` or run `geekbridge-service` in a terminal to see errors.
-* *Pairing unavailable / read-only*: the service cannot protect its state directory (wrong owner or mode); on
-  Windows the control API is unavailable until the private-file support there is verified.
+* *Pairing unavailable / read-only*: the service cannot protect its state directory (wrong owner or mode); the
+  same happens on Windows if the folder's access list cannot be made private. `geekbridge-ctl doctor` says which.
 * *Port in use*: the service uses 17380/17381 on 127.0.0.1; see [service-integration.md](service-integration.md).

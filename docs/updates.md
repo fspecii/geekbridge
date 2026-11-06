@@ -17,7 +17,7 @@ download unpacked, checked and switched in for you, with the old version kept ([
 
 Each request carries a `User-Agent` of `geekbridge-updater/<version>` (Android:
 `geekbridge-android-updater/<version>`), `Accept`, and, after the first answer, `If-None-Match` with GitHub's
-ETag (a `304` does not count against GitHub's unauthenticated rate limit). No account, device id, install id,
+ETag (a `304` saves bandwidth, but an anonymous `304` still counts against GitHub's limit of 60 requests an hour; a daily check is far below that). No account, device id, install id,
 IP-derived value or version history is sent beyond what any HTTPS request reveals. Redirects are followed only
 to the same allow-list: https on port 443 to exactly `github.com`, `api.github.com`, `objects.githubusercontent.com`,
 `release-assets.githubusercontent.com` and `github-releases.githubusercontent.com` (not other `*.githubusercontent.com`
@@ -217,7 +217,7 @@ What happens, in order, and what stops it:
    older ones are deleted.
 5. The service is **not** restarted unless you say so (`--yes`, the prompt, or the card's **Restart service now**), and
    never while a call is in progress or when that cannot be determined (the service itself checks and leaves in one step; a file in flight also waits unless `--force`; a service started by hand is left running and you are told to restart it).
-   service does not report the new version within 20 s, GeekBridge goes back to the previous version and restarts it.
+   If it does restart and the new service does not report the new version within 20 s, GeekBridge goes back to the previous version and restarts it.
 6. The outcome (`installed`, `failed`, `rolled_back`, `recovered`, with version and time) is recorded as
    `last_install` in `update-state.json`; `geekbridge-ctl update status` prints it.
 
@@ -281,7 +281,7 @@ exactly these names.
   verifies size and SHA-256 from `SHA256SUMS`, and deletes it on any mismatch. The download is abandoned if the
   app leaves the foreground.
 * Downloads are not resumed: an interrupted one is deleted (never a half file) and the next tap starts over; the
-  APK is about 6 MB. The pending file lives in `cache/updates/`; a new download replaces it, the app deletes it
+  APK is about 6.5 MB. The pending file lives in `cache/updates/`; a new download replaces it, the app deletes it
   after an update (`MY_PACKAGE_REPLACED`) and when it is older than a day at process start.
 * **Install update** re-hashes the file and hands it to Android's package installer through `UpdateFileProvider`
   (a minimal, non-exported, read-only `ContentProvider` standing in for AndroidX `FileProvider`) with a one-time

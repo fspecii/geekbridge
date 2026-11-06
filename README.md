@@ -72,7 +72,7 @@ individually confirmed there.**
 | Contacts | Searchable phonebook, call / message / copy, read-only | Emulator | not yet |
 | Calendar | Month, week, day, agenda; Google calendars via the phone's own sync; optional two-way editing | Emulator (provider inserts, desktop create/edit/delete) | not yet |
 | Android home-screen widgets | Connection (2x1), Quick actions (2x2), Agenda (4x2) in dot-matrix; light/dark, resizable, no polling | Emulator screenshots, JVM tests for the state/agenda logic | not yet |
-| Updates | GitHub release check, SHA-256 verified download, never auto-installs | Emulator self-update against a mock release server; real GitHub not contacted | not yet |
+| Updates | GitHub release check, SHA-256 verified download; nothing installs by itself. **Install update** exists for the Linux per-user install only; Windows and macOS: download only; Android hands the APK to the system installer | Emulator self-update against a mock release server; on 2026-11-06 a read-only check and download against the real GitHub release (a pre-release, so no update was offered) ([report](docs/reports/updater-real-network.md)) | not yet |
 | Phone battery on the computer | Level and charging state in the tray (Linux and Windows), Home and `status`; **off by default** on both ends | Scripted tests and unit tests against stock `kdeconnect.battery` packets | not yet |
 | Phone notifications on the computer | Banners with Dismiss and the phone's own buttons (no typed replies); only apps you pick; **off by default** on both ends; memory only | Emulator and scripted tests against stock `kdeconnect.notification` packets | not yet |
 | Recent phone photos on the computer | A "Phone photos" tab in the Share window: the newest 24 as small previews, **Save** and **Copy to clipboard** (full picture only on request); GeekBridge phones only; **off by default** on both ends; memory only | Scripted tests, a stand-in phone and the `photos` emulator job; Android code checked by unit tests | not yet |
@@ -95,8 +95,9 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
 1. **Install.** Android 8 or newer: `geekbridge-android.apk` (or the phone-only `geekbridge-android-arm64.apk`) from the latest
    GitHub release; allow "Install unknown apps" for your browser or file manager. Linux:
    `sudo apt install ./geekbridge_*.deb`, or extract the installer tarball and run `./install.sh` (per user; the service
-   starts at login). Windows and macOS: no prebuilt binaries yet (build from source, below). Check downloads against
-   `SHA256SUMS`.
+   starts at login), or `geekbridge-*-x86_64.pkg.tar.zst` on Arch (`sudo pacman -U`). Windows and macOS: no prebuilt binaries yet (build from source, below).
+   Check downloads against `SHA256SUMS`. The only release so far is the pre-release `v0.1.0-rc.1`; GitHub's "latest" link skips
+   pre-releases, so open the [Releases page](https://github.com/fspecii/geekbridge/releases) and pick it there.
 2. **Link via QR.** Same Wi-Fi, and open the firewall first (see Requirements). On the computer open **GeekBridge** > **Link a phone** (a QR
    code that renews itself). On the phone, in the setup wizard choose **Scan QR code from my computer**, point the camera at it, tap
    **Continue**, then confirm **Link**. Or link by name and compare the code on both screens. Then finish the wizard (notifications, contacts, calendar, phone state, **battery**). Nothing
@@ -120,8 +121,10 @@ machine, which cannot produce signed or tested Windows/macOS binaries; see [docs
    **Calendar** on the computer. Editing the calendar is a separate opt-in. **Messages** and phone notifications on an APK you
    installed yourself (Android 13+): if the switch is greyed out or nothing happens, open Settings > Apps > GeekBridge, tap the
    three dots and choose **Allow restricted settings**, then try again.
-7. **Updates.** A banner "Update available" appears in every app and on Android; downloads are checksum-verified and never
-   installed automatically.
+7. **Updates.** A banner "Update available" appears in every app and on Android; downloads are checksum-verified and nothing
+   installs by itself. On the Linux per-user install, **Install update** (or `geekbridge-ctl update install`) unpacks it for you and keeps the
+   old version; Windows and macOS: download only; Android: you tap Install in the system installer. Turn the check off with
+   `geekbridge-ctl update disable`. Behind a proxy, `HTTPS_PROXY` is honoured ([updates](docs/updates.md)).
 8. **Start at login.** The installers do it; otherwise `geekbridge-ctl autostart enable` (XDG autostart, LaunchAgent or the
    per-user Run key).
 9. **Something wrong?** Read the [FAQ](docs/FAQ.md). Run `geekbridge-ctl doctor` (service, firewall, desktop session, phones, Messages, calls; prints the
@@ -134,7 +137,7 @@ makes) is signed with a local debug key: it works for testing, but it can never 
 round; uninstall one before installing the other (this removes the pairing). Debug builds follow the **dev** update channel,
 release builds the **stable** one ([updates](docs/updates.md#dev-channel)); if you do not know which you have, you have the release.
 
-**Uninstall.** Phone: uninstall the app (and unlink the computer first if you want it gone there too). Linux: `sudo apt remove geekbridge`, or `./install.sh --uninstall` removes the program and keeps your pairings and settings;
+**Uninstall.** Phone: uninstall the app (and unlink the computer first if you want it gone there too). Linux: `sudo apt remove geekbridge` (Arch: `sudo pacman -R geekbridge`), or `./install.sh --uninstall` removes the program and keeps your pairings and settings;
 `./install.sh --uninstall --purge-data` also deletes them (`~/.local/share/geekbridge`, plus the updater's notes in `~/.local/state/geekbridge`).
 
 ## Requirements

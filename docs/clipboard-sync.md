@@ -63,7 +63,7 @@ This is the best a legitimate app can do; a seamless background read does not ex
   macOS and Windows build (type-checked and CI-built) but **have not been run there** (docs/reports/windows-macos-clipboard.md). Without a
   tool/session the clipboard app says what to install. `GEEKBRIDGE_CLIPBOARD=off|memory` overrides detection.
 * **Limits:** text/HTML 64 KiB each; images PNG/JPEG only (magic bytes decide, not the declared MIME), default 8 MiB,
-  setting 256 KiB to 32 MiB; at most 4 outstanding pulls; a pull times out after 90 s.
+  setting 64 KiB to 32 MiB; at most 4 outstanding pulls; a pull times out after 90 s.
 * **No history.** The current clipboard text is held in RAM only while sync is active; status carries counters, never
   content. Stored on disk: `clipboard-settings.json` (window, hotkey, image limit) in the service state directory.
 * **Loops:** echo of applied text is suppressed by the reducer (including across several phones: text from phone A is

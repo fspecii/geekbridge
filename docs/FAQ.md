@@ -81,15 +81,17 @@ step for your phone's maker (Samsung, Xiaomi, OnePlus and others hide a second s
 
 ## How do I update?
 
-Both apps show an "Update available" banner. **Download** fetches the file and checks its SHA-256; you install it yourself,
-nothing installs automatically. Use **Check for updates** to force a check. The Android app only accepts an update signed with
+Both apps show an "Update available" banner. **Download** fetches the file and checks its SHA-256; nothing installs automatically.
+On the Linux per-user install, **Install update** (or `geekbridge-ctl update install`) then switches it in and keeps the old version;
+package installs (`.deb`, Arch) update through the package manager, Windows and macOS are download only, and on Android you tap
+Install in the system installer. Use **Check for updates** to force a check. The Android app only accepts an update signed with
 the same key: the GitHub release APK updates to later release APKs, and a debug or development APK cannot update to a release
 (uninstall first; that removes the pairing). Debug builds follow the *dev* channel, release builds the *stable* one
 (`geekbridge-ctl update channel`). See [updates](updates.md).
 
 ## How do I uninstall it?
 
-Phone: uninstall the app. Linux: `sudo apt remove geekbridge`, or `./install.sh --uninstall` (this keeps your pairings; add
+Phone: uninstall the app. Linux: `sudo apt remove geekbridge` (Arch: `sudo pacman -R geekbridge`), or `./install.sh --uninstall` (this keeps your pairings; add
 `--purge-data` to delete them from `~/.local/share/geekbridge`). Windows: Settings > Apps. macOS: delete GeekBridge from
 Applications. Also **Unlink** the other device on each side so neither keeps a stale entry.
 

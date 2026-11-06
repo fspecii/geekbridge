@@ -82,9 +82,10 @@ test peers.
   supported.
 - **Vendor battery guidance** for Samsung, Xiaomi, Huawei/Honor, OnePlus, OPPO/realme, vivo and Nothing is
   unit-tested for the order of settings screens only.
-- **The updater is untested against real GitHub.** No stable release exists yet, so the update check, the download and
-  **Install update** were run against a mock release and the emulator only; the "Update available" chip appears only
-  when a newer stable release is published, so it has not been seen on a phone.
+- **The updater has seen real GitHub only read-only.** On 2026-11-06 the check and the download were run against the
+  real release (a pre-release, so no update was offered; see `docs/reports/updater-real-network.md`). No stable release
+  exists yet, so an actual offer, **Install update** and the Android "Update available" chip were run against a mock release
+  and the emulator only; none of them has been seen on a phone.
 - **Long-running behaviour.** A four-hour soak of the desktop service with a stand-in phone showed no linear leak, but
   also short stalls of the local control API early in the run (since fixed; a later 45-minute soak with rings, Wi-Fi
   listen sessions and re-pairing passed) and a slow memory creep that was levelling off. Real multi-day use has not been
