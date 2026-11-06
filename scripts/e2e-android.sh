@@ -252,8 +252,10 @@ stage_battery() {
   if ! ui has "Let app always run in background?"; then rec battery FAIL "system battery dialog did not appear"; return 1; fi
   shot 05-battery-system-dialog
   tap Deny; sleep 2; shot 05b-battery-after-deny
-  local denied_ok=0; ui has "Allow unrestricted battery" && denied_ok=1
-  tap "Allow unrestricted battery"; sleep 2; tap Allow; sleep 2; shot 05c-battery-after-allow
+  # After a No the step says "You chose not to allow this" and the button reads "Try again" (older builds kept "Allow unrestricted battery").
+  local denied_ok=0 again="Try again"; ui has "Try again" || again="Allow unrestricted battery"
+  ui has "You chose not to allow this" && denied_ok=1; ui has "Allow unrestricted battery" && denied_ok=1
+  tap "$again"; sleep 2; tap Allow; sleep 2; shot 05c-battery-after-allow
   local allowed_ok=0; ui has "Unrestricted" && allowed_ok=1
   local wl=0; $ADB shell dumpsys deviceidle whitelist | grep -q "$PKG" && wl=1
   # The Battery step is third now, so six optional steps follow: walk them (Skip/Next), then the overview's Finish.
