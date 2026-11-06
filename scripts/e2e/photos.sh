@@ -269,7 +269,8 @@ item_field() { # name field
 item_id() { item_field "$1" id; }
 all_thumbs() { [[ "$(pjson | jget 'all(i["has_thumb"] for i in d["items"]) and len(d["items"])>0')" == True ]]; }
 dev_partial() { pjson | jget 'any(x["partial"] for x in d["devices"])'; }
-dev_listed() { pjson | jget 'any(x["listed"] for x in d["devices"])'; }
+# Must test the printed value: jget exits 0 whatever it prints, so refresh_until returned after one 4 s round (runs 42155454627, 42167708317).
+dev_listed() { [[ "$(pjson | jget 'any(x["listed"] for x in d["devices"])')" == True ]]; }
 want_pics="${PIC_PREFIX}5.jpg ${PIC_PREFIX}4.jpg ${PIC_PREFIX}3.jpg ${PIC_PREFIX}2.jpg ${PIC_PREFIX}1.jpg"
 have_pics() { [[ "$(list_names)" == "$want_pics" ]]; }
 # Ask until the pictures are listed (a refresh asked within a few seconds of the last one is not repeated).
@@ -289,7 +290,7 @@ stays_empty() { # seconds
     is_connected || { desk_dial >/dev/null 2>&1; link_up 40; } || { echo "link down" >>"$LOGS/e2e-photos-notes.txt"; return 1; }
     ctl photos refresh "$PHONE_ID" >/dev/null 2>&1; sleep 4
     [[ "$(list_count)" == 0 ]] || return 1
-    [[ "$(dev_listed)" != True ]] || return 1
+    dev_listed && return 1
   done
 }
 # What the computer and the phone hold when a list does not come (the whole logcat is in logcat-full.txt).
