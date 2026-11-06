@@ -89,6 +89,7 @@ pub fn record_device(state: &mut Snapshot, device: bridge_core::Device) {
     } else if state.devices.len() < MAX_DEVICES {
         state.devices.push(device);
     }
+    reconnect::wake(); // an announcement is what the redial pass is waiting for
     state
         .devices
         .sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
@@ -216,8 +217,10 @@ pub async fn listen_discovery(socket: UdpSocket, state: SharedState) -> io::Resu
     }
 }
 
+/// Drops devices older than [`DEVICE_TTL_MS`] from the state. Every reader (the API snapshot, the redial pass)
+/// checks the age itself, so this is only housekeeping and does not need to wake often.
 pub async fn expire_devices(state: SharedState) {
-    let mut tick = time::interval(Duration::from_secs(5));
+    let mut tick = time::interval(Duration::from_secs(30));
     loop {
         tick.tick().await;
         let now = now_ms();
@@ -601,13 +604,7 @@ pub async fn run(config: config::Config) -> io::Result<()> {
     let redial = match &*control {
         control::Control::Ready { daemon, .. } => {
             let daemon = daemon.clone();
-            Some(tokio::spawn(async move {
-                let mut tick = time::interval(Duration::from_secs(2));
-                loop {
-                    tick.tick().await;
-                    daemon.reconnect_tick().await;
-                }
-            }))
+            Some(tokio::spawn(daemon.redial_forever()))
         }
         _ => None,
     };
@@ -618,8 +615,9 @@ pub async fn run(config: config::Config) -> io::Result<()> {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
                 loop {
                     tick.tick().await;
-                    let data = data.clone();
-                    let _ = tokio::task::spawn_blocking(move || data.tick_alerts()).await;
+                    // In memory under one short lock (a banner runs on its own thread): no blocking-pool thread
+                    // to start, and let go again, every 30 s.
+                    data.tick_alerts();
                 }
             }))
         }

@@ -9,8 +9,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 static KDECONNECT_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// The stock KDE Connect daemon owned `org.kde.kdeconnect` on the session bus at the last check.
+/// The stock KDE Connect daemon owned `org.kde.kdeconnect` on the session bus at the last check. The answer
+/// comes back at once; when it is older than [`STALE`] a re-check runs in the background (only someone asking,
+/// like the clipboard settings, causes one, so an idle service never wakes for it).
 pub fn other_sync_app_running() -> bool {
+    #[cfg(target_os = "linux")]
+    recheck_if_stale();
     KDECONNECT_RUNNING.load(Ordering::Relaxed)
 }
 
@@ -19,14 +23,46 @@ pub fn set_other_sync_app_running(running: bool) {
     KDECONNECT_RUNNING.store(running, Ordering::Relaxed);
 }
 
-/// Re-check the session bus every 20 s, for ever. Without a session bus the answer stays "no".
+/// Age after which a question starts a new check, in seconds.
+#[cfg(target_os = "linux")]
+const STALE_SECS: u64 = 20;
+
+#[cfg(target_os = "linux")]
+static ASKED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// Unix seconds of the last check; `u64::MAX` while one runs.
+#[cfg(target_os = "linux")]
+static CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
+#[cfg(target_os = "linux")]
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Check at start, then again whenever a question finds the answer stale. Without a session bus the
+/// answer stays "no". Runs for the life of the service; between checks it waits on a notification, no timer.
 #[cfg(target_os = "linux")]
 pub async fn watch() {
     loop {
         set_other_sync_app_running(probe().await);
+        CHECKED.store(unix_secs(), Ordering::Relaxed);
         // The probe just faulted the D-Bus code back in; let it go again (`bridge_core::codepages`).
         bridge_core::codepages::drop_idle();
-        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        ASKED.notified().await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn recheck_if_stale() {
+    let at = CHECKED.load(Ordering::Relaxed);
+    if at != u64::MAX
+        && unix_secs().saturating_sub(at) >= STALE_SECS
+        && CHECKED
+            .compare_exchange(at, u64::MAX, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        ASKED.notify_one(); // one asker wins, so a burst of questions starts one check
     }
 }
 

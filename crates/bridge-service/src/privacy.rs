@@ -144,6 +144,9 @@ impl Privacy {
         next.push((key, on));
         write(&privacy::format_choices(&next))?;
         *self.lock() = next;
+        if key == PrivacyKey::RespectDnd {
+            crate::dnd::choice_saved();
+        }
         Ok(())
     }
 }

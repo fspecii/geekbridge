@@ -186,8 +186,18 @@ impl Detector {
     }
 }
 
-/// Keeps `detector` fresh every `every`, but only while `enabled()` says the setting is on. The thread
-/// ends by itself once the detector is dropped.
+/// Poked when the "Respect Do Not Disturb" choice is saved, so the keep-warm thread need not poll the file.
+static CHOICE_SAVED: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+/// Tell the keep-warm thread that the choice changed.
+pub fn choice_saved() {
+    *CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    CHOICE_SAVED.1.notify_all();
+}
+
+/// Keeps `detector` fresh every `every`, but only while `enabled()` says the setting is on. While it is
+/// off the thread sleeps for `30 * every` (it is woken at once by [`choice_saved`]); it ends by itself
+/// once the detector is dropped.
 pub fn keep_warm(
     detector: Weak<Detector>,
     enabled: impl Fn() -> bool + Send + 'static,
@@ -196,12 +206,20 @@ pub fn keep_warm(
     std::thread::Builder::new()
         .name("gb-dnd-warm".into())
         .spawn(move || {
+            let mut seen = *CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner());
             while let Some(d) = detector.upgrade() {
-                if enabled() {
+                let on = enabled();
+                if on {
                     d.refresh_in_background();
                 }
                 drop(d);
-                std::thread::sleep(every);
+                let wait = if on { every } else { every * 30 };
+                let g = CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner());
+                if *g == seen {
+                    let _ = CHOICE_SAVED.1.wait_timeout(g, wait);
+                }
+                // Saved meanwhile or woken: look again (a stray wake-up costs one look).
+                seen = *CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner());
             }
         })
 }
@@ -365,5 +383,31 @@ mod tests {
         );
         drop(d);
         thread.join().unwrap();
+    }
+
+    #[test]
+    fn keep_warm_sleeps_long_while_off_and_wakes_when_the_choice_is_saved() {
+        use std::sync::atomic::AtomicU32;
+        static PROBES: AtomicU32 = AtomicU32::new(0);
+        let d = Arc::new(Detector::with_probe(|| {
+            PROBES.fetch_add(1, Ordering::SeqCst);
+            false
+        }));
+        let on = Arc::new(AtomicBool::new(false));
+        let flag = on.clone();
+        // 10 s while on, so 300 s while off: only the save can wake it in time.
+        let thread = keep_warm(
+            Arc::downgrade(&d),
+            move || flag.load(Ordering::SeqCst),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        on.store(true, Ordering::SeqCst);
+        choice_saved();
+        wait_until(|| PROBES.load(Ordering::SeqCst) >= 1);
+        drop(d);
+        choice_saved();
+        thread.join().unwrap(); // the detector is gone: it ends at the wake, not 10 s later
     }
 }

@@ -237,6 +237,7 @@ impl Core {
             kind,
         });
         crate::tray::poke();
+        crate::reconnect::wake(); // a link coming up or going away is what the redial pass reacts to
     }
 }
 
@@ -1624,51 +1625,45 @@ impl Daemon {
 
     /// One pass of the automatic redial: every paired phone that announced itself recently, has no link and whose
     /// back-off allows it is dialed at the address it announced from. Trust comes from the pairing store only.
-    pub async fn reconnect_tick(self: &Arc<Self>) {
+    /// Returns how long the caller may wait before the next pass ([`crate::reconnect::pause`] also ends the
+    /// wait early on an announcement or a link event).
+    pub async fn reconnect_tick(self: &Arc<Self>) -> Duration {
         const FRESH_MS: u64 = 20_000;
         let now_unix = now_ms();
-        let heard: Vec<(String, IpAddr, u64)> = self
+        let all: Vec<(String, IpAddr, u16, u64)> = self
             .discovery
             .read()
             .await
             .devices
             .iter()
-            .map(|d| (d.id.clone(), d.address, d.last_seen_unix_ms))
+            .map(|d| (d.id.clone(), d.address, d.tcp_port, d.last_seen_unix_ms))
             .collect();
         {
             let mut s = self.sightings.lock().unwrap_or_else(|e| e.into_inner());
-            for (id, ip, at) in heard {
-                s.record(&id, ip, at);
+            for (id, ip, _, at) in &all {
+                s.record(id, *ip, *at);
             }
         }
-        let seen: Vec<(String, IpAddr, u16)> = self
-            .discovery
-            .read()
-            .await
-            .devices
+        let age = |at: u64| now_unix.saturating_sub(at);
+        let seen: Vec<(String, IpAddr, u16)> = all
             .iter()
-            .filter(|d| now_unix.saturating_sub(d.last_seen_unix_ms) < FRESH_MS)
-            .map(|d| (d.id.clone(), d.address, d.tcp_port))
+            .filter(|d| age(d.3) < FRESH_MS)
+            .map(|d| (d.0.clone(), d.1, d.2))
             .collect();
         // A phone counts as gone (its redial history and a manual-disconnect pause are dropped) only once it has
         // been silent for as long as discovery keeps it. Using the 20 s dial freshness here dropped the history in
         // every gap between two of the phone's 30 s announcements: a manual disconnect lasted one announcement and
         // the back-off restarted with each one.
-        let recent: Vec<String> = self
-            .discovery
-            .read()
-            .await
-            .devices
+        let recent: Vec<&str> = all
             .iter()
-            .filter(|d| now_unix.saturating_sub(d.last_seen_unix_ms) < crate::DEVICE_TTL_MS)
-            .map(|d| d.id.clone())
+            .filter(|d| age(d.3) < crate::DEVICE_TTL_MS)
+            .map(|d| d.0.as_str())
             .collect();
-        let ids: Vec<&str> = recent.iter().map(String::as_str).collect();
         let now = Instant::now();
         self.reconnect
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .keep_only(&ids);
+            .keep_only(&recent);
         for (id, ip, port) in &seen {
             let Ok(target) = parse_id(id) else { continue };
             if !matches!(self.store.get(&target), Ok(Some(_))) {
@@ -1711,6 +1706,26 @@ impl Daemon {
                 .await;
         }
         self.dial_back_tick(now).await;
+        if self
+            .reconnect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active()
+            || self.lock_fallback().active()
+        {
+            crate::reconnect::BUSY_EVERY
+        } else {
+            crate::reconnect::IDLE_EVERY
+        }
+    }
+
+    /// The automatic redial for the life of the service: a pass, then a wait that is 2 s while a redial is under
+    /// way and 30 s otherwise, cut short by an announcement or a link event (`reconnect::wake`).
+    pub async fn redial_forever(self: Arc<Self>) {
+        loop {
+            let next = self.reconnect_tick().await;
+            crate::reconnect::pause(next).await;
+        }
     }
 
     /// Dial back paired phones whose link was lost silently and that are not announcing: a sleeping phone's timers
@@ -2317,6 +2332,7 @@ impl Daemon {
             drop(core);
             if silent {
                 self.lock_fallback().lost(id, Instant::now());
+                crate::reconnect::wake(); // the dial-back is registered now: let the pass see it
             }
         }
     }

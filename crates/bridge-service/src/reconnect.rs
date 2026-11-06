@@ -12,6 +12,27 @@ const MAX_DELAY: Duration = Duration::from_secs(60);
 /// After this many failed tries in a row we wait for the phone to disappear and announce again.
 pub const MAX_TRIES: u32 = 12;
 
+/// Pass interval while a redial is under way (a drop, a back-off, a dial-back): redial latency is at most this.
+pub const BUSY_EVERY: Duration = Duration::from_secs(2);
+/// Pass interval with nothing to redial: all linked, nobody paired, or every try used up. A drop, a link event
+/// or an announcement from a phone ends the wait at once ([`wake`]), so this only bounds the housekeeping
+/// (forgetting phones that went quiet) and a missed wake-up.
+pub const IDLE_EVERY: Duration = Duration::from_secs(30);
+
+static WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Run the redial pass now: an announcement was heard or a link changed.
+pub fn wake() {
+    WAKE.notify_one();
+}
+
+/// Wait `span`, or less when [`wake`] is called; then a short coalescing wait so a burst of events costs one pass.
+pub async fn pause(span: Duration) {
+    if tokio::time::timeout(span, WAKE.notified()).await.is_ok() {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 #[derive(Debug)]
 struct Entry {
     tries: u32,
@@ -102,6 +123,18 @@ impl Book {
             .retain(|id, _| announcing.contains(&id.as_str()));
     }
 
+    /// Whether a redial is under way that a timer has to drive: a phone with tries left, or a pause that ends by
+    /// itself. A user's pause (no end) and a used-up budget wait for an announcement instead.
+    pub fn active(&self) -> bool {
+        self.entries.values().any(|e| {
+            if e.paused {
+                e.pause_until.is_some()
+            } else {
+                e.tries < MAX_TRIES
+            }
+        })
+    }
+
     /// Redial attempts made for this phone since its link dropped, and whether the user paused it.
     pub fn progress(&self, id: &str) -> (u32, bool) {
         self.entries
@@ -177,6 +210,11 @@ impl Fallback {
         self.known.remove(id);
     }
 
+    /// Whether a dial-back still has tries left (a timer has to drive it).
+    pub fn active(&self) -> bool {
+        self.lost.values().any(|e| e.tries < MAX_TRIES)
+    }
+
     /// Phones with a dial-back in progress.
     pub fn pending(&self) -> Vec<String> {
         let mut v: Vec<String> = self.lost.keys().cloned().collect();
@@ -205,6 +243,47 @@ mod tests {
     use super::*;
     fn addr(last: u8) -> (std::net::IpAddr, u16) {
         (std::net::IpAddr::from([192, 168, 1, last]), 1716)
+    }
+
+    #[tokio::test]
+    async fn a_wake_ends_the_wait_early() {
+        let t = std::time::Instant::now();
+        let waiting = tokio::spawn(pause(Duration::from_secs(120)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        wake();
+        tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_timer_is_only_needed_while_a_redial_has_tries_left() {
+        let t0 = Instant::now();
+        let mut b = Book::default();
+        assert!(!b.active(), "nothing known");
+        assert!(b.due("p", addr(5), t0));
+        assert!(b.active(), "a try is under way");
+        b.settled("p");
+        assert!(!b.active(), "connected again");
+        b.pause("p", t0);
+        assert!(!b.active(), "a user's pause waits for an announcement");
+        b.pause_for("p", t0, Duration::from_secs(600));
+        assert!(b.active(), "a bounded pause ends by itself");
+        b.settled("p");
+        let mut t = t0;
+        while b.due("q", addr(6), t) {
+            t += Duration::from_secs(61);
+        }
+        assert!(!b.active(), "the budget is used up");
+        let mut f = Fallback::default();
+        assert!(!f.active());
+        f.learn("p", addr(5).0, 1716);
+        f.lost("p", t0);
+        assert!(f.active());
+        f.settled("p");
+        assert!(!f.active());
     }
 
     #[test]

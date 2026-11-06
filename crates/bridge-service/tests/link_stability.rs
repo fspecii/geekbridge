@@ -93,6 +93,36 @@ async fn a_manual_disconnect_survives_the_gap_between_two_announcements() {
     assert!(rig.status().await.links.is_empty());
 }
 
+/// The redial pass only needs its 2 s timer while a redial is under way; with nothing to dial it waits long and is
+/// woken by announcements and link events instead (idle wake-ups, docs/performance.md).
+#[tokio::test]
+async fn the_redial_pass_waits_long_unless_a_redial_is_under_way() {
+    use bridge_service::reconnect::{BUSY_EVERY, IDLE_EVERY};
+    let rig = Rig::start().await;
+    assert_eq!(
+        rig.daemon.reconnect_tick().await,
+        IDLE_EVERY,
+        "nobody paired"
+    );
+    let phone = Phone::new();
+    drop(pair_phone(&rig, &phone).await);
+    settle(&rig).await;
+    let (addr, dials) = counting_refuser().await;
+    announce_aged(&rig, &phone, addr, 0).await;
+    assert_eq!(
+        rig.daemon.reconnect_tick().await,
+        BUSY_EVERY,
+        "a dial was made and its back-off is running"
+    );
+    timeout(Duration::from_secs(10), async {
+        while dials.load(Ordering::SeqCst) == 0 {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
 /// Same gap, back-off: a phone that announces but cannot be reached over TCP must be dialed with a growing delay, not
 /// once per announcement (each try is a TLS handshake and a radio wake-up on the phone).
 #[tokio::test]
@@ -154,6 +184,10 @@ async fn a_phone_that_cannot_announce_is_dialed_back_after_a_silent_loss() {
     };
     wait_connected(&rig, &phone).await;
     let answered = phone.answer(back);
+    // The real loop, started while all is well so that it is in its 30 s idle wait: the loss event must wake it, and
+    // the dial-back then keeps it at 2 s.
+    let redial = tokio::spawn(rig.daemon.clone().redial_forever());
+    sleep(Duration::from_millis(300)).await;
     // Silent loss: the path resets the flow (RST both ways) on the next packet; no goodbye, no announcement.
     proxy.update(|f| f.reset_after_bytes = Some(0));
     let _ = link
@@ -170,15 +204,13 @@ async fn a_phone_that_cannot_announce_is_dialed_back_after_a_silent_loss() {
     .await;
     drop(link);
     let dialed_back = async {
-        loop {
-            rig.daemon.reconnect_tick().await;
-            if answered.is_finished() {
-                break;
-            }
-            sleep(Duration::from_millis(250)).await;
+        while !answered.is_finished() {
+            sleep(Duration::from_millis(100)).await;
         }
     };
-    if timeout(Duration::from_secs(20), dialed_back).await.is_err() {
+    let late = timeout(Duration::from_secs(15), dialed_back).await.is_err();
+    redial.abort();
+    if late {
         panic!(
             "not dialed back: {:#?} {:#?}",
             rig.events().await,
