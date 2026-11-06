@@ -165,23 +165,46 @@ struct Stats {
     feature_req: AtomicU64,
     polls_slow: AtomicU64,
     poll_max_ms: AtomicU64,
+    // History completeness (threads checked), and the I/O-stress control pings.
+    hist_ok: AtomicU64,
+    hist_bad: AtomicU64,
+    hist_skip: AtomicU64,
+    hist_rounds: AtomicU64,
+    io_pings: AtomicU64,
+    io_over_1s: AtomicU64,
+    io_max_ms: AtomicU64,
+    io_fail: AtomicU64,
 }
 
-/// The stand-in phone's message history: 100 conversations of 200 messages (served 20 a page).
+/// The stand-in phone's message history: 100 conversations, served 20 a page. The first `HIST_DEEP` hold the
+/// service's per-conversation cap (2,000 messages, 100 pages each); the rest hold 40. Total 16,000 + 3,680, under
+/// the per-phone cap of 20,000, so a complete history is exactly checkable.
 const HIST_THREADS: u64 = 100;
-const HIST_DEPTH: u64 = 200;
+const HIST_DEEP: u64 = 8;
+const HIST_DEEP_DEPTH: u64 = 2000;
+const HIST_SHALLOW_DEPTH: u64 = 40;
 const HIST_FIRST: i64 = 100;
+const HIST_PAGE: usize = 20;
 static HIST_GEN: AtomicU64 = AtomicU64::new(0);
 
+fn hist_depth(thread: u64) -> u64 {
+    if thread < HIST_DEEP {
+        HIST_DEEP_DEPTH
+    } else {
+        HIST_SHALLOW_DEPTH
+    }
+}
+
+/// Dates of one link's history never overlap another link's (200,000 s apart, a history spans 120,000 s).
 fn hist_date(epoch: u64, thread: u64, k: u64) -> u64 {
-    1_700_000_000_000 + epoch * 50_000_000 + thread * 1_000 + (HIST_DEPTH - k) * 60_000
+    1_700_000_000_000 + epoch * 200_000_000 + thread * 1_000 + (HIST_DEEP_DEPTH - k) * 60_000
 }
 
 fn hist_msg(epoch: u64, thread: u64, k: u64) -> Value {
     json!({
         "addresses": [{"address": format!("+1555{:07}", thread)}], "body": format!("history {epoch}/{thread}/{k} hello there"),
         "date": hist_date(epoch, thread, k), "type": 1 + (k % 2), "read": 1,
-        "thread_id": HIST_FIRST as u64 + thread, "_id": epoch * 1_000_000 + thread * 1_000 + k, "event": 1,
+        "thread_id": HIST_FIRST as u64 + thread, "_id": epoch * 1_000_000 + thread * 10_000 + k, "event": 1,
     })
 }
 
@@ -318,9 +341,9 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
                             let tid = p.body.get("threadID").and_then(Value::as_i64).unwrap_or(0);
                             let start = p.body.get("rangeStartTimestamp").and_then(Value::as_u64);
                             let t = (tid - HIST_FIRST) as u64;
-                            let msgs: Vec<Value> = (0..HIST_DEPTH)
+                            let msgs: Vec<Value> = (0..hist_depth(t))
                                 .filter(|k| start.is_none_or(|s| hist_date(epoch, t, *k) <= s))
-                                .take(20)
+                                .take(HIST_PAGE)
                                 .map(|k| hist_msg(epoch, t, k))
                                 .collect();
                             if tid >= HIST_FIRST && t < HIST_THREADS {
@@ -1289,7 +1312,193 @@ async fn ring_round(
     let _ = std::fs::remove_file(f.scratch.join("call-xfer.bin"));
 }
 
-async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
+/// The held count and messages (newest last) of one conversation, from the Messages window's view.
+async fn thread_view(f: &Feat<'_>, id: &str, tid: i64, limit: usize) -> Option<ipc::Response> {
+    f.ctl
+        .call(Request::MessagesView {
+            device_id: Some(id.to_string()),
+            thread_id: Some(tid),
+            query: None,
+            message_limit: limit,
+        })
+        .await
+        .ok()
+}
+
+/// Per-conversation completeness: forget the phone's SMS (consent off and on), ask for the list, then page every
+/// conversation back to its end, one request per answer. Every conversation must then hold exactly what the
+/// stand-in phone has (2,000 for the deep ones, 40 for the rest), every message of this link's history, no gap.
+/// A link that changed meanwhile makes the check void (counted as skipped), not failed.
+async fn history_check(f: &Feat<'_>, p0: &Arc<Phone>, id: &str) {
+    use bridge_core::phone_view::MessagesView as View;
+    let out = f.scratch.parent().unwrap_or(f.scratch).join("history.log");
+    let log = |line: String| {
+        if let Ok(mut l) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&out)
+        {
+            let _ = writeln!(l, "{:.1}\t{line}", f.t0.elapsed().as_secs_f64());
+        }
+    };
+    if !f
+        .ctl
+        .status()
+        .await
+        .is_some_and(|s| s.paired.iter().any(|d| d.device_id == id))
+    {
+        // The stand-in phone is not paired (a failed re-pair leaves it so until the next one): nothing to check.
+        f.stats.hist_skip.fetch_add(HIST_THREADS, Relaxed);
+        log("history check void: the stand-in phone is not paired".into());
+        return;
+    }
+    // A consent change on a saturated disk can outlast the control deadline and finish afterwards (the service lets
+    // the work run to the end): then the store is cleared at an unknown moment and this check means nothing.
+    for on in [false, true] {
+        if !f
+            .ctl
+            .ok(Request::SetConsent {
+                device_id: p0.id(),
+                feature: ipc::Feature::Sms,
+                enabled: on,
+            })
+            .await
+        {
+            f.stats.hist_skip.fetch_add(HIST_THREADS, Relaxed);
+            log("history check void: the consent change did not finish in time".into());
+            return;
+        }
+    }
+    let _ = f
+        .ctl
+        .call(Request::MessagesRefresh {
+            device_id: id.to_string(),
+            thread_id: None,
+        })
+        .await;
+    let start = Instant::now();
+    let mut asked: Vec<(usize, Instant)> = vec![(usize::MAX, start); HIST_THREADS as usize];
+    let mut done = vec![false; HIST_THREADS as usize];
+    while start.elapsed() < Duration::from_secs(120) && done.iter().any(|d| !d) {
+        let mut moved = false;
+        for t in 0..HIST_THREADS {
+            let i = t as usize;
+            if done[i] {
+                continue;
+            }
+            let Some(Response::Messages(v)) = thread_view(f, id, HIST_FIRST + t as i64, 1).await
+            else {
+                continue;
+            };
+            let Some(sel) = v.selected.as_ref() else {
+                continue; // the list has not arrived yet
+            };
+            if sel.held as u64 >= hist_depth(t) || !sel.may_have_older {
+                done[i] = true;
+                continue;
+            }
+            let (last_held, at) = asked[i];
+            // One request per answer: ask again when the count moved, or when 16 s passed without an answer
+            // (the service lets a request go after 15 s).
+            if last_held != sel.held || at.elapsed() > Duration::from_secs(16) {
+                asked[i] = (sel.held, Instant::now());
+                moved = true;
+                let _ = f
+                    .ctl
+                    .call(Request::MessagesRefresh {
+                        device_id: id.to_string(),
+                        thread_id: Some(HIST_FIRST + t as i64),
+                    })
+                    .await;
+                f.stats.feature_req.fetch_add(1, Relaxed);
+            }
+        }
+        if !moved {
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
+    sleep(Duration::from_millis(500)).await;
+    f.stats.hist_rounds.fetch_add(1, Relaxed);
+    // The link's history number is read off the first conversation (other pumps, of the pairing rounds, count too).
+    let mut link_epoch: Option<u64> = None;
+    let (mut ok, mut bad, mut skip, mut absent) = (0u64, 0u64, 0u64, 0u64);
+    for t in 0..HIST_THREADS {
+        let want = hist_depth(t) as usize;
+        let tid = HIST_FIRST + t as i64;
+        let Some(Response::Messages(v)) = thread_view(f, id, tid, 2000).await else {
+            skip += 1;
+            continue;
+        };
+        let v: View = *v;
+        let Some(sel) = v.selected else {
+            bad += 1;
+            absent += 1;
+            log(format!(
+                "thread {tid}: no selected thread after the history burst"
+            ));
+            continue;
+        };
+        // Newest last: bodies read "history {epoch}/{thread}/{k}", so k must fall by one along the list.
+        let mut why = String::new();
+        let mut prev: Option<u64> = None;
+        for m in &sel.messages {
+            let parts: Vec<u64> = m
+                .body
+                .strip_prefix("history ")
+                .and_then(|r| r.split(' ').next())
+                .map(|r| r.split('/').filter_map(|n| n.parse().ok()).collect())
+                .unwrap_or_default();
+            let [e, th, k] = parts[..] else {
+                why = format!("unreadable body {:?}", m.body);
+                break;
+            };
+            if th != t {
+                why = format!("message {:?} from another conversation", m.body);
+                break;
+            }
+            if *link_epoch.get_or_insert(e) != e {
+                // Two links' histories in one store: the link changed during the check. Void, not a failure.
+                why = "mixed".into();
+                break;
+            }
+            if prev.is_some_and(|p| p != k + 1) {
+                why = format!("gap in the held history before k={k} (previous {prev:?})");
+                break;
+            }
+            prev = Some(k);
+        }
+        if why.is_empty() && sel.held != want {
+            why = format!("holds {} of {want} messages", sel.held);
+        }
+        if why.is_empty() && prev != Some(0) && !sel.messages.is_empty() {
+            why = format!("newest message is k={prev:?}, not 0");
+        }
+        if why == "mixed" {
+            skip += 1;
+            log(format!("thread {tid}: histories of two links, check void"));
+        } else if why.is_empty() {
+            ok += 1;
+        } else {
+            bad += 1;
+            log(format!("thread {tid}: {why}"));
+        }
+    }
+    if absent == HIST_THREADS {
+        // Nothing held for any conversation: the link or the consent went away meanwhile (void, not incomplete).
+        bad -= absent;
+        skip += absent;
+        log("history check void: no conversation held at the end".into());
+    }
+    f.stats.hist_ok.fetch_add(ok, Relaxed);
+    f.stats.hist_bad.fetch_add(bad, Relaxed);
+    f.stats.hist_skip.fetch_add(skip, Relaxed);
+    log(format!(
+        "history check: {ok} complete, {bad} incomplete, {skip} skipped of {HIST_THREADS} conversations, {:.1} s",
+        start.elapsed().as_secs_f64()
+    ));
+}
+
+async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>, round: u64) {
     use bridge_core::privacy::PrivacyKey;
     let id = p0.id();
     let reqs = [
@@ -1321,6 +1530,9 @@ async fn data_requests(f: &Feat<'_>, rng: &mut Rng, p0: &Arc<Phone>) {
         },
         Request::PrivacyStatus,
     ];
+    if round.is_multiple_of(4) {
+        history_check(f, p0, &id).await;
+    }
     // Message history burst: the thread list, then every conversation asked for older pages (100 x 20 and more).
     let _ = f
         .ctl
@@ -1398,8 +1610,10 @@ async fn repair_p0(
             device_id: id.clone(),
         })
         .await;
+    // 60 s: the unpair deletes the trust record, then the consent files, each a lock and an fsync (a saturated disk
+    // takes tens of seconds for one; the I/O-stress windows measure 32 s for a small durable write).
     f.ctl
-        .wait(Duration::from_secs(15), |s| {
+        .wait(Duration::from_secs(60), |s| {
             !s.paired.iter().any(|d| d.device_id == id)
         })
         .await;
@@ -1408,6 +1622,7 @@ async fn repair_p0(
     let mut ok = false;
     // The step that stopped the last attempt, written to the event line.
     let mut why = "";
+    let (mut busy_waits, mut last_err) = (0u32, String::new());
     for _ in 0..3 {
         let _ = f
             .ctl
@@ -1416,14 +1631,35 @@ async fn repair_p0(
             })
             .await;
         why = "connect";
-        if !f
-            .ctl
-            .ok(Request::Connect {
-                device_id: id.clone(),
-                endpoint: Some(server.endpoint()),
-            })
-            .await
-        {
+        // "Still being unpaired, try again in a moment" is the service's answer while the unpair finishes its
+        // disk work: retried for a minute, the error text kept.
+        let mut connected_call = false;
+        let begun = Instant::now();
+        while begun.elapsed() < Duration::from_secs(60) {
+            match f
+                .ctl
+                .call(Request::Connect {
+                    device_id: id.clone(),
+                    endpoint: Some(server.endpoint()),
+                })
+                .await
+            {
+                Ok(Response::Ack) => {
+                    connected_call = true;
+                    break;
+                }
+                Err(ipc::IpcError::Service(e)) => {
+                    busy_waits += 1;
+                    last_err = format!("{e:?}");
+                    sleep(Duration::from_secs(2)).await;
+                }
+                other => {
+                    last_err = format!("{other:?}");
+                    break;
+                }
+            }
+        }
+        if !connected_call {
             sleep(Duration::from_secs(2)).await;
             continue;
         }
@@ -1469,7 +1705,7 @@ async fn repair_p0(
         }
         why = "connected";
         if f.ctl
-            .wait(Duration::from_secs(25), |s| {
+            .wait(Duration::from_secs(90), |s| {
                 link_of(s, &id).is_some_and(|l| l.phase == LinkPhase::Connected)
             })
             .await
@@ -1481,7 +1717,7 @@ async fn repair_p0(
         if let Some(st) = f.ctl.status().await {
             // What the service thought of the link when the pairing did not reach "connected".
             let _ = std::fs::write(
-                f.scratch.join(format!(
+                f.scratch.parent().unwrap_or(f.scratch).join(format!(
                     "repair-fail-{:.0}.json",
                     f.t0.elapsed().as_secs_f64()
                 )),
@@ -1503,6 +1739,13 @@ async fn repair_p0(
         if ok { "ok" } else { "FAIL" },
         t.elapsed().as_secs_f64()
     );
+    if busy_waits > 0 || !ok {
+        let _ = writeln!(
+            ev,
+            "{:.1}\trepair-p0-detail\tbusy answers {busy_waits}\t{last_err}\t",
+            f.t0.elapsed().as_secs_f64()
+        );
+    }
 }
 
 async fn feature_round(
@@ -1528,7 +1771,7 @@ async fn feature_round(
         }
     }
     if !skip("data") && round % 5 == 1 {
-        data_requests(f, rng, p0).await;
+        data_requests(f, rng, p0, round).await;
     }
     if !skip("rings") && round.is_multiple_of(3) {
         ring_round(f, rng, server, p0, ev, round.is_multiple_of(9)).await;
@@ -1733,6 +1976,136 @@ async fn soak_real_service() {
         })
     };
 
+    // I/O-stress windows (GEEKBRIDGE_SOAK_IO=0 turns them off): two `dd` writers (1 GiB each, fsync, in a loop) on the
+    // filesystem of the service's state, while the control API is pinged every 200 ms. The slowest ping is the number
+    // that matters (soak-5 saw one of 35 s with the old synchronous state writes).
+    let io = {
+        let (ctl, stats, dir) = (ctl.clone(), stats.clone(), out.clone());
+        let window = env_u64("GEEKBRIDGE_SOAK_IO_WINDOW", 240);
+        let on = std::env::var("GEEKBRIDGE_SOAK_IO").is_ok_and(|v| v != "0");
+        tokio::spawn(async move {
+            if !on {
+                return;
+            }
+            let mut log = std::fs::File::create(dir.join("io-stress.log")).unwrap();
+            for (n, frac) in [0.30f64, 0.55, 0.80].into_iter().enumerate() {
+                let at = Duration::from_secs_f64(secs as f64 * frac);
+                sleep(at.saturating_sub(t0.elapsed())).await;
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                // 256 MiB of pseudo-random bytes (the disk may compress zeros away), written four times a pass.
+                let src = dir.join("io-stress-src.bin");
+                if !src.exists() {
+                    tokio::task::block_in_place(|| {
+                        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+                        let buf: Vec<u8> = (0..256usize << 20)
+                            .map(|_| {
+                                x ^= x << 13;
+                                x ^= x >> 7;
+                                x ^= x << 17;
+                                (x >> 24) as u8
+                            })
+                            .collect();
+                        let _ = std::fs::write(&src, buf);
+                    });
+                }
+                let writers: Vec<_> = (0..2)
+                    .map(|w| {
+                        let (stop, file, src) = (
+                            stop.clone(),
+                            dir.join(format!("io-stress-{w}.bin")),
+                            src.clone(),
+                        );
+                        std::thread::spawn(move || {
+                            let mut gib = 0u64;
+                            'run: while !stop.load(Relaxed) {
+                                for part in 0..4 {
+                                    let mut cmd = Command::new("dd");
+                                    cmd.arg(format!("if={}", src.display()))
+                                        .arg(format!("of={}", file.display()))
+                                        .args(["bs=1M", "status=none"]);
+                                    if part == 0 {
+                                        cmd.arg("conv=fsync");
+                                    } else {
+                                        cmd.args(["oflag=append", "conv=notrunc,fsync"]);
+                                    }
+                                    let Ok(mut c) = cmd.stdin(Stdio::null()).spawn() else {
+                                        break 'run;
+                                    };
+                                    loop {
+                                        if stop.load(Relaxed) {
+                                            let _ = c.kill();
+                                            let _ = c.wait();
+                                            break 'run;
+                                        }
+                                        match c.try_wait() {
+                                            Ok(None) => {
+                                                std::thread::sleep(Duration::from_millis(50))
+                                            }
+                                            _ => break,
+                                        }
+                                    }
+                                }
+                                gib += 1;
+                            }
+                            let _ = std::fs::remove_file(&file);
+                            gib
+                        })
+                    })
+                    .collect();
+                let begin = Instant::now();
+                let (mut pings, mut worst, mut fails, mut over) = (0u64, 0u64, 0u64, 0u64);
+                let mut lat: Vec<u64> = Vec::new();
+                while begin.elapsed() < Duration::from_secs(window) {
+                    let request = match pings % 3 {
+                        0 => Request::Status,
+                        1 => Request::ShareStatus,
+                        _ => Request::ClipboardStatus,
+                    };
+                    let started = Instant::now();
+                    let r = ctl.call(request).await;
+                    let ms = started.elapsed().as_millis() as u64;
+                    pings += 1;
+                    lat.push(ms);
+                    worst = worst.max(ms);
+                    stats.io_pings.fetch_add(1, Relaxed);
+                    stats.io_max_ms.fetch_max(ms, Relaxed);
+                    if r.is_err() {
+                        fails += 1;
+                        stats.io_fail.fetch_add(1, Relaxed);
+                    }
+                    if ms > 1000 {
+                        over += 1;
+                        stats.io_over_1s.fetch_add(1, Relaxed);
+                        let _ = writeln!(
+                            log,
+                            "window {n}: ping {pings} took {ms} ms (ok {})",
+                            r.is_ok()
+                        );
+                    }
+                    sleep(Duration::from_millis(200).saturating_sub(started.elapsed())).await;
+                }
+                stop.store(true, Relaxed);
+                let gib: u64 = writers.into_iter().filter_map(|w| w.join().ok()).sum();
+                let _ = std::fs::remove_file(&src);
+                lat.sort_unstable();
+                let q = |p: f64| {
+                    lat.get(((lat.len() as f64 * p) as usize).min(lat.len().saturating_sub(1)))
+                        .copied()
+                        .unwrap_or(0)
+                };
+                let _ = writeln!(
+                    log,
+                    "window {n}: {:.0} s, {pings} pings, {fails} failed, {over} over 1 s, p50 {} p99 {} max {worst} ms, \
+                     {gib} GiB written and synced; load {}",
+                    begin.elapsed().as_secs_f64(),
+                    q(0.5),
+                    q(0.99),
+                    read_trim("/proc/loadavg")
+                );
+            }
+        })
+    };
+
     // Sampler task.
     let samp = {
         let (sampler, ctl, stats) = (sampler.clone(), ctl.clone(), stats.clone());
@@ -1865,29 +2238,46 @@ async fn soak_real_service() {
             };
             let mut srv = PhoneServer::start(&phone, faults, seed ^ round).await;
             let mut ok = false;
-            if ctl
-                .ok(Request::Connect {
-                    device_id: phone.id(),
-                    endpoint: Some(srv.endpoint()),
-                })
-                .await
-                && ctl
+            // The step that stopped this pairing, written to the event line (with a status dump in the run dir).
+            let mut why = "connect";
+            'pairing: {
+                if !ctl
+                    .ok(Request::Connect {
+                        device_id: phone.id(),
+                        endpoint: Some(srv.endpoint()),
+                    })
+                    .await
+                {
+                    break 'pairing;
+                }
+                why = "unpaired-phase";
+                if !ctl
                     .wait(Duration::from_secs(20), |s| {
                         link_of(s, &phone.id()).is_some_and(|l| l.phase == LinkPhase::Unpaired)
                     })
                     .await
-                && ctl
+                {
+                    break 'pairing;
+                }
+                why = "pair";
+                if !ctl
                     .ok(Request::Pair {
                         device_id: phone.id(),
                         mode: PairMode::Request,
                     })
                     .await
-                && ctl
+                {
+                    break 'pairing;
+                }
+                why = "challenge";
+                if !ctl
                     .wait(Duration::from_secs(20), |s| {
                         s.challenges.iter().any(|c| !c.challenge_id.is_empty())
                     })
                     .await
-            {
+                {
+                    break 'pairing;
+                }
                 if let Some(c) = ctl
                     .status()
                     .await
@@ -1895,8 +2285,10 @@ async fn soak_real_service() {
                 {
                     let _ = ctl.ok(Request::Approve { challenge_id: c }).await;
                 }
+                why = "link";
                 if let Ok(Some(link)) = timeout(Duration::from_secs(25), srv.links.recv()).await {
                     let pump = spawn_pump(link, stats.clone());
+                    why = "connected";
                     if ctl
                         .wait(Duration::from_secs(20), |s| {
                             link_of(s, &phone.id()).is_some_and(|l| l.phase == LinkPhase::Connected)
@@ -1925,6 +2317,30 @@ async fn soak_real_service() {
                     }
                     drop(pump);
                 }
+            }
+            // A pairing that missed the 20 s: does it complete late (slow disk) or is it lost?
+            let mut late = String::new();
+            if !ok && why == "connected" {
+                let t_late = Instant::now();
+                let done = ctl
+                    .wait(Duration::from_secs(90), |s| {
+                        link_of(s, &phone.id()).is_some_and(|l| l.phase == LinkPhase::Connected)
+                    })
+                    .await;
+                late = if done {
+                    format!(
+                        " late-ok after {:.0} s more",
+                        t_late.elapsed().as_secs_f64()
+                    )
+                } else {
+                    " never within 90 s more".to_string()
+                };
+            }
+            if !ok && let Some(st) = ctl.status().await {
+                let _ = std::fs::write(
+                    out.join(format!("pair-fail-{:.0}.json", t0.elapsed().as_secs_f64())),
+                    serde_json::to_string_pretty(&st).unwrap_or_default(),
+                );
             }
             // Whatever happened, leave nothing paired or half-open for this identity.
             // Retried: a control call can fail while the service is stalled (see the report).
@@ -1965,9 +2381,14 @@ async fn soak_real_service() {
             }
             let _ = writeln!(
                 events_log,
-                "{:.1}\tpair\t{}\t{}\t{:.1}",
+                "{:.1}\tpair\t{}{}\t{}\t{:.1}",
                 t0.elapsed().as_secs_f64(),
                 if faulty { "faulty" } else { "clean" },
+                if ok {
+                    String::new()
+                } else {
+                    format!(" ({why}{late})")
+                },
                 if ok { "ok" } else { "FAIL" },
                 t.elapsed().as_secs_f64()
             );
@@ -2063,8 +2484,35 @@ async fn soak_real_service() {
     }
     let _ = child.kill();
     let _ = child.wait();
+    io.abort();
+    let g = |a: &AtomicU64| a.load(Relaxed);
+    let summary = format!(
+        "history: {} conversations complete, {} incomplete, {} skipped in {} checks\n\
+         io-stress: {} pings, {} failed, {} over 1 s, slowest {} ms\n",
+        g(&stats.hist_ok),
+        g(&stats.hist_bad),
+        g(&stats.hist_skip),
+        g(&stats.hist_rounds),
+        g(&stats.io_pings),
+        g(&stats.io_fail),
+        g(&stats.io_over_1s),
+        g(&stats.io_max_ms)
+    );
+    let _ = std::fs::write(out.join("extras.txt"), &summary);
+    eprintln!("{summary}");
     std::fs::write(out.join("done"), if alive { "alive\n" } else { "DIED\n" }).unwrap();
     assert!(alive, "the service died during the soak; see service.log");
+    assert_eq!(
+        g(&stats.hist_bad),
+        0,
+        "incomplete message history; see history.log"
+    );
+    assert!(
+        g(&stats.io_max_ms) <= env_u64("GEEKBRIDGE_SOAK_IO_MAX_MS", 5000)
+            || g(&stats.io_pings) == 0,
+        "a control call took {} ms under the disk load; see io-stress.log",
+        g(&stats.io_max_ms)
+    );
 }
 
 fn unsafe_term(pid: u32) -> std::io::Result<()> {

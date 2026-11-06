@@ -82,12 +82,14 @@ if [[ "${SOAK_UPDATE_MOCK:-0}" == 1 ]]; then
   sleep 0.5
 fi
 echo "df before:"; df -h "$GB_TMP" | tail -1
-GEEKBRIDGE_SOAK_FEATURES=1 GEEKBRIDGE_SOAK_AUDIO_RUN="$SBX/xdg" GEEKBRIDGE_SOAK_OUT="$OUT/run" GEEKBRIDGE_SOAK_SECS="$SECS" \
+# SOAK_IO=1: three 4 minute windows of two fsyncing dd writers while the control API is pinged every 200 ms.
+GEEKBRIDGE_SOAK_IO="${SOAK_IO:-0}" GEEKBRIDGE_SOAK_FEATURES=1 GEEKBRIDGE_SOAK_AUDIO_RUN="$SBX/xdg" GEEKBRIDGE_SOAK_OUT="$OUT/run" GEEKBRIDGE_SOAK_SECS="$SECS" \
   XDG_RUNTIME_DIR= bash -c 'mkdir -p "$GEEKBRIDGE_SOAK_OUT" && exec cargo test --release --locked -p bridge-service --test soak_real -- --ignored --nocapture'
 rc=$?
 R="$OUT/run"
 cp "$R"/*.json "$R"/*.trace "$DIST"/ 2>/dev/null
-cp "$R"/samples.csv "$R"/events.tsv "$R"/threads-idle.txt "$R"/service.log "$R"/poll-errors.log "$R"/poll-diag.log "$DIST"/ 2>/dev/null
+cp "$R"/samples.csv "$R"/events.tsv "$R"/threads-idle.txt "$R"/service.log "$R"/poll-errors.log "$R"/poll-diag.log \
+  "$R"/history.log "$R"/io-stress.log "$R"/extras.txt "$DIST"/ 2>/dev/null
 cp "$SBX/log"/*.log "$DIST"/ 2>/dev/null
 python3 -I scripts/soak-fit.py "$DIST/samples.csv" --events "$DIST/events.tsv" --poll-errors "$DIST/poll-errors.log" | tee "$DIST/verdict.md"
 fit=${PIPESTATUS[0]}
