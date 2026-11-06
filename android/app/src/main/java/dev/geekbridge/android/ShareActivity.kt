@@ -28,6 +28,9 @@ class ShareActivity : Activity() {
     private lateinit var box: LinearLayout
     private var request: ShareRequest = ShareRequest.Invalid("")
     private var uris: List<Uri> = emptyList()
+
+    /** Set when the user picked a "Send to <computer>" shortcut in the Share sheet. */
+    private var shortcutId: String? = null
     private val connectTried = HashSet<String>()
     private var asked = false
 
@@ -122,6 +125,7 @@ class ShareActivity : Activity() {
     }
 
     private fun parse(i: Intent) {
+        shortcutId = i.getStringExtra(Intent.EXTRA_SHORTCUT_ID)
         val streams = ArrayList<Uri>()
         if (i.action == Intent.ACTION_SEND_MULTIPLE) {
             @Suppress("DEPRECATION")
@@ -272,7 +276,9 @@ class ShareActivity : Activity() {
             }
             targets.isEmpty() -> noComputer()
             else -> {
-                val choice = TargetPicker.autoChoice(targets)
+                // A tapped shortcut names its computer: wait for that one, never fall back to another.
+                val named = TargetPicker.forShortcut(targets, shortcutId)
+                val choice = named ?: TargetPicker.autoChoice(targets)
                 if (choice?.connectionId != null) {
                     send(choice)
                     return

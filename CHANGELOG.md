@@ -11,6 +11,7 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   name), and opens the app or the pairing step on a tap.
 - Android: when Android refuses to restart the background connection after a reboot or an update, a quiet **Tap to
   reconnect** notification appears instead of silence, and goes away once the connection is back.
+- Android: each linked computer now appears by name at the top of the Share sheet, so one tap on "Send to <computer>" sends the file or text straight there (Android 10 and later; the entry holds only the computer's name and goes away when you unlink it)
 
 ## [0.1.0] - 2026-11-03
 

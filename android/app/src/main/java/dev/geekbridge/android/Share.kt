@@ -342,6 +342,10 @@ object TargetPicker {
         return out
     }
 
+    /** The computer a tapped Share-sheet shortcut names, if it is still paired (it is then the only candidate). */
+    fun forShortcut(targets: List<ShareTarget>, shortcutId: String?): ShareTarget? =
+        ShareShortcuts.deviceIdOf(shortcutId)?.let { id -> targets.firstOrNull { it.deviceId == id } }
+
     /** The one unambiguous choice, if there is exactly one usable target. */
     fun autoChoice(targets: List<ShareTarget>): ShareTarget? {
         val connected = targets.filter { it.connectionId != null }

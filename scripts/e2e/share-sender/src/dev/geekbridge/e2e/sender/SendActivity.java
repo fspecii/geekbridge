@@ -14,7 +14,7 @@ import java.util.ArrayList;
 /**
  * Starts GeekBridge's ShareActivity like a Gallery, Browser or Files app does and finishes at once.
  *   am start -n dev.geekbridge.e2e.sender/.SendActivity --es uris "URI,URI" [--es type image/jpeg] [--es text TEXT]
- *            [--es action SEND|SEND_MULTIPLE] [--ez nostream true] [--es to dev.geekbridge.android/.ShareActivity]
+ *            [--es action SEND|SEND_MULTIPLE] [--ez chooser true] [--ez nostream true] [--es to dev.geekbridge.android/.ShareActivity]
  * uris: comma separated content:// Uris. One Uri is sent as EXTRA_STREAM; with action SEND_MULTIPLE (or several Uris)
  * as an ArrayList in EXTRA_STREAM plus ClipData. Without uris, text goes out as EXTRA_TEXT.
  */
@@ -42,8 +42,14 @@ public final class SendActivity extends Activity {
             out.setClipData(clip);
             out.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
         }
-        out.setComponent(ComponentName.unflattenFromString(to != null ? to : "dev.geekbridge.android/.ShareActivity"));
         Log.i(GenProvider.TAG, "start " + out.getAction() + " uris=" + uris.size());
+        if (in.getBooleanExtra("chooser", false)) {
+            // The system Share sheet, with its Direct Share row (sharing shortcuts).
+            startActivity(Intent.createChooser(out, null));
+            finish();
+            return;
+        }
+        out.setComponent(ComponentName.unflattenFromString(to != null ? to : "dev.geekbridge.android/.ShareActivity"));
         startActivity(out);
         finish();
     }

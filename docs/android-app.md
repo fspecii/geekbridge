@@ -59,6 +59,13 @@ and response size). Entered text is excluded from saved instance state, so rotat
 `*/*`, `text/plain`, `image/*`) from Gallery, Browser, Files and so on. It uses the KDE Connect `share` plugin through
 the `share_*` native actions (see [android-contract.md](android-contract.md)).
 
+- **Direct Share row.** On Android 10 and later each linked computer also gets its own "Send to <name>" entry at the top
+  of the Share sheet (`ShareShortcuts.kt`, `res/xml/shortcuts.xml`: a long-lived sharing shortcut per computer, at most 4,
+  matched to `ShareActivity`; the platform framework API, no new dependency). A shortcut holds only the computer's name and an
+  id built from its device id. It is republished when the paired list changes (pair, unpair, rename) and removed on unpair;
+  Android drops it with "Clear data". Tapping one opens `ShareActivity` with that computer preselected: it sends as soon as
+  that computer is connected (never to another one), through the same consent, "receive" permission and early-open path.
+  The share-target declaration is read by Android from the launcher activity, so `android.app.shortcuts` is on `HomeActivity`.
 - **Sending.** Files: only `content://` Uris are accepted (a `file://` Uri could point at this app's private files).
   Each is opened with `ContentResolver.openFileDescriptor(uri, "r")`; the descriptor number goes to the Rust core,
   which duplicates it and streams from it, so file contents are never loaded into memory by Kotlin or passed through

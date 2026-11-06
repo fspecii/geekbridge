@@ -104,6 +104,7 @@ object AppState {
         if (before == 0 && paired.isNotEmpty()) { keepConnected = true; endPairingGrace() }
         p()?.edit()?.putInt("paired_count", paired.size)?.putString("paired_names", names.joinToString("\n"))
             ?.putString("paired_peers", paired.take(MAX_NAMES).joinToString("\n") { it.deviceId + "\t" + it.name.ifEmpty { "Computer" }.replace(Regex("[\\n\\t]"), " ").take(NAME_CHARS) })?.apply()
+        appContext?.let { ShareShortcuts.sync(it, pairedPeers) }
         // Starting or stopping the background connection follows the paired count (event-driven, no polling).
         if ((before > 0) != (paired.isNotEmpty())) appContext?.let { LinkService.sync(it) }
     }

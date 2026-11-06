@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sharing shortcuts: the Share sheet's top row offers "Send to <computer>" for each linked computer (see ShareShortcuts). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <share-target android:targetClass="dev.geekbridge.android.ShareActivity">
+        <data android:mimeType="*/*" />
+        <category android:name="dev.geekbridge.android.category.SEND_TO_COMPUTER" />
+    </share-target>
+</shortcuts>

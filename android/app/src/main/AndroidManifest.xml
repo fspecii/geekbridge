@@ -102,6 +102,8 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Android reads share targets (Share sheet shortcuts, see ShareShortcuts) from the launcher activity. -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
 
         <!-- Setup wizard and permission master; opened from Home. -->
