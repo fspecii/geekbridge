@@ -167,6 +167,7 @@ link_up() { # seconds
 phone_config() {
   local grants="$1" ph="$2" b=false n=false c=false
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   # shellcheck disable=SC2086
   write_grants $grants
   write_phonedata "$b" "$n" "$ph"

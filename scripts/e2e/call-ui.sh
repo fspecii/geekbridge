@@ -174,6 +174,7 @@ XML
 }
 write_calls_prefs() {
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   write_grants_calls
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_calls.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>

@@ -163,6 +163,7 @@ phone_config() {
   local listener=0
   listener_granted && listener=1 && $ADB shell cmd notification disallow_listener "$MIRROR_SVC" >/dev/null 2>&1
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   # shellcheck disable=SC2086
   write_grants $grants
   write_phonedata "$b" "$n" "$@"

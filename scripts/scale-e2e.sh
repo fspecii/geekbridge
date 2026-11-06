@@ -111,6 +111,7 @@ stage_measure() {
   local cal_ids; cal_ids="$($ADB shell content query --uri content://com.android.calendar/calendars --projection _id | sed -n 's/.*_id=\([0-9]*\).*/\1/p' | paste -sd, -)"
   local setlist; setlist="$(for i in ${cal_ids//,/ }; do printf '<string>%s</string>' "$i"; done)"
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -212,6 +213,7 @@ stage_cases() {
   RO="$($ADB shell content query --uri $q --projection _id:account_name | sed -n 's/.*_id=\([0-9]*\), account_name=cc2.*/\1/p' | head -1)"
   [[ -n "$OWN" && -n "$RO" ]] || { rec cases FAIL "calendars not found (own=$OWN ro=$RO)"; return 1; }
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
@@ -244,7 +246,7 @@ XML
     ((round == 1)) || break
     echo "cases_sync: no data after 100 s (events $n, contacts $c, link $(link_phases)): starting the phone app afresh" >>"$LOGS/e2e-cases-notes.txt"
     ctl status | head -c 1500 >>"$LOGS/e2e-cases-notes.txt"; $ADB logcat -d -s GB:I 2>/dev/null | tail -15 >>"$LOGS/e2e-cases-notes.txt"
-    $ADB shell am force-stop $PKG; sleep 2; goto_home; sleep 3; ensure_link || true
+    $ADB shell am force-stop $PKG; sleep 2; mark_setup_done; goto_home; sleep 3; ensure_link || true
     desk_dial; wait_for 30 is_connected || true
     for f in contacts calendar calendar_edit; do ctl consent "$PHONE_ID" $f off >/dev/null; ctl consent "$PHONE_ID" $f on >/dev/null; done
   done
@@ -317,6 +319,7 @@ XML
   for f in contacts calendar; do ctl consent "$PHONE_ID" $f on >/dev/null; done
   for _ in $(seq 40); do n="$(count_of 'd["devices"][0]["events_count"]')"; [[ "${n:-0}" -ge 5 ]] 2>/dev/null && break; sleep 1; done
   $ADB shell am force-stop $PKG; sleep 1
+  mark_setup_done
   $ADB shell "run-as $PKG sh -c 'cat > shared_prefs/geekbridge_phonedata.xml'" <<XML
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>

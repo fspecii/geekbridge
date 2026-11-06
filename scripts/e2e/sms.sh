@@ -162,6 +162,7 @@ phone_config() {
   $ADB shell am force-stop $PKG; sleep 1
   # The old link must be seen going down, or the status read right after shows the previous declaration.
   wait_for 20 not_connected
+  mark_setup_done
   # shellcheck disable=SC2086
   write_grants $grants
   write_phonedata "$sms" "$special"

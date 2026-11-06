@@ -187,6 +187,21 @@ stage_env() {
 }
 
 # ---------------------------------------------------------------- shared navigation
+# A restarted app (force-stop, then Home) shows the first-run wizard again when "setup_finished" is not in its state preferences;
+# the wizard then covers the screen of the step that follows (run 42194747065: 'Step 3 of 9, Battery' instead of the dial
+# question). The app must be stopped. Adds the flag and keeps every other value in the file.
+mark_setup_done() {
+  local f="${RUN:-${TMPDIR:-/tmp}}/state-setup-done.xml"
+  $ADB shell "run-as $PKG cat shared_prefs/geekbridge_state.xml" 2>/dev/null | tr -d '\r' | python3 -I -c '
+import re, sys
+x = sys.stdin.read()
+if "<map" not in x:
+    x = "<?xml version=\x271.0\x27 encoding=\x27utf-8\x27 standalone=\x27yes\x27 ?>\n<map>\n</map>\n"
+x = re.sub(r"<boolean name=\"setup_finished\" value=\"[a-z]+\" />\s*", "", x)
+x = x.replace("</map>", "    <boolean name=\"setup_finished\" value=\"true\" />\n</map>")
+sys.stdout.write(x)' >"$f"
+  $ADB shell "run-as $PKG sh -c 'mkdir -p shared_prefs && cat > shared_prefs/geekbridge_state.xml'" <"$f"
+}
 goto_home() { $ADB shell am start -f 0x04000000 -n "$PKG/.HomeActivity" >/dev/null; sleep 2; }
 goto_diag() {
   goto_home
