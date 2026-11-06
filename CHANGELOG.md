@@ -6,13 +6,6 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
-### Added
-- Linux per-user install: **Install update** in the Settings update card and `geekbridge-ctl update install [--yes] [--dry-run]`
-  unpack the verified download beside the current version, check it (contents, executables, `geekbridge-service --version`),
-  switch atomically and keep the old version for `geekbridge-ctl update rollback`. The service is restarted only when you
-  confirm and never during a call. Package installs and Windows/macOS stay download only
-  ([design](docs/design/desktop-self-update.md)).
-
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android
@@ -25,7 +18,7 @@ builds have not been run on real hardware (see "Known limitations").
 - Answer or decline phone calls from your computer
 - Read and send texts, see your contacts, and keep your Google Calendar in sync with the desktop
 - See recent photos, battery level and notifications from your phone on your computer, each off until you allow it
-- Pair by scanning a QR code; updates are checked against GitHub and verified before you install
+- Pair by scanning a QR code; updates are checked against GitHub and verified; Linux per-user installs can install them with a way back
 
 ### Added
 
@@ -95,8 +88,9 @@ builds have not been run on real hardware (see "Known limitations").
   `scripts/android-perf.sh` ([docs/android-perf.md](docs/android-perf.md)).
 
 **Updates**
-- Update check against GitHub Releases on desktop and Android, SHA-256 verified download, never installs by itself;
-  the Android self-update was verified end to end on the emulator ([docs/updates.md](docs/updates.md)).
+- Update check against GitHub Releases on desktop and Android, SHA-256 verified download, nothing installs without your click;
+  the Android self-update was verified end to end on the emulator. On a Linux per-user install the desktop can also
+  switch the verified download in for you (see "Since the first release candidate") ([docs/updates.md](docs/updates.md)).
 
 **Linux and Hyprland / Omarchy integration**
 - Installer (`install.sh`, `.deb`) with a systemd user unit and XDG autostart; application entries for every app and a
@@ -124,6 +118,31 @@ builds have not been run on real hardware (see "Known limitations").
   either side connects; a service shutdown makes it redial with the normal back-off. The computer's secure identity also
   carries its real listening port (`geekbridgePort`) so a phone that only knows its address no longer guesses 1716.
   Stock KDE Connect peers see neither. See docs/reports/goodbye-and-port-hint.md.
+- Linux per-user install: **Install update** in the Settings update card and `geekbridge-ctl update install [--yes] [--dry-run]`
+  unpack the verified download beside the current version, check it (contents, executables, `geekbridge-service --version`),
+  switch atomically and keep the old version for `geekbridge-ctl update rollback`. The service is restarted only when you
+  confirm and never during a call; if the new version does not report itself within 20 s the old one comes back. Package
+  installs (`.deb`, Arch), Windows and macOS stay download only. The archive is verified by its SHA-256 from the same release,
+  not by a signature, so this is as trustworthy as downloading it by hand, only safer to apply. Tested with a kill at random
+  moments and a security review, in sandboxes; not yet run against a real GitHub release
+  ([design](docs/design/desktop-self-update.md), [review](docs/reports/security-review-9.md)).
+- Android: an **Update available** chip on Home when a newer stable release is known, and an optional update notification
+  (off by default). The check runs at most daily, backs off after a failure and waits for an unmetered network; nothing is
+  installed from the chip. Tested on the emulator and in unit tests; not seen on a phone.
+- Crash and power-loss safety of the desktop service: temporary files of a killed writer are swept at start, a download killed
+  half way leaves no partial or empty file, finished files are flushed before their name appears, an in-call card closes when the
+  service is gone for good, the pairing QR token no longer outlives a clock set back, and `geekbridge-ctl doctor` names a full or
+  read-only state folder. Checked with `kill -9` at random moments, a full disk, a read-only folder and clock steps in sandboxes
+  (1352 checks); a real power cut was not simulated ([report](docs/reports/crash-safety.md)).
+- Accessibility fixes from an audit: the in-call card no longer re-announces its clock every second to a screen reader,
+  "Decline with message" has a focus ring and the 12 pt minimum, dial pad keys are named, Android show/hide buttons announce
+  their state and TalkBack focus survives a rebuilt page. Checked with headless tests and code review; no TalkBack, Orca or
+  NVDA session has been run ([report](docs/reports/accessibility-audit.md)).
+- Upgrading from 0.1.0-rc.1 keeps pairings, consents and settings on the computer, and, on the phone, its pairing when updated by a build signed
+  the same way; a rollback to the older build also works. Verified in sandboxes and on the emulator with state written by the real
+  rc.1 build (182 checks, no migration problem found); Android rc.1 is debug-signed and still has to be uninstalled first
+  ([report](docs/reports/upgrade-path.md)).
+- The in-memory message store takes about half the memory per message (193 B instead of 407 B).
 - Phone notification mirroring with dismiss and button presses (stock `kdeconnect.notification`, `.request` and `.action`
   packets, so stock KDE Connect interoperates; typed replies are not offered). Off by default on both ends: a switch,
   Android's Notification access (with guidance for the restricted-settings case), an app list that starts empty and a

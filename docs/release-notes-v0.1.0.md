@@ -40,9 +40,17 @@ test peers.
   plain sentence and a suggested fix in Home, the tray and `status`.
 - **Auto-reconnect.** The phone's link service restarts at boot and reconnects with back-off; when you disconnect on
   the computer on purpose, the phone stays away for a few minutes instead of redialing at once.
-- **Updater.** The apps check GitHub for a newer release, download it, verify its SHA-256 against `SHA256SUMS`, and
-  then wait for you. Nothing installs by itself, and on the desktop you unpack and copy the files yourself. Only final
-  releases are offered, never prereleases.
+- **Updater.** The apps check GitHub for a newer release, download it and verify its SHA-256 against `SHA256SUMS`. Only
+  final releases are offered, never prereleases. Nothing installs without your click. On Android a small "Update available"
+  chip on Home opens the update card. On a Linux per-user install (`install.sh`) **Install update** (or `geekbridge-ctl update
+  install`) unpacks the verified download, checks it, switches to it and keeps the old version for `geekbridge-ctl update
+  rollback`; the service restarts only when you confirm and never during a call. On the `.deb`, the Arch package, Windows and
+  macOS you still download and install it yourself. Desktop archives are verified by checksum, not by a signature.
+- **Safer on a crash.** After a killed service, a full disk or a clock set back, the desktop service starts again with its
+  pairings intact and leaves no half-written files; `geekbridge-ctl doctor` says when the state folder is full or read-only.
+  Tested in sandboxes, not with a real power cut.
+- **Accessibility.** Contrast, keyboard focus and names for buttons are covered by automated tests on desktop and Android;
+  the call card no longer repeats its timer to screen readers. No screen reader (TalkBack, Orca, NVDA) has been used to try it.
 - **Pairing.** Choose **Link a phone** on the computer and scan its QR code (Android asks for the camera only on the scan screen, or
   use the phone's own camera app), or pick the phone from the nearby list and compare a code on both screens. Both sides pin each other's certificate.
 - **Design and access.** One look on Android and desktop (black or warm off-white, a single red accent, dot-matrix
@@ -72,6 +80,9 @@ test peers.
   supported.
 - **Vendor battery guidance** for Samsung, Xiaomi, Huawei/Honor, OnePlus, OPPO/realme, vivo and Nothing is
   unit-tested for the order of settings screens only.
+- **The updater is untested against real GitHub.** No stable release exists yet, so the update check, the download and
+  **Install update** were run against a mock release and the emulator only; the "Update available" chip appears only
+  when a newer stable release is published, so it has not been seen on a phone.
 - **Long-running behaviour.** A four-hour soak of the desktop service with a stand-in phone showed no linear leak, but
   also short stalls of the local control API early in the run (since fixed; a later 45-minute soak with rings, Wi-Fi
   listen sessions and re-pairing passed) and a slow memory creep that was levelling off. Real multi-day use has not been
@@ -123,6 +134,8 @@ fingerprint is what Android checks before it accepts an update, so a different k
   unpair it there first. From now on updates install in place.
 - **Linux (and other desktops):** install the new package or run the new `install.sh`; your pairings and settings are
   kept. The in-app updater also offers 0.1.0 to an rc.1 install.
+- Your pairings and settings were checked to survive the update from rc.1 on the computer and in a sandbox on the phone
+  (and a rollback), but not on a real phone with the real package installer.
 - After an update the apps show a dismissible "What's new" card once.
 
 ### Privacy
