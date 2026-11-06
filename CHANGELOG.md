@@ -22,12 +22,14 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ### Changed
 - `geekbridge-ctl`: every command has its own `--help` (usage, what it does, flags, one example); a mistake prints one error and that command's usage only. `clipboard image-limit` takes whole MiB or KiB.
 - The idle desktop service now settles at about 2.6-2.8 MB resident (CI-measured; it was about 8 MB): idle pages of the binary and read-only libraries are handed back after start. The first version of this could, in a rare case, advise on a library that had just been unloaded; it now touches only the loader's read-only segments under the loader's lock, with a test.
+- Smaller programs: the desktop service and `geekbridge-ctl` are about 250 kB and 30 kB smaller, and the Android app's code is about 27 kB smaller; behaviour and idle numbers are unchanged.
 - Android: Back in the setup wizard from a step opened from Home, a widget or an overview row now returns there instead of walking through every earlier step; shorter wording for Caller number and Contacts.
 - Android: the battery step says "You chose not to allow this" after a No in Android's dialog, with Try again and Open app
   settings; the Diagnostics and developer link card say "linked" instead of "paired"; pasted or opened links no longer
   say "you scanned" or "QR code"; the Share with computer step has one intro instead of three.
 
 ### Fixed
+- Slow or busy disks: saving settings, a received file or update choices no longer stalls the desktop service (a heavily loaded disk once froze the control API for 35 seconds). Unlinking a phone now finishes even when it takes longer than the control request allows, other requests get a clear "busy" answer meanwhile, and a new link is held back until it is done; a pairing write that hits a lock timeout is retried. Data safety is unchanged.
 - Calls: a computer allowed on the phone while a call is already ringing or live is now told the call state at once (it used to see nothing until the next call event).
 - Battery: a computer allowed on the phone now receives the battery level (it was sent before the phone knew the permission).
 - Privacy: a computer you unlink no longer stays in a backup copy of the share settings (`share.json.bak`), and repeated or forged discovery announcements no longer keep waking the reconnect pass.

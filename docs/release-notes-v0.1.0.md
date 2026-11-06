@@ -21,7 +21,7 @@ test peers.
   where Bluetooth hands-free accepts tones (on a stock phone it is hidden over the link). None of this has been tried with
   a real call. Wi-Fi call audio is **experimental**: off by default, debug phone builds only, and whether a real phone
   allows it is open.
-- **Messages (SMS).** Read conversations, search, and send texts from the desktop, with honest delivery status and
+- **Messages (SMS).** Read conversations, search every conversation at once (results grouped by conversation, click one to open it at that message), and send texts from the desktop, with honest delivery status and
   new-message notifications (with a Reply action). Text only: no MMS, group or RCS. Conversation lists show the newest text of each thread and older history loads on request
   (tested with 100 threads of 20 texts on an emulator, not on a real phone).
 - **Contacts and calendar.** A searchable phonebook with Call, Message and Copy actions. Month, week, day and agenda
@@ -93,8 +93,10 @@ test peers.
   and the emulator only; none of them has been seen on a phone.
 - **Long-running behaviour.** A four-hour soak of the desktop service with a stand-in phone showed no linear leak, but
   also short stalls of the local control API early in the run (since fixed; a later 45-minute soak with rings, Wi-Fi
-  listen sessions and re-pairing passed) and a slow memory creep that was levelling off. Real multi-day use has not been
-  measured.
+  listen sessions and re-pairing passed) and a slow memory creep that was levelling off. A later 92-minute soak found no
+  leak and no deadlock. On a heavily loaded disk it saw one 35-second pause of the control API (fixed by moving disk writes
+  off the busy threads) and two re-pairs of the stand-in phone that failed and could not be reproduced. Real multi-day use
+  has not been measured.
 - **Linux is the main target.** It has been run on Arch/Omarchy with Hyprland. Other desktops should work but have had
   less attention (the clipboard needs `wl-clipboard` or `xclip`).
 
