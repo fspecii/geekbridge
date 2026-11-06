@@ -24,6 +24,7 @@
     <string name="qr_confirm_fp_hint">The full fingerprint is shown again when you approve; it must match your computer’s. If you did not start this yourself, cancel.</string>
     <string name="qr_cancel">Cancel</string>
     <string name="qr_connecting">Connecting to %1$s…</string>
+    <string name="qr_waiting_computer">Waiting for the computer to finish… It is saving the link, which can take a while when its disk is busy.</string>
     <string name="qr_connecting_hint">Checking that this is the computer in the QR code. You will be asked to confirm.</string>
     <string name="qr_done_title">Linked ✓ with %1$s</string>
     <string name="qr_next_title">What to do next</string>

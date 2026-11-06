@@ -1276,6 +1276,9 @@ pub struct Status {
     /// For each paired phone without a link: the plain-words reason and a suggested fix.
     #[serde(default)]
     pub disconnected: Vec<crate::why_disconnected::WhyDisconnected>,
+    /// Phones whose trust record is being written right now (a slow disk can hold this for many seconds).
+    #[serde(default)]
+    pub saving: Vec<String>,
 }
 
 impl Status {
@@ -1381,6 +1384,10 @@ pub enum ErrorCode {
     Unsupported,
     Failed,
 }
+
+/// The service's answer (code `Busy`) to a connect while the phone's old trust record is still being deleted.
+/// The desktop window turns it into a calm waiting line and retries; other callers see this text.
+pub const UNPAIR_BUSY_MESSAGE: &str = "the phone is still being unpaired; try again in a moment";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {

@@ -45,6 +45,7 @@ class QrPairActivity : Activity() {
     private var plan: QrPlan? = null
     private var report: NetReport? = null
     private var testing = false
+    private var waitingOnComputer = false
     private var linkField: android.widget.EditText? = null
     private var message: String? = null
     private var linkPending = false
@@ -255,7 +256,12 @@ class QrPairActivity : Activity() {
         if (controller.phase != LinkPhase.Running) return
         controller.poll()
         prompt.sync()
-        when (val step = plan?.next(controller.snapshot, SystemClock.elapsedRealtime())) {
+        val now = SystemClock.elapsedRealtime()
+        val step = plan?.next(controller.snapshot, now)
+        // Past a few seconds with no answer the computer is most likely saving the link on a busy disk: say so calmly.
+        val calm = QrWait.calm(plan?.requestSentAt, now)
+        if (calm != waitingOnComputer) { waitingOnComputer = calm; render() }
+        when (step) {
             is QrStep.Dial -> controller.connect(step.address.host, step.address.port, m.target.deviceId)
             is QrStep.Pair -> controller.qrPairRequest(step.connectionId, m.target.token, m.target.certSha256) { code ->
                 if (code != null) failed(m.target, PairingHelp.explain(strings, null, code, viaQr = true))
@@ -345,7 +351,11 @@ class QrPairActivity : Activity() {
     private fun connecting(root: LinearLayout, t: QrTarget) {
         val card = kit.panel(root)
         card.addView(kit.text(getString(R.string.qr_connecting, Bidi.isolate(QrConfirmText.safeName(t.name).ifEmpty { getString(R.string.pair_this_computer) })), 18f, bold = true))
-        card.addView(kit.text(getString(R.string.qr_connecting_hint), 14f, Tone.Muted).apply { setPadding(0, kit.dp(8), 0, 0) })
+        card.addView(kit.text(getString(if (waitingOnComputer) R.string.qr_waiting_computer else R.string.qr_connecting_hint), 14f, Tone.Muted).apply {
+            setPadding(0, kit.dp(8), 0, 0)
+            // A change is spoken without moving focus.
+            accessibilityLiveRegion = android.view.View.ACCESSIBILITY_LIVE_REGION_POLITE
+        })
         kit.button(card, getString(R.string.qr_cancel), BtnStyle.Plain) {
             cancelAttempt()
         }

@@ -77,6 +77,7 @@ fn status(connected: bool, devices: usize) -> Status {
         inbound_listener: None,
         reconnecting: vec![],
         disconnected: vec![],
+        saving: vec![],
     }
 }
 

@@ -54,6 +54,16 @@ pub(super) struct PairUi {
     auto_opened: bool,
     /// When the phone's scan was first noticed (the "confirm on phone" state ends after a while).
     scanned_since: Option<Instant>,
+    /// Since when the service has been writing a trust record (the "Saving the link…" line waits a few seconds).
+    saving_since: Option<Instant>,
+}
+
+/// A trust-record write that takes longer than this is reported to the user as a busy disk.
+const SAVING_AFTER: Duration = Duration::from_secs(3);
+
+/// Whether a write that started at `since` has been going on long enough to say so.
+pub(super) fn saving_is_slow(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|s| now.saturating_duration_since(s) >= SAVING_AFTER)
 }
 
 /// How long a code stays alive after the Pair view was last drawn (a hidden view must not keep issuing tokens).
@@ -129,6 +139,14 @@ impl Connections {
         let Some(status) = self.state.status.clone() else {
             return;
         };
+        if status.saving.is_empty() {
+            self.pair.saving_since = None;
+        } else {
+            let since = *self.pair.saving_since.get_or_insert_with(Instant::now);
+            if !saving_is_slow(Some(since), Instant::now()) {
+                ctx.request_repaint_after(SAVING_AFTER.saturating_sub(since.elapsed()));
+            }
+        }
         let ids: BTreeSet<String> = status.paired.iter().map(|p| p.device_id.clone()).collect();
         match &self.pair.known_paired {
             None => self.pair.known_paired = Some(ids),
@@ -192,6 +210,22 @@ impl Connections {
             }
             ctx.request_repaint_after(Duration::from_secs(1));
         }
+    }
+
+    /// True once the trust record of `device_id` has been being written for a few seconds.
+    pub(super) fn saving_slow(&self, device_id: &str) -> bool {
+        saving_is_slow(self.pair.saving_since, Instant::now())
+            && self
+                .state
+                .status
+                .as_ref()
+                .is_some_and(|s| s.saving.iter().any(|d| d == device_id))
+    }
+
+    /// "Saving the link… (your disk is busy)", spoken politely by a screen reader.
+    pub(super) fn say_saving(ui: &mut egui::Ui, pal: &Palette) {
+        let r = ui.add(egui::Label::new(theme::caption(pal, tr("pair.saving"))).wrap());
+        crate::a11y::live_region(ui.ctx(), r.id, crate::a11y::Live::Polite);
     }
 
     /// What the live line under the code says.

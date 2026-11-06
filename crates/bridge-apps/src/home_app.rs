@@ -1670,6 +1670,7 @@ mod tests {
             inbound_listener: None,
             reconnecting: vec![],
             disconnected: vec![],
+            saving: vec![],
         };
         crate::connection::ControlState {
             status: Some(status),

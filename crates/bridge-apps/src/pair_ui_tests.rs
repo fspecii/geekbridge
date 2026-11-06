@@ -33,6 +33,7 @@ fn status(paired: &[&str], links: Vec<ipc::LinkStatus>) -> Status {
         inbound_listener: None,
         reconnecting: vec![],
         disconnected: vec![],
+        saving: vec![],
     }
 }
 
@@ -444,5 +445,94 @@ fn the_card_with_no_service_disables_pairing_buttons() {
             Request::PairQr | Request::TestConnection { .. }
         )),
         0
+    );
+}
+
+fn pairing_with_saving(slow: bool) -> (Connections, egui::Context) {
+    let id = "ab".repeat(16);
+    let mut st = status(&[], vec![]);
+    st.links.push(ipc::LinkStatus {
+        device_id: id.clone(),
+        name: "Phone".into(),
+        phase: LinkPhase::Pairing,
+        role: None,
+        connection_id: None,
+        peer_ip: None,
+        peer_cert_sha256: None,
+        negotiated: vec![],
+        since_unix_ms: 0,
+        pings_received: 0,
+        last_ping_unix_ms: None,
+        rejected_packets: 0,
+        battery: None,
+    });
+    st.saving = vec![id];
+    let s = Arc::new(Mutex::new(st));
+    let (mut c, _) = scripted(s, 60_000);
+    wait(&mut c, "status", |c| c.state.status.is_some());
+    c.pair_tick(&ctx());
+    if slow {
+        c.pair.saving_since = Some(Instant::now() - Duration::from_secs(4));
+    }
+    (c, ctx())
+}
+
+fn tree_of(c: &mut Connections) -> crate::a11y_tests::Tree {
+    let pal = theme::palette(AppKind::Calls, true);
+    crate::a11y_tests::capture(egui::vec2(700.0, 800.0), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            c.details(ui, &pal, &DiscoveryModel::Checking);
+        });
+        c.dialogs(ctx, &pal);
+    })
+}
+
+#[test]
+fn saving_is_only_reported_after_three_seconds() {
+    let t0 = Instant::now();
+    assert!(!saving_is_slow(None, t0));
+    assert!(!saving_is_slow(Some(t0), t0 + Duration::from_millis(2_900)));
+    assert!(saving_is_slow(Some(t0), t0 + Duration::from_secs(3)));
+}
+
+#[test]
+fn a_quick_save_shows_nothing_and_a_slow_one_says_so_politely() {
+    let (mut quick, _) = pairing_with_saving(false);
+    let t = tree_of(&mut quick);
+    assert!(!t.outline().contains("Saving the link"), "{}", t.outline());
+
+    let (mut slow, _) = pairing_with_saving(true);
+    let t = tree_of(&mut slow);
+    assert!(
+        t.outline()
+            .contains("Label \"Saving the link… (your disk is busy)\" [live=Polite]"),
+        "{}",
+        t.outline()
+    );
+    assert!(
+        t.unnamed_controls().is_empty(),
+        "{:?}",
+        t.unnamed_controls()
+    );
+    // Both the phones list and the prompt-sized window carry it, and it adds no tab stop.
+    assert!(
+        t.outline().matches("Saving the link").count() >= 2,
+        "{}",
+        t.outline()
+    );
+}
+
+#[test]
+fn the_waiting_line_for_an_unpair_is_polite_and_not_an_error() {
+    let (mut c, _) = pairing_with_saving(false);
+    c.state.status.as_mut().unwrap().saving.clear();
+    c.state.notice = Some(tr("connection.removing_old").to_string());
+    let t = tree_of(&mut c);
+    assert!(
+        t.outline().contains(
+            "Label \"Still removing the old link… this can take a moment on a busy disk\" [live=Polite]"
+        ),
+        "{}",
+        t.outline()
     );
 }

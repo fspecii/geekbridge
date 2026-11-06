@@ -75,7 +75,23 @@ class QrPairingTest {
         assertEquals(QrStep.Dial(QrAddress("10.0.0.5", 1716)), plan.next(snap(), 100))
         assertEquals(QrStep.Waiting, plan.next(snap(), 3_000))
         assertEquals(QrStep.Dial(QrAddress("192.168.1.20", 1716)), plan.next(snap(), 6_200))
-        assertEquals(QrStep.Failed(QrFailure.NoAddressAnswered), plan.next(snap(), 12_500))
+        // The last address has no fallback: it gets the core's whole handshake window (20 s) before giving up.
+        assertEquals(QrStep.Waiting, plan.next(snap(), 12_500))
+        assertEquals(QrStep.Waiting, plan.next(snap(), 27_000))
+        assertEquals(QrStep.Failed(QrFailure.NoAddressAnswered), plan.next(snap(), 28_300))
+    }
+
+    @Test fun theScreenTurnsCalmAfterFiveSecondsWithoutAnAnswerAndKeepsWaiting() {
+        val plan = QrPlan(target("192.168.1.20"))
+        assertNull(plan.requestSentAt)
+        plan.next(snap(), 0)
+        assertEquals(QrStep.Pair(7), plan.next(snap(listOf(conn("parked"))), 500))
+        assertEquals(500L, plan.requestSentAt)
+        assertFalse(QrWait.calm(plan.requestSentAt, 5_400))
+        assertTrue(QrWait.calm(plan.requestSentAt, 5_500))
+        // 40 s in, with the computer still writing its record: still waiting, not an error.
+        assertEquals(QrStep.Waiting, plan.next(snap(listOf(conn("pairing_request"))), 40_000))
+        assertFalse(QrWait.calm(null, 99_000))
     }
 
     @Test fun pairRequestIsSentOnceWhenTheChannelIsParked() {

@@ -109,11 +109,20 @@ enum class QrFailure { NoAddressAnswered, ConnectionLost }
  * pairing request once the secure channel is parked, then wait for the phone-side approval and the trust record.
  * Pure, so the order and the time-outs are unit-tested.
  */
-class QrPlan(val target: QrTarget, private val dialTimeoutMs: Long = 6_000) {
+class QrPlan(
+    val target: QrTarget,
+    private val dialTimeoutMs: Long = 6_000,
+    /** The last address has no fallback after it, so it may take the core's whole handshake ceiling (20 s) plus a margin. */
+    private val lastDialTimeoutMs: Long = 22_000,
+) {
     private var index = -1
     private var dialStartedAt = 0L
     private var pairSent = false
+    private var pairSentAt = 0L
     private var forgetAt = -1L
+
+    /** When the pairing request was sent, or null before that. */
+    val requestSentAt: Long? get() = if (pairSent) pairSentAt else null
 
     fun next(s: TransportSnapshot?, nowMs: Long): QrStep {
         if (s == null) return QrStep.Waiting
@@ -130,18 +139,29 @@ class QrPlan(val target: QrTarget, private val dialTimeoutMs: Long = 6_000) {
         if (c != null) {
             return when {
                 c.trusted -> QrStep.Paired
-                c.phase == "parked" && !pairSent -> { pairSent = true; QrStep.Pair(c.id) }
+                c.phase == "parked" && !pairSent -> { pairSent = true; pairSentAt = nowMs; QrStep.Pair(c.id) }
                 else -> QrStep.Waiting
             }
         }
         // The connection was there and is gone before trust was recorded: refused, closed or timed out.
         if (pairSent) return QrStep.Failed(QrFailure.ConnectionLost)
-        if (index >= 0 && nowMs - dialStartedAt < dialTimeoutMs) return QrStep.Waiting
+        val allowed = if (index == target.addresses.size - 1) lastDialTimeoutMs else dialTimeoutMs
+        if (index >= 0 && nowMs - dialStartedAt < allowed) return QrStep.Waiting
         index++
         if (index >= target.addresses.size) return QrStep.Failed(QrFailure.NoAddressAnswered)
         dialStartedAt = nowMs
         return QrStep.Dial(target.addresses[index])
     }
+}
+
+/**
+ * The request has been out for a while with no answer: the computer saves the link to disk before it accepts, which
+ * can take many seconds on a busy disk. The screen then says so instead of looking stuck, and the core keeps waiting
+ * (its window after our approval is 60 s). Pure, so the threshold is unit-tested.
+ */
+object QrWait {
+    const val CALM_AFTER_MS = 5_000L
+    fun calm(pairSentAt: Long?, nowMs: Long): Boolean = pairSentAt != null && nowMs - pairSentAt >= CALM_AFTER_MS
 }
 
 /** Where a pairing link came from. */

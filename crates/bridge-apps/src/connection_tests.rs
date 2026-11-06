@@ -70,6 +70,7 @@ fn status() -> Status {
         inbound_listener: None,
         reconnecting: vec![],
         disconnected: vec![],
+        saving: vec![],
     }
 }
 

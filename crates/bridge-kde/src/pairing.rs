@@ -44,6 +44,11 @@ pub const MAX_REPLACEMENTS: usize = 5;
 pub const PROMPT_CAP_FACTOR: u32 = 3;
 /// Tries at the trust-store write that completes a pairing when its file lock times out.
 const PERSIST_ATTEMPTS: usize = 3;
+/// Once we have approved our own request, the peer still has to make its trust record durable before it
+/// accepts (a file lock, fsync, rename and directory fsync: seconds on a busy disk, up to
+/// `PERSIST_ATTEMPTS` lock timeouts in the worst case). We keep waiting at least this long after our approval
+/// rather than time out into an error while the peer is saving.
+pub const PEER_SAVE_GRACE: Duration = Duration::from_secs(60);
 
 pub const REPLACEMENT_WINDOW: Duration = Duration::from_secs(60);
 
@@ -473,9 +478,12 @@ impl Machine {
             State::Requested {
                 peer_accepted,
                 local_approved,
-                ..
+                deadline,
             } => {
                 *local_approved = true;
+                if !*peer_accepted {
+                    *deadline = (*deadline).max(now.mono + PEER_SAVE_GRACE);
+                }
                 if *peer_accepted {
                     self.state = State::Finished;
                     vec![Action::Complete]
@@ -785,8 +793,9 @@ mod tests {
             m.on_local_decision(1, true, now).is_empty(),
             "still waiting for a genuine accept"
         );
-        // Times out, notifying the peer.
-        let late = at(t0 + Duration::from_secs(31), 1031);
+        // Our approval gave the peer time to save; still no accept after that window: times out, notifying the peer.
+        assert!(m.on_tick(at(t0 + Duration::from_secs(31), 1031)).is_empty());
+        let late = at(t0 + Duration::from_secs(61), 1061);
         assert_eq!(
             m.on_tick(late),
             vec![send(false, None), Action::Fail(PairingFailure::Timeout)]
@@ -852,6 +861,40 @@ mod tests {
         );
         assert!(m.on_local_decision(g2, true, later).is_empty());
         assert!(m.on_pair(request(5011), later).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_our_approval_the_peer_gets_time_to_save_before_it_accepts() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        let actions = m.start(PairMode::Request, at(t0, 5000));
+        let generation = match &actions[..] {
+            [_, Action::Prompt { generation, .. }] => *generation,
+            other => panic!("{other:?}"),
+        };
+        // We approve at 20 s; the request window (30 s) would end 10 s later, but the peer is writing its
+        // trust record on a busy disk and only accepts at 75 s.
+        let approved = at(t0 + Duration::from_secs(20), 5020);
+        assert!(m.on_local_decision(generation, true, approved).is_empty());
+        assert_eq!(m.deadline(), Some(approved.mono + PEER_SAVE_GRACE));
+        let late = at(t0 + Duration::from_secs(75), 5075);
+        assert_eq!(m.on_pair(accept(), late), vec![Action::Complete]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_our_approval_the_request_window_is_unchanged() {
+        let t0 = Instant::now();
+        let mut m = machine();
+        m.start(PairMode::Request, at(t0, 5000));
+        assert_eq!(m.deadline(), Some(t0 + cfg().request_timeout));
+        let after = at(t0 + Duration::from_secs(31), 5031);
+        assert!(matches!(
+            m.on_tick(after)[..],
+            [
+                Action::Send { pair: false, .. },
+                Action::Fail(PairingFailure::Timeout)
+            ]
+        ));
     }
 
     #[tokio::test(start_paused = true)]

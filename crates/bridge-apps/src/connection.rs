@@ -13,7 +13,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use zeroize::Zeroize;
 
@@ -172,8 +172,25 @@ fn service_error(error: ipc::IpcError) -> String {
         ),
         ipc::IpcError::Unavailable { .. } => "The service can't protect its private settings. Phone linking is unavailable.".into(),
         ipc::IpcError::Unauthorized | ipc::IpcError::Protocol(_) => "The service couldn't be authenticated. Check that both apps use the same phone-link settings.".into(),
+        ipc::IpcError::Service(body) if is_unpair_busy(&body) => {
+            crate::i18n::tr("connection.removing_old").to_string()
+        }
         ipc::IpcError::Service(body) => display_text(&body.message),
     }
+}
+
+/// The service's deliberate answer to a connect while the phone's old trust record is still being deleted.
+fn is_unpair_busy(body: &bridge_core::ipc::ErrorBody) -> bool {
+    body.code == bridge_core::ipc::ErrorCode::Busy && body.message == ipc::UNPAIR_BUSY_MESSAGE
+}
+
+/// A Connect that was answered "still removing the old link" is tried again for this long ...
+const UNPAIR_RETRY_FOR: Duration = Duration::from_secs(60);
+/// ... this often.
+const UNPAIR_RETRY_EVERY: Duration = Duration::from_secs(2);
+
+fn removing_old(error: &str) -> bool {
+    error == crate::i18n::tr("connection.removing_old")
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +232,8 @@ impl Worker {
                 let mut previous = None;
                 // Events older than the first status are history, not news.
                 let mut seen_seq: Option<u64> = None;
+                // A Connect answered "still removing the old link": (request, give up at, next try at).
+                let mut retry: Option<(Request, Instant, Instant)> = None;
                 let publish = |state: &ControlState, previous: &mut Option<ControlState>| {
                     if previous.as_ref() != Some(state) {
                         *previous = Some(state.clone());
@@ -256,10 +275,26 @@ impl Worker {
                                 Request::PairQr | Request::Connect { .. } => state.problem = None,
                                 _ => {}
                             }
+                            retry = None;
                             let result = request(&command);
                             apply_result(&mut state, &command, result);
+                            let until = Instant::now() + UNPAIR_RETRY_FOR;
+                            keep_trying(&mut retry, &mut state, command, until);
                         }
-                        Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Ok(_) => {}
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if let Some((command, until, next)) = retry.clone()
+                                && Instant::now() >= next
+                            {
+                                retry = None;
+                                state.busy = true;
+                                publish(&state, &mut previous);
+                                let result = request(&command);
+                                apply_result(&mut state, &command, result);
+                                state.busy = false;
+                                keep_trying(&mut retry, &mut state, command, until);
+                            }
+                        }
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
                 }
@@ -283,6 +318,27 @@ impl Drop for Worker {
         self.stop.store(true, Ordering::Release);
     }
 }
+/// After a Connect that got the calm "still removing the old link" answer: try again soon, and say
+/// plainly when the minute is up. Anything else ends the waiting.
+fn keep_trying(
+    retry: &mut Option<(Request, Instant, Instant)>,
+    state: &mut ControlState,
+    command: Request,
+    until: Instant,
+) {
+    let waiting = matches!(command, Request::Connect { .. })
+        && state.notice.as_deref().is_some_and(removing_old);
+    if !waiting {
+        return;
+    }
+    let now = Instant::now();
+    if now >= until {
+        state.notice = Some(crate::i18n::tr("connection.removing_old_gave_up").to_string());
+    } else {
+        *retry = Some((command, until, now + UNPAIR_RETRY_EVERY));
+    }
+}
+
 /// Fold the answer to an explicit request into what the UI shows.
 fn apply_result(state: &mut ControlState, command: &Request, result: Result<Response, String>) {
     match (command, result) {
@@ -498,23 +554,31 @@ impl Connections {
             "Linking by name (not by QR code): link only after the same code shows on this computer and your phone.",
         ));
         if let Some(notice) = &self.state.notice {
-            ui.add(egui::Label::new(theme::secondary(pal, notice)).wrap());
+            let line = ui.add(egui::Label::new(theme::secondary(pal, notice)).wrap());
+            if removing_old(notice) {
+                crate::a11y::live_region(ui.ctx(), line.id, crate::a11y::Live::Polite);
+            }
         }
         let enabled = !self.state.busy;
         let mut seen = BTreeSet::new();
         for link in &status.links {
             seen.insert(link.device_id.clone());
+            let saving = self.saving_slow(&link.device_id);
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(display_text(&link.name), 13.0));
-                ui.label(theme::caption(
-                    pal,
-                    match link.phase {
-                        LinkPhase::Connecting => "Connecting…",
-                        LinkPhase::Unpaired => "Not linked",
-                        LinkPhase::Pairing => "Linking…",
-                        LinkPhase::Connected => "Connected securely",
-                    },
-                ));
+                if saving {
+                    Self::say_saving(ui, pal);
+                } else {
+                    ui.label(theme::caption(
+                        pal,
+                        match link.phase {
+                            LinkPhase::Connecting => "Connecting…",
+                            LinkPhase::Unpaired => "Not linked",
+                            LinkPhase::Pairing => "Linking…",
+                            LinkPhase::Connected => "Connected securely",
+                        },
+                    ));
+                }
                 if link.phase == LinkPhase::Unpaired
                     && named_for(
                         ui.add_enabled(enabled, egui::Button::new("Link")),
@@ -752,6 +816,20 @@ impl Connections {
                 );
             }
         }
+        // The prompt is gone once approved; the durable write that follows can take a while on a busy disk.
+        if challenge_gone_saving(self) {
+            let title = crate::i18n::tr("pair.prompt_title").to_string();
+            let shown = egui::Window::new(title.clone())
+                .id(egui::Id::new("pair-phone-saving"))
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| Self::say_saving(ui, pal));
+            if let Some(shown) = shown {
+                crate::a11y::describe(ctx, shown.response.id, &title, None);
+            }
+        }
         if let Some((id, name)) = self.forget.clone() {
             // Escape is the safe answer: keep the pairing.
             if theme::escape_pressed(ctx) {
@@ -793,6 +871,13 @@ impl Connections {
     }
 }
 
+fn challenge_gone_saving(c: &Connections) -> bool {
+    c.state
+        .status
+        .as_ref()
+        .is_some_and(|s| s.challenges.is_empty() && s.saving.iter().any(|id| c.saving_slow(id)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,6 +904,7 @@ mod tests {
             inbound_listener: None,
             reconnecting: vec![],
             disconnected: vec![],
+            saving: vec![],
         }
     }
     #[test]
@@ -857,6 +943,103 @@ mod tests {
             received.recv_timeout(Duration::from_secs(2)).unwrap(),
             caller
         );
+    }
+    fn unpair_busy() -> String {
+        service_error(ipc::IpcError::Service(ipc::ErrorBody {
+            code: ipc::ErrorCode::Busy,
+            message: ipc::UNPAIR_BUSY_MESSAGE.into(),
+        }))
+    }
+    #[test]
+    fn the_unpair_busy_answer_is_a_calm_line_not_the_service_error() {
+        let line = unpair_busy();
+        assert!(removing_old(&line));
+        assert!(line.starts_with("Still removing the old link"), "{line}");
+        assert!(!line.contains("Busy"), "{line}");
+        // Other busy answers keep their own words.
+        let other = service_error(ipc::IpcError::Service(ipc::ErrorBody {
+            code: ipc::ErrorCode::Busy,
+            message: "the link is busy or closing".into(),
+        }));
+        assert!(!removing_old(&other));
+    }
+    #[test]
+    fn a_connect_that_met_the_unpair_is_retried_until_it_goes_through() {
+        let calls = Arc::new(Mutex::new(0u32));
+        let counted = calls.clone();
+        let worker = Worker::spawn_with(
+            || Ok(status()),
+            move |request| match request {
+                Request::Connect { .. } => {
+                    let mut n = counted.lock().unwrap();
+                    *n += 1;
+                    if *n < 3 {
+                        Err(unpair_busy())
+                    } else {
+                        Ok(Response::Ack)
+                    }
+                }
+                _ => Ok(Response::Ack),
+            },
+            || {},
+        );
+        assert!(worker.send(Command::Request(Request::Connect {
+            device_id: "x".repeat(32),
+            endpoint: None,
+        })));
+        let end = Instant::now() + Duration::from_secs(20);
+        let mut calm_seen = false;
+        loop {
+            if let Some(s) = worker.latest() {
+                calm_seen |= s.notice.as_deref().is_some_and(removing_old);
+                if s.notice.as_deref() == Some("Connection requested. Waiting for the phone.") {
+                    break;
+                }
+            }
+            assert!(Instant::now() < end, "never connected");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(calm_seen, "the waiting line was shown first");
+        assert_eq!(*calls.lock().unwrap(), 3);
+    }
+    #[test]
+    fn the_retry_gives_up_in_plain_words_after_its_window() {
+        let mut retry = None;
+        let mut state = ControlState {
+            notice: Some(unpair_busy()),
+            ..Default::default()
+        };
+        let connect = Request::Connect {
+            device_id: "x".repeat(32),
+            endpoint: None,
+        };
+        let long_ago = Instant::now() - Duration::from_secs(1);
+        keep_trying(&mut retry, &mut state, connect.clone(), long_ago);
+        assert!(retry.is_none());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some(crate::i18n::tr("connection.removing_old_gave_up"))
+        );
+        state.notice = Some(unpair_busy());
+        keep_trying(
+            &mut retry,
+            &mut state,
+            connect,
+            Instant::now() + UNPAIR_RETRY_FOR,
+        );
+        assert!(retry.is_some(), "inside the window it tries again");
+        // Anything but a Connect is never retried.
+        retry = None;
+        state.notice = Some(unpair_busy());
+        keep_trying(
+            &mut retry,
+            &mut state,
+            Request::Disconnect {
+                device_id: "x".repeat(32),
+            },
+            Instant::now() + UNPAIR_RETRY_FOR,
+        );
+        assert!(retry.is_none());
     }
     #[test]
     fn authenticated_transport_never_enables_missing_feature_adapters() {

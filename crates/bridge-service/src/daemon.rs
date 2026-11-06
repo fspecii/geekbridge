@@ -278,6 +278,8 @@ pub struct Daemon {
     callwifi: Arc<crate::callwifi::CallWifi>,
     /// Phones whose unpairing is still running; a new link to one waits (see `unpair`).
     unpairing: Mutex<BTreeSet<String>>,
+    /// Phones whose trust record is being written (shown as "Saving the link…" when the disk is slow).
+    saving: Arc<Mutex<BTreeSet<String>>>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
     reconnect: Mutex<crate::reconnect::Book>,
     /// Dial-back after a silent loss, for phones whose announcements do not reach us (see `reconnect::Fallback`).
@@ -352,6 +354,41 @@ fn parse_id(id: &str) -> Result<kde::DeviceId, ErrorBody> {
     })
 }
 
+/// Marks a phone as "being saved" for as long as its trust record is written (the write is durable, so on
+/// a busy disk it is slow); the status shows it so the window can say so. Reads and deletes pass through.
+struct SavingStore {
+    inner: Arc<dyn kde::TrustStore>,
+    saving: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl kde::TrustStore for SavingStore {
+    fn get(&self, id: &kde::DeviceId) -> Result<Option<kde::TrustedPeer>, kde::KdeError> {
+        self.inner.get(id)
+    }
+    fn insert(&self, peer: kde::TrustedPeer) -> Result<(), kde::KdeError> {
+        struct Mark<'a>(&'a SavingStore, String);
+        impl Drop for Mark<'_> {
+            fn drop(&mut self) {
+                let mut set = self.0.saving.lock().unwrap_or_else(|e| e.into_inner());
+                set.remove(&self.1);
+            }
+        }
+        let id = peer.device_id.to_string();
+        self.saving
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone());
+        let _mark = Mark(self, id);
+        self.inner.insert(peer)
+    }
+    fn remove(&self, id: &kde::DeviceId) -> Result<bool, kde::KdeError> {
+        self.inner.remove(id)
+    }
+    fn list(&self) -> Result<Vec<kde::TrustedPeer>, kde::KdeError> {
+        self.inner.list()
+    }
+}
+
 impl Daemon {
     pub fn new(
         credentials: Arc<kde::DeviceCredentials>,
@@ -370,6 +407,11 @@ impl Daemon {
                 Some(path) => ClipboardService::with_settings_file(backend, &local, path),
                 None => ClipboardService::new(backend, &local),
             }
+        });
+        let saving = Arc::new(Mutex::new(BTreeSet::new()));
+        let store: Arc<dyn kde::TrustStore> = Arc::new(SavingStore {
+            inner: store,
+            saving: saving.clone(),
         });
         let endpoint = kde::Endpoint::new(
             credentials,
@@ -490,6 +532,7 @@ impl Daemon {
             debug,
             callwifi,
             unpairing: Mutex::new(BTreeSet::new()),
+            saving,
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             fallback: Mutex::new(crate::reconnect::Fallback::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
@@ -847,6 +890,13 @@ impl Daemon {
             paired,
             links,
             challenges,
+            saving: self
+                .saving
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .cloned()
+                .collect(),
             event_seq: core.next_seq,
             inbound_listener: *self.inbound.lock().unwrap_or_else(|e| e.into_inner()),
             reconnecting: {
@@ -1501,10 +1551,7 @@ impl Daemon {
             .unwrap_or_else(|e| e.into_inner())
             .contains(device_id)
         {
-            return Err(err(
-                ErrorCode::Busy,
-                "the phone is still being unpaired; try again in a moment",
-            ));
+            return Err(err(ErrorCode::Busy, bridge_core::ipc::UNPAIR_BUSY_MESSAGE));
         }
         let (ip, port) = match endpoint {
             Some(e) => (e.address, e.port),
@@ -3495,5 +3542,61 @@ impl kde::Approver for ChallengeApprover {
             challenge_id,
         };
         rx.await.unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod saving_tests {
+    use super::*;
+
+    /// A store that looks at the marker from inside the write, as a slow disk would let a status request do.
+    struct Probe {
+        saving: Arc<Mutex<BTreeSet<String>>>,
+        seen: Mutex<Vec<String>>,
+    }
+    impl kde::TrustStore for Probe {
+        fn get(&self, _: &kde::DeviceId) -> Result<Option<kde::TrustedPeer>, kde::KdeError> {
+            Ok(None)
+        }
+        fn insert(&self, _: kde::TrustedPeer) -> Result<(), kde::KdeError> {
+            let now: Vec<String> = self.saving.lock().unwrap().iter().cloned().collect();
+            *self.seen.lock().unwrap() = now;
+            Err(kde::KdeError::Store("disk said no".into()))
+        }
+        fn remove(&self, _: &kde::DeviceId) -> Result<bool, kde::KdeError> {
+            Ok(false)
+        }
+        fn list(&self) -> Result<Vec<kde::TrustedPeer>, kde::KdeError> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn a_phone_is_marked_saving_for_exactly_the_duration_of_its_trust_write() {
+        let saving = Arc::new(Mutex::new(BTreeSet::new()));
+        let probe = Arc::new(Probe {
+            saving: saving.clone(),
+            seen: Mutex::default(),
+        });
+        let store = SavingStore {
+            inner: probe.clone(),
+            saving: saving.clone(),
+        };
+        let id = kde::DeviceId::parse(&"c".repeat(32)).unwrap();
+        let creds = kde::DeviceCredentials::generate_with_id(&id).unwrap();
+        let peer = kde::TrustedPeer {
+            device_id: id,
+            name: "Phone".into(),
+            device_type: "phone".into(),
+            protocol_version: 8,
+            cert: creds.cert().clone(),
+            paired_at_unix: 1,
+        };
+        assert!(kde::TrustStore::insert(&store, peer).is_err());
+        assert_eq!(*probe.seen.lock().unwrap(), vec!["c".repeat(32)]);
+        assert!(
+            saving.lock().unwrap().is_empty(),
+            "cleared even when the write failed"
+        );
     }
 }
