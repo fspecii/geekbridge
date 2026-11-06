@@ -9,7 +9,8 @@
 //! idle service. `madvise(MADV_DONTNEED)` drops those page-table entries; whatever runs later
 //! faults back in just the pages it needs (a minor fault, no I/O while the file is cached).
 //!
-//! Only private, executable, file-backed mappings (`r-xp` with a path) with no privately written page are touched. Those are never
+//! Only private, read-only or executable, file-backed mappings (`r-xp` and `r--p` with a path: code, `.rodata`, `.eh_frame`, the
+//! dynamic symbol tables) with no privately written page are touched. Those are never
 //! written (no text relocations), so dropping them cannot lose data. Writable data and the
 //! read-only-after-relocation mappings are skipped on purpose: `MADV_DONTNEED` there would revert
 //! patched pointers to the file's contents. Linux (glibc or musl) only; a no-op elsewhere.
@@ -21,6 +22,10 @@
 /// - has any anonymous page (`Anonymous:` above zero in smaps): a private page that was written
 ///   once (a debugger's breakpoint, a text relocation, a hot patch) is a copy-on-write page that
 ///   `MADV_DONTNEED` would silently turn back into the file's bytes.
+///
+/// `Private_Dirty` / `Shared_Dirty` are deliberately not looked at: for a file mapping they also count page-cache pages that
+/// are dirty because the file was just written (a binary linked seconds ago, which is what CI runs), not a private copy.
+/// Skipping those left the whole text resident on the CI runner (8 MB RSS against 2-4 MB for the same binary a minute later).
 ///
 /// Given plain `maps` text there are no `Anonymous:` lines to check; the caller reads `smaps`.
 #[cfg(any(target_os = "linux", test))]
@@ -41,7 +46,7 @@ fn code_ranges(maps: &str) -> Vec<(usize, usize)> {
         let Some(first) = f.next() else { continue };
         if let Some(key) = first.strip_suffix(':') {
             // A smaps attribute line of the current mapping.
-            if key == "Anonymous" || key == "Private_Dirty" || key == "Shared_Dirty" {
+            if key == "Anonymous" {
                 let kb: u64 = f.next().and_then(|v| v.parse().ok()).unwrap_or(1);
                 if kb > 0
                     && let Some(i) = current.take()
@@ -55,7 +60,7 @@ fn code_ranges(maps: &str) -> Vec<(usize, usize)> {
         let (Some(perms), Some(path)) = (f.next(), f.nth(3)) else {
             continue;
         };
-        if perms != "r-xp" || !plain_file(path) {
+        if !(perms == "r-xp" || perms == "r--p") || !plain_file(path) {
             continue;
         }
         let Some((a, b)) = first.split_once('-') else {
@@ -104,7 +109,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn picks_only_private_executable_file_mappings() {
+    fn picks_only_private_read_only_or_executable_file_mappings() {
         let maps = "\
 55d0c8a00000-55d0c8a01000 r--p 00000000 08:01 100 /usr/bin/geekbridge-service
 55d0c8a01000-55d0c9000000 r-xp 00001000 08:01 100 /usr/bin/geekbridge-service
@@ -118,7 +123,9 @@ mod tests {
         assert_eq!(
             code_ranges(maps),
             vec![
+                (0x55d0c8a00000, 0x1000),
                 (0x55d0c8a01000, 0x55d0c9000000 - 0x55d0c8a01000),
+                (0x55d0c9000000, 0x200000),
                 (0x7f0000000000, 0x100000)
             ]
         );
@@ -126,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn leaves_memfd_device_and_privately_modified_mappings_alone() {
+    fn leaves_memfd_device_and_privately_modified_mappings_alone_but_takes_dirty_page_cache() {
         let smaps = "\
 7f0000000000-7f0000100000 r-xp 00000000 08:01 200 /usr/lib/libc.so.6
 Size:               1024 kB
@@ -137,11 +144,23 @@ Anonymous:             0 kB
 Anonymous:             4 kB
 7f0000600000-7f0000700000 r-xp 00000000 00:05 6 /dev/shm/code
 Anonymous:             0 kB
-7f0000800000-7f0000900000 r-xp 00000000 08:01 400 /usr/lib/libdirty.so
+7f0000800000-7f0000900000 r-xp 00000000 08:01 400 /usr/lib/libjustbuilt.so
 Anonymous:             0 kB
 Private_Dirty:         8 kB
+Shared_Dirty:        512 kB
+7f0000a00000-7f0000b00000 r--p 00000000 08:01 500 /usr/lib/librelro.so
+Anonymous:            16 kB
+7f0000c00000-7f0000d00000 r--p 00000000 08:01 501 /usr/lib/librodata.so
+Anonymous:             0 kB
 ";
-        assert_eq!(code_ranges(smaps), vec![(0x7f0000000000, 0x100000)]);
+        assert_eq!(
+            code_ranges(smaps),
+            vec![
+                (0x7f0000000000, 0x100000),
+                (0x7f0000800000, 0x100000),
+                (0x7f0000c00000, 0x100000)
+            ]
+        );
     }
 
     #[cfg(target_os = "linux")]

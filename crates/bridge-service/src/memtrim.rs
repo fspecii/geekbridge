@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Two seconds after start the service drops its idle code pages from its resident set
-//! (`bridge_core::codepages`: 4.4 of 7.7 MB RSS measured on an idle service). The session-bus
-//! probe (`coexist.rs`, at start and when the clipboard status is asked for) repeats the drop after each run, since it
-//! touches the D-Bus code again.
+//! Idle code pages are dropped from the service's resident set (`bridge_core::codepages`: 4.4 of 7.7 MB RSS measured on an
+//! idle service) two seconds after start and then every [`SETTLE_EVERY`], together with the free heap. The jobs that touch
+//! the code again (LAN announcement, redial pass, session-bus probe, a linked phone's pings) are not followed one by one:
+//! a fixed beat is what keeps the resident set low whatever ran, also on a kernel that maps a whole large page-cache folio
+//! per fault (the CI runner: 5 MB of the 5.2 MB text resident at every sample) and with a phone linked (7.7 MB, never trimmed,
+//! before the beat). The session-bus probe (`coexist.rs`, at start and when the clipboard status is asked for) and the
+//! LAN announcement still drop right after they ran.
 //! Linux only; a no-op elsewhere.
-/// Drop the idle code pages once, shortly after start. Call from inside the runtime.
+
+/// Beat of the periodic drop. Short enough that a reader sampling every few seconds finds the trimmed state, long
+/// enough to be one timer wake-up per four seconds (0.25 /s of the 3 /s budget; measured: wake-ups unchanged at 0 /s).
+#[cfg(target_os = "linux")]
+const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_secs(4);
+
+/// Drop the idle code pages two seconds after start, then on a beat. Call from inside the runtime.
 pub fn after_startup() {
     #[cfg(target_os = "linux")]
     {
@@ -12,7 +21,11 @@ pub fn after_startup() {
         const DELAY: std::time::Duration = std::time::Duration::from_secs(2);
         tokio::spawn(async {
             tokio::time::sleep(DELAY).await;
-            bridge_core::codepages::drop_idle();
+            loop {
+                bridge_core::codepages::drop_idle();
+                trim_heap();
+                tokio::time::sleep(SETTLE_EVERY).await;
+            }
         });
     }
 }
@@ -22,6 +35,7 @@ pub fn after_startup() {
 /// resident set sat at 4.0-4.6 MB (7.7 MB right after the first announcement) instead of 3.5 MB.
 pub fn after_announce() {
     bridge_core::codepages::drop_idle();
+    trim_heap();
 }
 
 /// One malloc arena for the whole process (glibc only; set before the first thread starts). glibc gives every thread

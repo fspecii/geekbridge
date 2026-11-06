@@ -125,6 +125,20 @@ until grep -q 'discovery API' "$TMP/service.log" 2>/dev/null; do
     sleep 0.002
 done
 startup_ms=$((($(date +%s%N) - start_ns) / 1000000))
+# Every change of the resident set with the second it happened (information; printed with the breakdown), to see which job
+# faults the code pages back in. Polling at 0.2 s reads /proc only and ends with the service.
+(
+    last=0
+    while kill -0 "$SVC" 2>/dev/null; do
+        cur=$(awk '$1 == "VmRSS:" {print $2}' "/proc/$SVC/status" 2>/dev/null || true)
+        if [[ -n $cur && $cur != "$last" ]]; then
+            printf '%s %s\n' "$((($(date +%s%N) - start_ns) / 100000000))" "$cur" >> "$TMP/rss.series"
+            last=$cur
+        fi
+        sleep 0.2
+    done
+) &
+PIDS+=("$!")
 
 sleep 3 # settle: first-run key generation and allocator warm-up
 c0=$(ctxt "$SVC"); t0=$(ticks "$SVC")
@@ -144,6 +158,7 @@ c1=$(ctxt "$SVC"); t1=$(ticks "$SVC")
 # differs between machines (kernel, libc, page-fault read-around, huge pages), so a CI figure can be compared with a local one.
 rss_breakdown() {
     echo "== geekbridge-service resident set by mapping (kB) =="
+    [[ -s $TMP/rss.series ]] && echo "RSS changes (tenth of a second since start: kB): $(paste -sd' ' "$TMP/rss.series")"
     echo "kernel $(uname -r), $(getconf GNU_LIBC_VERSION 2>/dev/null || echo libc?), fault_around_bytes $(cat /sys/kernel/debug/fault_around_bytes 2>/dev/null || echo n/a), THP $(sed 's/.*\[\(.*\)\].*/\1/' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo n/a)"
     awk '
         /^[0-9a-f]+-[0-9a-f]+ / { name = ($6 == "" ? "[anon]" : $6); sub(".*/", "", name); key = $2 " " name; cur = key }

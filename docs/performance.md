@@ -256,6 +256,51 @@ and 8 MB on the same binary (the CI job flipped on 8028-8156 kB readings against
 sample is printed but not budgeted. The budget numbers did not change. The announcement trim (`memtrim::after_announce`) lowered the steady sawtooth
 from 5.0-5.6 MB to 4.1-4.3 MB.
 
+## Idle RSS on the CI runner (2026-11-06)
+
+CI measured a settled minimum of 7 988-8 036 kB (peak sample 8 436-8 484 kB, budget 8 500) for the same binary that settles at
+3.7-4.1 MB locally (5.3 MB peak). `scripts/perf-check.sh` now prints where the resident set sits (per mapping Rss/Pss/anonymous from
+`/proc/<pid>/smaps`, kernel, libc, the RSS change log with the second it happened). The CI log of 14ff36aa3 (kernel 7.0.0-1019-azure,
+glibc 2.43, one 7 530 064 B binary linked seconds earlier in the same job):
+
+| Mapping (kB) | CI, before | Local, before | Local, after |
+| --- | --- | --- | --- |
+| `geekbridge-service` text (`r-xp`) | 4 956 | 1 812 (peak) | 1 868 (peak, 1 s) |
+| `geekbridge-service` `.rodata`, `.eh_frame` (`r--p`) | 1 000 | 1 044 | 408 (152 of it relocated, never dropped) |
+| libc / libm / ld.so / libgcc_s | 704 + 360 + 300 + 64 + 56 + 36 | 512 + 372 + 232 + 128 + 72 + 36 | 880 + 16 + 196 + 128 + 8 |
+| heap | 660 | 656 | 448 |
+| other anonymous (thread stacks, tokio) + stack | 224 + 40 | 232 + 40 | 232 + 40 |
+| Anonymous total | 1 136 | 1 144 | 920 |
+| Threads, tokio workers | 7, 2 | 7, 2 | 7, 2 |
+
+Anonymous memory was never the difference (about 1.1 MB on both, no eagerly allocated pool or ring shows up: the heap is 660 kB, one
+arena, 7 threads; the `[anon]` 224-232 kB and `[stack]` 40 kB are all the stacks and runtime state together). The 4 MB gap was file-backed:
+
+* **Dirty page cache hid the binary from `drop_idle`.** `smaps_rollup` on CI reads `Private_Clean: 0 kB`: the binary had been linked
+  seconds before, so its page-cache pages were still dirty (written back after about 30 s), and smaps counts those as
+  `Shared_Dirty`/`Private_Dirty` even in a private, never-written mapping. `codepages::code_ranges` skipped every mapping with a dirty
+  count, so on CI (and on any machine right after `cargo build`) the 2 s drop and every later one did nothing to the executable's own text.
+  Locally the same binary, run straight after a build: 6.8 MB settled; a minute later: 3.8 MB. The check that matters for "privately
+  written" is `Anonymous:` (a copy-on-write page is anonymous); the dirty counters are no longer consulted.
+* **Read-only mappings were never dropped.** The binary's `r--p` mapping (`.rodata`, `.eh_frame`, dynamic symbol tables: 1.0 MB resident)
+  and the libraries' ones (libc 372, libm 232 kB) held every page start-up read. They are clean file pages like the text; `drop_idle` now
+  takes `r--p` plain-file mappings that have no anonymous page too (the RELRO part, which does, stays). Local peak 5.35 -> 4.0 MB.
+* **Nothing dropped what the jobs between announcements faulted back.** The drop ran at 2 s, after each 15 s announcement and after
+  each session-bus probe. Locally the RSS climbs 1.7-2 MB about 2.2 s after each announcement (jobs of the redial pass and housekeeping that
+  nothing trims) and stays there for 12 s; with a stand-in phone linked nothing trims at all and the service sat at 7.7 MB flat
+  (300 s, `scripts/perf-phone.sh --scenarios idle`). `memtrim::after_startup` now runs `drop_idle` and `malloc_trim` on a 4 s beat
+  (first at 2 s). One timer wake-up per 4 s: 0.3-0.9 wake-ups/s measured with a phone linked (it was 0.26 without the beat), 6 CPU ticks in 300 s.
+* **Free heap.** `malloc_trim(0)` with the drop: heap 656-684 -> 448 kB (-216 kB), anonymous 1 144 -> 920 kB.
+
+Measured with `scripts/perf-check.sh --window 10` (GB_CI=1), the CI method: settled minimum / peak sample, right after the build,
+four runs: **2.16-2.32 MB / 2.84-2.88 MB** (before: 6.8 MB / 7.3 MB right after a build, 3.7-4.1 MB / 5.3 MB a minute later). Stand-in phone linked, idle:
+7.7 MB flat -> 2.4 MB, anonymous 1 140 -> 1 024 kB, flat for 300 s (2 404-2 548 kB). Threads 7, fds 18-19, wakeups 0-1 /s, startup 18 ms, service
+7 511 192 -> 7 509 528 B. Looked at and left alone: the `gb-dnd-warm` thread (parked for 90 s while the setting is off; the whole `[anon]` mapping, stacks
+included, is 232 kB, so a thread is a few kB), stack sizes (untouched stack pages are not resident), `M_TRIM_THRESHOLD` and
+`M_MMAP_THRESHOLD` (the periodic `malloc_trim(0)` already leaves 448 kB of live heap), and starting call audio, Wi-Fi or the
+update client on demand (none of them holds memory at idle: the heap is the runtime, the trust store, the discovery state and
+the TLS config). CI figure for this change: see the commit that follows.
+
 ## Android responsiveness round (2026-11-03)
 
 Emulator (AVD clone, Android 16 x86_64, software GPU, host load average 3-13 from other jobs), release build with R8 signed with the
