@@ -1,6 +1,6 @@
 # Real-device session script (Fold5 SM-F946B, Android 16, this Arch/Omarchy PC)
 
-Build (round 10): head `35b872a22`, APK versionCode 20393 (versionName 0.1.0), sha256 `5bd5e348a5935998e47159a31322c23aa1e6ca872b50302ede0d6c1c254dac10`, signer `4d711ab4...a3c3` (updates in place). PC binaries in `target/release` (sha256 starts: geekbridge `d4cc3cf4`, service `7d5417be`, ctl `04be4c35`, calls `6f7e06d6`, messages `e230e311`, clipboard `b5049103`, agenda `d8c0d24a`, contacts `3b7abbd7`, share `c2eaf375`); the running service was not restarted.
+Build (round 11): head `7b35acff9`, APK versionCode 20400 (versionName 0.1.0), sha256 `306c66106dd7b76b710742acebb747bdba7f23eb5d0b195d3b9aea75fd548f93`, signer `4d711ab4...a3c3` (updates in place). PC binaries in `target/release` (sha256 starts: geekbridge `edcfeb7c`, service `94a37c10`, ctl `fee66bb6`, calls `51b3ad89`, messages `1ef7a447`, clipboard `2350bc69`, agenda `fe1edbe9`, contacts `136d7b93`, share `3633815a`); the running service was not restarted. Adds the Windows/macOS runtime fixes (667f0a5ab) and the privacy defaults test fix.
 
 One ordered script, about 90 minutes, copy-paste from the repository root in a terminal inside Hyprland. Each step has a
 **Send back** line; on any failure note the step, run the shown capture command, and move on (step 7 collects
