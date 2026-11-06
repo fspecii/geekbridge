@@ -5,6 +5,53 @@ numbers come from `/proc` (`scripts/perf-check.sh`); `perf`, `strace`, `valgrind
 not installed here, so there is no allocation profile. The machine was under heavy load from other
 builds (load average 23-32), which affects timings but not RSS, thread or voluntary-wakeup counts.
 
+## Idle wakeups round (2026-11-06)
+
+`scripts/perf-check.sh` reported 4-6 wakeups/s on the current head against its budget of 3 (about 2/s in earlier rounds,
+~1/s on the CI runner). It was real, not load: 788543220 and 84e0e0c23 (head) measure the same, so no round-8-to-11
+change moved it; the earlier ~2/s readings and the CI runner's ~1/s did not show these timers. Method: a private HOME, XDG, state, ports,
+session bus (stand-in StatusNotifierWatcher), no announcements, `--tray`; with and without a stand-in phone
+(`perf-phone`) paired and idle; 60 s windows after 8 s of settling; per thread `voluntary_ctxt_switches` deltas from
+`/proc/<pid>/task/*/status` with names from `comm` (no `perf`/`strace` here), plus a 20 ms-resolution sampler of the same
+counters to read each source's period. Tokio's two workers cannot be told apart per timer, so a source is attributed by
+its period in the trace and confirmed by removing it. The machine was not quiet (load 4-15 from other work; 24 cores),
+which does not move voluntary switches: repeated runs differ by under 0.1/s.
+
+| Thread / source | Period | Before (wakeups/s) | After |
+| --- | --- | --- | --- |
+| `gb-dnd-warm` (keep-warm, read the privacy file every pass) | 2 s, even with Respect Do Not Disturb off | 0.50 | 0.02 (off: sleeps 60 s, woken by saving the choice; on: still 2 s, as before) |
+| Redial pass `reconnect_tick` (tokio worker) | 2 s | ~0.5-1.0 (timer wake plus a second worker) | 0.03 idle; 2 s only while a redial or dial-back has tries left; an announcement or any link event runs it at once |
+| Session-bus probe `coexist::watch` (tokio worker + `async-io`) | 20 s, 11-17 wakeups per probe | 0.55-0.75 | 0: once at start, then when the clipboard status is asked for and is over 20 s old |
+| `expire_devices` (tokio worker) | 5 s | 0.2 | 0.03 (30 s; every reader checks the age itself) |
+| `tick_alerts` via `spawn_blocking` | 30 s, started a blocking-pool thread each time | ~0.1 | 0.03 (runs in the task; the pool thread, and the 8th thread, are gone) |
+| `geekbridge-calls-watchdog` | parks 30 s | 0.03 | 0.03 |
+| LAN announcement every 15 s (NIC walk, send, code page drop) | 15 s | 0.1 | 0.1 |
+| Link heartbeat tick (phone linked) | 20 s | 0.15 | 0.15 |
+| `banner-reaper`, call-trace writer, update scheduler (daily), tray, zbus connection thread | none while idle | 0 | 0 |
+| **Whole process, no phone** | | **2.9** (788543220 and 84e0e0c23: 2.88-2.97) | **0.22** |
+| **Whole process, stand-in phone paired, idle** | | **2.6-3.1** | **0.35-0.40** |
+| Threads | | 8 | 7 |
+| `scripts/perf-check.sh` (session env, announcing, tray; ceiling of wakeups/s) | | 4-5 | 1 |
+| `geekbridge-service` size | | 7 518 696 B | 7 516 272 B |
+
+What changed: the keep-warm thread waits on a condition that saving the choice signals (`dnd::choice_saved`); the
+redial loop is `Daemon::redial_forever`, whose wait is chosen by `Book::active` / `Fallback::active` and cut short by
+`reconnect::wake` (called from `record_device` and from every link event, after the dial-back is registered); the
+coexistence probe is asked for instead of timed; the expiry housekeeping runs every 30 s; the alerts pass no longer
+starts a thread. Behaviour that stays: redial latency (2 s steps while anything is being redialed, immediate on an
+announcement or a loss), dial-back after a silent loss, ring detection, the watchdog and the heartbeat. Tests:
+`reconnect::tests::a_timer_is_only_needed_while_a_redial_has_tries_left`, `a_wake_ends_the_wait_early`,
+`link_stability::the_redial_pass_waits_long_unless_a_redial_is_under_way`, the silent-loss dial-back test now runs the
+real loop (started idle, so the loss event has to wake it), `dnd::tests::keep_warm_sleeps_long_while_off_and_wakes_when_the_choice_is_saved`.
+
+Not changed, and worth knowing: with the option on, Respect Do Not Disturb still refreshes every 2 s (a tool run per
+pass); the 20 s heartbeat tick with a phone linked is the protocol's keepalive. The budgets are unchanged (3/s locally,
+6/s on CI): the service now sits at 0.2-0.4/s and 1/s in the script's ceiling, so the 3/s line still absorbs a busy
+machine. One measurement trap: run from an agent session whose environment carries the `T3CODE_*` / `ELECTRON_*`
+variables, the same service shows a burst of about 35 wakeups every 15.7 s (1.8/s) that vanishes with a clean
+environment (`env -i` or those variables unset); it was not found inside the service (no code reads them), so compare
+numbers taken in the same environment.
+
 ## Perf budget (enforced by `scripts/perf-check.sh`)
 
 | Metric (service, idle) | Before | After | Budget |

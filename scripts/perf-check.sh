@@ -129,7 +129,7 @@ startup_ms=$((($(date +%s%N) - start_ns) / 1000000))
 sleep 3 # settle: first-run key generation and allocator warm-up
 c0=$(ctxt "$SVC"); t0=$(ticks "$SVC")
 # Idle RSS is a sawtooth: the code pages dropped by `codepages::drop_idle` (2 s after start, after each LAN announcement
-# every 15 s and after each 20 s session-bus probe) fault back in when the next periodic job runs, and one RSS read lands
+# every 15 s and after each session-bus probe, at start and on demand) fault back in when the next periodic job runs, and one RSS read lands
 # anywhere on that curve (3.5 to 8 MB on the same binary). The budget is therefore on the settled idle figure: the lowest of
 # the samples taken every 5 s over the window (at least 4, so at least one follows a trim). Peak is printed for information.
 rss=0; rss_max=0; waited=0
