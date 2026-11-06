@@ -21,8 +21,8 @@ use bridge_core::{
     messages::{SmsEncoding, sms_segments},
     phone_view::{
         AgendaView, ConversationItem, DataDevice, DataState, MAX_MESSAGES_LIMIT,
-        MAX_MESSAGES_SHOWN, MessageItem, MessagesView, SelectedThread, SendItem, SendPhase,
-        SimItem, send_reason_text,
+        MAX_MESSAGES_SHOWN, MessageHit, MessageItem, MessagesView, SelectedThread, SendItem,
+        SendPhase, SimItem, ThreadHits, send_reason_text,
     },
 };
 use eframe::egui::{
@@ -71,6 +71,12 @@ pub struct Messages {
     open_number_checked: bool,
     /// Text in the search field of the conversation list.
     search: String,
+    /// The message a search result opened: (device id, thread id, uid, is MMS). Marked in the conversation.
+    found: Option<(String, i64, i64, bool)>,
+    /// How many messages of that conversation are newer than `found`.
+    found_newer: usize,
+    /// Frames left to keep scrolling to `found` (its bubble heights are only estimated until drawn).
+    scroll_to_found: u8,
     /// SIM subscription chosen for the next send; `None` = the phone's default.
     sim: Option<i32>,
     /// Conversations already marked read on this computer, with how many messages they held then.
@@ -451,6 +457,76 @@ impl Messages {
     }
 
     /// The list of conversations from every allowed phone, newest first.
+    fn found_thread(&self) -> Option<(String, i64)> {
+        self.found.as_ref().map(|f| (f.0.clone(), f.1))
+    }
+
+    /// How many of the thread's newest messages the view needs so the found message is among them.
+    fn found_limit(&self) -> usize {
+        match &self.found {
+            Some(_) => self
+                .found_newer
+                .saturating_add(40)
+                .clamp(MAX_MESSAGES_SHOWN, MAX_MESSAGES_LIMIT),
+            None => 0,
+        }
+    }
+
+    /// Open a search result: its conversation, scrolled to the message and marking it.
+    fn open_hit(&mut self, g: &ThreadHits, h: &MessageHit) {
+        self.thread = Some((g.device_id.clone(), g.thread_id));
+        self.found = Some((g.device_id.clone(), g.thread_id, h.uid, h.mms));
+        self.found_newer = h.newer;
+        self.scroll_to_found = 6;
+        self.message_limit = self.found_limit().max(self.message_limit);
+        self.focus_reply = false;
+    }
+
+    /// Search results: each conversation with matches, then its matching messages (snippet and date).
+    fn search_results(
+        &mut self,
+        ui: &mut egui::Ui,
+        pal: &Palette,
+        view: &MessagesView,
+        now_ms: u64,
+    ) {
+        for g in &view.hits {
+            let open = self
+                .thread
+                .as_ref()
+                .is_some_and(|(d, t)| *d == g.device_id && *t == g.thread_id);
+            if hit_header(ui, pal, g, open).clicked() {
+                self.thread = Some((g.device_id.clone(), g.thread_id));
+                self.found = None;
+            }
+            for h in &g.hits {
+                let marked = self.found.as_ref().is_some_and(|f| {
+                    f.0 == g.device_id && f.1 == g.thread_id && f.2 == h.uid && f.3 == h.mms
+                });
+                if hit_row(ui, pal, g, h, marked, now_ms).clicked() {
+                    self.open_hit(g, h);
+                }
+            }
+            ui.add_space(4.0);
+        }
+        // Conversations found by name or number only.
+        for c in view.conversations.iter().filter(|c| {
+            !view
+                .hits
+                .iter()
+                .any(|g| g.device_id == c.device_id && g.thread_id == c.thread_id)
+        }) {
+            let selected = self
+                .thread
+                .as_ref()
+                .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
+            if thread_row(ui, pal, c, selected, now_ms).clicked() {
+                self.thread = Some((c.device_id.clone(), c.thread_id));
+                self.found = None;
+            }
+        }
+    }
+
     fn thread_list(&mut self, ctx: &egui::Context, env: &Env, view: &MessagesView) {
         let pal = env.pal;
         let now_ms = now_ms();
@@ -494,14 +570,19 @@ impl Messages {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        for c in &view.conversations {
-                            let selected = self
-                                .thread
-                                .as_ref()
-                                .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
-                            if thread_row(ui, pal, c, selected, now_ms).clicked() {
-                                self.thread = Some((c.device_id.clone(), c.thread_id));
+                        if view.hits.is_empty() {
+                            for c in &view.conversations {
+                                let selected = self
+                                    .thread
+                                    .as_ref()
+                                    .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
+                                if thread_row(ui, pal, c, selected, now_ms).clicked() {
+                                    self.thread = Some((c.device_id.clone(), c.thread_id));
+                                    self.found = None;
+                                }
                             }
+                        } else {
+                            self.search_results(ui, pal, view, now_ms);
                         }
                         if let Some(note) = conversations_note(view) {
                             ui.add_space(6.0);
@@ -635,14 +716,25 @@ impl Messages {
                         ));
                     });
                 }
-                thread_bubbles(
+                let target = self
+                    .found
+                    .as_ref()
+                    .filter(|f| f.0 == device && f.1 == thread)
+                    .map(|f| (f.2, f.3, self.scroll_to_found > 0));
+                let scroll = target.is_some_and(|t| t.2);
+                let placed = thread_bubbles(
                     ui,
                     pal,
                     &mut self.heights,
                     &sel.messages,
                     viewport,
                     list_origin,
+                    target,
                 );
+                if scroll && placed {
+                    self.scroll_to_found -= 1;
+                    ui.ctx().request_repaint();
+                }
                 ui.add_space(6.0);
             }).bars(ui.ctx());
         theme::hairline(ui, pal);
@@ -1552,6 +1644,115 @@ fn send_blocker(d: &DataDevice) -> Option<String> {
     })
 }
 
+/// The clock for something from the last day, else how long ago.
+fn when_label(now_ms: u64, date_ms: u64) -> String {
+    if now_ms.saturating_sub(date_ms) < 86_400_000 {
+        localtime::clock_label_local(i64::try_from(date_ms).unwrap_or(0))
+    } else {
+        phone_ui::age_label(now_ms, date_ms)
+    }
+}
+
+/// The title line above one conversation's search results.
+fn hit_header(ui: &mut egui::Ui, pal: &Palette, g: &ThreadHits, open: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::click());
+    let radius = CornerRadius::same(8);
+    if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, radius, pal.control_hover.gamma_multiply(0.55));
+    }
+    if response.has_focus() {
+        theme::focus_ring(ui, pal, rect, radius);
+    }
+    let clip = ui.painter().with_clip_rect(rect.shrink2(vec2(6.0, 0.0)));
+    clip.text(
+        rect.left_center() + vec2(14.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        &g.title,
+        FontId::new(13.5, theme::semibold_family()),
+        if open { pal.accent } else { pal.text },
+    );
+    let n = g.hits.len();
+    ui.painter().text(
+        rect.right_center() - vec2(12.0, 0.0),
+        egui::Align2::RIGHT_CENTER,
+        crate::i18n::tr_n("search.matches", n as u64, &[]),
+        FontId::new(12.0, FontFamily::Proportional),
+        pal.text3,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            crate::i18n::tr_n("search.group_label", n as u64, &[("title", &g.title)]),
+        )
+    });
+    response
+}
+
+/// One matching message: a snippet around the match and when it was sent.
+fn hit_row(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    g: &ThreadHits,
+    h: &MessageHit,
+    marked: bool,
+    now_ms: u64,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
+    let radius = CornerRadius::same(8);
+    if marked {
+        ui.painter().rect_filled(rect, radius, pal.selected_bg);
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, radius, pal.control_hover.gamma_multiply(0.55));
+    }
+    if response.has_focus() {
+        theme::focus_ring(ui, pal, rect, radius);
+    }
+    let fg = if marked { pal.selected_fg } else { pal.text };
+    let sub = if marked { pal.selected_fg } else { pal.text2 };
+    let when = when_label(now_ms, h.date_ms);
+    let date = ui.painter().text(
+        egui::pos2(rect.right() - 12.0, rect.top() + 12.0),
+        egui::Align2::RIGHT_CENTER,
+        &when,
+        FontId::new(12.0, FontFamily::Proportional),
+        sub,
+    );
+    let clip = ui.painter().with_clip_rect(egui::Rect::from_min_max(
+        rect.left_top() + vec2(6.0, 0.0),
+        egui::pos2(date.left() - 8.0, rect.bottom()),
+    ));
+    let key = if h.outgoing {
+        "search.hit_you"
+    } else {
+        "search.hit"
+    };
+    clip.text(
+        rect.left_top() + vec2(22.0, 12.0),
+        egui::Align2::LEFT_CENTER,
+        crate::i18n::tr_args(key, &[("text", &h.snippet)]),
+        FontId::new(13.0, FontFamily::Proportional),
+        fg,
+    );
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Button,
+            true,
+            crate::i18n::tr_args(
+                if h.outgoing {
+                    "search.hit_label_you"
+                } else {
+                    "search.hit_label"
+                },
+                &[("title", &g.title), ("when", &when), ("text", &h.snippet)],
+            ),
+        )
+    });
+    response
+}
+
 fn thread_row(
     ui: &mut egui::Ui,
     pal: &Palette,
@@ -1592,11 +1793,7 @@ fn thread_row(
         FontId::new(12.5, FontFamily::Proportional),
         sub,
     );
-    let when = if now_ms.saturating_sub(c.last_date_ms) < 86_400_000 {
-        localtime::clock_label_local(i64::try_from(c.last_date_ms).unwrap_or(0))
-    } else {
-        phone_ui::age_label(now_ms, c.last_date_ms)
-    };
+    let when = when_label(now_ms, c.last_date_ms);
     ui.painter().text(
         egui::pos2(rect.right() - 12.0, rect.top() + 18.0),
         egui::Align2::RIGHT_CENTER,
@@ -1653,7 +1850,8 @@ fn thread_bubbles(
     messages: &[MessageItem],
     viewport: egui::Rect,
     list_origin: f32,
-) {
+    target: Option<(i64, bool, bool)>,
+) -> bool {
     let today = localtime::now().date;
     // Only the bubbles near the viewport are laid out. Heights are measured the first time a
     // bubble is drawn and remembered; unseen ones count as an estimate, so a frame costs
@@ -1676,11 +1874,15 @@ fn thread_bubbles(
             .unwrap_or(ESTIMATED_BUBBLE + if days[i].is_some() { 34.0 } else { 0.0 })
     };
     let mut y = base;
+    let mut target_at = None;
     let (mut first, mut last) = (0, 0);
     let mut before = 0.0;
     let mut after = 0.0;
     for (i, m) in messages.iter().enumerate() {
         let h = height_of(heights, i, m);
+        if target.is_some_and(|t| (t.0, t.1) == (m.uid, m.mms)) {
+            target_at = Some((y, h));
+        }
         if y + h < top - OVERSCAN {
             first = i + 1;
             before += h;
@@ -1702,7 +1904,12 @@ fn thread_bubbles(
                 ui.add_space(4.0);
             });
         }
-        bubble(ui, pal, m);
+        bubble(
+            ui,
+            pal,
+            m,
+            target.is_some_and(|t| (t.0, t.1) == (m.uid, m.mms)),
+        );
         let measured = ui.cursor().top() - start;
         let known = heights.insert((m.uid, width_bucket), measured);
         if known.is_none_or(|k| (k - measured).abs() > 0.5) {
@@ -1712,6 +1919,19 @@ fn thread_bubbles(
     ui.add_space(after);
     if heights.len() > 8 * MAX_MESSAGES_LIMIT {
         heights.clear();
+    }
+    // The message a search result opened is brought to the middle of the pane (its place is an estimate
+    // until the bubbles above it have been drawn once, so this is repeated for a few frames).
+    match (target_at, target.is_some_and(|t| t.2)) {
+        (Some((at, h)), true) => {
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(ui.max_rect().left(), list_origin + at),
+                vec2(10.0, h),
+            );
+            ui.scroll_to_rect(rect, Some(Align::Center));
+            true
+        }
+        _ => false,
     }
 }
 
@@ -1754,7 +1974,12 @@ fn fmt_count(n: usize) -> String {
     out
 }
 
-fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::MessageItem) {
+fn bubble(
+    ui: &mut egui::Ui,
+    pal: &Palette,
+    m: &bridge_core::phone_view::MessageItem,
+    marked: bool,
+) {
     let layout = if m.outgoing {
         Layout::right_to_left(Align::TOP)
     } else {
@@ -1767,7 +1992,7 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
         } else {
             (pal.control, pal.text)
         };
-        egui::Frame::new()
+        let framed = egui::Frame::new()
             .fill(fill)
             .corner_radius(CornerRadius::same(14))
             .inner_margin(Margin::symmetric(12, 7))
@@ -1799,6 +2024,14 @@ fn bubble(ui: &mut egui::Ui, pal: &Palette, m: &bridge_core::phone_view::Message
                     );
                 });
             });
+        if marked {
+            ui.painter().rect_stroke(
+                framed.response.rect,
+                CornerRadius::same(14),
+                Stroke::new(2.0_f32, pal.accent),
+                StrokeKind::Outside,
+            );
+        }
     });
     ui.add_space(3.0);
 }
@@ -1810,7 +2043,12 @@ impl AppView for Messages {
         ctx.input_mut(|i| self.ime.drop_composing_enter(&mut i.events));
         if self.limit_for != self.thread {
             self.limit_for.clone_from(&self.thread);
-            self.message_limit = 0;
+            // A search result further back than the default window asks for enough messages to include it.
+            self.message_limit = self.found_limit();
+        }
+        if self.search.trim().is_empty() || self.found_thread() != self.thread {
+            self.found = None;
+            self.scroll_to_found = 0;
         }
         let request = Request::MessagesView {
             device_id: self.thread.as_ref().map(|(d, _)| d.clone()),
@@ -1912,6 +2150,10 @@ impl AppView for Messages {
                     .conversations
                     .iter()
                     .any(|c| c.device_id == *d && c.thread_id == *t)
+                && !view
+                    .hits
+                    .iter()
+                    .any(|g| g.device_id == *d && g.thread_id == *t)
         });
         if hidden {
             self.thread = None;
@@ -2253,6 +2495,7 @@ mod tests {
                                     list,
                                     viewport,
                                     origin,
+                                    None,
                                 );
                             });
                     });

@@ -326,6 +326,34 @@ pub struct MessagesView {
     pub conversations_total: usize,
     pub selected: Option<SelectedThread>,
     pub sends: Vec<SendItem>,
+    /// For a search: the matching messages, grouped by conversation, newest first (at most `MAX_SEARCH_HITS`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hits: Vec<ThreadHits>,
+}
+
+/// Most matching messages one search returns.
+pub const MAX_SEARCH_HITS: usize = 200;
+
+/// The messages of one conversation that match a search.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadHits {
+    pub device_id: String,
+    pub thread_id: i64,
+    pub title: String,
+    /// Newest first.
+    pub hits: Vec<MessageHit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageHit {
+    pub uid: i64,
+    pub mms: bool,
+    pub outgoing: bool,
+    pub date_ms: u64,
+    /// A short piece of the body around the match.
+    pub snippet: String,
+    /// Messages of the conversation that are newer than this one (0 = the newest).
+    pub newer: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

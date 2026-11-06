@@ -15,17 +15,17 @@ use bridge_core::{
     agenda::{Agenda, CalendarEvent, Contact, Date, Record, SourceId, Store, When},
     ipc::{ErrorBody, ErrorCode, Feature},
     messages::{
-        Address, Conversation, Direction, MergeOutcome, OutgoingTextIntent, ResendConsent,
-        SendEvent, SendId, SendLedger, SendState, SimSelection, SubmissionId, Submit,
-        SubscriptionId, ThreadId,
+        Address, Conversation, Direction, MergeOutcome, MessageKey, OutgoingTextIntent,
+        ResendConsent, SendEvent, SendId, SendLedger, SendState, SimSelection, SubmissionId,
+        Submit, SubscriptionId, ThreadId,
     },
     phone_link::{self as wire, SmsPhase},
     phone_view::{
         AgendaView, CalendarEditAction, CalendarItem, ConversationItem, DataDevice, DataState,
         EventDraft, EventItem, MAX_CONVERSATIONS_SHOWN, MAX_EVENTS_SHOWN, MAX_MESSAGES_LIMIT,
         MAX_MESSAGES_PER_PHONE, MAX_MESSAGES_PER_THREAD, MAX_MESSAGES_SHOWN, MAX_PEOPLE_LIMIT,
-        MAX_PEOPLE_SHOWN, MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageItem, MessagesView, Person,
-        SelectedThread, SendItem, SendPhase, SimItem,
+        MAX_PEOPLE_SHOWN, MAX_SEARCH_HITS, MAX_SENDS_SHOWN, MAX_VIEW_DAYS, MessageHit, MessageItem,
+        MessagesView, Person, SelectedThread, SendItem, SendPhase, SimItem, ThreadHits,
     },
 };
 use bridge_kde::sms;
@@ -1747,6 +1747,7 @@ impl PhoneData {
         }
         let devices = Self::devices(&g);
         let mut conversations = Vec::new();
+        let mut raw_hits = Vec::new();
         let mut sends = Vec::new();
         let mut ids: Vec<&String> = g.devices.keys().collect();
         ids.sort();
@@ -1774,18 +1775,22 @@ impl PhoneData {
                 if let Some(q) = &needle {
                     let in_title = title.to_lowercase().contains(q.as_str())
                         || addrs.iter().any(|a| a.to_lowercase().contains(q.as_str()));
+                    let found = body_matches(&t.conv, q);
                     if !in_title {
                         // Newest matching message gives the snippet.
-                        let hit = t
-                            .conv
-                            .ordered()
-                            .into_iter()
-                            .rev()
-                            .find(|m| m.body.to_lowercase().contains(q.as_str()));
-                        match hit {
+                        match found.iter().max_by_key(|m| (m.date_ms, m.key)) {
                             Some(m) => matched = Some(snippet(&m.body, q, 60)),
                             None => continue,
                         }
+                    }
+                    if !found.is_empty() {
+                        raw_hits.push((
+                            id.clone(),
+                            t.conv.thread_id().0,
+                            title.clone(),
+                            &t.conv,
+                            found,
+                        ));
                     }
                 }
                 conversations.push(ConversationItem {
@@ -1872,12 +1877,17 @@ impl PhoneData {
             }),
             _ => None,
         };
+        let hits = match &needle {
+            Some(q) => group_hits(raw_hits, q),
+            None => Vec::new(),
+        };
         Ok(MessagesView {
             devices,
             conversations,
             conversations_total,
             selected,
             sends,
+            hits,
         })
     }
 }
@@ -1981,6 +1991,83 @@ fn parse_day(day: &str) -> Result<Date, ErrorBody> {
 
 /// About `max` characters of `body` around the first case-insensitive occurrence of `needle`
 /// (already lower case). Falls back to the start of the text.
+/// Does `body` contain `needle` (already lower-cased), ignoring case? Plain ASCII text is compared in place;
+/// anything else is lower-cased first, so non-ASCII letters fold too. No allocation for the common case.
+fn contains_folded(body: &str, needle: &str) -> bool {
+    if body.is_ascii() && needle.is_ascii() {
+        let n = needle.as_bytes();
+        return n.is_empty()
+            || body
+                .as_bytes()
+                .windows(n.len())
+                .any(|w| w.eq_ignore_ascii_case(n));
+    }
+    body.to_lowercase().contains(needle)
+}
+
+/// The messages of one thread whose held text contains `needle` (a linear scan; bodies are held clipped).
+fn body_matches<'a>(
+    conv: &'a Conversation,
+    needle: &str,
+) -> Vec<&'a bridge_core::messages::Message> {
+    conv.iter()
+        .filter(|m| contains_folded(&m.body, needle))
+        .collect()
+}
+
+/// Newest `MAX_SEARCH_HITS` matches over all threads, grouped by thread (the thread with the newest match first).
+fn group_hits(
+    raw: Vec<(
+        String,
+        i64,
+        String,
+        &Conversation,
+        Vec<&bridge_core::messages::Message>,
+    )>,
+    needle: &str,
+) -> Vec<ThreadHits> {
+    let mut all: Vec<(u64, MessageKey, usize)> = raw
+        .iter()
+        .enumerate()
+        .flat_map(|(i, r)| r.4.iter().map(move |m| (m.date_ms, m.key, i)))
+        .collect();
+    all.sort_by_key(|h| std::cmp::Reverse((h.0, h.1)));
+    all.truncate(MAX_SEARCH_HITS);
+    let mut groups: Vec<ThreadHits> = Vec::new();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for (date_ms, key, i) in all {
+        let (device_id, thread_id, title, conv, found) = &raw[i];
+        let Some(m) = found.iter().find(|m| m.key == key) else {
+            continue;
+        };
+        let g = *slot.entry(i).or_insert_with(|| {
+            groups.push(ThreadHits {
+                device_id: device_id.clone(),
+                thread_id: *thread_id,
+                title: if title.is_empty() {
+                    "Unknown sender".into()
+                } else {
+                    title.clone()
+                },
+                hits: Vec::new(),
+            });
+            groups.len() - 1
+        });
+        groups[g].hits.push(MessageHit {
+            uid: key.uid,
+            mms: key.transport == bridge_core::messages::Transport::Mms,
+            outgoing: m.direction() == Direction::Outgoing,
+            date_ms,
+            snippet: snippet(&m.body, needle, 70),
+            newer: conv
+                .iter()
+                .filter(|o| (o.date_ms, o.key) > (date_ms, key))
+                .count(),
+        });
+    }
+    groups
+}
+
 fn snippet(body: &str, needle: &str, max: usize) -> String {
     let flat: String = body
         .chars()
@@ -3323,6 +3410,172 @@ mod tests {
             "title match needs no snippet"
         );
         assert!(find("zzz").is_empty());
+    }
+
+    fn search(h: &PhoneData, q: &str) -> MessagesView {
+        h.messages_view(None, None, Some(q)).unwrap()
+    }
+
+    #[test]
+    fn search_lists_every_matching_message_newest_first_grouped_by_thread() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        feed(
+            &h,
+            vec![
+                msg(4, 1, 1, "Parcel one", now - 9000),
+                msg(5, 2, 1, "no match here", now - 8000),
+                msg(4, 3, 2, "my parcel two", now - 7000),
+                msg(6, 4, 1, "PARCEL three", now - 6000),
+                msg(4, 5, 1, "parcel four", now - 5000),
+            ],
+        );
+        let v = search(&h, "  Parcel ");
+        let order: Vec<(i64, Vec<i64>)> = v
+            .hits
+            .iter()
+            .map(|g| (g.thread_id, g.hits.iter().map(|m| m.uid).collect()))
+            .collect();
+        assert_eq!(order, vec![(4, vec![5, 3, 1]), (6, vec![4])]);
+        let g = &v.hits[0];
+        assert!(g.hits[1].outgoing);
+        assert_eq!(g.hits[0].newer, 0);
+        assert_eq!(g.hits[2].newer, 2);
+        assert!(g.hits[0].snippet.contains("parcel four"));
+        assert_eq!(g.hits[0].date_ms, now - 5000);
+        assert!(
+            search(&h, "").hits.is_empty(),
+            "an empty query scans nothing"
+        );
+        assert!(search(&h, "   ").hits.is_empty());
+        assert!(h.messages_view(None, None, None).unwrap().hits.is_empty());
+        assert!(search(&h, "zzz").hits.is_empty());
+    }
+
+    #[test]
+    fn search_returns_at_most_the_newest_two_hundred() {
+        let (h, _rx) = sms_hub();
+        let base = 1_700_000_000_000_u64;
+        for chunk in (0..450_u64).collect::<Vec<_>>().chunks(150) {
+            feed(
+                &h,
+                chunk
+                    .iter()
+                    .map(|i| msg(4, *i as i64 + 1, 1, "needle", base + i))
+                    .collect(),
+            );
+        }
+        let v = search(&h, "needle");
+        let hits = &v.hits[0].hits;
+        assert_eq!(hits.len(), MAX_SEARCH_HITS);
+        assert_eq!(hits[0].uid, 450);
+        assert_eq!(hits.last().unwrap().uid, 450 - MAX_SEARCH_HITS as i64 + 1);
+        assert_eq!(hits.last().unwrap().newer, MAX_SEARCH_HITS - 1);
+    }
+
+    #[test]
+    fn search_folds_case_beyond_ascii_and_matches_names_and_numbers() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, false, true));
+        drain(&mut rx);
+        give_contacts(&h, &[("a", &card("Zoë Müller", "+44 20 7946 0001"))]);
+        let now = now_ms();
+        let named = json!({"addresses": [{"address": "+442079460001"}], "body": "see you",
+            "date": now - 1000, "type": 1, "read": 0, "thread_id": 8, "_id": 1});
+        feed(
+            &h,
+            vec![
+                named,
+                msg(4, 2, 1, "Straße ÉCOLE Привет", now - 2000),
+                msg(5, 3, 1, "Kelvin K sign", now - 3000),
+            ],
+        );
+        for q in [
+            "école",
+            "ÉCOLE",
+            "привет",
+            "STRASSE".to_lowercase().as_str(),
+        ] {
+            let hit = search(&h, q);
+            assert_eq!(hit.hits.len(), usize::from(q != "strasse"), "{q}");
+        }
+        assert_eq!(search(&h, "kelvin k").hits[0].hits[0].uid, 3);
+        assert_eq!(
+            search(&h, "\u{212a} sign").hits[0].hits[0].uid,
+            3,
+            "Kelvin sign folds to k"
+        );
+        // A contact name or a number finds the conversation (it has no body hit of its own).
+        let by_name = search(&h, "MÜLLER");
+        assert_eq!(by_name.conversations.len(), 1);
+        assert_eq!(by_name.conversations[0].thread_id, 8);
+        assert!(by_name.hits.is_empty());
+        assert_eq!(search(&h, "7946").conversations[0].thread_id, 8);
+        assert!(search(&h, "ö").hits.is_empty());
+    }
+
+    #[test]
+    fn search_sees_only_the_clipped_body_that_is_held() {
+        let (h, _rx) = sms_hub();
+        let now = now_ms();
+        let long = format!(
+            "{}TAILWORD",
+            "x".repeat(bridge_core::messages::MAX_STORED_BODY_BYTES)
+        );
+        feed(&h, vec![msg(4, 1, 1, &format!("HEADWORD {long}"), now)]);
+        assert_eq!(search(&h, "headword").hits.len(), 1);
+        assert!(
+            search(&h, "tailword").hits.is_empty(),
+            "the clipped tail is not held"
+        );
+    }
+
+    #[test]
+    fn searching_twenty_thousand_messages_is_quick() {
+        let (h, _rx) = sms_hub();
+        let base = 1_700_000_000_000_u64;
+        let per = MAX_MESSAGES_PER_THREAD as u64;
+        for t in 0..10_u64 {
+            for chunk in (0..per).collect::<Vec<_>>().chunks(500) {
+                feed(
+                    &h,
+                    chunk
+                        .iter()
+                        .map(|i| {
+                            let body = if i % 97 == 0 {
+                                "see the Parcel at the door, thanks a lot".to_owned()
+                            } else {
+                                format!("ordinary message number {i} about lunch plans tonight")
+                            };
+                            msg(t as i64 + 1, *i as i64 + 1, 1, &body, base + t * per + i)
+                        })
+                        .collect(),
+                );
+            }
+        }
+        let held: usize = h
+            .lock()
+            .devices
+            .values()
+            .flat_map(|d| d.threads.values())
+            .map(|t| t.conv.len())
+            .sum();
+        assert_eq!(held, MAX_MESSAGES_TOTAL);
+        let best = (0..5)
+            .map(|_| {
+                let t = std::time::Instant::now();
+                let v = search(&h, "PARCEL");
+                assert_eq!(
+                    v.hits.iter().map(|g| g.hits.len()).sum::<usize>(),
+                    MAX_SEARCH_HITS
+                );
+                t.elapsed()
+            })
+            .min()
+            .unwrap();
+        eprintln!("search over {held} messages: {best:?}");
+        let limit = if cfg!(debug_assertions) { 400 } else { 20 };
+        assert!(best.as_millis() < limit, "{best:?}");
     }
 
     #[test]

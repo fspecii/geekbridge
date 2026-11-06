@@ -188,6 +188,20 @@ reason, or *Unknown whether the phone applied this* (for example the link droppe
 applies each change only once. Repeating events can only be changed on the phone. **Notify before events** (also off by
 default) shows a desktop notification shortly before an event starts.
 
+## Searching your messages
+
+The search box above the conversation list (Ctrl+F, or Cmd+F on a Mac, puts the cursor in it) looks through every
+conversation at once. It matches the text of the messages and the contact name or number, ignoring capital letters
+(accented and other non-English letters included). Results are grouped by conversation, newest first, each with a short
+piece of the message around the match and when it was sent; at most 200 messages are listed. Click a result to open that
+conversation with the message marked and scrolled into view. A conversation that matched only by name or number is listed
+under the results.
+
+Only messages this computer already holds are searched: the newest messages of each conversation, loaded as you open
+it (up to 20,000 in all, with very long texts cut at 4 KB). Older history that is still only on the phone is not found
+until you open that conversation and choose **Load older messages**. Nothing is indexed or saved for search, and what you
+type is not written to any log or file; it is gone when you close the window.
+
 ## Clipboard
 
 Switch the phone on under *Phone sync*. Copying on the computer then reaches the phone. To get the phone's

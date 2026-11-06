@@ -7,6 +7,9 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 ## [Unreleased]
 
 ### Added
+- Messages: the search box now finds every matching message across all conversations, not just the conversation it
+  belongs to. Results are grouped by conversation, newest first, each with a snippet and its date, and clicking one opens
+  the conversation at that message. It covers the messages already loaded on the computer and keeps no index.
 - Android: a **Computer link** Quick Settings tile that shows whether the phone is connected to your computer (and its
   name), and opens the app or the pairing step on a tap.
 - Android: when Android refuses to restart the background connection after a reboot or an update, a quiet **Tap to

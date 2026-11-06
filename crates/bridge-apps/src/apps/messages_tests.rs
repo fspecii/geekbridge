@@ -80,6 +80,45 @@ fn convo(id: i64, title: &str, body: &str, unread: u32) -> ConversationItem {
     }
 }
 
+fn hit(uid: i64, newer: usize, snippet: &str, days_ago: u64) -> MessageHit {
+    MessageHit {
+        uid,
+        mms: false,
+        outgoing: uid % 2 == 0,
+        date_ms: now_ms() - days_ago * D,
+        snippet: snippet.into(),
+        newer,
+    }
+}
+
+/// A search result view: two conversations with matches, one found by name only.
+fn search_fixture() -> MessagesView {
+    let mut v = fixture(DataState::Ready, true);
+    v.hits = vec![
+        ThreadHits {
+            device_id: "d".into(),
+            thread_id: 3,
+            title: "Ann".into(),
+            hits: vec![
+                hit(
+                    30,
+                    2,
+                    "Ping me when it is done, I will check it tonight.",
+                    0,
+                ),
+                hit(12, 700, "the paper is due Friday", 3),
+            ],
+        },
+        ThreadHits {
+            device_id: "d".into(),
+            thread_id: 2,
+            title: "+1 555 000 0002".into(),
+            hits: vec![hit(7, 0, "Look at this! \u{1F389} caf\u{e9}", 9)],
+        },
+    ];
+    v
+}
+
 fn send_item(id: u64, phase: SendPhase, reason: Option<&str>) -> SendItem {
     SendItem {
         send_id: id,
@@ -142,6 +181,7 @@ fn fixture(sms: DataState, send: bool) -> MessagesView {
             send_item(7, SendPhase::Failed, Some("something odd")),
             send_item(8, SendPhase::Uncertain, None),
         ],
+        hits: Vec::new(),
     }
 }
 
@@ -791,4 +831,84 @@ fn the_contact_list_is_named_for_a_screen_reader_and_leaving_compose_stops_the_s
     m.section = Section::Conversations;
     rig.settle(&mut m, 2);
     assert!(m.people.is_none(), "no contact polling outside compose");
+}
+
+#[test]
+fn a_search_result_opens_its_conversation_and_asks_for_enough_history_to_hold_the_message() {
+    let _clock = pin();
+    let mut m = messages_with(search_fixture());
+    m.search = "is".into();
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    let v = m.feed.as_ref().unwrap().state().view.unwrap();
+    let (g, far) = (&v.hits[0], &v.hits[0].hits[1]);
+    m.open_hit(g, far);
+    assert_eq!(m.thread, Some(("d".into(), 3)));
+    assert_eq!(m.found, Some(("d".into(), 3, 12, false)));
+    assert_eq!(
+        m.message_limit, 740,
+        "the 700 newer messages, the message and room around it"
+    );
+    // The next frame (the thread changed) keeps that window instead of resetting it.
+    rig.settle(&mut m, 2);
+    assert_eq!(m.message_limit, 740);
+    assert!(m.found.is_some());
+    // Clearing the search clears the mark.
+    m.search.clear();
+    rig.settle(&mut m, 2);
+    assert!(m.found.is_none());
+    // Opening a result closer than the default window needs no more than the default.
+    m.search = "is".into();
+    m.thread = None;
+    m.message_limit = 0;
+    m.open_hit(g, &g.hits[0]);
+    assert_eq!(m.message_limit, MAX_MESSAGES_SHOWN);
+}
+
+#[test]
+fn search_results_draw_in_both_themes_and_the_box_and_rows_are_named_and_focusable() {
+    let _clock = pin();
+    use crate::{connection::ControlState, shell::Env, test_support::paired_model};
+    let mut m = messages_with(search_fixture());
+    m.search = "is".into();
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    let (model, control) = (paired_model(), ControlState::default());
+    let audit = crate::a11y_tests::audit_screen(
+        "search results",
+        AppKind::Messages,
+        egui::vec2(1000.0, 700.0),
+        move |ctx| {
+            let pal = crate::theme::current(ctx, AppKind::Messages);
+            let env = Env {
+                app: AppKind::Messages,
+                api_port: 1,
+                model: &model,
+                pal: &pal,
+                control: &control,
+            };
+            m.show(ctx, &env);
+        },
+    );
+    assert!(audit.problems.is_empty(), "{}", audit.problems.join("\n"));
+    assert!(
+        audit.tree.find("Search messages").is_some(),
+        "the search box is named"
+    );
+    assert!(
+        audit.stops.iter().any(|s| s == "Search messages"),
+        "Tab reaches the search box: {:?}",
+        audit.stops
+    );
+    for want in [
+        "+1 555 000 0002, 1 matching message,",
+        "Ann, 2 matching messages",
+        "Ann, 3 d ago: you: the paper is due Friday",
+    ] {
+        assert!(
+            audit.stops.iter().any(|s| s.starts_with(want)),
+            "{want:?} missing from {:?}",
+            audit.stops
+        );
+    }
 }
