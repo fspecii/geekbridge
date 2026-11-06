@@ -164,7 +164,9 @@ shot_once() { # display app theme name keys [ENV=VAL...]   keys is an xdotool ke
   # The share window and the home tiles (calendar, messages) fill in several seconds after launch.
   case "$app" in geekbridge-share) floor=8 ;; geekbridge) floor=10 ;; esac
   sleep $floor
-  if [ "$keys" != "-" ]; then DISPLAY=$disp timeout 10 xdotool windowfocus --sync "$wid" key --delay 150 $keys; sleep 1.5; fi
+  if [ "$keys" != "-" ]; then DISPLAY=$disp timeout 10 xdotool windowfocus --sync "$wid" key --delay 150 $keys; sleep 1.5
+  elif [ "$app" = geekbridge-messages ]; then DISPLAY=$disp timeout 10 xdotool windowfocus --sync "$wid"; sleep 1.5   # no window manager in Xvfb: Messages marks a conversation read only while focused, so focus it as a user reading would
+  fi
   grab "$disp" "$wid" "$RUN/raw/$name-$theme-std.png" 8 || : >"$RUN/fail/$name-$theme"
   read -r mw mh <<<"${MINSZ[$app]:-360 96}"   # the call card (geekbridge-calls+overlay) is fixed-size: min = std
   DISPLAY=$disp timeout 10 xdotool windowsize --sync "$wid" "$mw" "$mh"; sleep 1.5
@@ -196,6 +198,15 @@ shot() { # worker display app theme name keys [ENV=VAL...]
       # --check: a capture that differs from its golden is taken again (up to 3 times). A real regression differs every
       # time; a startup race (a feed tile that was still empty on a loaded machine) does not. --update never retries.
       [ "$MODE" = check ] && ! shot_matches "$3-$2" && [ $attempt -lt 3 ] && { echo "golden-desktop: $3-$2 differs, capturing again ($attempt)"; sleep 1; continue; }
+      # --update: a capture is only accepted when a second capture agrees with it, so a feed tile that was still empty
+      # (a startup race) can never be blessed as a golden. Two disagreeing captures are retried; the 3rd attempt is taken as is.
+      if [ "$MODE" = update ] && [ $attempt -lt 3 ]; then
+        local sz agree=1; mkdir -p "$RUN/first"
+        for sz in std min; do $IMG reduce "$RUN/raw/$3-$2-$sz.png" "$RUN/first/$3-$2-$sz.png"; done
+        shot_once "$disp" "$@" || agree=0
+        for sz in std min; do [ $agree = 1 ] && { GOLDEN_MAX_RATIO=$(max_ratio "$3-$2") $IMG compare "$RUN/raw/$3-$2-$sz.png" "$RUN/first/$3-$2-$sz.png" "$RUN/retry.$3-$2-$sz.png" >/dev/null 2>&1 || agree=0; }; done
+        [ $agree = 1 ] || { echo "golden-desktop: $3-$2 unstable between two captures, again ($attempt)"; sleep 1; continue; }
+      fi
       return 0
     fi
     sleep 1

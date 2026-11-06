@@ -22,8 +22,8 @@ one red accent.
   <img src="docs/img/android-calendar-dark.png" width="170" alt="Android dot-matrix calendar, dark">
 </p>
 <p align="center">
-  <img src="docs/img/desktop-nothing-home-dark.png" width="380" alt="Desktop Home, paired and connected, dark">
-  <img src="docs/img/desktop-nothing-first-run-dark.png" width="380" alt="Desktop Home on first run: install the app and pair a phone, dark">
+  <img src="docs/img/desktop-nothing-home-dark.png" width="380" alt="Desktop Home, linked and connected, dark">
+  <img src="docs/img/desktop-nothing-first-run-dark.png" width="380" alt="Desktop Home on first run: install the app and link a phone, dark">
 </p>
 <p align="center">
   <img src="docs/img/desktop-nothing-messages-dark.png" width="250" alt="Desktop Messages, dark">

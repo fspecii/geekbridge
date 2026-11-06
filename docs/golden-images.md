@@ -29,7 +29,7 @@ Desktop (`scripts/golden-desktop.sh`, Linux with Xvfb, xdotool, ImageMagick `imp
 private Xvfb and service state; a scripted phone (`bridge-phone-sim`); the wall clock frozen at 2026-06-15 12:00 UTC by an
 `LD_PRELOAD` shim (`scripts/golden/fakeclock.c`); `TZ=UTC`, 24 h clock, `en_US`; fonts from `third_party/fonts` only
 (`GEEKBRIDGE_BUNDLED_FONTS_ONLY=1` skips system fonts); animations are off in the theme; update banner from a loopback
-mock release server (no network); each screen is captured until two consecutive frames are identical. Every screen is shot
+mock release server (no network); the Messages window is focused before capture (Xvfb has no window manager, and Messages marks a conversation read only while focused); each screen is captured until two consecutive frames are identical, and `--update` accepts a capture only when a second capture agrees with it. Every screen is shot
 in light and dark at the standard window size (`-std`) and resized to the app's minimum (`-min`).
 
 Android (`scripts/golden-android.sh`): which screens, see its header. The debug design gallery (`DesignGalleryActivity`, pages
