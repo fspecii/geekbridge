@@ -19,7 +19,7 @@
 # AVD for stable pixels: see docs/golden-images.md (google_apis x86_64 android-36, 1080x2400, density 420, en-US).
 # Own emulator (free console port, own adb server on a free port, both chosen at run time; EMU_PORT / ANDROID_ADB_SERVER_PORT override) started read-only, so the AVD is not modified
 # and no other emulator is touched. Env: GOLDEN_AVD (default gbnothing),
-# GOLDEN_TIMEOUT (seconds, default 600), GOLDEN_APK, GOLDEN_BUILD=1 (build the APK first), GOLDEN_KEEP_EMU=1 (leave the emulator running).
+# GOLDEN_TIMEOUT (seconds, default 3600), GOLDEN_APK, GOLDEN_BUILD=1 (build the APK first), GOLDEN_KEEP_EMU=1 (leave the emulator running).
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"; cd "$ROOT"
 MODE=check
@@ -27,7 +27,7 @@ case "${1:-}" in --update) MODE=update ;; --check|"") ;; *) echo "usage: $0 [--u
 source scripts/android-env.sh >/dev/null 2>&1
 # Re-run ourselves in our own process group under `timeout` (default 600 s, emulator boot included): on expiry the whole
 # group, emulator included, is killed.
-if [ -z "${GOLDEN_INNER:-}" ]; then GOLDEN_INNER=1 exec timeout -k 10 "${GOLDEN_TIMEOUT:-600}" "$0" "$@"; fi
+if [ -z "${GOLDEN_INNER:-}" ]; then GOLDEN_INNER=1 exec timeout -k 10 "${GOLDEN_TIMEOUT:-3600}" "$0" "$@"; fi
 # Ports are chosen free at run time: the adb server on any free port, the emulator on a free even console port (and +1).
 free_tcp() { python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1])'; }
 free_console() { python3 -I - <<'PY'
@@ -54,22 +54,50 @@ rm -rf "$RUN/raw"; mkdir -p "$RUN/raw" "$RUN/tmp" "$GOLDEN_DIR" "$DIFF"
 [ "$MODE" = check ] && rm -f "$DIFF"/android-*.png
 [ -n "${GOLDEN_BUILD:-}" ] && { scripts/build-android.sh || exit 1; }
 [ -f "$APK" ] || { echo "golden-android: no APK at $APK (GOLDEN_BUILD=1 or make android)"; exit 2; }
+# The Updates card prints "build <versionCode>", and a debug build's code is 20000 + the commit count, so a golden would go stale with
+# every commit. Pin it: unless the APK already has the pinned code (GOLDEN_VERSION_CODE, default 20207), build one from the same
+# sources with -Pgb.commitCount (needs the native libraries from scripts/build-android.sh; skipped when GOLDEN_APK is given).
+GOLDEN_VERSION_CODE="${GOLDEN_VERSION_CODE:-20207}"
+if [ -z "${GOLDEN_APK:-}" ]; then
+  AAPT2="$(ls -d "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)"
+  have=$("$AAPT2" dump badging "$APK" 2>/dev/null | sed -n "s/^package: .*versionCode='\([0-9]*\)'.*/\1/p")
+  if [ "$have" != "$GOLDEN_VERSION_CODE" ]; then
+    echo "golden-android: APK has versionCode ${have:-?}, building one with the pinned $GOLDEN_VERSION_CODE"
+    gradle -p "$ROOT/android" --console=plain --no-daemon -Pgb.commitCount=$((GOLDEN_VERSION_CODE-20000)) assembleDebug >"$RUN/gradle.log" 2>&1 \
+      || { tail -n 20 "$RUN/gradle.log"; echo "golden-android: pinned build failed (log: $RUN/gradle.log)"; exit 1; }
+    pinned=$(find "$ROOT/android/app/build/outputs/apk/debug" -maxdepth 1 -name '*.apk' | head -1)
+    [ -n "$pinned" ] && cp "$pinned" "$RUN/golden.apk" && APK="$RUN/golden.apk" || { echo "golden-android: no pinned APK built"; exit 1; }
+  fi
+fi
 
-STARTED=0; EMU=""
+STARTED=0; EMU=""; UNIT=""
 die() { echo "golden-android: $*"; exit 1; }
 cleanup() {
   trap - EXIT INT TERM
   if [ -z "${GOLDEN_KEEP_EMU:-}" ] && [ "$STARTED" = 1 ]; then
-    $ADB emu kill >/dev/null 2>&1; [ -n "$EMU" ] && kill "$EMU" 2>/dev/null; pkill -P $$ 2>/dev/null; timeout 10 adb kill-server >/dev/null 2>&1
+    $ADB emu kill >/dev/null 2>&1; [ -n "$EMU" ] && kill "$EMU" 2>/dev/null; [ -n "$UNIT" ] && systemctl --user stop "$UNIT" >/dev/null 2>&1; pkill -P $$ 2>/dev/null; timeout 10 adb kill-server >/dev/null 2>&1
   fi
 }
 trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
 timeout 30 adb start-server >/dev/null 2>&1
 if ! $ADB get-state >/dev/null 2>&1; then
   echo "golden-android: starting $AVD on port $EMU_PORT (read-only)"
-  GB_EMU_AVD="$AVD" GB_EMU_PORT="$EMU_PORT" GB_EMU_ADB_PORT="$ANDROID_ADB_SERVER_PORT" GB_EMU_TMPDIR="$RUN/tmp" GB_EMU_EXTRA="-read-only" \
+  export GB_EMU_AVD="$AVD" GB_EMU_PORT="$EMU_PORT" GB_EMU_ADB_PORT="$ANDROID_ADB_SERVER_PORT" GB_EMU_TMPDIR="$RUN/tmp" GB_EMU_EXTRA="-read-only"
+  # In its own transient systemd user unit when there is one: the emulator's modem listens on a random localhost port, and the host
+  # tooling's port probe (an HTTP GET from a node client) inside an agent's process tree crashes it (SIGSEGV) mid-run, see emulator-call.sh.
+  if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+    UNIT="gb-golden-emu-$$"; : >"$RUN/emulator.log"
+    systemd-run --user --quiet --unit="$UNIT" --collect -p "StandardOutput=truncate:$RUN/emulator.log" -p StandardError=inherit \
+      -p KillMode=control-group -p TimeoutStopSec=20 \
+      --setenv=GB_EMU_AVD --setenv=GB_EMU_PORT --setenv=GB_EMU_ADB_PORT --setenv=GB_EMU_TMPDIR --setenv=GB_EMU_EXTRA \
+      "$ROOT/scripts/emulator-call-launch.sh" 9>&- || die "systemd-run failed"
+    EMU=$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null)
+    for _ in 1 2 3 4 5 6 7 8 9 10; do [ -n "$EMU" ] && [ "$EMU" != 0 ] && break; sleep 0.3; EMU=$(systemctl --user show -p MainPID --value "$UNIT" 2>/dev/null); done
+  else
     scripts/emulator-call-launch.sh >"$RUN/emulator.log" 2>&1 &
-  EMU=$!; STARTED=1
+    EMU=$!
+  fi
+  STARTED=1
   for _ in $(seq 90); do
     $ADB get-state >/dev/null 2>&1 && break
     kill -0 $EMU 2>/dev/null || { tail -n 15 "$RUN/emulator.log"; die "emulator exited during start"; }; sleep 2
@@ -84,12 +112,20 @@ done
 timeout 180 adb -s "$SER" install -r -t "$APK" >/dev/null || die "install failed"
 # Locale, time zone and date need root (google_apis image).
 $ADB root >/dev/null 2>&1; sleep 2; timeout 60 adb -s "$SER" wait-for-device
+for _ in $(seq 30); do [ "$($ADB get-state 2>/dev/null)" = device ] && break; sleep 1; done   # "wait-for-device" can return while the root restart still shows it offline
+[ "$($ADB get-state 2>/dev/null)" = device ] || die "emulator is offline after adb root (is the temp dir full? see ANDROID_TMP in scripts/emulator-call-launch.sh)"
 $ADB shell setprop persist.sys.locale en-US; $ADB shell setprop persist.sys.timezone UTC
 $ADB shell settings put global auto_time 0; $ADB shell settings put global auto_time_zone 0
-$ADB shell date 061512002026.00 >/dev/null 2>&1
+pin_date() { # the emulator can step the clock back to the host time (calendar screens then show today): check and re-pin
+  [ "$($ADB shell date +%F 2>/dev/null | tr -d '\r')" = 2026-06-15 ] || { $ADB shell date 061512002026.00 >/dev/null 2>&1; sleep 1; }
+}
+pin_date
 $ADB shell settings put system accelerometer_rotation 0; $ADB shell settings put system user_rotation 0
 for s in window_animation_scale transition_animation_scale animator_duration_scale; do $ADB shell settings put global $s 0; done
 $ADB shell settings put system time_12_24 24
+# A slow host makes system_server miss a deadline and Android draws a "System UI isn't responding" dialog over the app (it was baked into a
+# golden once): never show crash/ANR dialogs.
+$ADB shell settings put global hide_error_dialogs 1; $ADB shell settings put global anr_show_background 0
 # System UI: demo mode, so the (cropped) bars are fixed anyway.
 $ADB shell settings put global sysui_demo_allowed 1
 demo() { $ADB shell am broadcast -a com.android.systemui.demo -e command "$@" >/dev/null 2>&1; }
@@ -123,8 +159,11 @@ shoot() {
       local f="$pn-$theme-fs${fs/./}"
       [ -n "${ONLY:-}" ] && ! [[ "$f" =~ $ONLY ]] && continue
       local extra=(); [ $pg -gt 0 ] && extra=(--ei gb_scroll $pg)
+      pin_date
       $ADB shell am force-stop dev.geekbridge.android; sleep 1
-      $ADB shell am start -W -n "$@" "${extra[@]}" >/dev/null 2>&1 || { echo "golden-android: cannot start for $f"; FAILED=1; continue; }
+      # One retry: a start can fail while the previous process is still going away.
+      $ADB shell am start -W -n "$@" "${extra[@]}" >/dev/null 2>&1 || { sleep 3; $ADB shell am start -W -n "$@" "${extra[@]}" >/dev/null 2>&1; } \
+        || { echo "golden-android: cannot start for $f"; FAILED=1; continue; }
       sleep 3; [ $pg -gt 0 ] && sleep 2
       grab "$RUN/raw/$f.png" || { echo "golden-android: screencap failed for $f"; FAILED=1; }
       if [ -n "$prev" ] && $IMG same "$RUN/raw/$f.png" "$prev"; then rm -f "$RUN/raw/$f.png"; break; fi

@@ -45,6 +45,12 @@ which allows `adb root`), 1080x2400, density 420, locale en-US, software GPU (`-
 default). The default is the project AVD `gbnothing` (`scripts/bootstrap-android.sh`); to make your own:
 `avdmanager create avd -n gbgolden -k "system-images;android-36;google_apis;x86_64" -d pixel_6` then set
 `hw.lcd.density=420`, `hw.lcd.width=1080`, `hw.lcd.height=2400` in its `config.ini`, and run with `GOLDEN_AVD=gbgolden`.
+The Updates card prints "build <versionCode>" and a debug build's code is 20000 + the commit count, so the check pins it: unless the APK
+already has `GOLDEN_VERSION_CODE` (default 20207) it builds one from the same sources with `-Pgb.commitCount=207` (needs the native libraries
+from `scripts/build-android.sh`; not done when `GOLDEN_APK` is given). The emulator runs in a transient systemd user unit (the host's port probe
+of its modem port crashes it otherwise) with its temp files in the private scratch (`ANDROID_TMP`; the default `/tmp/android-$USER` fills a small
+tmpfs and the device goes offline). The whole check takes 40 to 60 minutes on a busy machine (`GOLDEN_TIMEOUT`, default 3600 s).
+
 A different image, density or GPU renders text a few pixels differently, so the goldens are only valid on that setup.
 
 Photo previews (`share-photos*`) are gradients and edges that the 256-colour reducer and the comparer's palette mapping
@@ -55,9 +61,9 @@ change moves far more than that.
 
 Both scripts pick every port at run time (control, API, discovery, mock release server, adb server, emulator console), give
 each capture worker its own Xvfb (`-displayfd`, no display numbers), fail at once with the helper's log tail if a helper
-process dies, and are bounded by `GOLDEN_TIMEOUT` seconds (desktop 240, Android 600) with the whole process group killed on
+process dies, and are bounded by `GOLDEN_TIMEOUT` seconds (desktop 240, Android 3600) with the whole process group killed on
 expiry. Scratch files live in `~/.cache/gb-golden` (`GOLDEN_SCRATCH`). The desktop check takes about two minutes
-(`GOLDEN_JOBS` workers, default min(8, cores)); the Android check about three, most of it emulator boot. In `--check` a
+(`GOLDEN_JOBS` workers, default min(8, cores)); the Android check 40 to 60 minutes (about 190 screenshots). In `--check` a
 desktop screen that differs is captured again (up to 3 tries): a startup race on a loaded machine passes, a real regression
 differs every time. Other pins: the call timer (`GEEKBRIDGE_FIXED_CALL_SECONDS=83`), `HOME=/tmp/gb-golden-home` (the share
 window prints its save folder), and the order of the captures (Home before Messages is opened, which marks conversations read).

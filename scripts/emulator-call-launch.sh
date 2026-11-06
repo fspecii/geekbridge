@@ -15,6 +15,9 @@ export ANDROID_ADB_SERVER_PORT="${GB_EMU_ADB_PORT:-16037}"
 # A private TMPDIR keeps emulator temp files out of the (shared, quota-limited) /tmp.
 export TMPDIR="${GB_EMU_TMPDIR:-$PWD/.tools/gbcall/tmp}"
 mkdir -p "$TMPDIR"
+# The emulator keeps its read-only overlay (hundreds of MB, growing) and crash db in ANDROID_TMP, default /tmp/android-$USER:
+# on a small tmpfs that fills up and the device goes "offline" mid-run.
+export ANDROID_TMP="$TMPDIR"
 # shellcheck disable=SC2086
 exec emulator -avd "${GB_EMU_AVD:-gbcall}" -port "${GB_EMU_PORT:-5584}" \
   -no-window -no-audio -no-snapshot -no-boot-anim \
