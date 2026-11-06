@@ -45,6 +45,24 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 
+# Cold dependencies at opt-level "z": D-Bus (zbus, zvariant, zbus_xml: tray, call backend, probes), certificate
+# generation/parsing (rcgen, x509-parser) and the root-store table run once per start or per user action, never
+# per frame or per packet. Measured on the service, x86_64 Linux: 7 554 072 -> 7 519 896 B (-34 kB).
+# Everything on the data path (ring, sha2, tokio, serde_json, rustls, opus-pure, our own crates) stays "s":
+# widening "z" to all dependencies saved less (7 527 192 B), so the list is deliberately short.
+[profile.release.package.zbus]
+opt-level = "z"
+[profile.release.package.zvariant]
+opt-level = "z"
+[profile.release.package.zbus_xml]
+opt-level = "z"
+[profile.release.package.x509-parser]
+opt-level = "z"
+[profile.release.package.rcgen]
+opt-level = "z"
+[profile.release.package.webpki-roots]
+opt-level = "z"
+
 # Size-optimised profile for the Android shared library (scripts/build-android.sh uses it). panic stays
 # "unwind": the JNI boundary (jni_export.rs, dispatch.rs) catches panics and turns them into error replies;
 # with panic=abort one bad request would kill the whole app process instead.
