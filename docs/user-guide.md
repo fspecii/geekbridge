@@ -58,7 +58,7 @@ open **GeekBridge** from Applications.
 
 <p align="center">
   <img src="img/shot-android-setup-link.png" width="200" alt="Android setup wizard, step 1 of 9: Link to your computer, with a Scan QR code button and Other ways to link">
-  <img src="img/shot-desktop-home.png" width="360" alt="Desktop Home with the paired phone, link status tiles and a what-is-new notice, light theme">
+  <img src="img/shot-desktop-home.png" width="360" alt="Desktop Home with the linked phone, link status tiles and a what-is-new notice, light theme">
 </p>
 
 Requirements: Android 8 or newer, phone and computer on the same network (not a guest network), the background service running, and the

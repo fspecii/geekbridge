@@ -113,6 +113,8 @@ pub struct HomeApp {
     call_replies: crate::call_replies_ui::ReplyEditor,
     /// Screenshots: scroll Settings to the call audio section once (`GEEKBRIDGE_OPEN_CALLAUDIO`).
     scroll_to_call_audio: bool,
+    /// Screenshots: scroll Settings to the open "Report a problem" preview (`GEEKBRIDGE_OPEN_REPORT`).
+    scroll_to_report: bool,
     /// Screenshots: the window size the scroll above was last applied for (a resize re-applies it).
     shot_size: Option<egui::Vec2>,
     diagnostics_for_report: bool,
@@ -319,6 +321,7 @@ impl HomeApp {
             call_audio: crate::call_audio_ui::CallAudioPanel::new(),
             call_replies: Default::default(),
             scroll_to_call_audio: false,
+            scroll_to_report: false,
             shot_size: None,
             diagnostics_for_report: false,
             diagnostics: None,
@@ -342,6 +345,7 @@ impl HomeApp {
         if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
             app.view = View::Settings;
             app.diagnostics_for_report = true;
+            app.scroll_to_report = true;
             app.collect_diagnostics(ctx);
         }
         app
@@ -1268,6 +1272,23 @@ impl HomeApp {
         nothing::card(ui, pal, |ui| {
             crate::call_replies_ui::show(ui, pal, &mut self.call_replies, self.calls.as_ref())
         });
+        // Screenshots only: show the report preview itself (it is built a moment after launch and the
+        // sections above change height as the service answers, so the scroll is held for a while).
+        if std::env::var_os("GEEKBRIDGE_OPEN_REPORT").is_some() {
+            let size = ctx.screen_rect().size(); // a resize (the minimum-size shot) scrolls there again
+            if self.shot_size.is_some_and(|s| s != size) {
+                self.scroll_to_report = true;
+            }
+            self.shot_size = Some(size);
+        }
+        if self.report.is_some() && self.scroll_to_report {
+            self.scroll_hold += 1;
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            if self.scroll_hold > 40 {
+                self.scroll_to_report = false;
+                self.scroll_hold = 0;
+            }
+        }
         nothing::section(ui, pal, report_ui::section());
         if let Some(panel) = &mut self.report {
             if !panel.show(ui, pal) {
