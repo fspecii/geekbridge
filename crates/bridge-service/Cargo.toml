@@ -52,7 +52,7 @@ libc = "0.2"
 
 # Linux tray: a StatusNotifierItem on the zbus the call backend already links (no new crates).
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = "5"
+zbus = "6"
 futures-lite = "2"
 
 # macOS: the menu-bar item (tray/macos.rs). Generated bindings, type-checked without an Apple SDK.
