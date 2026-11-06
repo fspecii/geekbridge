@@ -215,11 +215,18 @@ pub fn keep_warm(
                 drop(d);
                 let wait = if on { every } else { every * 30 };
                 let g = CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner());
-                if *g == seen {
-                    let _ = CHOICE_SAVED.1.wait_timeout(g, wait);
-                }
+                // Saved since the last look: no wait. The guard must not be held while the count is read again
+                // (locking twice on one thread is a deadlock that also blocks every later save).
+                let g = if *g == seen {
+                    CHOICE_SAVED
+                        .1
+                        .wait_timeout(g, wait)
+                        .map_or_else(|e| e.into_inner().0, |(g, _)| g)
+                } else {
+                    g
+                };
                 // Saved meanwhile or woken: look again (a stray wake-up costs one look).
-                seen = *CHOICE_SAVED.0.lock().unwrap_or_else(|e| e.into_inner());
+                seen = *g;
             }
         })
 }
@@ -409,5 +416,35 @@ mod tests {
         drop(d);
         choice_saved();
         thread.join().unwrap(); // the detector is gone: it ends at the wake, not 10 s later
+    }
+
+    #[test]
+    fn a_save_during_the_look_does_not_deadlock_the_keep_warm_thread() {
+        // The choice is saved while the thread is between reading the counter and waiting (here: inside `enabled`,
+        // which runs exactly there). It used to lock the counter twice and hang itself and every later save.
+        let d = Arc::new(Detector::with_probe(|| false));
+        let first = Arc::new(AtomicBool::new(true));
+        let f = first.clone();
+        let thread = keep_warm(
+            Arc::downgrade(&d),
+            move || {
+                if f.swap(false, Ordering::SeqCst) {
+                    choice_saved();
+                }
+                false
+            },
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(d);
+            choice_saved(); // blocks for ever when the thread holds the counter
+            thread.join().unwrap();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the keep-warm thread ends at the wake and later saves go through");
     }
 }
