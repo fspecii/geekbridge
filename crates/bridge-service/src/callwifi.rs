@@ -1785,20 +1785,13 @@ mod tests {
         assert!(on && why.contains("headset"), "{why}");
     }
 
-    /// Live, speaking, with the far party's tone arriving the whole time.
-    /// The far party talking until `join()` (a runner may take seconds to get the microphone going; a fixed
-    /// burst could end before the guard had anything to hold).
-    struct FarTalk(Arc<AtomicBool>, std::thread::JoinHandle<()>);
-    impl FarTalk {
-        fn join(self) -> std::thread::Result<()> {
-            self.0.store(true, Ordering::SeqCst);
-            self.1.join()
-        }
-    }
-
-    fn speaking_with_far_talk(r: &Rig) -> (u64, FarTalk) {
+    /// Speaking, with the far party heard "now and for good": the guard reads the stamp the playout
+    /// thread writes when it renders loud audio, so the test sets it instead of racing that thread
+    /// against a wall clock (the far party can never fall silent mid-test on a slow runner).
+    fn speaking_with_far_talk(r: &Rig) {
         phone(r, true, true);
         let s = go_live(r);
+        r.hub.far_talk_at.store(u64::MAX / 2, Ordering::Relaxed);
         r.hub.speak(true).unwrap();
         feed(
             &r.hub,
@@ -1808,57 +1801,35 @@ mod tests {
                 on: true,
             },
         );
-        let hub = r.hub.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
-        let t = std::thread::spawn(move || {
-            let (mut enc, mut tone) = (Encoder::new().unwrap(), Tone::new(440.0, 8000.0));
-            for seq in 0..1500u32 {
-                if flag.load(Ordering::SeqCst) {
-                    break;
-                }
-                let opus = enc.encode(&tone.frame()).unwrap();
-                let f = Msg::Frame(Frame {
-                    session: s,
-                    dir: Dir::Down,
-                    seq,
-                    ts: seq * 320,
-                    cap: 0,
-                    opus,
-                });
-                hub.on_packet("p1", f.kind(), &wire::body(&f));
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        });
-        (s, FarTalk(stop, t))
     }
 
     #[test]
     fn the_echo_guard_silences_the_microphone_while_the_far_party_talks_unless_off() {
         let r = rig();
-        let (_, t) = speaking_with_far_talk(&r);
+        assert!(!r.hub.far_talking(1_000), "nobody heard yet");
+        r.hub.far_talk_at.store(1_000, Ordering::Relaxed);
+        assert!(r.hub.far_talking(1_000 + ECHO_HANGOVER_MS - 1));
+        assert!(!r.hub.far_talking(1_000 + ECHO_HANGOVER_MS));
+        speaking_with_far_talk(&r);
         wait("held microphone frames", || {
-            r.hub
-                .view(false)
-                .session
-                .is_some_and(|s| s.up_sent >= 15 && s.echo_held_pct >= 50)
+            r.hub.view(false).session.is_some_and(|s| s.up_sent >= 15)
         });
         let v = r.hub.view(false);
-        assert!(v.session.as_ref().unwrap().echo_guard);
+        let s = v.session.as_ref().unwrap();
+        assert!(s.echo_guard);
+        assert_eq!(s.echo_held_pct, 100, "{s:?}");
         assert_eq!(v.echo, EchoMode::Auto);
         assert!(v.echo_note.is_some());
-        t.join().unwrap();
         r.hub.stop();
 
         let r = rig();
         r.hub.set_echo(EchoMode::Off);
-        let (_, t) = speaking_with_far_talk(&r);
+        speaking_with_far_talk(&r);
         wait("microphone frames", || {
             r.hub.view(false).session.is_some_and(|s| s.up_sent >= 15)
         });
         let s = r.hub.view(false).session.unwrap();
         assert!(!s.echo_guard && s.echo_held_pct == 0, "{s:?}");
-        t.join().unwrap();
         r.hub.stop();
     }
 
