@@ -722,10 +722,13 @@ async fn withdrawing_photos_cancels_a_picture_that_is_still_arriving() {
         assert!(Instant::now() < end, "the download was left running: {s:?}");
         sleep(Duration::from_millis(30)).await;
     }
-    assert!(
-        std::fs::read_dir(&rig.save_dir).map_or(true, |d| d.count() == 0),
-        "no partial file is left"
-    );
+    // The transfer reads as cancelled a moment before its partial file is gone (Windows removes
+    // the file only after the last handle closes), so wait for the folder instead of racing it.
+    let end = Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_dir(&rig.save_dir).map_or(true, |d| d.count() == 0) {
+        assert!(Instant::now() < end, "a partial file is left");
+        sleep(Duration::from_millis(30)).await;
+    }
 }
 
 #[cfg(unix)]
