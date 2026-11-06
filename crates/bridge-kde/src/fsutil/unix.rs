@@ -148,6 +148,7 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<()> {
             .open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
+        bridge_core::statefile::slow_disk_hook();
         bridge_core::statefile::failpoint("before_rename");
         fs::rename(&tmp, path)?;
         dir_fd.sync_all()?;

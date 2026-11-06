@@ -36,7 +36,7 @@ use bridge_core::privacy::PrivacyKey;
 use bridge_kde as kde;
 use serde_json::Map;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
@@ -276,6 +276,8 @@ pub struct Daemon {
     debug: Arc<crate::phone_debug::PhoneDebug>,
     /// EXPERIMENTAL: a phone call heard on this computer over the link (`callwifi`). Off by default.
     callwifi: Arc<crate::callwifi::CallWifi>,
+    /// Phones whose unpairing is still running; a new link to one waits (see `unpair`).
+    unpairing: Mutex<BTreeSet<String>>,
     /// Automatic redial bookkeeping for paired phones (see `reconnect`).
     reconnect: Mutex<crate::reconnect::Book>,
     /// Dial-back after a silent loss, for phones whose announcements do not reach us (see `reconnect::Fallback`).
@@ -487,6 +489,7 @@ impl Daemon {
             photos: crate::photos::Photos::default(),
             debug,
             callwifi,
+            unpairing: Mutex::new(BTreeSet::new()),
             reconnect: Mutex::new(crate::reconnect::Book::default()),
             fallback: Mutex::new(crate::reconnect::Fallback::default()),
             sightings: Mutex::new(crate::why::Sightings::default()),
@@ -977,7 +980,14 @@ impl Daemon {
                 .test_connection(device_id.as_deref(), endpoint)
                 .await
                 .map(|t| Response::ConnectionTest(Box::new(t))),
-            Request::SetDeviceName { name } => self.set_device_name(&name).map(|()| Response::Ack),
+            Request::SetDeviceName { name } => {
+                // The name file is replaced atomically (fsync): not on an async worker.
+                let d = self.clone();
+                self.off_worker(Box::new(move || {
+                    d.set_device_name(&name).map(|()| Response::Ack)
+                }))
+                .await
+            }
             Request::Disconnect { device_id } => {
                 self.disconnect(&device_id).await.map(|()| Response::Ack)
             }
@@ -1156,9 +1166,15 @@ impl Daemon {
                 window_ms,
                 hotkey,
                 max_image_bytes,
-            } => self
-                .clipboard_settings(window_ms, hotkey.as_deref(), max_image_bytes)
-                .map(|()| Response::Ack),
+            } => {
+                // The settings file is saved with an fsync: not on an async worker.
+                let d = self.clone();
+                self.off_worker(Box::new(move || {
+                    d.clipboard_settings(window_ms, hotkey.as_deref(), max_image_bytes)
+                        .map(|()| Response::Ack)
+                }))
+                .await
+            }
             Request::ShareStatus => self.share_status().map(|s| Response::Share(Box::new(s))),
             Request::ShareSendFile { device_id, path } => self
                 .share_send(&device_id, ShareSend::File(path))
@@ -1293,19 +1309,33 @@ impl Daemon {
                 .start_download()
                 .map(|()| self.update_response())
                 .map_err(|e| err(ErrorCode::Failed, e.to_string())),
-            Request::UpdateSkip { version } => self
-                .options
-                .updates
-                .skip(&version)
-                .map(|()| self.update_response())
-                .map_err(|_| err(ErrorCode::BadRequest, "not a version number")),
+            Request::UpdateSkip { version } => {
+                // The choice is saved with an fsync: not on an async worker.
+                let d = self.clone();
+                self.off_worker(Box::new(move || {
+                    d.options
+                        .updates
+                        .skip(&version)
+                        .map(|()| d.update_response())
+                        .map_err(|_| err(ErrorCode::BadRequest, "not a version number"))
+                }))
+                .await
+            }
             Request::UpdateSetEnabled { enabled } => {
-                self.options.updates.set_enabled(enabled);
-                Ok(self.update_response())
+                let d = self.clone();
+                self.off_worker(Box::new(move || {
+                    d.options.updates.set_enabled(enabled);
+                    Ok(d.update_response())
+                }))
+                .await
             }
             Request::UpdateSetChannel { channel } => {
-                self.options.updates.set_channel(channel);
-                Ok(self.update_response())
+                let d = self.clone();
+                self.off_worker(Box::new(move || {
+                    d.options.updates.set_channel(channel);
+                    Ok(d.update_response())
+                }))
+                .await
             }
         };
         result.unwrap_or_else(Response::Error)
@@ -1461,6 +1491,19 @@ impl Daemon {
             return Err(err(
                 ErrorCode::BadRequest,
                 "refusing to connect to ourselves",
+            ));
+        }
+        // An unpairing deletes the trust record (slowly, on a busy disk); a pairing that finished first
+        // would have its fresh record deleted by it.
+        if self
+            .unpairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(device_id)
+        {
+            return Err(err(
+                ErrorCode::Busy,
+                "the phone is still being unpaired; try again in a moment",
             ));
         }
         let (ip, port) = match endpoint {
@@ -1849,8 +1892,35 @@ impl Daemon {
         Ok(())
     }
 
+    /// Run blocking disk work off the async workers and hand back its reply. The work runs to the end
+    /// even when the caller (a control exchange past its deadline) is gone.
+    async fn off_worker(
+        &self,
+        job: Box<dyn FnOnce() -> Result<Response, ErrorBody> + Send>,
+    ) -> Result<Response, ErrorBody> {
+        // One boxed type, not one `spawn_blocking` instantiation per caller (binary size).
+        tokio::task::spawn_blocking(job)
+            .await
+            .unwrap_or_else(|_| Err(err(ErrorCode::Failed, "the change was interrupted")))
+    }
+
     async fn unpair(self: &Arc<Self>, device_id: &str) -> Result<(), ErrorBody> {
         let id = parse_id(device_id)?;
+        struct Unpairing<'a>(&'a Daemon, String);
+        impl Drop for Unpairing<'_> {
+            fn drop(&mut self) {
+                self.0
+                    .unpairing
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&self.1);
+            }
+        }
+        self.unpairing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(device_id.to_owned());
+        let _unpairing = Unpairing(self, device_id.to_owned());
         self.lock_fallback().forget(device_id);
         let connected = {
             let core = self.core();
@@ -1863,7 +1933,7 @@ impl Daemon {
             // The trusted session owns the link: it deletes the record, then tells the phone.
             let (tx, rx) = oneshot::channel();
             if cmd.send(LinkCmd::Unpair(tx)).await.is_ok() {
-                match timeout(Duration::from_secs(2), rx).await {
+                match timeout(UNPAIR_LINK_WAIT, rx).await {
                     Ok(Ok(Ok(()))) => {
                         self.forget_consent_off_worker(device_id).await?;
                         return Ok(());
@@ -3193,6 +3263,11 @@ impl Drop for DataLinkGuard {
         }
     }
 }
+
+/// How long `unpair` waits for the link that owns the trust record to delete it. The delete is a
+/// durable write: on a saturated disk it takes seconds, and starting a second delete beside it
+/// (the fallback below) would only queue behind it.
+const UNPAIR_LINK_WAIT: Duration = Duration::from_secs(20);
 
 struct CallsLinkGuard(Option<(Arc<Daemon>, String, u64)>);
 impl Drop for CallsLinkGuard {

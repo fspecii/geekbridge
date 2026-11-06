@@ -383,7 +383,13 @@ async fn toggle_pause(daemon: &Arc<Daemon>, state_dir: &Path) {
         return;
     };
     // Atomic: a crash mid-write must not leave a torn list that "forgets" which devices to resume.
-    if bridge_core::statefile::write_atomic_plain(&state_dir.join(PAUSED_FILE), &json).is_err() {
+    // The write fsyncs: not on an async worker.
+    let file = state_dir.join(PAUSED_FILE);
+    let saved = tokio::task::spawn_blocking(move || {
+        bridge_core::statefile::write_atomic_plain(&file, &json)
+    })
+    .await;
+    if !matches!(saved, Ok(Ok(()))) {
         return;
     }
     for device_id in on {

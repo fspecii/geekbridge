@@ -498,6 +498,7 @@ pub fn write_atomic_plain(path: &Path, data: &[u8]) -> io::Result<()> {
         let mut f = opts.open(&tmp)?;
         f.write_all(data)?;
         f.sync_all()?;
+        slow_disk_hook();
         failpoint("before_rename");
         std::fs::rename(&tmp, path)?;
         #[cfg(unix)]
@@ -521,6 +522,23 @@ pub fn failpoint(name: &str) {
 #[cfg(not(feature = "failpoints"))]
 #[inline(always)]
 pub fn failpoint(_name: &str) {}
+
+static WRITE_DELAY_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Test hook: make every durable state-file write sleep this long before its rename, as a saturated
+/// disk would (soak 5 saw fsyncs take 35 s). Zero, the default, costs one relaxed load per write.
+/// Not behind a feature: a dev-dependency feature would leak into `cargo build --release --example`.
+pub fn set_write_delay_ms(ms: u32) {
+    WRITE_DELAY_MS.store(ms, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Called by every atomic writer between the fsync of the data and the rename.
+pub fn slow_disk_hook() {
+    let ms = WRITE_DELAY_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(ms)));
+    }
+}
 
 #[cfg(test)]
 mod tests {

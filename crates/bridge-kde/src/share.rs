@@ -375,12 +375,28 @@ pub async fn receive_file(
     progress: &mut (dyn FnMut(u64) + Send),
     cancel: &CancelToken,
 ) -> PayloadResult<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let reserved = reserve_unique(dir, &offer.name)?;
-    let tmp = temp_path(&reserved.path);
-    let _ = std::fs::remove_file(&tmp);
+    // Every disk call here (create, fsync, rename) runs off the async workers: on a saturated disk
+    // a transfer must slow down, not freeze the control API and the links that share the runtime.
+    let (dir_owned, name) = (dir.to_owned(), offer.name.clone());
+    let Io::Opened(reserved, tmp, std_file) = blocking_io(Box::new(move || {
+        std::fs::create_dir_all(&dir_owned)?;
+        let reserved = reserve_unique(&dir_owned, &name)?;
+        let tmp = temp_path(&reserved.path);
+        let _ = std::fs::remove_file(&tmp);
+        let file = OpenOptions::new().write(true).create_new(true).open(&tmp);
+        match file {
+            Ok(file) => Ok(Io::Opened(reserved, tmp, file)),
+            Err(e) => {
+                let _ = std::fs::remove_file(&reserved.path);
+                Err(e)
+            }
+        }
+    }))
+    .await?
+    else {
+        unreachable!("the opener returns Opened");
+    };
     let result = async {
-        let std_file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         let mut out = tokio::fs::File::from_std(std_file);
         ctx.receive(
             offer.port,
@@ -392,30 +408,60 @@ pub async fn receive_file(
         )
         .await?;
         let std_file = out.into_std().await;
-        if let Some(t) = offer.last_modified_ms.and_then(sane_mtime) {
-            let _ = std_file.set_modified(t);
-        }
-        // The bytes reach the disk before the name does: after a power cut the file under its final name
-        // is either whole or absent (the reservation), never a long file of zeros.
-        std_file.sync_all()?;
-        drop(std_file);
-        // Replaces our own empty reservation atomically.
-        std::fs::rename(&tmp, &reserved.path)?;
-        #[cfg(unix)]
-        if let Ok(d) = std::fs::File::open(dir) {
-            let _ = d.sync_all();
-        }
+        let (modified, from, to, dir) = (
+            offer.last_modified_ms.and_then(sane_mtime),
+            tmp.clone(),
+            reserved.path.clone(),
+            dir.to_owned(),
+        );
+        blocking_io(Box::new(move || {
+            if let Some(t) = modified {
+                let _ = std_file.set_modified(t);
+            }
+            // The bytes reach the disk before the name does: after a power cut the file under its final name
+            // is either whole or absent (the reservation), never a long file of zeros.
+            std_file.sync_all()?;
+            drop(std_file);
+            bridge_core::statefile::slow_disk_hook();
+            bridge_core::statefile::failpoint("before_rename");
+            // Replaces our own empty reservation atomically.
+            std::fs::rename(&from, &to)?;
+            #[cfg(unix)]
+            if let Ok(d) = std::fs::File::open(&dir) {
+                let _ = d.sync_all();
+            }
+            Ok(Io::Done)
+        }))
+        .await?;
         Ok::<(), PayloadError>(())
     }
     .await;
     match result {
         Ok(()) => Ok(reserved.path),
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            let _ = std::fs::remove_file(&reserved.path);
+            let (tmp, path) = (tmp.clone(), reserved.path.clone());
+            let _ = blocking_io(Box::new(move || {
+                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&path);
+                Ok(Io::Done)
+            }))
+            .await;
             Err(e)
         }
     }
+}
+
+/// What a blocking file job hands back (one type, so the blocking pool is instantiated once, not per job).
+enum Io {
+    Opened(Reserved, PathBuf, std::fs::File),
+    Done,
+}
+
+/// Run blocking file work on the blocking pool; the work finishes even if the caller is dropped.
+async fn blocking_io(job: Box<dyn FnOnce() -> io::Result<Io> + Send>) -> io::Result<Io> {
+    tokio::task::spawn_blocking(job)
+        .await
+        .unwrap_or_else(|_| Err(io::Error::other("file operation interrupted")))
 }
 
 fn sane_mtime(ms: i64) -> Option<SystemTime> {

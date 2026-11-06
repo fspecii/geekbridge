@@ -27,6 +27,13 @@ follows, and the tests that keep them true.
    (`<file>.lock`, `flock`/`LockFileEx`, released if the holder dies). Before replacing a good
    file it is copied to `<file>.bak` (one generation, same permissions). Temp files left by a
    killed writer are swept after an hour.
+   The writes themselves never run on an async worker of the service (the runtime has two) and never
+   under a lock that status, ping, link accept or call handling take: callers use the blocking pool, a
+   settings writer takes a snapshot first and writes after releasing its view lock (update state), and a
+   request that must not be cut in half (`unpair`) runs to the end even when the control client gave up at its
+   8 s deadline. Durability is unchanged: a pairing is durable before the accept goes out, a request answers
+   after its write. Test hook: `statefile::set_write_delay_ms` makes every atomic write sleep before its
+   rename (one relaxed load when off); `crates/bridge-service/tests/io_stall.rs` uses it.
 6. **Damage never bricks the app.** Empty, truncated, zero-byte, non-object, wrongly typed,
    unreadable (EACCES) or failing-migration files are *damaged*. Order of fallback: `.bak` → the
    store's policy (`Corrupt::Reset`: start empty and say so; `Corrupt::Fail`: report an error and

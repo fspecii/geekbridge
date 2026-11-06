@@ -316,6 +316,8 @@ struct Runtime {
     error: Option<String>,
     downloaded: Option<Downloaded>,
     progress: (u64, u64),
+    /// Number of the newest snapshot handed to `persist`.
+    save_seq: u64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -335,6 +337,8 @@ pub struct Updater {
     current: Version,
     client: http::Client,
     state: Mutex<Runtime>,
+    /// Number of the newest snapshot written to `update-state.json`; held across the write, never with `state`.
+    saved: Mutex<u64>,
 }
 
 /// Clears a `Runtime` busy flag when dropped, so a panicking worker cannot leave "checking" or
@@ -397,6 +401,7 @@ impl Updater {
                 persisted,
                 ..Runtime::default()
             }),
+            saved: Mutex::new(0),
             cfg,
         }))
     }
@@ -405,19 +410,33 @@ impl Updater {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn persist(&self, rt: &Runtime) {
-        if let Some(path) = &self.cfg.state_file
-            && let Ok(serde_json::Value::Object(known)) = serde_json::to_value(&rt.persisted)
-        {
-            // Only our fields are replaced: anything a newer build added stays in the file, and a
-            // file from a newer format is left untouched. A failed save is only a missed cache.
-            let result = state_file(path).update(|body| {
-                body.extend(known);
-                true
-            });
-            if let Err(e) = result {
-                bridge_core::statefile::note(format!("update-state.json: not saved: {e}"));
-            }
+    /// Save the persisted fields. Takes the guard so the runtime lock is released *before* the file
+    /// lock and the fsync: a status poll never waits for the disk. The call still returns only once
+    /// the file is written. Snapshots are numbered under the lock; one that a newer snapshot already
+    /// overtook is dropped, so racing savers cannot write an older state last.
+    fn persist(&self, mut rt: MutexGuard<'_, Runtime>) {
+        let Some(path) = &self.cfg.state_file else {
+            return;
+        };
+        let Ok(serde_json::Value::Object(known)) = serde_json::to_value(&rt.persisted) else {
+            return;
+        };
+        rt.save_seq += 1;
+        let seq = rt.save_seq;
+        drop(rt);
+        let mut written = self.saved.lock().unwrap_or_else(|e| e.into_inner());
+        if *written > seq {
+            return;
+        }
+        // Only our fields are replaced: anything a newer build added stays in the file, and a
+        // file from a newer format is left untouched. A failed save is only a missed cache.
+        let result = state_file(path).update(|body| {
+            body.extend(known);
+            true
+        });
+        *written = seq;
+        if let Err(e) = result {
+            bridge_core::statefile::note(format!("update-state.json: not saved: {e}"));
         }
     }
 
@@ -522,16 +541,18 @@ impl Updater {
         rt.persisted.no_public_release = false;
         rt.error = None;
         rt.progress = (0, 0);
-        if let Some(old) = rt.downloaded.take() {
+        let old = rt.downloaded.take();
+        self.persist(rt);
+        // Up to 512 MiB: removed after the lock is released.
+        if let Some(old) = old {
             let _ = std::fs::remove_dir_all(old.dir);
         }
-        self.persist(&rt);
     }
 
     pub fn set_enabled(&self, enabled: bool) {
         let mut rt = self.lock();
         rt.persisted.enabled = enabled;
-        self.persist(&rt);
+        self.persist(rt);
     }
 
     /// Hide the offer for `version`; a later release is offered again.
@@ -545,7 +566,7 @@ impl Updater {
         };
         let mut rt = self.lock();
         rt.persisted.skipped_version = Some(skipped);
-        self.persist(&rt);
+        self.persist(rt);
         Ok(())
     }
 
@@ -673,11 +694,11 @@ impl Updater {
                         Some(now + (*retry_after_secs).clamp(60, MAX_BACKOFF_SECS));
                 }
                 rt.error = Some(e.to_string());
-                self.persist(&rt);
+                self.persist(rt);
                 return Err(e);
             }
         }
-        self.persist(&rt);
+        self.persist(rt);
         Ok(())
     }
 
@@ -1108,7 +1129,7 @@ impl Updater {
             let mut rt = self.lock();
             if rt.error.is_some() {
                 rt.persisted.last_attempt_unix = Some(now_unix());
-                self.persist(&rt);
+                self.persist(rt);
             }
         }
     }
@@ -1424,6 +1445,33 @@ mod tests {
             !up.check_due(false),
             "a failed attempt must not be retried every tick"
         );
+    }
+
+    #[test]
+    fn a_slow_save_does_not_hold_the_status_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::github("0.1.0");
+        cfg.state_file = Some(dir.path().join("update-state.json"));
+        let up = Updater::new(cfg).unwrap();
+        bridge_core::statefile::set_write_delay_ms(700);
+        let saver = {
+            let up = up.clone();
+            std::thread::spawn(move || up.set_enabled(false))
+        };
+        std::thread::sleep(Duration::from_millis(200)); // inside the slow write now
+        let started = std::time::Instant::now();
+        let status = up.status();
+        let took = started.elapsed();
+        assert!(!status.enabled, "the change is visible at once");
+        assert!(took < Duration::from_millis(150), "status waited {took:?}");
+        assert!(!saver.is_finished(), "the save was still running");
+        saver.join().unwrap();
+        bridge_core::statefile::set_write_delay_ms(0);
+        // Returned means written, and the newest snapshot wins.
+        up.skip("9.9.9").unwrap();
+        let back = load_persisted(&dir.path().join("update-state.json")).unwrap();
+        assert!(!back.enabled);
+        assert_eq!(back.skipped_version.as_deref(), Some("9.9.9"));
     }
 
     #[test]

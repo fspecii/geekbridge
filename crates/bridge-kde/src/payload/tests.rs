@@ -322,6 +322,66 @@ async fn receive_file_is_safe_and_atomic() {
     assert_eq!(before, after);
 }
 
+/// The runtime here has one thread: if the closing fsync and rename ran on it, the ticker would stall.
+#[tokio::test]
+async fn receive_file_keeps_the_runtime_alive_while_the_disk_is_slow() {
+    let (a, b) = (creds('a'), creds('b'));
+    let dir = tempfile::tempdir().unwrap();
+    let payload = data(70_000);
+    let listener = ctx(&a, &b).listen().await.unwrap();
+    let port = listener.port();
+    let cancel = CancelToken::new();
+    let (src, c2) = (payload.clone(), cancel.clone());
+    let send = tokio::spawn(async move {
+        listener
+            .send(Cursor::new(src), 70_000, &mut |_| {}, &c2)
+            .await
+    });
+    let offer = FileOffer {
+        name: "slow.bin".into(),
+        size: Some(70_000),
+        port,
+        last_modified_ms: None,
+        number_of_files: None,
+    };
+    bridge_core::statefile::set_write_delay_ms(600);
+    let worst = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let ticker = {
+        let worst = worst.clone();
+        tokio::spawn(async move {
+            let mut last = std::time::Instant::now();
+            loop {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                let gap = last.elapsed().as_millis() as u64;
+                worst.fetch_max(gap, std::sync::atomic::Ordering::SeqCst);
+                last = std::time::Instant::now();
+            }
+        })
+    };
+    let started = std::time::Instant::now();
+    let path = share::receive_file(
+        &ctx(&b, &a),
+        &offer,
+        dir.path(),
+        1 << 30,
+        &mut |_| {},
+        &cancel,
+    )
+    .await
+    .unwrap();
+    let took = started.elapsed();
+    ticker.abort();
+    bridge_core::statefile::set_write_delay_ms(0);
+    send.await.unwrap().unwrap();
+    assert!(
+        took >= Duration::from_millis(600),
+        "the hook was not active: {took:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), payload);
+    let gap = worst.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(gap < 200, "the runtime stalled for {gap} ms");
+}
+
 #[test]
 fn only_the_paired_host_gets_a_handshake_slot() {
     let peer: IpAddr = "192.168.1.20".parse().unwrap();

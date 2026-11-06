@@ -42,6 +42,9 @@ pub const MAX_REPLACEMENTS: usize = 5;
 /// A prompt series (the first request plus its replacements) lives at most this many response
 /// windows, however many replacements arrive.
 pub const PROMPT_CAP_FACTOR: u32 = 3;
+/// Tries at the trust-store write that completes a pairing when its file lock times out.
+const PERSIST_ATTEMPTS: usize = 3;
+
 pub const REPLACEMENT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
@@ -665,10 +668,19 @@ impl PendingLink {
             paired_at_unix: clock(),
         };
         // File lock + fsync: never on an async worker (a slow disk would freeze every other task).
-        let store = self.store.clone();
-        let stored = tokio::task::spawn_blocking(move || store.insert(peer))
-            .await
-            .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into())));
+        // The write is durable before the accept goes out (a crash must never leave the phone paired
+        // with us and us not with it). A lock held by another process for longer than the lock
+        // timeout (a stalled disk) is retried: the handshake is over and the peer is still waiting.
+        let mut stored = Err(KdeError::Store("trust store write interrupted".into()));
+        for _ in 0..PERSIST_ATTEMPTS {
+            let (store, peer) = (self.store.clone(), peer.clone());
+            stored = tokio::task::spawn_blocking(move || store.insert(peer))
+                .await
+                .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into())));
+            if !matches!(&stored, Err(KdeError::Store(m)) if m.starts_with("timed out")) {
+                break;
+            }
+        }
         if let Err(e) = stored {
             // The peer may already consider us paired; tell it we are not.
             let _ = self.conn.send(&pair_packet(false, None)).await;

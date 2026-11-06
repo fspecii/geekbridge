@@ -48,6 +48,15 @@ was still listed, every state file parsed (owner-only, no half files), no tempor
   private store (`atomic_write_private`, `write_atomic_plain`); `.bak` is refreshed first. Call replies, privacy, share
   settings, consents, trust, identity, update state share these two paths; `call-replies` has no `geekbridge-ctl`
   writer, so it is covered by the shared path and `a_refused_list_leaves_the_old_one`, not by the kill loop.
+* Slow disk (soak 5: 35 s control stall, fsyncs on the service's two async workers). Moved off the workers: the
+  clipboard settings file, the device name, update choices (`skip`, enable, channel), the tray's pause list and the
+  closing fsync/rename of a received file. `update-state.json` is no longer written under the updater's status lock
+  (numbered snapshots, the newest wins). Durability did not change; only where the wait happens. `unpair` finishes even
+  when the client gave up after 8 s, waits 20 s (was 2 s) for the link that owns the trust record instead of starting a
+  second delete beside it, and a new `Connect` to that phone is refused as busy until it is done (a late delete would
+  remove the fresh record). A pairing write that times out on the file lock is retried twice before the accept.
+  Tests: `crates/bridge-service/tests/io_stall.rs`, `a_slow_save_does_not_hold_the_status_lock`,
+  `receive_file_keeps_the_runtime_alive_while_the_disk_is_slow`, `a_lock_timeout_on_the_pairing_write_is_retried_before_the_accept`.
 * `call-trace.log` is emptied at every start by design (call history empty after a restart). Its entries carry
   millisecond wall-clock stamps used for display only; a clock step reorders nothing (entries are appended).
 * Update backoff and "last checked" in the future are bounded (`a_last_check_time_in_the_future_does_not_freeze_or_hammer_checks`,

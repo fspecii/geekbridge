@@ -25,6 +25,8 @@ use tokio::{
 
 pub const MAX_CONNECTIONS: usize = 8;
 pub const EXCHANGE_DEADLINE: Duration = Duration::from_secs(8);
+/// Upper bound for a request that keeps running after its client has given up (see `exchange`).
+const WORK_DEADLINE: Duration = Duration::from_secs(90);
 
 pub enum Control {
     Ready {
@@ -102,6 +104,27 @@ async fn exchange(mut stream: TcpStream, control: &Control) -> io::Result<()> {
     };
 
     let response = match serde_json::from_slice::<Request>(body) {
+        // A request with several durable steps must not be cut in half by the exchange deadline (the
+        // client is gone after 8 s, the work is not): it runs as its own task, bounded by `WORK_DEADLINE`.
+        Ok(request @ Request::Unpair { .. }) => {
+            let daemon = daemon.clone();
+            let work = tokio::spawn(async move {
+                timeout(WORK_DEADLINE, daemon.handle(request))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Response::Error(ErrorBody {
+                            code: ErrorCode::Failed,
+                            message: "the change took too long".into(),
+                        })
+                    })
+            });
+            work.await.unwrap_or_else(|_| {
+                Response::Error(ErrorBody {
+                    code: ErrorCode::Failed,
+                    message: "the change was interrupted".into(),
+                })
+            })
+        }
         Ok(request) => daemon.handle(request).await,
         Err(_) => Response::Error(ErrorBody {
             code: ErrorCode::BadRequest,

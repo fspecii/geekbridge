@@ -542,6 +542,79 @@ async fn initiator_role_round_trip(v: V, expect_version: &str) {
     drop(trusted_link);
 }
 
+/// A store whose first `fail` inserts time out waiting for the file lock (a stalled disk).
+struct LockTimeouts {
+    inner: MemoryTrustStore,
+    fail: AtomicUsize,
+    tries: AtomicUsize,
+}
+
+// `try_update` needs a newer compiler than the workspace minimum.
+#[allow(deprecated)]
+impl TrustStore for LockTimeouts {
+    fn get(&self, id: &DeviceId) -> Result<Option<TrustedPeer>> {
+        self.inner.get(id)
+    }
+    fn insert(&self, peer: TrustedPeer) -> Result<()> {
+        self.tries.fetch_add(1, Ordering::SeqCst);
+        if self
+            .fail
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(KdeError::Store(
+                "timed out after 10s waiting for another process to release the lock".into(),
+            ));
+        }
+        self.inner.insert(peer)
+    }
+    fn remove(&self, id: &DeviceId) -> Result<bool> {
+        self.inner.remove(id)
+    }
+    fn list(&self) -> Result<Vec<TrustedPeer>> {
+        self.inner.list()
+    }
+}
+
+async fn pair_with_store(store: Arc<LockTimeouts>) -> Result<TrustedLink> {
+    let ep = endpoint(store);
+    let phone = raw_peer('q');
+    let (l, addr) = listener().await;
+    let peer_id = id_of(&phone);
+    let local = tokio::spawn(async move {
+        pending(ep.connect(addr, &peer_id).await.unwrap())
+            .pair(PairMode::Request, &mut Auto::yes())
+            .await
+    });
+    let mut s = within(raw_as_acceptor(&l, &phone, V::Tls12, &Opts::default())).await;
+    raw_accepts_our_request(&mut s).await;
+    within(local).await.unwrap()
+}
+
+#[tokio::test]
+async fn a_lock_timeout_on_the_pairing_write_is_retried_before_the_accept() {
+    let store = Arc::new(LockTimeouts {
+        inner: MemoryTrustStore::new(),
+        fail: AtomicUsize::new(2),
+        tries: AtomicUsize::new(0),
+    });
+    pair_with_store(store.clone()).await.unwrap();
+    assert_eq!(store.tries.load(Ordering::SeqCst), 3);
+    assert_eq!(store.list().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_pairing_write_that_keeps_failing_fails_the_pairing_without_a_record() {
+    let store = Arc::new(LockTimeouts {
+        inner: MemoryTrustStore::new(),
+        fail: AtomicUsize::new(100),
+        tries: AtomicUsize::new(0),
+    });
+    assert!(pair_with_store(store.clone()).await.is_err());
+    assert_eq!(store.tries.load(Ordering::SeqCst), 3, "bounded");
+    assert!(store.list().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn initiator_is_tls_server_tls12() {
     within(initiator_role_round_trip(V::Tls12, "TLSv1_2")).await;
