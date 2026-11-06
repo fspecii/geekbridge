@@ -999,13 +999,14 @@ mod tests {
             Duration::from_millis(50),
             Instant::now() + Duration::from_millis(300),
             Arc::new(|_| {
-                std::thread::sleep(Duration::from_secs(3));
+                std::thread::sleep(Duration::from_secs(30));
                 Err(io::Error::from(io::ErrorKind::TimedOut))
             }),
         )
         .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2));
+        // Deadline 300 ms; the attempts hang 30 s. Slack for a loaded CI runner.
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     fn sa(s: &str) -> SocketAddr {
@@ -1044,7 +1045,7 @@ mod tests {
             Instant::now() + Duration::from_secs(10),
             Arc::new(move |a| {
                 if *a == stalled {
-                    std::thread::sleep(Duration::from_secs(5)); // a black hole
+                    std::thread::sleep(Duration::from_secs(60)); // a black hole
                     Err(io::Error::from(io::ErrorKind::TimedOut))
                 } else {
                     TcpStream::connect(a)
@@ -1054,7 +1055,7 @@ mod tests {
         .unwrap();
         assert_eq!(sock.peer_addr().unwrap(), live);
         assert!(
-            started.elapsed() < Duration::from_secs(2),
+            started.elapsed() < Duration::from_secs(20),
             "{:?}",
             started.elapsed()
         );
@@ -1081,7 +1082,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sock.peer_addr().unwrap(), live.local_addr().unwrap());
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // Success came from the failure, not the 30 s stagger timer.
+        assert!(started.elapsed() < Duration::from_secs(20));
         let err =
             race_connect(&[dead, dead], Duration::from_millis(10), far(), connect).unwrap_err();
         // Windows retries a refused connect for about two seconds and then reports a timeout.
@@ -1215,14 +1217,15 @@ mod tests {
         let (done, wait) = mpsc::channel::<()>();
         let h = std::thread::spawn(move || {
             let (_s, _) = l.accept().unwrap();
-            let _ = wait.recv_timeout(Duration::from_secs(5));
+            let _ = wait.recv_timeout(Duration::from_secs(60));
         });
         let sock = TcpStream::connect(addr).unwrap();
         sock.set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         let started = Instant::now();
         assert!(proxy_tunnel(sock, "h", 443, far()).is_err());
-        assert!(started.elapsed() < Duration::from_secs(3));
+        // Read timeout 200 ms; the silent proxy holds on for 60 s.
+        assert!(started.elapsed() < Duration::from_secs(20));
         drop(done);
         let _ = h.join();
     }

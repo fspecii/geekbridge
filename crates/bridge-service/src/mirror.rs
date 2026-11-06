@@ -678,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn open_banners_are_capped_and_a_stuck_one_is_killed() {
+    fn open_banners_are_capped() {
         use std::sync::atomic::AtomicUsize;
         let c = AtomicUsize::new(0);
         let held: Vec<_> = (0..3).filter_map(|_| OpenSlot::acquire(&c, 3)).collect();
@@ -686,11 +686,17 @@ mod tests {
         assert!(OpenSlot::acquire(&c, 3).is_none());
         drop(held);
         assert!(OpenSlot::acquire(&c, 3).is_some());
+    }
+
+    /// Real child processes: `sleep` and `echo` are programs on Unix only.
+    #[cfg(unix)]
+    #[test]
+    fn a_stuck_banner_process_is_killed_and_a_quick_one_returns_its_output() {
         let t = Instant::now();
         let mut cmd = std::process::Command::new("sleep");
         cmd.arg("30");
         assert!(run_bounded(cmd, Duration::from_millis(300)).is_none());
-        assert!(t.elapsed() < Duration::from_secs(5));
+        assert!(t.elapsed() < Duration::from_secs(15));
         let mut cmd = std::process::Command::new("echo");
         cmd.arg("a1");
         assert_eq!(

@@ -33,7 +33,8 @@ pub enum Probe {
     Connected,
     /// The phone's network answered "nothing listens here".
     Refused,
-    /// No answer at all.
+    /// No answer at all. Windows reports a refused connect this way too (it retries for about two
+    /// seconds, then times out), so this also covers "the app is not running on the phone".
     TimedOut,
     /// The route does not exist ("network unreachable", "no route to host").
     NoRoute,
@@ -167,7 +168,7 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
                 Probe::Connected => "Connected",
                 Probe::Refused => "The phone refused: GeekBridge is not running there",
                 Probe::TimedOut if !different_network => {
-                    "No answer, although the phone's announcement was heard: Wi-Fi client isolation or a firewall"
+                    "No answer, although the phone's announcement was heard: GeekBridge closed on the phone, Wi-Fi client isolation or a firewall"
                 }
                 Probe::TimedOut => "No answer",
                 Probe::NoRoute => "No route to the phone",
@@ -223,7 +224,7 @@ pub fn build_report(m: &Measured) -> ConnectionTest {
         // what a router's client isolation does (broadcast allowed, client-to-client TCP dropped),
         // or a firewall. Say so first.
         headline = if m.probe == Probe::TimedOut {
-            "The phone can be seen but does not accept connections (client isolation or a firewall)"
+            "The phone can be seen but does not accept connections (app closed, client isolation or a firewall)"
         } else {
             "The phone does not answer"
         }
@@ -381,6 +382,14 @@ mod tests {
         assert!(r.headline.contains("client isolation"), "{}", r.headline);
         assert!(r.advice[0].contains("client isolation"), "{:?}", r.advice);
         assert!(r.advice[0].contains("main Wi-Fi"));
+        // Windows cannot tell a refused connect from a dropped one, so the app-closed case must be
+        // named and its fix offered.
+        assert!(r.headline.contains("app closed"), "{}", r.headline);
+        assert!(
+            r.advice
+                .iter()
+                .any(|a| a.contains("Open GeekBridge on the phone"))
+        );
         assert!(r.advice.iter().any(|a| a.contains("firewall")));
         let answers = r.steps.iter().find(|s| s.label == "Phone answers").unwrap();
         assert!(answers.detail.contains("client isolation"));

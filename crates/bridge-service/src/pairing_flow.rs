@@ -18,6 +18,20 @@ const ANNOUNCE_EVERY: Duration = Duration::from_secs(15);
 /// isolation) is exactly the case that waits the full time, and the answer has to arrive then, not
 /// as "service closed the connection".
 const PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
+/// What a failed connect means. Windows retries a refused connect for about two seconds and then
+/// reports a timeout, so a timeout cannot be told from a silent drop there: it stays `TimedOut`,
+/// and the report's wording names the closed app as one of the causes.
+fn probe_from_error(kind: std::io::ErrorKind) -> Probe {
+    match kind {
+        std::io::ErrorKind::ConnectionRefused => Probe::Refused,
+        std::io::ErrorKind::TimedOut => Probe::TimedOut,
+        std::io::ErrorKind::NetworkUnreachable | std::io::ErrorKind::HostUnreachable => {
+            Probe::NoRoute
+        }
+        _ => Probe::Other,
+    }
+}
+
 /// Addresses written into one QR code.
 const MAX_QR_ADDRESSES: usize = 4;
 
@@ -252,13 +266,7 @@ impl Daemon {
                     {
                         Err(_) => Probe::TimedOut,
                         Ok(Ok(_)) => Probe::Connected,
-                        Ok(Err(e)) => match e.kind() {
-                            std::io::ErrorKind::ConnectionRefused => Probe::Refused,
-                            std::io::ErrorKind::TimedOut => Probe::TimedOut,
-                            std::io::ErrorKind::NetworkUnreachable
-                            | std::io::ErrorKind::HostUnreachable => Probe::NoRoute,
-                            _ => Probe::Other,
-                        },
+                        Ok(Err(e)) => probe_from_error(e.kind()),
                     }
                 }
             }
@@ -327,6 +335,17 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::ErrorKind as K;
+
+    #[test]
+    fn connect_errors_map_to_probe_results() {
+        assert_eq!(probe_from_error(K::ConnectionRefused), Probe::Refused);
+        // A Windows refused connect arrives as this; it must read as "no answer", never "other".
+        assert_eq!(probe_from_error(K::TimedOut), Probe::TimedOut);
+        assert_eq!(probe_from_error(K::HostUnreachable), Probe::NoRoute);
+        assert_eq!(probe_from_error(K::NetworkUnreachable), Probe::NoRoute);
+        assert_eq!(probe_from_error(K::PermissionDenied), Probe::Other);
+    }
 
     #[test]
     fn the_connection_probe_gives_up_before_the_control_exchange_does() {
