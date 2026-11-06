@@ -117,4 +117,5 @@
         <item quantity="one">%1$d calendar shared</item>
         <item quantity="other">%1$d calendars shared</item>
     </plurals>
+    <string name="share_shortcut_long">Send to %1$s</string>
 </resources>

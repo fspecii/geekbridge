@@ -371,6 +371,13 @@ fn name_problem(draft: &str) -> Option<&'static str> {
         Err(_) => Some("Use letters, numbers and spaces, up to 32 characters."),
     }
 }
+/// Gives a row's button the phone's name for a screen reader ("Unlink Pixel"): several rows share the
+/// same visible words, and two linked phones can even share a name.
+fn named_for(response: egui::Response, key: &str, phone: &str) -> egui::Response {
+    let name = crate::i18n::tr_args(key, &[("name", &display_text(phone))]);
+    crate::a11y::named(response, &name)
+}
+
 fn code_matches(entered: &str, expected: &str) -> bool {
     expected.len() == 8
         && expected.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -509,7 +516,12 @@ impl Connections {
                     },
                 ));
                 if link.phase == LinkPhase::Unpaired
-                    && ui.add_enabled(enabled, egui::Button::new("Link")).clicked()
+                    && named_for(
+                        ui.add_enabled(enabled, egui::Button::new("Link")),
+                        "phones.link_named",
+                        &link.name,
+                    )
+                    .clicked()
                 {
                     self.submit(Request::Pair {
                         device_id: link.device_id.clone(),
@@ -517,17 +529,23 @@ impl Connections {
                     });
                 }
                 if link.phase == LinkPhase::Connected
-                    && ui
-                        .add_enabled(enabled, egui::Button::new("Check connection"))
-                        .clicked()
+                    && named_for(
+                        ui.add_enabled(enabled, egui::Button::new("Check connection")),
+                        "phones.check_named",
+                        &link.name,
+                    )
+                    .clicked()
                 {
                     self.submit(Request::Ping {
                         device_id: link.device_id.clone(),
                     });
                 }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Disconnect"))
-                    .clicked()
+                if named_for(
+                    ui.add_enabled(enabled, egui::Button::new("Disconnect")),
+                    "phones.disconnect_named",
+                    &link.name,
+                )
+                .clicked()
                 {
                     self.submit(Request::Disconnect {
                         device_id: link.device_id.clone(),
@@ -542,9 +560,12 @@ impl Connections {
                 ui.label(theme::semibold(display_text(&phone.name), 13.0));
                 if !seen.contains(&phone.device_id) {
                     ui.label(theme::caption(pal, "Linked · offline"));
-                    if ui
-                        .add_enabled(enabled, egui::Button::new("Connect"))
-                        .clicked()
+                    if named_for(
+                        ui.add_enabled(enabled, egui::Button::new("Connect")),
+                        "phones.connect_named",
+                        &phone.name,
+                    )
+                    .clicked()
                     {
                         self.submit(Request::Connect {
                             device_id: phone.device_id.clone(),
@@ -552,9 +573,16 @@ impl Connections {
                         });
                     }
                 }
-                if ui
-                    .add_enabled(enabled, egui::Button::new("Unlink…"))
-                    .clicked()
+                if named_for(
+                    ui.add_enabled(enabled, egui::Button::new("Unlink…")),
+                    if replaced {
+                        "phones.unlink_old_named"
+                    } else {
+                        "phones.unlink_named"
+                    },
+                    &phone.name,
+                )
+                .clicked()
                 {
                     self.forget = Some((phone.device_id.clone(), display_text(&phone.name)));
                 }
@@ -578,12 +606,18 @@ impl Connections {
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(&phone.name, 13.0));
                 ui.label(theme::caption(pal, "Nearby"));
-                if ui.add_enabled(enabled, egui::Button::new("Link")).clicked() {
+                if named_for(
+                    ui.add_enabled(enabled, egui::Button::new("Link")),
+                    "phones.link_named",
+                    &phone.name,
+                )
+                .clicked()
+                {
                     self.one_tap_pair(&phone.id);
                 }
             });
         }
-        egui::CollapsingHeader::new("Connect by address").show(ui, |ui| {
+        let by_address = egui::CollapsingHeader::new("Connect by address").show(ui, |ui| {
             ui.label(theme::caption(
                 pal,
                 "Use the address and device ID shown on the phone.",
@@ -614,6 +648,7 @@ impl Connections {
                 }
             }
         });
+        theme::ring_when_focused(ui, pal, &by_address.header_response);
     }
     pub fn dialogs(&mut self, ctx: &egui::Context, pal: &Palette) {
         self.pair_tick(ctx);
@@ -630,13 +665,17 @@ impl Connections {
             self.entered_code.clear();
         }
         if let Some(challenge) = challenge {
-            egui::Window::new("Link phone")
+            let shown = egui::Window::new(crate::i18n::tr("pair.dialog.link_title"))
                 .id(egui::Id::new("pair-phone"))
+                .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    ui.label(theme::semibold(display_text(&challenge.device_name), 17.0));
+                    // The title bar is a drag handle that Tab lands on without a name or a ring;
+                    // the title is plain text instead and names the window.
+                    ui.label(theme::semibold(crate::i18n::tr("pair.dialog.link_title"), 17.0));
+                    ui.label(theme::semibold(display_text(&challenge.device_name), 15.0));
                     ui.label("Your phone and this computer should show the same code:");
                     ui.vertical_centered(|ui| {
                         ui.label(
@@ -704,18 +743,28 @@ impl Connections {
                         ui.add(egui::Label::new(theme::caption(pal, notice)).wrap());
                     }
                 });
+            if let Some(shown) = shown {
+                crate::a11y::describe(
+                    ctx,
+                    shown.response.id,
+                    crate::i18n::tr("pair.dialog.link_title"),
+                    None,
+                );
+            }
         }
         if let Some((id, name)) = self.forget.clone() {
             // Escape is the safe answer: keep the pairing.
             if theme::escape_pressed(ctx) {
                 self.forget = None;
             }
-            egui::Window::new("Unlink phone?")
+            let shown = egui::Window::new(crate::i18n::tr("pair.dialog.unlink_title"))
                 .id(egui::Id::new("forget-phone"))
+                .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
+                    ui.label(theme::semibold(crate::i18n::tr("pair.dialog.unlink_title"), 17.0));
                     ui.label(format!(
                         "{name} will no longer be trusted by this computer. To use it again, link it with a new QR code."
                     ));
@@ -732,6 +781,14 @@ impl Connections {
                         }
                     });
                 });
+            if let Some(shown) = shown {
+                crate::a11y::describe(
+                    ctx,
+                    shown.response.id,
+                    crate::i18n::tr("pair.dialog.unlink_title"),
+                    None,
+                );
+            }
         }
     }
 }

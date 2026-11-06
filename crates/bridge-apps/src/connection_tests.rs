@@ -847,3 +847,68 @@ fn dialog_frames(
     }
     out.unwrap()
 }
+
+#[test]
+fn the_phones_list_and_pairing_prompt_read_in_order_with_phone_names_on_every_button() {
+    let size = egui::vec2(800.0, 900.0);
+    let mut s = busy_status();
+    let mut ch = challenge("ABCD1234", 60_000);
+    ch.device_name = "Pixel".into();
+    s.paired = vec![
+        paired_at("old", "Pixel", 100),
+        paired_at("new", "Pixel", 200),
+    ];
+    s.challenges = vec![ch];
+    let (mut c, _) = conn_with(s);
+    let audit = crate::a11y_tests::audit_screen(
+        "phones and pairing prompt",
+        AppKind::Calls,
+        size,
+        move |ctx| {
+            let pal = theme::current(ctx, AppKind::Calls);
+            egui::CentralPanel::default().show(ctx, |ui| {
+                c.details(ui, &pal, &DiscoveryModel::Checking);
+            });
+            c.dialogs(ctx, &pal);
+        },
+    );
+
+    assert!(audit.problems.is_empty(), "{}", audit.problems.join("\n"));
+    let stops = audit.stops.join(" | ");
+    // Two phones with one name: every button says which phone it acts on.
+    assert_eq!(
+        audit
+            .stops
+            .iter()
+            .filter(|s| s.starts_with("Unlink"))
+            .count(),
+        2,
+        "{stops}"
+    );
+    assert!(
+        audit.stops.iter().all(|s| s != "Unlink…"),
+        "a bare Unlink… cannot tell the two Pixel entries apart: {stops}"
+    );
+    assert!(
+        audit
+            .stops
+            .iter()
+            .any(|s| s == "Unlink Pixel, the older entry"),
+        "{stops}"
+    );
+    assert!(
+        audit.stops.iter().any(|s| s == "Disconnect Phone l1"),
+        "{stops}"
+    );
+    // The hint in the prompt is plain text (not colour) and sits between the code explanation and the field.
+    let outline = audit.tree.outline();
+    let pos = |needle: &str| {
+        outline
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} missing from {outline}"))
+    };
+    assert!(pos("Type the code your phone shows") < pos("already linked"));
+    assert!(pos("already linked") < pos("Code from the phone"));
+    // The hint under the older entry follows that entry's own buttons.
+    assert!(pos("A newer link has the same name") > pos("Unlink"));
+}

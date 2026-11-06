@@ -382,22 +382,26 @@ impl Connections {
                     ))
                     .wrap(),
                 );
-                egui::CollapsingHeader::new(tr("pair.link.cant_scan")).show(ui, |ui| {
-                    let mut text = q.payload.clone();
-                    crate::a11y::named(
+                let cant_scan =
+                    egui::CollapsingHeader::new(tr("pair.link.cant_scan")).show(ui, |ui| {
+                        let mut text = q.payload.clone();
+                        crate::a11y::named(
+                            ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .desired_rows(3)
+                                    .desired_width(300.0)
+                                    .font(egui::TextStyle::Monospace),
+                            ),
+                            tr("pair.link.link_name"),
+                        );
+                        if ui.button(tr("pair.link.copy")).clicked() {
+                            ui.ctx().copy_text(q.payload.clone());
+                        }
                         ui.add(
-                            egui::TextEdit::multiline(&mut text)
-                                .desired_rows(3)
-                                .desired_width(300.0)
-                                .font(egui::TextStyle::Monospace),
-                        ),
-                        tr("pair.link.link_name"),
-                    );
-                    if ui.button(tr("pair.link.copy")).clicked() {
-                        ui.ctx().copy_text(q.payload.clone());
-                    }
-                    ui.add(egui::Label::new(theme::caption(pal, tr("pair.link.link_hint"))).wrap());
-                });
+                            egui::Label::new(theme::caption(pal, tr("pair.link.link_hint"))).wrap(),
+                        );
+                    });
+                theme::ring_when_focused(ui, pal, &cant_scan.header_response);
             }
             _ => {
                 if let Some(error) = self.state.notice.as_ref().filter(|_| !self.state.busy) {

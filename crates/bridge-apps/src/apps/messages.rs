@@ -63,6 +63,10 @@ pub struct Messages {
     focus_reply: bool,
     /// Ctrl/Cmd+F was pressed: put the cursor in the search field.
     focus_search: bool,
+    /// Down arrow in the search box: put the keyboard focus on the first result.
+    focus_first_result: bool,
+    /// The search box had the cursor last frame (egui drops focus on Escape before the app sees it).
+    search_had_focus: bool,
     /// A send was clicked; the draft is cleared only once the service accepted it.
     awaiting: bool,
     clicks: u64,
@@ -490,12 +494,17 @@ impl Messages {
         view: &MessagesView,
         now_ms: u64,
     ) {
+        let mut first = std::mem::take(&mut self.focus_first_result);
         for g in &view.hits {
             let open = self
                 .thread
                 .as_ref()
                 .is_some_and(|(d, t)| *d == g.device_id && *t == g.thread_id);
-            if hit_header(ui, pal, g, open).clicked() {
+            let header = hit_header(ui, pal, g, open);
+            if std::mem::take(&mut first) {
+                header.request_focus();
+            }
+            if header.clicked() {
                 self.thread = Some((g.device_id.clone(), g.thread_id));
                 self.found = None;
             }
@@ -520,7 +529,11 @@ impl Messages {
                 .thread
                 .as_ref()
                 .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
-            if thread_row(ui, pal, c, selected, now_ms).clicked() {
+            let row = thread_row(ui, pal, c, selected, now_ms);
+            if std::mem::take(&mut first) {
+                row.request_focus();
+            }
+            if row.clicked() {
                 self.thread = Some((c.device_id.clone(), c.thread_id));
                 self.found = None;
             }
@@ -544,6 +557,20 @@ impl Messages {
                 if std::mem::take(&mut self.focus_search) {
                     ui.memory_mut(|m| m.request_focus(search_id));
                 }
+                // Escape clears a search and the field keeps the cursor; on an empty field it leaves as usual.
+                if self.search_had_focus
+                    && !self.search.is_empty()
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+                {
+                    self.search.clear();
+                    ui.memory_mut(|m| m.request_focus(search_id));
+                }
+                if ui.memory(|m| m.has_focus(search_id))
+                    && !self.search.trim().is_empty()
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown))
+                {
+                    self.focus_first_result = true;
+                }
                 crate::a11y::named(ui.add(
                     egui::TextEdit::singleline(&mut self.search)
                         .id(search_id)
@@ -551,11 +578,20 @@ impl Messages {
                         .desired_width(f32::INFINITY),
                 ), "Search messages");
                 input::limit_chars(&mut self.search, 64);
+                self.search_had_focus = ui.memory(|m| m.has_focus(search_id));
                 ui.add_space(4.0);
+                if let Some(text) = search_status(&self.search, view) {
+                    // A polite live region: a screen reader says how many results the typing found.
+                    let line = ui.add(egui::Label::new(theme::caption(pal, text)).wrap());
+                    crate::a11y::live_region(ui.ctx(), line.id, crate::a11y::Live::Polite);
+                }
                 if view.conversations.is_empty() {
                     ui.add_space(14.0);
                     ui.vertical_centered(|ui| {
-                        ui.label(theme::secondary(pal, "No conversation matches."));
+                        let none = ui.label(theme::secondary(pal, "No conversation matches."));
+                        if !self.search.trim().is_empty() {
+                            crate::a11y::live_region(ui.ctx(), none.id, crate::a11y::Live::Polite);
+                        }
                         ui.add(
                             egui::Label::new(theme::caption(
                                 pal,
@@ -571,12 +607,17 @@ impl Messages {
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         if view.hits.is_empty() {
+                            let mut first = std::mem::take(&mut self.focus_first_result);
                             for c in &view.conversations {
                                 let selected = self
                                     .thread
                                     .as_ref()
                                     .is_some_and(|(d, t)| *d == c.device_id && *t == c.thread_id);
-                                if thread_row(ui, pal, c, selected, now_ms).clicked() {
+                                let row = thread_row(ui, pal, c, selected, now_ms);
+                                if std::mem::take(&mut first) {
+                                    row.request_focus();
+                                }
+                                if row.clicked() {
                                     self.thread = Some((c.device_id.clone(), c.thread_id));
                                     self.found = None;
                                 }
@@ -1933,6 +1974,19 @@ fn thread_bubbles(
         }
         _ => false,
     }
+}
+
+/// What a search found, spoken once the typing settles: None while the box is empty.
+fn search_status(search: &str, view: &MessagesView) -> Option<String> {
+    if search.trim().is_empty() || view.conversations.is_empty() {
+        return None;
+    }
+    let messages: usize = view.hits.iter().map(|g| g.hits.len()).sum();
+    Some(if messages > 0 {
+        crate::i18n::tr_n("search.total", messages as u64, &[])
+    } else {
+        crate::i18n::tr_n("search.names", view.conversations.len() as u64, &[])
+    })
 }
 
 /// Says so when the list is cut: this computer shows the newest conversations only; the rest stay on the phone.

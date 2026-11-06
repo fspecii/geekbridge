@@ -48,4 +48,19 @@ class A11yLabelsTest {
         val ui = java.io.File(dir, "UiKit.kt").readText()
         assertTrue(ui.contains("R.string.state_expanded") && ui.contains("R.string.state_collapsed"))
     }
+
+    /** The answer to the battery dialog arrives as a rebuilt page: the "denied" sentence is a polite live region. */
+    @Test fun theBatteryDeniedSentenceIsSpokenWithoutMovingFocus() {
+        val src = java.io.File("src/main/java/dev/geekbridge/android/SetupActivity.kt").readText()
+        val denied = src.lines().first { it.contains("R.string.setup_battery_denied") }
+        assertTrue(denied.contains("ACCESSIBILITY_LIVE_REGION_POLITE"))
+    }
+
+    /** The Quick Settings tile is spoken with a comma, not the "·" of its visible subtitle. */
+    @Test fun theTileDescriptionHasNoMiddleDot() {
+        val strings = java.io.File("src/main/res/values/gb_widgets.xml").readText()
+        assertTrue(Regex("""tile_link_sub_spoken">[^<·]*</string>""").containsMatchIn(strings))
+        val svc = java.io.File("src/main/java/dev/geekbridge/android/LinkTileService.kt").readText()
+        assertTrue(svc.contains("getString(R.string.tile_link_a11y, spoken)"))
+    }
 }

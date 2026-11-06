@@ -29,7 +29,9 @@ class LinkTileService : TileService() {
             )
             val sub = LinkTileModel.subtitle(v, word) { w, name -> getString(R.string.tile_link_sub, w, name) }
             if (Build.VERSION.SDK_INT >= 29) subtitle = sub
-            contentDescription = getString(R.string.tile_link_a11y, sub)
+            // Spoken with a comma: a screen reader reads the "·" of the visible subtitle as "middle dot".
+            val spoken = LinkTileModel.subtitle(v, word) { w, name -> getString(R.string.tile_link_sub_spoken, w, name) }
+            contentDescription = getString(R.string.tile_link_a11y, spoken)
             updateTile()
         }
     }

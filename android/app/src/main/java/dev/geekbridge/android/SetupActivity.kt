@@ -346,7 +346,11 @@ class SetupActivity : Activity() {
         when (state) {
             BatteryState.Optimised -> {
                 val denied = SetupModel.batteryDenied(batteryAsked, state)
-                panel.addView(if (denied) kit.text(getString(R.string.setup_battery_denied), 14f, Tone.Warn) else kit.text(getString(R.string.setup_battery_optimised), 14f, Tone.Muted))
+                // The answer to the system dialog comes back as a rebuilt page: speak it, politely, without moving focus.
+                panel.addView(
+                    if (denied) kit.text(getString(R.string.setup_battery_denied), 14f, Tone.Warn).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
+                    else kit.text(getString(R.string.setup_battery_optimised), 14f, Tone.Muted),
+                )
                 kit.button(panel, getString(if (denied) R.string.setup_battery_retry else R.string.setup_battery_allow), BtnStyle.Primary) { batteryAsked = true; PowerChecks.requestUnrestricted(this) }
             }
             BatteryState.BackgroundRestricted -> {

@@ -39,6 +39,12 @@ class ThemeContrastTest {
         need("gb_hero_muted", "gb_hero", 4.5)
         // Non-text: the separators are decorative, but the accent dot and "off" dots must stay visible.
         need("gb_red", "gb_card", 3.0)
+        // The red dot also sits on the page, in stripes and in filled tiles; the checked switch track and the unchecked
+        // thumb (muted on the grey track) are the other non-text signals a control state rests on.
+        for (s in surfaces) need("gb_red", s, 3.0)
+        need("gb_accent", "gb_card", 3.0)
+        need("gb_muted", "gb_line", 3.0)
+        need("gb_on_accent", "gb_accent", 3.0)
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 

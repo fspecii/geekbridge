@@ -59,6 +59,8 @@ object ShareShortcuts {
         val target = ComponentName(ctx, ShareActivity::class.java)
         return ShortcutInfo.Builder(ctx, e.id)
             .setShortLabel(e.label)
+            // Where there is room (the launcher's long-press list, a screen reader's description) say what it does.
+            .setLongLabel(ctx.getString(R.string.share_shortcut_long, Bidi.isolate(e.label)))
             .setLongLived(true)
             .setRank(rank)
             .setActivity(target)

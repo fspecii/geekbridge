@@ -418,7 +418,9 @@ impl Updates {
             ));
             return;
         };
-        ui.add(egui::Label::new(theme::secondary(pal, summary_line(&status))).wrap());
+        // Polite live region: the result of "Check for updates" is spoken without moving focus.
+        let summary = ui.add(egui::Label::new(theme::secondary(pal, summary_line(&status))).wrap());
+        crate::a11y::live_region(ui.ctx(), summary.id, crate::a11y::Live::Polite);
         self.install_controls(ui, pal, &status);
         ui.horizontal_wrapped(|ui| {
             let idle = !matches!(
@@ -444,7 +446,11 @@ impl Updates {
                 (UpdateChannel::Stable, "update.channel_stable"),
                 (UpdateChannel::Dev, "update.channel_dev"),
             ] {
-                ui.selectable_value(&mut channel, value, tr(key));
+                // "Stable" alone says nothing out of context: the name carries the group.
+                crate::a11y::named(
+                    ui.selectable_value(&mut channel, value, tr(key)),
+                    &tr_args("update.channel_named", &[("name", &tr(key))]),
+                );
             }
             if channel != status.channel {
                 self.dismissed = None;
@@ -469,12 +475,10 @@ impl Updates {
             .clone();
         match (&state, self.support()) {
             (Install::Installed(version), _) => {
-                ui.add(
-                    egui::Label::new(theme::caption(
-                        pal,
-                        tr_args("update.installed", &[("version", version)]),
-                    ))
-                    .wrap(),
+                progress(
+                    ui,
+                    pal,
+                    tr_args("update.installed", &[("version", version)]),
                 );
                 if theme::pill_button(ui, pal, tr("update.restart_now"), ButtonKind::Primary, true)
                     .clicked()
@@ -485,13 +489,13 @@ impl Updates {
                 }
             }
             (Install::Working, _) => {
-                ui.add(egui::Label::new(theme::caption(pal, tr("update.installing"))).wrap());
+                progress(ui, pal, tr("update.installing").to_owned());
             }
             (Install::Restarting, _) => {
-                ui.add(egui::Label::new(theme::caption(pal, tr("update.restarting"))).wrap());
+                progress(ui, pal, tr("update.restarting").to_owned());
             }
             (Install::Done(text) | Install::Failed(text), _) => {
-                ui.add(egui::Label::new(theme::caption(pal, text.clone())).wrap());
+                progress(ui, pal, text.clone());
             }
             (Install::Idle, Some(Support::User))
                 if offered && status.channel == UpdateChannel::Stable =>
@@ -538,6 +542,12 @@ enum Action {
 
 /// The version to announce, or `None` when there is nothing to show (not newer, skipped, or
 /// closed with "Later").
+/// An install step ("Installing...", "Installed 0.2.0", a failure) as a polite live region.
+fn progress(ui: &mut egui::Ui, pal: &Palette, text: String) {
+    let line = ui.add(egui::Label::new(theme::caption(pal, text)).wrap());
+    crate::a11y::live_region(ui.ctx(), line.id, crate::a11y::Live::Polite);
+}
+
 fn banner_version(status: &UpdateStatus, dismissed: Option<&str>) -> Option<String> {
     let latest = status.latest.as_ref()?;
     (status.newer && !status.skipped && dismissed != Some(latest.version.as_str()))
@@ -697,6 +707,45 @@ mod tests {
             downloaded_path: None,
             error: None,
         }
+    }
+
+    #[test]
+    fn the_updates_section_and_banner_are_named_focus_marked_and_the_result_is_spoken() {
+        let mut updates = Updates::spawn(|_| Ok(status(true, false)), || {});
+        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+        while updates.status.is_none() {
+            updates.poll();
+            assert!(std::time::Instant::now() < deadline, "no status");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let audit = crate::a11y_tests::audit_screen(
+            "updates",
+            bridge_core::AppKind::Calls,
+            egui::vec2(700.0, 500.0),
+            move |ctx| {
+                let pal = theme::current(ctx, bridge_core::AppKind::Calls);
+                updates.banner(ctx, &pal);
+                egui::CentralPanel::default().show(ctx, |ui| updates.details(ui, &pal));
+            },
+        );
+        assert!(audit.problems.is_empty(), "{}", audit.problems.join("\n"));
+        for want in [
+            "Update channel: Stable",
+            "Update channel: Dev (newest main build)",
+        ] {
+            assert!(
+                audit.stops.iter().any(|s| s == want),
+                "{want}: {:?}",
+                audit.stops
+            );
+        }
+        let outline = audit.tree.outline();
+        assert!(
+            outline
+                .lines()
+                .any(|l| l.contains("[live=Polite]") && l.contains("0.2.0")),
+            "the summary is a polite live region:\n{outline}"
+        );
     }
 
     #[test]

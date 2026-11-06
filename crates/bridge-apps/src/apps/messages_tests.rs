@@ -912,3 +912,72 @@ fn search_results_draw_in_both_themes_and_the_box_and_rows_are_named_and_focusab
         );
     }
 }
+
+#[test]
+fn the_search_is_usable_from_the_keyboard_alone() {
+    let _clock = pin();
+    let mut m = messages_with(search_fixture());
+    let mut rig = Rig::new(AppKind::Messages, 1000.0, 700.0);
+    ready(&mut m, &mut rig);
+    // Ctrl/Cmd+F focuses the box and typing searches.
+    rig.key_with(&mut m, Key::F, Modifiers::COMMAND);
+    rig.settle(&mut m, 2);
+    rig.type_text(&mut m, "is");
+    rig.settle(&mut m, 2);
+    assert_eq!(m.search, "is");
+    // Down moves to the first result (the first conversation header), further Downs to the next row.
+    rig.key(&mut m, Key::ArrowDown);
+    rig.settle(&mut m, 2);
+    assert!(m.found.is_none(), "moving does not open a message");
+    rig.key(&mut m, Key::ArrowDown);
+    rig.settle(&mut m, 2);
+    // Enter opens the focused hit.
+    rig.key(&mut m, Key::Enter);
+    rig.settle(&mut m, 2);
+    assert!(
+        m.found.is_some(),
+        "Enter on a message result opens it: {:?}",
+        m.thread
+    );
+    // Back in the box, Escape clears the text and the cursor stays.
+    rig.key_with(&mut m, Key::F, Modifiers::COMMAND);
+    rig.settle(&mut m, 2);
+    rig.key(&mut m, Key::Escape);
+    rig.settle(&mut m, 2);
+    assert!(m.search.is_empty(), "Escape clears the search");
+    rig.type_text(&mut m, "x");
+    assert_eq!(m.search, "x", "the box still has the cursor");
+}
+
+#[test]
+fn the_result_count_is_a_polite_live_region() {
+    let _clock = pin();
+    use crate::{connection::ControlState, shell::Env, test_support::paired_model};
+    let mut m = messages_with(search_fixture());
+    m.search = "is".into();
+    let (model, control) = (paired_model(), ControlState::default());
+    let audit = crate::a11y_tests::audit_screen(
+        "search count",
+        AppKind::Messages,
+        egui::vec2(1000.0, 700.0),
+        move |ctx| {
+            let pal = crate::theme::current(ctx, AppKind::Messages);
+            let env = Env {
+                app: AppKind::Messages,
+                api_port: 1,
+                model: &model,
+                pal: &pal,
+                control: &control,
+            };
+            m.show(ctx, &env);
+        },
+    );
+    let node = audit
+        .tree
+        .nodes
+        .values()
+        .find(|n| n.live() == Some(egui::accesskit::Live::Polite))
+        .expect("a polite live node");
+    let text = format!("{:?}{:?}", node.label(), node.value());
+    assert!(text.contains("3 matching messages"), "{text}");
+}

@@ -27,6 +27,7 @@
     <!-- Quick Settings tile: the same states as the Connection widget. -->
     <string name="tile_link_label">Computer link</string>
     <string name="tile_link_sub">%1$s · %2$s</string>
+    <string name="tile_link_sub_spoken">%1$s, %2$s</string>
     <string name="tile_link_a11y">Computer link. %1$s</string>
 
     <string name="widget_q_send_file">Send file</string>

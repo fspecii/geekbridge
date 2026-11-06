@@ -78,3 +78,103 @@ gallery `fs15`).
 
 `cargo test -p bridge-apps` (all pass), `cargo clippy -p bridge-apps --all-targets -- -D warnings`, `cargo fmt --check`,
 `gradle --offline testDebugUnitTest lintDebug` (both pass).
+
+# Accessibility re-audit, 2026-11-06
+
+Scope: the UI added since the audit above. Desktop: the Messages search box and results, the reinstalled-phone hint in the
+pairing prompt and in the phones list, Settings > Updates, the new golden states. Android: the setup wizard Battery "denied"
+state, the Quick Settings tile, the Direct Share row, the reconnect notice, Home link states, large font and display size,
+dark mode, touch targets, Back. Method: the egui AccessKit harness (`a11y_tests::audit_screen`: Tab walk in both themes,
+names, focus rings, crowded targets) for the desktop, and `uiautomator` dumps on a private API 36 emulator (own AVD, console
+port 5694, adb server port 16410, wiped afterwards) driven by `scripts/e2e/a11y-audit.py`. Contrast was computed from
+`res/values/colors.xml` and `values-night/colors.xml`. No TalkBack, Orca or NVDA session was run: live regions, headings and
+names are checked as tree attributes and in source, not as speech.
+
+## Desktop
+
+| Area | Result |
+| --- | --- |
+| Search keyboard flow | Ctrl/Cmd+F focuses the box (already there, `ctrl_f_puts_the_cursor_in_the_search_field`). Tab reaches every result (header and message rows are named buttons with a focus ring in both themes; `search_results_draw_in_both_themes_...`). Enter on a focused row opens it. Missing: Down arrow from the box (egui keeps arrows inside a text field), Escape to clear, and any announcement of how many results there are. See defects 1 and 2. |
+| Names and group headers | Box "Search messages"; group header "Ann, 2 matching messages, open the conversation"; row "Ann, 3 d ago: you: the paper is due Friday". Matches are read in the order they are drawn: header, then its messages. No defect. |
+| Reinstalled-phone hint | In the pairing prompt it is plain text (not a colour) placed between the "type the code" explanation and the code field, so a reader meets it before the field. Under the older phones-list entry it is a plain caption after that entry's buttons. The hint is not a shortcut: approving still needs the typed code (existing test). The buttons were the problem, see defect 3. |
+| Settings > Updates | Section label, summary, check, automatic switch, channel choice and notes read in layout order; every stop is named and has a ring (new `the_updates_section_and_banner_are_named_...`). Defect 4. |
+| New golden states | Only `messages-search` changed (the new count line, below); the other 100+ desktop goldens match. A first full `--check` on this loaded machine hit X-server start-up failures on other screens and re-captured "differs" screens on retry; no diff image was left, so those were load noise, not changes. |
+| Contrast | Unchanged theme tokens; covered by `theme::contrast_tests`. The new count line uses the caption colour (secondary text, AA). |
+
+### Defects fixed (desktop)
+
+1. **Escape did not clear the search and Down arrow did not reach the results.** Escape on a non-empty box now clears it and
+   keeps the cursor (egui drops focus on Escape before the app sees the key, so the box remembers that it had focus; an empty
+   box still lets Escape go). Down arrow moves to the first result, and egui's own arrow navigation then walks the rows.
+   Test: `the_search_is_usable_from_the_keyboard_alone` (Ctrl+F, type, Down, Down, Enter opens the hit, Escape clears).
+2. **Nothing announced the number of results.** A polite live-region line under the box says "3 matching messages. Down arrow
+   moves to the results, Escape clears the search." (or "N conversations match..."), and "No conversation matches." is live
+   while a search is active. It is visible text too, so it also teaches the keys. Test: `the_result_count_is_a_polite_live_region`.
+   Golden `messages-search-*` regenerated for the extra line (reviewed).
+3. **Buttons in the phones list were not tied to a phone.** "Connect", "Unlink...", "Disconnect", "Link" and "Check
+   connection" had the same name on every row, and after a reinstall two rows can have the same phone name, which is exactly when
+   the hint says to unlink "the old entry". Each is now named for its phone ("Unlink Pixel", "Disconnect Pixel 8") and the
+   flagged older entry says so ("Unlink Pixel, the older entry"). Test: `the_phones_list_and_pairing_prompt_read_in_order_...`.
+4. **Three controls on the way had no keyboard marker or name.** (a) The "Link phone" and "Unlink phone?" dialogs used egui's
+   title bar, a drag handle that Tab lands on with no name and no ring; the title is now a text line and names the window.
+   (b) "Connect by address" (phones list) and "Can't scan?" (pairing panel) were collapsing headers with no focus ring; both
+   draw the shared ring now. (c) The channel buttons "Stable" / "Dev" are named "Update channel: Stable", and the update
+   summary and the install progress lines (Installing, Installed, failed) are polite live regions, so the result of
+   "Check for updates" and an install are spoken without moving focus.
+
+### Remaining desktop items
+
+- The calendar "New event" / "Edit event" dialog still uses the title bar (drag handle with no ring); the same fix fits but
+  it is outside this scope.
+- Search results are not exposed as a list with item counts; each row is a button. Fine for Orca and NVDA browse mode, untested.
+- Real Orca / NVDA pass still open.
+
+## Android
+
+| Item | Result |
+| --- | --- |
+| Setup wizard Battery, Deny state | After "Allow unrestricted battery" and "Deny" the page shows the warning sentence, "Try again", the OEM guide, "Open Pixel settings", "Open app settings", then Back / Skip (dump order). Buttons are 48 dp or taller, focus order follows layout, labels are text (no content descriptions needed), and the state is a sentence, not colour. TalkBack focus is restored to the same slot after the rebuild (existing `focusPath`). The sentence was not announced, defect 5. |
+| Quick Settings tile | Label "Computer link", subtitle "Connected · Desk", state Active/Inactive set from the connection. The description spoke "·" as "middle dot"; defect 6. |
+| Direct Share row | Short label is the computer name; Android's chooser adds the app name. Added a long label "Send to Desk" for the launcher list and descriptions (defect 7). |
+| Reconnect notice | Title "GeekBridge", text "Android stopped the background connection. Tap to reconnect.", low importance, whole notification is the action, channel "Reconnect reminder". Plain words, says what to do. No defect. |
+| Home link states | Home, the design gallery `status` / `controls` / `updatesavail` / `pairdlgcode` pages, the setup overview and the Battery page, in light, dark, font scale 1.5 and 2.0, display size large (density 600): no unlabeled control, overlap or off-screen clip. The only SMALL hits were rows cut by the scroll viewport at the edge of a page (a 6 dp slice of "Open app settings" before scrolling). At display size large with dark mode and 1.5 the emulator itself crashed part way through (an emulator segfault, adb dropped), so that combination was only partly covered. |
+| Touch targets | Every clickable is 48 dp or taller; the only sub-48 rows remain the non-interactive info rows (`Ui.row`, 40 dp). |
+| Back | A page opened with a `step` extra (the Battery page) leaves the wizard on Back; inside the wizard Back goes to the previous page (`SetupModel.back` tests). Home keeps the default Back (not run). No defect. |
+
+Contrast (WCAG), computed from the theme colours (ratios, text needs 4.5:1, non-text 3:1):
+
+| Pair | Light | Dark |
+| --- | --- | --- |
+| text on surface / card / stripe / fill (worst) | 16.2 | 16.5 |
+| muted text on surface / card / stripe / fill (worst) | 4.73 (fill) | 5.93 (fill) |
+| warn / bad text on those (worst) | 4.99 | 5.40 |
+| on-accent on accent, on-hero on hero | 19.7 | 18.1 to 21.0 |
+| hero-muted on hero | 8.28 | 6.92 |
+| red dot on surface, card, stripe, fill (worst) | 4.27 | 3.70 |
+| checked switch track on card | 19.7 | 18.7 |
+| unchecked thumb (muted) on its track (line) | 3.94 | 5.00 |
+
+All pass. The unchecked track itself (line on card, 1.45 / 1.34) is below 3:1, as is the "off" dot colour; state is carried by
+the thumb position and thumb colour (which pass) and by the words beside it, and the dot-matrix "off" dots are decoration
+(text is also in the content description). Noted, not changed.
+
+### Defects fixed (Android)
+
+5. **The Battery "denied" sentence was not announced.** The answer to Android's dialog arrives as a rebuilt page; the sentence
+   is now a polite live region (like the scan hint and the paired banner). Test: `A11yLabelsTest.theBatteryDeniedSentenceIsSpokenWithoutMovingFocus`.
+6. **The tile description read the middle dot.** The visible subtitle keeps "·"; `contentDescription` now joins with a comma
+   ("Computer link. Connected, Desk"). Test: `theTileDescriptionHasNoMiddleDot`.
+7. **Direct Share shortcut had a short label only.** Added `setLongLabel("Send to <name>")`, name bidi-isolated.
+8. Contrast test extended: red dot on every surface, checked track, thumb on track, on-accent as a 3:1 non-text check
+   (`ThemeContrastTest`).
+
+### Remaining Android items
+
+- Run TalkBack on a device for 5 and 6; live-region attributes cannot be read from a `uiautomator` dump.
+- The emulator crashed repeatedly when started while Gradle was building; the large-display dark 1.5 run is incomplete.
+
+## Checks run
+
+`cargo test -p bridge-apps` (all pass), `cargo clippy -p bridge-apps --all-targets -- -D warnings`, `cargo fmt --check`,
+`gradle testDebugUnitTest lintDebug assembleDebug` (pass; debug classes.dex +924 B, release effect smaller after R8),
+`scripts/golden-desktop.sh --update` limited to `messages-search`. The i18n allowlist for `connection.rs` went from 64 to 62.
