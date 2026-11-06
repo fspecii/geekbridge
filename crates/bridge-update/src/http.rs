@@ -1084,7 +1084,14 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         let err =
             race_connect(&[dead, dead], Duration::from_millis(10), far(), connect).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+        // Windows retries a refused connect for about two seconds and then reports a timeout.
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+            ),
+            "{err:?}"
+        );
         assert!(
             race_connect(
                 &[],
