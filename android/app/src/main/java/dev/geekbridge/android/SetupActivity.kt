@@ -24,6 +24,9 @@ class SetupActivity : Activity() {
     private lateinit var screen: Screen
     private var steps: List<StepInfo> = emptyList()
     private var page = 0
+    // A page reached from outside the wizard or from the overview: Back returns there, not to the previous step.
+    private var anchor = -1
+    private var anchorTarget = SetupModel.BACK_FINISH
     private val oem = OemDetector.detect(Build.MANUFACTURER, Build.BRAND)
     private var pairPanel: PairPanel? = null
     private var pairBox: LinearLayout? = null
@@ -44,6 +47,10 @@ class SetupActivity : Activity() {
             intent.getBooleanExtra(EXTRA_REVIEW, false) -> steps.size
             else -> SetupModel.firstOpen(steps)?.let { f -> steps.indexOfFirst { it.id == f.id } } ?: steps.size
         }
+        if (savedInstanceState != null) {
+            anchor = savedInstanceState.getInt(KEY_ANCHOR, -1)
+            anchorTarget = savedInstanceState.getInt(KEY_ANCHOR_TARGET, SetupModel.BACK_FINISH)
+        } else if (intent.getStringExtra(EXTRA_STEP) != null) anchor = page
     }
 
     // Predictive back: on the first page the system's own back-to-home animation plays; the callback is only
@@ -53,7 +60,7 @@ class SetupActivity : Activity() {
 
     private fun syncBackCallback() {
         if (Build.VERSION.SDK_INT < 33) return
-        val want = page > 0
+        val want = page > 0 || anchor == page
         if (want == backRegistered) return
         backRegistered = want
         if (want) onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, backCallback)
@@ -64,6 +71,8 @@ class SetupActivity : Activity() {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_PAGE, page)
         outState.putBoolean(KEY_MORE, moreCalls)
+        outState.putInt(KEY_ANCHOR, anchor)
+        outState.putInt(KEY_ANCHOR_TARGET, anchorTarget)
     }
 
     override fun onResume() {
@@ -89,7 +98,9 @@ class SetupActivity : Activity() {
     }
 
     private fun goBack() {
-        if (page > 0) { page--; render() } else finish()
+        val to = SetupModel.back(page, anchor, anchorTarget)
+        if (anchor == page) anchor = -1 // the way back is used up
+        if (to == SetupModel.BACK_FINISH) finish() else { page = to; render() }
     }
 
     // ------------------------------------------------------------------ state
@@ -383,7 +394,7 @@ class SetupActivity : Activity() {
             kit.row(
                 panel, copy(s.id).first, SetupModel.title(strings, s.id), s.detail,
                 kit.chip(chipText(s), tone(s.status)), tone(s.status),
-            ) { page = i; render() }
+            ) { anchor = i; anchorTarget = steps.size; page = i; render() }
         }
     }
 
@@ -392,7 +403,7 @@ class SetupActivity : Activity() {
         f.removeAllViews()
         val last = page >= steps.size
         val back = kit.pill(getString(R.string.setup_back), BtnStyle.Plain) { goBack() }
-        back.visibility = if (page == 0) View.INVISIBLE else View.VISIBLE
+        back.visibility = if (page == 0 && anchor != 0) View.INVISIBLE else View.VISIBLE
         f.addView(back, LinearLayout.LayoutParams(0, Ui.WRAP, 1f))
         val s = steps.getOrNull(page)
         val done = s == null || s.status == StepStatus.Done || s.status == StepStatus.Info
@@ -444,6 +455,8 @@ class SetupActivity : Activity() {
     companion object {
         private const val KEY_PAGE = "page"
         private const val KEY_MORE = "more_calls"
+        private const val KEY_ANCHOR = "anchor"
+        private const val KEY_ANCHOR_TARGET = "anchor_target"
         /** Debug/golden aid: open the "Answer calls" page with its optional sections showing. */
         const val EXTRA_MORE = "more"
         const val EXTRA_REVIEW = "review"

@@ -112,6 +112,20 @@ object SetupModel {
     fun firstOpen(steps: List<StepInfo>): StepInfo? =
         steps.firstOrNull { it.status != StepStatus.Done && it.status != StepStatus.Info }
 
+    /** Where Back leads from [page]: a page number, or [BACK_FINISH] to leave the wizard. */
+    const val BACK_FINISH = -1
+
+    /**
+     * Back inside the wizard. A page that was opened from outside the wizard (a Home tile, a widget: [anchor])
+     * or from a row of the overview returns to where it came from ([anchorTarget], [BACK_FINISH] = leave) instead
+     * of walking through every earlier step; any other page goes to the one before it, the first page leaves.
+     */
+    fun back(page: Int, anchor: Int, anchorTarget: Int): Int = when {
+        anchor == page -> anchorTarget
+        page > 0 -> page - 1
+        else -> BACK_FINISH
+    }
+
     data class Warning(val step: StepId, val text: String)
 
     /**

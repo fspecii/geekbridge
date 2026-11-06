@@ -108,4 +108,16 @@ class SetupModelTest {
         val i = inputs(paired = 1, battery = BatteryState.Unrestricted, notifications = PermissionStatus.Denied)
         assertEquals(listOf(StepId.Notifications), SetupModel.warnings(TestStrings, i, true).map { it.step })
     }
+
+    @Test fun backFromAPageOpenedElsewhereReturnsThereNotThroughEveryStep() {
+        // A Home tile opened step 9 (index 8): one Back leaves the wizard.
+        assertEquals(SetupModel.BACK_FINISH, SetupModel.back(page = 8, anchor = 8, anchorTarget = SetupModel.BACK_FINISH))
+        // A row of the overview (index 9 is the overview itself): Back returns to it.
+        assertEquals(9, SetupModel.back(page = 3, anchor = 3, anchorTarget = 9))
+        // Walking on from the anchored page and back still goes one step at a time.
+        assertEquals(7, SetupModel.back(page = 8, anchor = 3, anchorTarget = 9))
+        // No anchor: previous page, and the first page leaves.
+        assertEquals(1, SetupModel.back(page = 2, anchor = -1, anchorTarget = SetupModel.BACK_FINISH))
+        assertEquals(SetupModel.BACK_FINISH, SetupModel.back(page = 0, anchor = -1, anchorTarget = SetupModel.BACK_FINISH))
+    }
 }
