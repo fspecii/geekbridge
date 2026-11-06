@@ -229,6 +229,13 @@ fn call_packet(state: &str) -> Packet {
     )
 }
 
+struct AcceptAll;
+impl kde::Approver for AcceptAll {
+    async fn approve(&mut self, _: kde::ApprovalRequest) -> bool {
+        true
+    }
+}
+
 struct Pump {
     tx: mpsc::UnboundedSender<Cmd>,
     task: JoinHandle<()>,
@@ -367,7 +374,19 @@ fn spawn_pump(mut link: kde::TrustedLink, stats: Arc<Stats>) -> Pump {
                         }
                     }
                     Ok(kde::LinkEvent::PeerUnpaired) | Err(_) => break,
-                    Ok(kde::LinkEvent::PeerRequestedRePair { .. }) => {}
+                    Ok(kde::LinkEvent::PeerRequestedRePair { .. }) => {
+                        // The service forgot this phone while the phone still trusts it (an abandoned pairing, an
+                        // unpair the phone never heard of): answer the request as the user of the real app does,
+                        // by accepting it. Ignored, the phone stayed unpaired until the next re-pair round
+                        // (docs/reports/repair-under-load.md).
+                        match link.into_re_pairing() {
+                            Ok(pending) => match pending.pair(kde::PairMode::AwaitPeerRequest, &mut AcceptAll).await {
+                                Ok(again) => link = again,
+                                Err(_) => break,
+                            },
+                            Err(back) => link = back,
+                        }
+                    }
                 },
                 cmd = rx.recv() => match cmd {
                     None => break,

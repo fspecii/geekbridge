@@ -2386,6 +2386,16 @@ impl Daemon {
         {
             return;
         }
+        // The handshake decided "trusted" from the record as it was; the record may have been deleted since (an
+        // unpair that finished while this connection was being set up).
+        if trusted
+            && !matches!(
+                self.store.get(&info.peer.device_id),
+                Ok(Some(p)) if p.cert.fingerprint() == info.peer_cert.fingerprint()
+            )
+        {
+            return;
+        }
         let mut core = self.core();
         // Strangers must not starve the table (docs/reports/security-review-2.md S2-1): one address holds
         // only a few unpaired links, and a paired phone takes the place of the oldest stranger.

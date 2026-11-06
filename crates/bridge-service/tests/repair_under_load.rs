@@ -167,6 +167,8 @@ struct Sim {
     store: Arc<kde::MemoryTrustStore>,
     proxy: FaultProxy,
     cmds: broadcast::Sender<Cmd>,
+    /// Answer a re-pair request like the app (the user accepts); the soak's old stand-in ignored it.
+    reaccept: bool,
     live: Arc<AtomicUsize>,
     accepted: Arc<AtomicUsize>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -227,6 +229,7 @@ impl Sim {
             store,
             proxy,
             cmds,
+            reaccept: std::env::var_os("GB_REPAIR_IGNORE_REPAIR").is_none(),
             live: Arc::default(),
             accepted: Arc::default(),
             tasks: Mutex::default(),
@@ -263,21 +266,43 @@ impl Sim {
     /// Take the result of a handshake: hold the link; an unpaired peer is paired (waiting for its request, or
     /// asking itself when it dialed).
     async fn adopt(self: &Arc<Self>, hs: Option<kde::Handshake>, mode: PairMode) {
+        let trace = std::env::var_os("GB_REPAIR_TRACE").is_some();
         let link = match hs {
-            Some(kde::Handshake::Trusted(link)) => link,
+            Some(kde::Handshake::Trusted(link)) => {
+                if trace {
+                    eprintln!("phone: trusted link");
+                }
+                link
+            }
             Some(kde::Handshake::Pending(p)) => {
                 let m = match mode {
                     PairMode::Request => kde::PairMode::Request,
                     PairMode::Await => kde::PairMode::AwaitPeerRequest,
                 };
+                if trace {
+                    eprintln!("phone: pending link, pairing {m:?}");
+                }
                 match p.pair(m, &mut Yes).await {
                     Ok(link) => link,
-                    Err(_) => return,
+                    Err(e) => {
+                        if trace {
+                            eprintln!("phone: pairing ended: {e}");
+                        }
+                        return;
+                    }
                 }
             }
-            None => return,
+            None => {
+                if trace {
+                    eprintln!("phone: handshake failed");
+                }
+                return;
+            }
         };
         self.hold(link).await;
+        if trace {
+            eprintln!("phone: link ended");
+        }
     }
 
     async fn hold(&self, mut link: kde::TrustedLink) {
@@ -294,6 +319,16 @@ impl Sim {
             tokio::select! {
                 ev = link.recv() => match ev {
                     Ok(kde::LinkEvent::PeerUnpaired) | Err(_) => return,
+                    Ok(kde::LinkEvent::PeerRequestedRePair { .. }) if self.reaccept => {
+                        // As the app does: the user accepts the service's request on this connection.
+                        match link.into_re_pairing() {
+                            Ok(pending) => match pending.pair(kde::PairMode::AwaitPeerRequest, &mut Yes).await {
+                                Ok(again) => link = again,
+                                Err(_) => return,
+                            },
+                            Err(back) => link = back,
+                        }
+                    }
                     Ok(_) => {}
                 },
                 c = cmds.recv() => match c {
@@ -325,7 +360,7 @@ impl Sim {
         always: bool,
     ) -> JoinHandle<()> {
         let s = self.clone();
-        let t = tokio::spawn(async move {
+        tokio::spawn(async move {
             let mut rng = Rng(seed | 1);
             loop {
                 sleep(ms(between(&mut rng, 1600, 2400))).await;
@@ -333,8 +368,7 @@ impl Sim {
                     s.dial_in(to, &service, PairMode::Request);
                 }
             }
-        });
-        t
+        })
     }
 
     fn send(&self, c: Cmd) {
@@ -437,10 +471,6 @@ impl Lab {
             inbound_proxy,
             _approver: approver,
         }
-    }
-
-    async fn ok(&self, r: Request) -> bool {
-        matches!(self.rig.call(r).await, Ok(Response::Ack))
     }
 
     async fn until(&self, within: Duration, cond: impl Fn(&Status) -> bool) -> bool {
@@ -653,7 +683,31 @@ async fn converge(lab: &Lab, sim: &Arc<Sim>, what: &str, consent: Consent) -> Co
     if !ok {
         panic!(
             "{}",
-            ctx(&format!("never connected: {:#?}", lab.rig.status().await))
+            ctx(&format!(
+                "never connected: links {:?}; trust records {}; phone live {}, phone trusts service {}; events {:?}",
+                lab.rig
+                    .status()
+                    .await
+                    .links
+                    .iter()
+                    .map(|l| (&l.phase, l.role))
+                    .collect::<Vec<_>>(),
+                lab.rig.trust_len(),
+                sim.live.load(Relaxed),
+                sim.store
+                    .get(&kde::DeviceId::parse(&lab.service_id).unwrap())
+                    .unwrap()
+                    .is_some(),
+                lab.rig
+                    .events()
+                    .await
+                    .events
+                    .iter()
+                    .rev()
+                    .take(16)
+                    .map(|e| format!("{:?}", e.kind))
+                    .collect::<Vec<_>>()
+            ))
         );
     }
     // Every write has landed; then nothing may change any more (a late delete would show up here).
