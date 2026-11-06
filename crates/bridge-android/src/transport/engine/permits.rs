@@ -30,8 +30,12 @@ pub(in crate::transport) type PermitMap = HashMap<String, HashSet<String>>;
 pub(in crate::transport) struct Permits(Mutex<Option<PermitMap>>);
 
 impl Permits {
-    pub(in crate::transport) fn set(&self, map: PermitMap) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(map);
+    /// Replaces the list; returns what it was (`None` = nothing had been set, so nobody was restricted).
+    pub(in crate::transport) fn set(&self, map: PermitMap) -> Option<PermitMap> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(map)
     }
 
     pub(in crate::transport) fn allows(&self, feature: &str, device: &str) -> bool {
@@ -44,9 +48,32 @@ impl Permits {
 
 impl Core {
     pub(in crate::transport) fn set_permits(&self, map: PermitMap) {
-        self.permits.set(map);
+        let before = self.permits.set(map);
         // A computer whose grant was withdrawn loses a live call-audio session at once.
         self.callwifi_revalidate();
+        // A computer that was just allowed call control is told what the phone is doing now. Its own request for the
+        // state (made when it switched Telephony on) was refused while it was not allowed and is not repeated, and an
+        // idle or ringing phone has no change to report, so without this it saw nothing until the next call event.
+        if let Some(before) = before {
+            let newly = self.newly_permitted("calls", &before);
+            self.calls_state_to(&newly);
+        }
+    }
+
+    /// Trusted connections whose computer may use `feature` now but was not in `before`.
+    fn newly_permitted(&self, feature: &str, before: &PermitMap) -> Vec<u64> {
+        let st = self.lock();
+        st.conns
+            .values()
+            .filter(|c| c.phase == Phase::Trusted)
+            .filter(|c| self.permits.allows(feature, c.peer_id.as_str()))
+            .filter(|c| {
+                !before
+                    .get(feature)
+                    .is_some_and(|s| s.contains(c.peer_id.as_str()))
+            })
+            .map(|c| c.id)
+            .collect()
     }
 
     /// May the computer on this connection use `feature`?

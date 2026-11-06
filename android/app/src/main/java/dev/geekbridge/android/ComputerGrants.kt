@@ -98,6 +98,9 @@ data class ComputerGrants(val byDevice: Map<String, Set<GrantFeature>> = emptyMa
 
 /** Wording of the "who is allowed" line; pure so it is tested. */
 object GrantText {
+    /** "calls=1 sms=0 ..." (how many computers each feature is allowed for; no ids), for the debug log. */
+    fun counts(g: ComputerGrants): String = GrantFeature.entries.joinToString(" ") { "${it.key}=${g.devicesFor(it).size}" }
+
     fun summary(allowedNames: List<String>, pairedCount: Int, s: Strings): String = when {
         pairedCount == 0 -> s.get(R.string.grant_none_paired)
         allowedNames.isEmpty() -> s.get(R.string.grant_none_allowed)
@@ -141,6 +144,7 @@ object ComputerGrantsRuntime {
         prefs = p
         blob = BackedBlob(StateMigrations.kv(p), "grants", BackedBlob::jsonObject)
         GrantsHolder.current = ComputerGrants.fromJson(blob?.read()?.ifEmpty { null })
+        GbLog.i("grants", "loaded: ${GrantText.counts(GrantsHolder.current)}")
     }
 
     @Synchronized
@@ -153,6 +157,7 @@ object ComputerGrantsRuntime {
         val batteryChanged = g.devicesFor(GrantFeature.Battery) != before
         worker.execute {
             GrantsPublish.run(g, batteryChanged, { core.transportAction(it) }, { PhoneDataRuntime.onBatteryGrantsChanged() })
+            GbLog.i("grants", "sent to the core: ${GrantText.counts(g)}")
         }
     }
 

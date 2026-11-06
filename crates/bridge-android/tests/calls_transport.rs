@@ -476,6 +476,36 @@ fn a_computer_outside_the_permit_list_is_refused_and_hears_no_call_state() {
 }
 
 #[test]
+fn a_computer_allowed_while_the_phone_rings_is_told_the_state_without_asking() {
+    let phone = Phone::start(Some(json!({"enabled": true})));
+    let mut peer = Peer::full();
+    peer.pair(&phone);
+    // Not allowed yet: the ring is kept but goes to nobody, and the computer's request for the state is refused.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"calls": ["e".repeat(32)]}}),
+    );
+    let r = phone.ok(
+        "transport_calls_report",
+        json!({"state": "ringing", "number": "+4915112345", "can_answer": true, "can_end": true}),
+    );
+    assert_eq!(r["queued"], 0);
+    peer.send(REQUEST, wire::request_body("s1", LinkAction::Report));
+    let res = peer.recv_kind(RESULT);
+    assert_eq!(
+        wire::parse_result(&res.body),
+        Ok(("s1".to_owned(), Err(LinkFailure::PermissionMissing)))
+    );
+    // The user allows this computer: the ring reaches it at once, with no new report and no new request.
+    phone.ok(
+        "transport_permits",
+        json!({"permits": {"calls": ["d".repeat(32)]}}),
+    );
+    let state = peer.recv_kind(STATE);
+    assert_eq!(state.body["state"], "ringing");
+}
+
+#[test]
 fn dial_requests_reach_kotlin_with_a_plain_number_and_can_dial_is_reported() {
     let phone = Phone::start(Some(json!({"enabled": true})));
     let mut peer = Peer::full();

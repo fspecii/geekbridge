@@ -280,6 +280,18 @@ impl Core {
             .collect()
     }
 
+    /// Send the phone's current call state to these connections (those allowed call control and accepting it).
+    pub(in crate::transport) fn calls_state_to(&self, connections: &[u64]) {
+        let Some(last) = self.calls.current() else {
+            return;
+        };
+        for id in connections {
+            for ctl in self.permitted_ctls("calls", bridge_core::calls_link::STATE, Some(*id)) {
+                let _ = ctl.try_send(Ctl::Calls(Out::State(last.clone())));
+            }
+        }
+    }
+
     /// Validate a state report from Kotlin, keep it, and send it to every trusted computer.
     pub(in crate::transport) fn calls_report(&self, a: ReportArgs) -> Result<Value, ApiError> {
         if !self.calls.enabled() {

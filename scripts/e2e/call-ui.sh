@@ -91,7 +91,11 @@ ring() { # number -> waits until the desktop sees the call ringing
   wait_for 25 call_ringing && return 0
   # Once more after renegotiating: the link can come back without the calls capability on a slow runner.
   $ADB emu gsm cancel "$1" >/dev/null 2>&1; grant_calls_perms
-  ctl consent "$PHONE_ID" telephony off >/dev/null 2>&1; sleep 2; ctl consent "$PHONE_ID" telephony on >/dev/null 2>&1
+  # The phone answers "permissionmissing" to the computer's requests when its own allow list does not name this computer
+  # (calls off in the app, or this computer not allowed): nothing below a renegotiation fixes that, the list must be written again.
+  if phone_refuses; then heal_calls_permit; else
+    ctl consent "$PHONE_ID" telephony off >/dev/null 2>&1; sleep 2; ctl consent "$PHONE_ID" telephony on >/dev/null 2>&1
+  fi
   local i; for ((i = 0; i < 60; i++)); do ctl status | jget '",".join(d["links"][0]["negotiated"])' 2>/dev/null | grep -q geekbridge.calls && break; sleep 1; done
   $ADB emu gsm call "$1" >/dev/null
   wait_for 25 call_ringing
@@ -194,6 +198,32 @@ grant_calls_perms() {
   done
   return 1
 }
+# --- does the phone accept this computer for calls? ---------------------------------------------------------------------
+# Negotiating the calls packet types only says both sides know them. Whether the phone ANSWERS this computer is decided by the
+# phone's own allow list (the app's calls switch and the per-computer grant, handed to the native core at start): a computer that
+# is not on it gets "permissionmissing" to every request, and the call state is queued for nobody ("report to core: ... queued=0"),
+# so a later ring is never seen (run 42194747065: 'desktop never saw the call ringing' in popup and overlay). The desktop does not
+# ask again after such a refusal, so the harness checks it here instead of finding out at the first ring.
+calls_negotiated() { ctl status | jget '",".join(d["links"][0]["negotiated"])' | grep -q geekbridge.calls; }
+phone_state_lines() { ctl calls --trace 2>/dev/null | grep -c 'state phone='; }
+phone_refuses() { ctl calls --trace 2>/dev/null | grep -q 'replied to .*permissionmissing'; }
+phone_state_seen() { (( $(phone_state_lines) > 0 )); }
+phone_state_after() { # count-before: true once the phone has sent its call state again
+  (( $(phone_state_lines) > $1 ))
+}
+grants_on_phone() { $ADB shell "run-as $PKG cat shared_prefs/geekbridge_grants.xml shared_prefs/geekbridge_calls.xml" 2>/dev/null | tr -d '\r\n' | sed 's/  */ /g' | head -c 600; }
+# Write the phone's allow list again, start the app afresh, wait for the link, switch the computer's consent off and on and
+# wait until the phone has sent its state.
+heal_calls_permit() {
+  local before; before="$(phone_state_lines)"
+  log "phone refuses the computer's call requests; allow list on the phone: $(grants_on_phone)"
+  write_calls_prefs; goto_home; sleep 3
+  desk_dial >/dev/null 2>&1
+  wait_for 40 is_connected
+  ctl consent "$PHONE_ID" telephony off >/dev/null 2>&1; sleep 2; ctl consent "$PHONE_ID" telephony on >/dev/null 2>&1
+  wait_for 90 calls_negotiated
+  wait_for 30 phone_state_after "$before"
+}
 stage_pair() {
   desk_id; PHONE_ID="$(cat "$RUN/phone-id" 2>/dev/null)"
   wake
@@ -221,11 +251,15 @@ stage_pair() {
   wait_for 25 is_connected || { rec callui_pair FAIL "link not connected"; return 1; }
   ctl consent "$PHONE_ID" telephony on >/dev/null; sleep 3
   # Turning the consent on renegotiates the link; the calls capability shows up a moment later.
-  calls_negotiated() { ctl status | jget '",".join(d["links"][0]["negotiated"])' | grep -q geekbridge.calls; }
   # 90 s: a CI runner's emulator needed more than 30 s here (the same link negotiates calls within seconds on a fast host).
   wait_for 90 calls_negotiated \
     || { rec callui_pair FAIL "calls not negotiated: $(ctl status | jget '",".join(d["links"][0]["negotiated"])')"; return 1; }
-  rec callui_pair PASS "paired $PHONE_ID, connected, telephony consent on, 'Answer from computer' on, calls negotiated"
+  # The phone must also have ANSWERED the consent change with its state (it sends it as soon as it lets this computer in).
+  if ! wait_for 20 phone_state_seen; then
+    heal_calls_permit
+    phone_state_seen || { rec callui_pair FAIL "the phone never sent its call state to this computer after the consent: refusals=$(phone_refuses && echo yes || echo no); allow list on the phone: $(grants_on_phone)"; return 1; }
+  fi
+  rec callui_pair PASS "paired $PHONE_ID, connected, telephony consent on, 'Answer from computer' on, calls negotiated, phone state received"
 }
 
 # ---------------------------------------------------------------- notification stage
