@@ -299,7 +299,10 @@ four runs: **2.16-2.32 MB / 2.84-2.88 MB** (before: 6.8 MB / 7.3 MB right after 
 included, is 232 kB, so a thread is a few kB), stack sizes (untouched stack pages are not resident), `M_TRIM_THRESHOLD` and
 `M_MMAP_THRESHOLD` (the periodic `malloc_trim(0)` already leaves 448 kB of live heap), and starting call audio, Wi-Fi or the
 update client on demand (none of them holds memory at idle: the heap is the runtime, the trust store, the discovery state and
-the TLS config). CI figure for this change: see the commit that follows.
+the TLS config). CI figure for this change (b512861c1, same runner image, job
+"Performance budget"): settled minimum **2 624 kB** (was 7 988-8 036), peak sample 3 200 kB (was 8 436-8 484), text 4 956 -> 1 248 kB,
+`r--p` 1 000 -> 216 kB, heap 660 -> 436 kB, anonymous 1 136 -> 920 kB, 7 threads, 21 fds, 1 wakeup/s, service 7 530 064 -> 7 530 320 B. The
+budgets (8 500 kB on CI, 6 000 kB locally) were left as they are.
 
 ## Android responsiveness round (2026-11-03)
 
