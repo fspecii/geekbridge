@@ -233,10 +233,20 @@ XML
   for f in contacts calendar calendar_edit; do ctl consent "$PHONE_ID" $f on >/dev/null; done
   # Wait for the data itself, not a delay: the desktop re-asks a request the phone left unanswered (30 s), and reading the
   # agenda every second is what triggers that. 150 s covers one lost request plus the sync; the states go in the detail.
-  local n=0 c=0
-  for _ in $(seq 150); do
-    n="$(count_of 'd["devices"][0]["events_count"]')"; c="$(count_of 'd["devices"][0]["contacts_count"]')"
-    [[ "${n:-0}" -ge 10 && "${c:-0}" -ge 5 ]] 2>/dev/null && break; sleep 1
+  local n=0 c=0 round
+  for round in 1 2; do
+    for _ in $(seq $((round == 1 ? 100 : 150))); do
+      n="$(count_of 'd["devices"][0]["events_count"]')"; c="$(count_of 'd["devices"][0]["contacts_count"]')"
+      [[ "${n:-0}" -ge 10 && "${c:-0}" -ge 5 ]] 2>/dev/null && break 2; sleep 1
+    done
+    # Run 42167708317: the link was up for minutes and the phone never answered (the same happens in the features and
+    # photos suites until the phone app is started afresh). One fresh start with the same settings, as a user would do.
+    ((round == 1)) || break
+    echo "cases_sync: no data after 100 s (events $n, contacts $c, link $(link_phases)): starting the phone app afresh" >>"$LOGS/e2e-cases-notes.txt"
+    ctl status | head -c 1500 >>"$LOGS/e2e-cases-notes.txt"; $ADB logcat -d -s GB:I 2>/dev/null | tail -15 >>"$LOGS/e2e-cases-notes.txt"
+    $ADB shell am force-stop $PKG; sleep 2; goto_home; sleep 3; ensure_link || true
+    desk_dial; wait_for 30 is_connected || true
+    for f in contacts calendar calendar_edit; do ctl consent "$PHONE_ID" $f off >/dev/null; ctl consent "$PHONE_ID" $f on >/dev/null; done
   done
   rec cases_sync "$([[ "${n:-0}" -ge 10 ]] && echo PASS || echo FAIL)" "events on desktop: $n, contacts: $c (calendar $(count_of 'd["devices"][0]["calendar"]'), contacts $(count_of 'd["devices"][0]["contacts"]'), link $(link_phases))"
 
