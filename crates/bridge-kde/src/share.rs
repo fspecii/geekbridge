@@ -420,6 +420,8 @@ pub async fn receive_file(
             }
             // The bytes reach the disk before the name does: after a power cut the file under its final name
             // is either whole or absent (the reservation), never a long file of zeros.
+            #[cfg(not(unix))]
+            let _ = &dir;
             std_file.sync_all()?;
             drop(std_file);
             bridge_core::statefile::slow_disk_hook();
