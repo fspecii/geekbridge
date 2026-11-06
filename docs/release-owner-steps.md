@@ -99,6 +99,17 @@ a missing environment would create it unprotected, with no branch restriction). 
 the repository variable `ANDROID_SIGNER_SHA256` pins the signer. Leave `DEV_AUTOPUBLISH` unset (publishing stays manual) unless you want CI to
 publish the rolling `dev` prerelease.
 
+**Why there is no `dev` release yet (checked 2026-11-06).** The "Dev build (rolling)" runs are green because the
+`android` job skips cleanly without `DEV_KEYSTORE_B64` (it reports `built=false`) and the `publish` job is then
+skipped by design: it needs the APK, and `DEV_AUTOPUBLISH=true` or a manual run with `publish=true`. At that point the
+repository had the `dev-signing` environment but no secrets or variables in it, so only desktop workflow artifacts
+exist and `releases/tags/dev` answers 404 (the updater reports "no dev build published yet"). To get the channel, either
+(a) set the 3a secrets and `DEV_SIGNER_SHA256`, then set `DEV_AUTOPUBLISH=true` (`gh variable set DEV_AUTOPUBLISH --body true --repo fspecii/geekbridge`)
+or start the workflow once with `gh workflow run dev-release.yml -f publish=true`; or (b) run `scripts/release-dev.sh --publish`
+on your machine. A green run does not mean published: look for the job "Update the rolling dev prerelease" not being "skipped".
+The `dev-manifest.json` that `scripts/release-dev.sh` writes (`commit`, `versionCode`, `builtAt`, `notes`) is what
+`crates/bridge-update/src/dev.rs` parses.
+
 ### 3b. Branch protection status checks
 
 `main` is protected but requires nothing (force pushes and deletions are blocked, admins not enforced). To require the
