@@ -22,7 +22,8 @@ test peers.
   a real call. Wi-Fi call audio is **experimental**: off by default, debug phone builds only, and whether a real phone
   allows it is open.
 - **Messages (SMS).** Read conversations, search, and send texts from the desktop, with honest delivery status and
-  new-message notifications (with a Reply action). Text only: no MMS, group or RCS.
+  new-message notifications (with a Reply action). Text only: no MMS, group or RCS. Conversation lists show the newest text of each thread and older history loads on request
+  (tested with 100 threads of 20 texts on an emulator, not on a real phone).
 - **Contacts and calendar.** A searchable phonebook with Call, Message and Copy actions. Month, week, day and agenda
   calendar views for the calendars on your phone (Google Calendar works through the phone's own sync, with no API key).
   Creating, editing and deleting one-off events from the computer is a separate opt-in.
@@ -46,6 +47,7 @@ test peers.
   install`) unpacks the verified download, checks it, switches to it and keeps the old version for `geekbridge-ctl update
   rollback`; the service restarts only when you confirm and never during a call. On the `.deb`, the Arch package, Windows and
   macOS you still download and install it yourself. Desktop archives are verified by checksum, not by a signature.
+  The update check connects over IPv6 and IPv4 in turn, honours `HTTPS_PROXY` and `NO_PROXY`, and says so when a wrong clock breaks TLS.
 - **Safer on a crash.** After a killed service, a full disk or a clock set back, the desktop service starts again with its
   pairings intact and leaves no half-written files; `geekbridge-ctl doctor` says when the state folder is full or read-only.
   Tested in sandboxes, not with a real power cut.

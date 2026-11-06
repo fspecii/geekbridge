@@ -1,6 +1,8 @@
 # Real-device session script (Fold5 SM-F946B, Android 16, this Arch/Omarchy PC)
 
-Build (round 11): head `7b35acff9`, APK versionCode 20400 (versionName 0.1.0), sha256 `306c66106dd7b76b710742acebb747bdba7f23eb5d0b195d3b9aea75fd548f93`, signer `4d711ab4...a3c3` (updates in place). PC binaries in `target/release` (sha256 starts: geekbridge `edcfeb7c`, service `94a37c10`, ctl `fee66bb6`, calls `51b3ad89`, messages `1ef7a447`, clipboard `2350bc69`, agenda `fe1edbe9`, contacts `136d7b93`, share `3633815a`); the running service was not restarted. Adds the Windows/macOS runtime fixes (667f0a5ab) and the privacy defaults test fix.
+Build (round 12, refreshed 2026-11-06): code head `7cbe7301c` (CI: Cross-platform Rust checks, Docs links and Dev build green; Emulator end-to-end was still running). **Rebuild needed**: the APK in `dist/android` (sha256 `306c66106dd7...fd548f93`, built 2026-11-06 02:34, the round 11 build from `7b35acff9`, versionCode 20400, signer `4d711ab4...a3c3`) predates the Messages sort and burst fixes, the DND deadlock fix, the idle-wakeup work, the updater changes and the call setup BlueZ guard, so it is not a build of this head. Step 0 builds it and prints the new head, versionCode and sha256: write them here before the session. PC binaries must be rebuilt too (the old hashes in earlier rounds no longer apply); the running service is not restarted by this edit.
+
+What is new to look at since round 11 (all emulator/sandbox-tested only): Messages should now load fully (newest text of each thread, history paging returns older texts); saving the Do Not Disturb switch twice quickly must not hang Settings; `top -H -p $(pgrep geekbridge-service)` or `perf-check` should show about 0.2-0.4 wakeups/s idle (was 2.9); `call setup` restores the adapter's settings (step 3a); the update check with a proxy (`HTTPS_PROXY`) or a wrong clock gives plain messages; Android update notes no longer show "null".
 
 One ordered script, about 90 minutes, copy-paste from the repository root in a terminal inside Hyprland. Each step has a
 **Send back** line; on any failure note the step, run the shown capture command, and move on (step 7 collects
@@ -83,6 +85,13 @@ Also once: `geekbridge-ctl call dial NUMBER` with your second phone (never an em
 Decision tree with every failure line: [call-audio-decision.md](call-audio-decision.md) section 1. Use the USB headset,
 not a Bluetooth one. Phone: Settings > Connections > Bluetooth open and unlocked.
 
+Before B2, note the adapter's settings so you can confirm they come back (an earlier sandbox test changed DiscoverableTimeout to 180 s; the guard
+in 4dbcc7829 stops tests touching the real adapter, and `call setup` now restores the modes on every exit):
+
+```
+bluetoothctl show | grep -E 'Powered|Discoverable|DiscoverableTimeout|Pairable|PairableTimeout'   # B-pre: write these lines down
+```
+
 ```
 geekbridge-ctl calling                       # B0: steps 1-4 [ok] (controller hci0, not blocked, bluetooth.service, powered)
 geekbridge-ctl call setup --fix-config       # B1: "The WirePlumber configuration needs no change." or "Wrote ~/.config/wireplumber/wireplumber.conf.d/zz-geekbridge-call-audio.conf ..."
@@ -105,7 +114,12 @@ keypad now appears: press digits against a phone menu. Silent but "voice link op
 as in [../call-audio-troubleshooting.md](../call-audio-troubleshooting.md#wideband-off-msbc-for-a-silent-or-choppy-call),
 `systemctl --user restart wireplumber`, call again.
 
-**Send back:** each `calling` and `call setup` output, the `calls` line from B4, whether each side heard the other, and
+**3a. After B2 (finished, failed or cancelled), run `bluetoothctl show` again** and compare with B-pre: `Discoverable: no` and the
+same `DiscoverableTimeout`, `Pairable` and `PairableTimeout` as before. If `DiscoverableTimeout` is still 180 s from the old test and you
+want the usual value, set it back by hand (`bluetoothctl discoverable-timeout 0` on BlueZ 5.x, or whatever it was) and say so; a value that
+changed because of `call setup` itself is a bug: capture the output of both commands.
+
+**Send back:** the two `bluetoothctl show` outputs, each `calling` and `call setup` output, the `calls` line from B4, whether each side heard the other, and
 `scripts/realdevice-report.sh --no-adb --bt-trace 60` started just before a failing call (place the call within the 60
 seconds).
 

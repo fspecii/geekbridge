@@ -227,6 +227,17 @@ builds have not been run on real hardware (see "Known limitations").
 - Wording: "link" instead of "pair" in more places on the phone and the computer.
 
 ### Fixed
+- Messages on the phone were read oldest first (two sort columns shared one direction), so lists showed the oldest text of each thread and
+  history paging returned nothing new; now newest first. The desktop keeps at most 16 history requests out (the phone drops beyond 64
+  queued), so a burst of 100 threads no longer loses some. Tested; not seen on a real phone.
+- Settings -> Privacy could hang when "Respect Do Not Disturb" was saved while its keep-warm thread was between looking and waiting; fixed with a test.
+- Idle wakeups of the desktop service fell from about 2.9 to 0.2-0.4 per second (stand-in phone paired: 0.35-0.40) by letting the
+  Do Not Disturb keep-warm thread and the redial pass sleep when there is nothing to do ([docs/performance.md](docs/performance.md)).
+- Updater: a wrong clock now produces a TLS error that says so; connections try IPv6 and IPv4 in turn (happy eyeballs); `HTTPS_PROXY`, `ALL_PROXY`
+  and `NO_PROXY` are honoured; the Android update card no longer shows "null" for empty release-note fields. An ignored real-GitHub smoke test exists
+  ([report](docs/reports/updater-real-network.md)); no stable release exists yet to check against.
+- First run: `install.sh --uninstall` leaves no icon or desktop-database caches behind, `call setup` restores the computer's Bluetooth settings when it
+  cannot go visible and never touches the system adapter from a test or sandbox, unpairing refreshes the consent backup, and hints say to start the service.
 - Desktop to phone file transfers no longer stall at "Waiting" with a secure-channel or timeout error when the link
   arrived on a network other than the phone's default: the phone dials the normal route first, and a route counts only
   after its TLS handshake finished.
