@@ -150,7 +150,7 @@ fn unwinding_a_panic_right_after_a_drop_works() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 #[test]
 fn it_advises_something_on_linux_and_the_amount_is_plausible() {
     let first = drop_idle();
@@ -161,8 +161,74 @@ fn it_advises_something_on_linux_and_the_amount_is_plausible() {
     assert!(drop_idle() > 0);
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 #[test]
 fn it_is_a_no_op_elsewhere() {
     assert_eq!(drop_idle(), 0);
+}
+
+/// A library unloaded and its address range reused by anonymous memory must never be zeroed by a drop that read
+/// `smaps` before the unload: load/unload a small library and map/fill/verify/unmap anonymous pages while others drop.
+#[cfg(all(target_os = "linux", target_env = "gnu", target_pointer_width = "64"))]
+#[test]
+fn unloading_libraries_and_reusing_their_addresses_never_loses_anonymous_data() {
+    use std::ffi::{CString, c_void};
+    unsafe extern "C" {
+        fn dlopen(name: *const std::ffi::c_char, flags: i32) -> *mut c_void;
+        fn dlclose(h: *mut c_void) -> i32;
+        fn mmap(a: *mut c_void, l: usize, p: i32, f: i32, fd: i32, o: i64) -> *mut c_void;
+        fn munmap(a: *mut c_void, l: usize) -> i32;
+    }
+    let name = CString::new("libresolv.so.2").unwrap();
+    // SAFETY: plain loader calls on a system library.
+    let probe = unsafe { dlopen(name.as_ptr(), 2) };
+    if probe.is_null() {
+        return; // not installed here
+    }
+    unsafe { dlclose(probe) };
+    let stop = Arc::new(AtomicBool::new(false));
+    let droppers: Vec<_> = (0..2)
+        .map(|_| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    drop_idle();
+                }
+            })
+        })
+        .collect();
+    let loader = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let name = CString::new("libresolv.so.2").unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                // SAFETY: load and unload a library that nothing else uses.
+                unsafe {
+                    let h = dlopen(name.as_ptr(), 2);
+                    if !h.is_null() {
+                        dlclose(h);
+                    }
+                }
+            }
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        // SAFETY: private anonymous read/write pages of our own, filled, checked and unmapped here.
+        unsafe {
+            let len = 256 * 1024;
+            let p = mmap(std::ptr::null_mut(), len, 3, 0x22, -1, 0).cast::<u8>();
+            assert!(!p.is_null() && p as isize != -1);
+            std::ptr::write_bytes(p, 0xAB, len);
+            std::thread::yield_now();
+            let s = std::slice::from_raw_parts(p, len);
+            assert!(s.iter().all(|b| *b == 0xAB), "anonymous memory was zeroed");
+            munmap(p.cast(), len);
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    loader.join().unwrap();
+    for d in droppers {
+        d.join().unwrap();
+    }
 }

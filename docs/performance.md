@@ -304,6 +304,39 @@ the TLS config). CI figure for this change (b512861c1, same runner image, job
 `r--p` 1 000 -> 216 kB, heap 660 -> 436 kB, anonymous 1 136 -> 920 kB, 7 threads, 21 fds, 1 wakeup/s, service 7 530 064 -> 7 530 320 B. The
 budgets (8 500 kB on CI, 6 000 kB locally) were left as they are.
 
+**Review of the drop (2026-11-06): one real bug fixed, cost measured and small, beat kept.**
+
+* **Race fixed.** `drop_idle` read `/proc/self/smaps` and then called `madvise(MADV_DONTNEED)` on the ranges, so a library
+  unloaded in between (`dlclose`, which the GL drivers of `geekbridge-messages` do) and its addresses reused by an anonymous
+  mapping (a thread stack, the heap) had live data zeroed. The new test `unloading_libraries_and_reusing_their_addresses_never_loses_anonymous_data`
+  (`dlopen`/`dlclose` of a small library on one thread, map/fill/verify/unmap on another, two threads dropping) fails on the
+  old code within milliseconds (zeroed memory, then SIGSEGV) and passes now. The advice is now given from inside
+  `dl_iterate_phdr` (it holds the loader's lock, so nothing is loaded or unloaded meanwhile) and only to the read-only `PT_LOAD`
+  segments of the loaded objects, clipped to what smaps showed as private, file-backed and never written; the program headers are
+  read before the first range of an object is dropped (the headers sit in that first mapping, and dropping it first faulted it
+  and 15 neighbours straight back in). Price: file mappings that are not loaded objects (`/etc/ld.so.cache`, 180 kB when a
+  `dlopen` or name lookup ran) are no longer dropped; settled idle 2.2 -> about 2.4-2.6 MB locally (that 180 kB plus where in the 4 s
+  cycle the sample falls). 64-bit Linux only (glibc and musl); 32-bit Linux and other systems compile it out.
+* **Why the rest is safe.** `Anonymous: 0` means no copy-on-write page exists, so the mapping is the file's bytes (a RELRO or
+  text-relocated mapping has anonymous pages and is skipped; `[vdso]`, `[vvar]`, JIT/memfd/SysV memory are not files in `dl_iterate_phdr`
+  or fail the path test). `MADV_DONTNEED` on such a mapping only removes page-table entries; a thread executing there takes a minor
+  fault and goes on (`crates/bridge-core/tests/drop_idle.rs` runs compute, sockets, thread start and panic unwinding against a dropper). Left open: a
+  debugger breakpoint written between the smaps read and the advice is lost (benign). Transparent huge pages: file THP are split or
+  unmapped as a whole; the CI kernel (7.0, THP madvise) and a THP-always laptop (7.2) both measured fine. Not used: `MADV_PAGEOUT`/`MADV_COLD`
+  (they also evict from the page cache, which turns the next use into disk I/O: a major fault).
+* **Latency (stand-in phone linked, `perf-phone` plus a ring-to-visible and status timing loop, 15 trials each, same binary with and
+  without the drop by shimming `madvise`).** After a drop the next local request costs about 60 minor faults and no major ones:
+  status round trip 0.35 -> 0.5-0.6 ms cold (0.19-0.3 ms warm), ring to visible in the call list 0.3-0.5 -> 0.4-0.9 ms, answer 0.27 -> 0.3-0.4 ms.
+  The 21 ms outliers on every fourth ring are the call card process starting, with or without the drop. Nothing a person can feel.
+* **Steady state.** Idle with a phone linked: 12.7-14.3 minor faults/s with the beat against 3.5 without, 0 major, 1 CPU tick in 60 s,
+  wake-ups 1.03/s with or without (the phone's pings). Without a phone: 16.6 (old) and 19.5 (new) minor faults/s in 120 s, 2.6-3.0
+  voluntary context switches/s. About 10 extra faults/s is a few tens of microseconds of CPU a second. A backoff (4 s while the
+  resident file set grows, doubling to 60 s while it does not) was built and measured: it never engaged, because the idle service itself faults
+  over 128 kB into the file set in every 4 s window, and it cost RSS (drift). Dropped again; the 4 s beat stays. Not done: keeping the call path's pages
+  out of the drop: the cold cost above is 0.2-0.3 ms.
+* **Budgets not tightened yet.** Only one CI run so far measures the beat (2aac58d27: settled 2 300 kB, peak 2 876 kB, 1 wakeup/s, 0 ticks; kernel 7.0.0-1019-azure,
+  glibc 2.43, THP madvise), the run on b512861c1 was cancelled. The CI budget (8 500 kB) is tightened once three runs agree.
+
 ## Android responsiveness round (2026-11-03)
 
 Emulator (AVD clone, Android 16 x86_64, software GPU, host load average 3-13 from other jobs), release build with R8 signed with the

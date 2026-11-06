@@ -10,6 +10,9 @@
 
 /// Beat of the periodic drop. Short enough that a reader sampling every few seconds finds the trimmed state, long
 /// enough to be one timer wake-up per four seconds (0.25 /s of the 3 /s budget; measured: wake-ups unchanged at 0 /s).
+/// What a drop costs (stand-in phone linked, `docs/performance.md`): the next ring or request faults about 60 pages
+/// back in, 0.2-0.3 ms; an idle service takes 9-13 more minor faults a second, under 0.01% of a core. A backoff to a
+/// minute was tried and never engaged: an idle service itself faults over 128 kB in every 4 s window.
 #[cfg(target_os = "linux")]
 const SETTLE_EVERY: std::time::Duration = std::time::Duration::from_secs(4);
 
