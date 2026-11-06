@@ -697,3 +697,153 @@ fn manual_connect_rejects_bad_text_with_a_notice_and_sends_nothing() {
         }
     )));
 }
+
+// ------------------------------------------------------------- reinstalled phone (same name, new id)
+
+fn paired_at(id: &str, name: &str, at: i64) -> PairedDevice {
+    PairedDevice {
+        paired_at_unix: at,
+        ..paired(id, name)
+    }
+}
+
+fn shape_text(shapes: &[egui::epaint::ClippedShape]) -> String {
+    fn walk(s: &egui::epaint::Shape, out: &mut String) {
+        match s {
+            egui::epaint::Shape::Text(t) => {
+                out.push_str(&t.galley.job.text);
+                out.push('\n');
+            }
+            egui::epaint::Shape::Vec(v) => v.iter().for_each(|s| walk(s, out)),
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    shapes.iter().for_each(|c| walk(&c.shape, &mut out));
+    out
+}
+
+fn details_text(c: &mut Connections) -> String {
+    let cx = ctx();
+    let pal = theme::palette(AppKind::Calls, true);
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(800.0, 700.0),
+        )),
+        ..Default::default()
+    };
+    let out = cx.run(input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            c.details(ui, &pal, &DiscoveryModel::Checking);
+        });
+    });
+    shape_text(&out.shapes)
+}
+
+const STALE_HINT: &str = "A newer link has the same name";
+
+#[test]
+fn an_older_offline_entry_with_the_same_name_is_flagged_as_probably_replaced() {
+    let list = [
+        paired_at("old", "Pixel", 100),
+        paired_at("new", " pixel ", 200),
+        paired_at("other", "Galaxy", 50),
+    ];
+    assert!(looks_replaced(&list, &list[0], false));
+    assert!(
+        !looks_replaced(&list, &list[1], false),
+        "the newest is never the stale one"
+    );
+    assert!(!looks_replaced(&list, &list[2], false), "different name");
+    assert!(
+        !looks_replaced(&list, &list[0], true),
+        "an online entry is in use, not stale"
+    );
+    assert!(!looks_replaced(
+        &[paired_at("a", "", 1), paired_at("b", "", 2)],
+        &paired_at("a", "", 1),
+        false
+    ));
+}
+
+#[test]
+fn the_phone_list_hints_at_the_old_entry_but_never_unlinks_or_merges_by_itself() {
+    let mut s = status();
+    s.paired = vec![
+        paired_at("old", "Pixel", 100),
+        paired_at("new", "Pixel", 200),
+    ];
+    let (mut c, log) = conn_with(s);
+    let text = details_text(&mut c);
+    assert_eq!(
+        text.matches(STALE_HINT).count(),
+        1,
+        "one hint, on the old entry only: {text}"
+    );
+    assert!(text.contains("Unlink…"));
+    assert!(c.forget.is_none());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !log.lock().unwrap().iter().any(|r| matches!(
+            r,
+            Request::Unpair { .. } | Request::Approve { .. } | Request::SetConsent { .. }
+        )),
+        "showing the hint changes nothing"
+    );
+    let mut s = status();
+    s.paired = vec![paired_at("a", "Pixel", 1), paired_at("b", "Galaxy", 2)];
+    let (mut c, _) = conn_with(s);
+    assert!(!details_text(&mut c).contains(STALE_HINT));
+}
+
+#[test]
+fn a_pairing_prompt_for_a_known_name_explains_the_reinstall_case_and_still_needs_the_typed_code() {
+    let cx = ctx();
+    let size = egui::vec2(800.0, 700.0);
+    let mut s = busy_status();
+    let mut ch = challenge("ABCD1234", 60_000);
+    ch.device_name = "Pixel".into();
+    s.paired = vec![paired_at("old", "Pixel", 100)];
+    s.challenges = vec![ch];
+    let (mut c, log) = conn_with(s);
+    let pal = theme::palette(AppKind::Calls, true);
+    let out = dialog_frames(&mut c, &cx, &pal, size);
+    let text = shape_text(&out.shapes);
+    assert!(text.contains("already linked"), "{text}");
+    assert!(text.contains("every sharing option off"));
+    // The note is not a shortcut: no code typed, no approval.
+    assert!(!code_matches(&c.entered_code, "ABCD1234"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !log.lock()
+            .unwrap()
+            .iter()
+            .any(|r| matches!(r, Request::Approve { .. }))
+    );
+    // A challenge from a name nobody has linked carries no note.
+    let mut s = busy_status();
+    s.challenges = vec![challenge("ABCD1234", 60_000)];
+    let (mut c, _) = conn_with(s);
+    let out = dialog_frames(&mut c, &cx, &pal, size);
+    assert!(!shape_text(&out.shapes).contains("already linked"));
+}
+
+fn dialog_frames(
+    c: &mut Connections,
+    cx: &egui::Context,
+    pal: &Palette,
+    size: egui::Vec2,
+) -> egui::FullOutput {
+    let mut out = None;
+    for _ in 0..3 {
+        out = Some(cx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                ..Default::default()
+            },
+            |ctx| c.dialogs(ctx, pal),
+        ));
+    }
+    out.unwrap()
+}

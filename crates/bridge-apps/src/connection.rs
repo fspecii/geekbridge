@@ -21,6 +21,31 @@ use zeroize::Zeroize;
 mod pair_ui;
 pub use pair_ui::{NextStep, Problem, draw_qr, qr_modules};
 
+/// Phones already linked under the same visible name as `name` but a different device id: what a reinstalled
+/// phone app looks like (a new id and certificate). Only ever a hint; nothing is merged or trusted from it.
+fn same_name_entries<'a>(
+    paired: &'a [ipc::PairedDevice],
+    device_id: &str,
+    name: &str,
+) -> Vec<&'a ipc::PairedDevice> {
+    let key = name.trim().to_lowercase();
+    if key.is_empty() {
+        return Vec::new();
+    }
+    paired
+        .iter()
+        .filter(|p| p.device_id != device_id && p.name.trim().to_lowercase() == key)
+        .collect()
+}
+
+/// True when `phone` is an older entry with a newer one under the same name, and is not online itself.
+fn looks_replaced(paired: &[ipc::PairedDevice], phone: &ipc::PairedDevice, online: bool) -> bool {
+    !online
+        && same_name_entries(paired, &phone.device_id, &phone.name)
+            .iter()
+            .any(|o| o.paired_at_unix > phone.paired_at_unix)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ControlState {
     pub status: Option<Status>,
@@ -510,7 +535,9 @@ impl Connections {
                 }
             });
         }
+        let online: BTreeSet<String> = seen.clone();
         for phone in &status.paired {
+            let replaced = looks_replaced(&status.paired, phone, online.contains(&phone.device_id));
             ui.horizontal_wrapped(|ui| {
                 ui.label(theme::semibold(display_text(&phone.name), 13.0));
                 if !seen.contains(&phone.device_id) {
@@ -532,6 +559,15 @@ impl Connections {
                     self.forget = Some((phone.device_id.clone(), display_text(&phone.name)));
                 }
             });
+            if replaced {
+                ui.add(
+                    egui::Label::new(theme::caption(
+                        pal,
+                        crate::i18n::tr("pair.reinstall.old_entry"),
+                    ))
+                    .wrap(),
+                );
+            }
             seen.insert(phone.device_id.clone());
         }
         for phone in discovery
@@ -617,6 +653,22 @@ impl Connections {
                         ))
                         .wrap(),
                     );
+                    if let Some(status) = &self.state.status
+                        && !same_name_entries(
+                            &status.paired,
+                            &challenge.device_id,
+                            &challenge.device_name,
+                        )
+                        .is_empty()
+                    {
+                        ui.add(
+                            egui::Label::new(theme::caption(
+                                pal,
+                                crate::i18n::tr("pair.reinstall.prompt"),
+                            ))
+                            .wrap(),
+                        );
+                    }
                     crate::a11y::named(ui.add(
                         egui::TextEdit::singleline(&mut self.entered_code)
                             .hint_text(crate::theme::hint(ui, "Code from phone"))
