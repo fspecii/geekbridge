@@ -18,6 +18,15 @@ use std::time::{Duration, Instant};
 use support::{Phone, Rig, pair_phone};
 use tokio::time::{sleep, timeout};
 
+/// The call trace is one ring per process (as in the service), and every `Rig::start` empties it
+/// while any call event of any test lands in it. Tests in this file run on parallel threads of one
+/// process, so each holds this for its whole run: the trace tests then see only their own events.
+static ONE_SERVICE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn one_service() -> tokio::sync::MutexGuard<'static, ()> {
+    ONE_SERVICE.lock().await
+}
+
 fn calls_phone() -> Arc<Phone> {
     let creds = Arc::new(kde::DeviceCredentials::generate().unwrap());
     let mut config = kde::TransportConfig::default();
@@ -133,6 +142,7 @@ async fn next_request(phone_link: &mut kde::TrustedLink) -> (String, LinkAction)
 
 #[tokio::test]
 async fn answer_reject_and_hangup_over_the_phone_link() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -251,6 +261,7 @@ async fn answer_reject_and_hangup_over_the_phone_link() {
 
 #[tokio::test]
 async fn phone_without_permission_gets_no_answer_button_and_refusals_are_shown() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -311,6 +322,7 @@ async fn phone_without_permission_gets_no_answer_button_and_refusals_are_shown()
 
 #[tokio::test]
 async fn malformed_call_packets_do_not_create_calls() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -339,6 +351,7 @@ async fn malformed_call_packets_do_not_create_calls() {
 /// no call is ever placed anywhere; the numbers below are fictional.
 #[tokio::test]
 async fn dial_needs_consent_the_phones_permission_and_a_plain_number() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -460,6 +473,7 @@ async fn dial_needs_consent_the_phones_permission_and_a_plain_number() {
 /// stand-in phone as the only "network". Fictional numbers; nothing is ever placed.
 #[tokio::test]
 async fn ctl_call_dial_explains_asks_to_confirm_and_then_dials_through_the_link() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -561,6 +575,7 @@ fn ctl_runner(
 
 #[tokio::test]
 async fn ctl_calls_trace_shows_the_states_without_numbers_prints_json_and_clears() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
@@ -608,6 +623,7 @@ async fn ctl_calls_trace_shows_the_states_without_numbers_prints_json_and_clears
 
 #[tokio::test]
 async fn ctl_calls_masks_numbers_and_each_control_says_plainly_when_it_is_missing() {
+    let _one = one_service().await;
     let rig = Rig::start().await;
     let phone = calls_phone();
     let mut phone_link = pair_phone(&rig, &phone).await;
