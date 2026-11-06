@@ -86,6 +86,9 @@ jobs:
         # so one platform-specific surprise does not hide the results of the other checks.
         continue-on-error: ${{ runner.os != 'Linux' }}
         run: scripts/smoke-binaries.sh --live
+      - name: Upgrade path (state directories written by old builds open in this build; fixtures, no emulator, about 15 s)
+        if: runner.os == 'Linux'
+        run: scripts/e2e/upgrade-path.sh
       - name: SBOM generator (CycloneDX shape, completeness against Cargo.lock and Gradle verification, determinism)
         if: runner.os == 'Linux'
         run: scripts/tests/sbom-test.sh

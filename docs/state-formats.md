@@ -123,6 +123,7 @@ pinned widget, pairing and opt-ins; see `docs/reports/e2e-findings.md`).
 | Two writer processes | `bridge-kde/tests/state_compat.rs::two_processes_incrementing_one_file_lose_no_update`, `bridge-kde/tests/persistence.rs` |
 | Update flow | `bridge-service/tests/state_compat.rs::pairing_and_settings_survive_an_upgrade_with_a_live_phone`: starts the service on a v1 state dir, reconnects the fixture phone, expects trust, consent and device name kept and no pairing challenge |
 | Newer / damaged state, whole service | `files_from_a_newer_version_are_read_but_never_overwritten`, `damaged_state_files_do_not_brick_the_service`, `a_damaged_identity_or_trust_store_is_restored_from_its_backup` |
+| Real old builds, real binaries | `scripts/e2e/upgrade-path.sh` (CI, about 15 s): state directories written by the `v0.1.0-rc.1` and round 9 builds (`tests/fixtures/upgrade/`) are opened by the current `geekbridge-service`; pairings, consents, privacy choices, update state and identity must be unchanged, new files owner-only, no migration or damage note; plus update-state, privacy and call-reply variants with and without the newer fields, damaged, and written by a newer version. With `--old-bin` it also pairs a stand-in phone with an old build and reads the result back with the old build (rollback). Results: `docs/reports/upgrade-path.md` |
 
 ## Rollback and downgrade
 

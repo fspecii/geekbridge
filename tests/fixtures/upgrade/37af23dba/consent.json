@@ -1,0 +1,11 @@
+{
+  "devices": {
+    "44ddab4fe3a2e3b4c4e92f7e7b44c995": [
+      "sms",
+      "contacts",
+      "clipboard",
+      "telephony"
+    ]
+  },
+  "version": 1
+}

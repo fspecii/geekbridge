@@ -1,0 +1,9 @@
+{
+  "devices": {
+    "02454ee592cbe0ad3e3d3bfca0a7105e": {
+      "auto_accept": false,
+      "receive": true
+    }
+  },
+  "version": 1
+}

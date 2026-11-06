@@ -1,0 +1,13 @@
+{
+  "backoff_until": null,
+  "channel": "stable",
+  "checked_for": null,
+  "enabled": false,
+  "etag": null,
+  "last_attempt_unix": null,
+  "last_checked_unix": null,
+  "no_public_release": false,
+  "release": null,
+  "skipped_version": "9.9.9",
+  "version": 1
+}

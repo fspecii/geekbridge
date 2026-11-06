@@ -1,0 +1,14 @@
+{
+  "peers": [
+    {
+      "cert_der_base64": "MIIBqDCCAU6gAwIBAgIQVUpYRhg/kAyoM6FXhyVaQjAKBggqhkjOPQQDAjBVMSkwJwYDVQQDDCAwMjQ1NGVlNTkyY2JlMGFkM2UzZDNiZmNhMGE3MTA1ZTETMBEGA1UECwwKR2Vla0JyaWRnZTETMBEGA1UECgwKR2Vla0JyaWRnZTAgFw03MDAxMDIwMDAwMDBaGA8yMTAwMDEwMTAwMDAwMFowVTEpMCcGA1UEAwwgMDI0NTRlZTU5MmNiZTBhZDNlM2QzYmZjYTBhNzEwNWUxEzARBgNVBAsMCkdlZWtCcmlkZ2UxEzARBgNVBAoMCkdlZWtCcmlkZ2UwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASXoO0BwPkLvTqcIGClawmn+pKOj9gTpsb73TX+953Y7YhfY8MIvVeLUpIn+ZHxQziHwdly04ZSG3Znz69dTeIAMAoGCCqGSM49BAMCA0gAMEUCIQDwzkqLSsyZgfKOw6KR8uTUaNV0gCkGYPaOqvGlWi/nfAIgfSsv97oJpvHPDlL5uQvFuXY0lWP+Tgb8h3XjOH5D84E=",
+      "cert_sha256": "befddf1324cec12dc8c63e6d7d8e0df7b356b94c1ea58da0009917342da0c2be",
+      "device_id": "02454ee592cbe0ad3e3d3bfca0a7105e",
+      "device_type": "phone",
+      "name": "Upgrade Test Phone",
+      "paired_at_unix": 1793922809,
+      "protocol_version": 8
+    }
+  ],
+  "version": 1
+}
