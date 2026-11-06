@@ -365,6 +365,8 @@ fn test_config() -> TransportConfig {
         pairing: PairingConfig {
             request_timeout: Duration::from_secs(5),
             response_timeout: Duration::from_secs(5),
+            // These tests time out on purpose after a local approval; the peer-saves grace has its own unit test.
+            peer_save_grace: Duration::ZERO,
             ..PairingConfig::default()
         },
         ..TransportConfig::default()

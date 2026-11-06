@@ -59,6 +59,9 @@ pub struct PairingConfig {
     pub request_timeout: Duration,
     /// How long the local user has to answer a request made by the peer.
     pub response_timeout: Duration,
+    /// After we approved our own request, how long we keep waiting at least for the peer's accept while it
+    /// makes its trust record durable ([`PEER_SAVE_GRACE`] by default).
+    pub peer_save_grace: Duration,
     /// Accepted distance between a request timestamp and our clock.
     pub max_skew_secs: i64,
     /// Unexpected/duplicate packets tolerated while unpaired.
@@ -75,6 +78,7 @@ impl Default for PairingConfig {
         Self {
             request_timeout: Duration::from_secs(30),
             response_timeout: Duration::from_secs(25),
+            peer_save_grace: PEER_SAVE_GRACE,
             max_skew_secs: 1800,
             max_unexpected: 8,
             clock: unix_now,
@@ -482,7 +486,7 @@ impl Machine {
             } => {
                 *local_approved = true;
                 if !*peer_accepted {
-                    *deadline = (*deadline).max(now.mono + PEER_SAVE_GRACE);
+                    *deadline = (*deadline).max(now.mono + self.cfg.peer_save_grace);
                 }
                 if *peer_accepted {
                     self.state = State::Finished;
@@ -876,7 +880,8 @@ mod tests {
         // trust record on a busy disk and only accepts at 75 s.
         let approved = at(t0 + Duration::from_secs(20), 5020);
         assert!(m.on_local_decision(generation, true, approved).is_empty());
-        assert_eq!(m.deadline(), Some(approved.mono + PEER_SAVE_GRACE));
+        assert_eq!(m.deadline(), Some(approved.mono + cfg().peer_save_grace));
+        assert_eq!(cfg().peer_save_grace, PEER_SAVE_GRACE);
         let late = at(t0 + Duration::from_secs(75), 5075);
         assert_eq!(m.on_pair(accept(), late), vec![Action::Complete]);
     }
