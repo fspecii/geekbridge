@@ -1187,6 +1187,7 @@ mod tests {
         // Endless header bytes with no terminator: refused at the cap, not buffered forever.
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap();
+        let (stop, hold) = mpsc::channel::<()>();
         let h = std::thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
             // Read the CONNECT request first: closing with it unread makes Windows reset the connection and
@@ -1198,9 +1199,13 @@ mod tests {
                 head.push(b[0]);
             }
             let _ = s.write_all(&vec![b'a'; 100_000]);
+            // Keep the connection open until the client has judged the reply: Windows resets a connection that
+            // is closed with bytes still unread on the other side and the client would see the reset, not the cap.
+            let _ = hold.recv_timeout(Duration::from_secs(10));
         });
         let sock = TcpStream::connect(addr).unwrap();
         let err = proxy_tunnel(sock, "h", 443, far()).unwrap_err();
+        let _ = stop.send(());
         assert!(err.to_string().contains("too long"), "{err}");
         let _ = h.join();
 
