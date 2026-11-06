@@ -124,7 +124,16 @@ not in the release dex).
   threads refreshed -> 31.8 MB after closing the app and a GC; back to 27.3 MB after the history refresh burst and a GC. High-water mark unchanged (137 MB
   VmHWM, shared mappings). The 2 000 rows are not held in memory afterwards. The desktop's per-thread history paging
   (`messages-refresh DEVICE THREAD`) still showed one message per thread after 10 s in this run, so the full 2 000 never crossed the link here; that path is not
-  measured.
+  measured on a device.
+  **Code review of that result (no bug found in the code):** by design the phone lists only the newest message of each thread, and the desktop asks for older
+  messages of one thread only when that conversation is opened (`refresh_messages(Some(thread))`, called from the Messages window or `messages-refresh`);
+  there is no background fill of every thread, so one message per thread is the expected state until threads are asked for. The request/response path was
+  read end to end: `PhoneData::refresh_messages` sends `request_conversation` with the oldest held date and 50 per page, `PhoneDataEngine.smsConversation`
+  answers with `date <=` that start, newest first (so the first page is the other 19 plus the one held), and `on_messages` merges and de-duplicates.
+  `crates/bridge-service/tests/history_every_thread.rs` plays a phone with 100 threads x 20 texts through that path: the list alone gives 100 messages and
+  asks for nothing, then a refresh per thread brings the count to 2 000. So what the run showed is either lazy behaviour or a seeding/driver artefact
+  (a refresh that was never sent or answered for most threads; only 10 were refreshed here). Not reproduced on the emulator; if a refreshed thread on a
+  real provider still stays at one message, check `adb logcat` for the `request_conversation` and the provider rows (type 1..6, `thread_id`, `date`).
 * **Threads by name (idle, closed, paired):** 7 binder, 3 `geekbridge-call*`, 2 `geekbridge-data*`, 2 `gb-transport`, 1 each of `geekbridge-sms-status`, `geekbridge-link`,
   `geekbridge-transport`, plus ART and UI-toolkit threads. The one that was not needed at idle was the `geekbridge-sms-status` `HandlerThread`: `AndroidSmsSender`
   is built whenever the link starts, but only a send uses the thread. It is now created lazily (`IdleThreadsTest`). The rest are single-thread executors that start on
