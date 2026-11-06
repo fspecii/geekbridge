@@ -93,3 +93,45 @@ fn asking_for_each_thread_brings_all_of_its_history() {
     }
     assert_eq!(held(&h), (THREADS * EACH) as usize, "all 2,000 crossed");
 }
+
+/// A burst of refreshes (100 `messages-refresh THREAD` back to back): the phone keeps 64 undelivered requests and
+/// drops the oldest beyond that, so no more than a few may be out at once; the rest go out as answers come in.
+#[test]
+fn a_burst_of_refreshes_never_has_more_than_a_few_requests_out() {
+    let h = PhoneData::new();
+    let (mut rx, _) = h.link_up(ID, "Pixel", caps(), (false, false, true));
+    drain(&mut rx);
+    let newest: Vec<Value> = (1..=THREADS).map(|t| msg(t, EACH - 1)).collect();
+    h.on_packet(
+        ID,
+        sms::MESSAGES,
+        &obj(json!({"version": 2, "messages": newest})),
+    );
+    for t in 1..=THREADS {
+        h.refresh_messages(ID, Some(t)).unwrap();
+    }
+    let mut out = drain(&mut rx);
+    assert!(
+        !out.is_empty() && out.len() <= 32,
+        "{} out at once",
+        out.len()
+    );
+    let mut rounds = 0;
+    while !out.is_empty() {
+        rounds += 1;
+        assert!(rounds < 200, "does not finish");
+        for o in out {
+            h.on_packet(ID, sms::MESSAGES, &answer(&o.body));
+        }
+        out = drain(&mut rx);
+        assert!(out.len() <= 32, "{} out at once", out.len());
+    }
+    let held: usize = h
+        .messages_view(None, None, None)
+        .unwrap()
+        .conversations
+        .iter()
+        .map(|c| c.message_count)
+        .sum();
+    assert_eq!(held, (THREADS * EACH) as usize, "all 2,000 crossed");
+}

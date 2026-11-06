@@ -125,15 +125,19 @@ not in the release dex).
   VmHWM, shared mappings). The 2 000 rows are not held in memory afterwards. The desktop's per-thread history paging
   (`messages-refresh DEVICE THREAD`) still showed one message per thread after 10 s in this run, so the full 2 000 never crossed the link here; that path is not
   measured on a device.
-  **Code review of that result (no bug found in the code):** by design the phone lists only the newest message of each thread, and the desktop asks for older
-  messages of one thread only when that conversation is opened (`refresh_messages(Some(thread))`, called from the Messages window or `messages-refresh`);
-  there is no background fill of every thread, so one message per thread is the expected state until threads are asked for. The request/response path was
-  read end to end: `PhoneData::refresh_messages` sends `request_conversation` with the oldest held date and 50 per page, `PhoneDataEngine.smsConversation`
-  answers with `date <=` that start, newest first (so the first page is the other 19 plus the one held), and `on_messages` merges and de-duplicates.
-  `crates/bridge-service/tests/history_every_thread.rs` plays a phone with 100 threads x 20 texts through that path: the list alone gives 100 messages and
-  asks for nothing, then a refresh per thread brings the count to 2 000. So what the run showed is either lazy behaviour or a seeding/driver artefact
-  (a refresh that was never sent or answered for most threads; only 10 were refreshed here). Not reproduced on the emulator; if a refreshed thread on a
-  real provider still stays at one message, check `adb logcat` for the `request_conversation` and the provider rows (type 1..6, `thread_id`, `date`).
+  **Reproduced and fixed (private API 36 emulator, 100 threads x 20 texts = 2 000 rows written through the SMS provider with explicit
+  `thread_id`, `date`, `address`, `body`, type 1 and 2):** the earlier "one message per thread" was a real bug, two of them.
+  (1) The phone read the provider with `QUERY_ARG_SORT_COLUMNS = [date, _id]` plus one `SORT_DIRECTION_DESCENDING`; the framework turns that
+  into `ORDER BY date, _id DESC`, so the date came oldest first. The list carried the OLDEST text of each thread (`t100_m1` instead of
+  `t100_m20`), the desktop then asked for `date <= oldest` and got the same one row back. Fixed with an explicit
+  `date DESC, _id DESC` SQL sort (`newestFirstSql`, `SmsSortTest`); it only hid on small test phones. (2) With the sort fixed, 100
+  `messages-refresh THREAD` calls issued back to back (0.2 s) landed 17 threads short (1 677 of 2 000, stuck): the phone core keeps 64
+  undelivered requests and drops the oldest beyond that. The desktop now keeps at most 16 history requests out per phone and sends the
+  rest as answers arrive (`PhoneData::pump_older`; `a_burst_of_refreshes_never_has_more_than_a_few_requests_out`); asking for a thread
+  again while its answer is out re-sends at once. The send queue never reported "link is busy" in this run (0 of 100 refreshes).
+  After the fix, three runs: all 2 000 texts held on the desktop in about 10 s from the first refresh (8 packets/s sustained by the phone's
+  own packet limit), every thread at 20, phone PSS 55 MB before -> 65-67 MB after the burst (about 61-64 MB a minute later), desktop service RSS
+  3-8 MB throughout (VmHWM 8.5 MB), no FATAL EXCEPTION or ANR in logcat.
 * **Threads by name (idle, closed, paired):** 7 binder, 3 `geekbridge-call*`, 2 `geekbridge-data*`, 2 `gb-transport`, 1 each of `geekbridge-sms-status`, `geekbridge-link`,
   `geekbridge-transport`, plus ART and UI-toolkit threads. The one that was not needed at idle was the `geekbridge-sms-status` `HandlerThread`: `AndroidSmsSender`
   is built whenever the link starts, but only a send uses the thread. It is now created lazily (`IdleThreadsTest`). The rest are single-thread executors that start on

@@ -133,6 +133,12 @@ const VCARD_RETRY_MS: u64 = 15_000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
 /// A first contacts / calendar request nobody answered is asked again when the window is read after this long.
 const ASK_RETRY_MS: u64 = 30_000;
+/// History requests (one per conversation) outstanding at once. The phone keeps only 64 undelivered requests and drops
+/// the oldest beyond that, so a burst of 100 asked for 100 answers and silently lost 17 of them (measured on an
+/// emulator); the rest wait here and go out as answers arrive.
+const OLDER_IN_FLIGHT: usize = 16;
+/// A history request nobody answered for this long no longer holds a slot (the user can ask again).
+const OLDER_STALE_MS: u64 = 15_000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
 const SENDS_PER_MINUTE: usize = 10;
 /// SMS parts per minute (a long or emoji text is several, each billed by the carrier).
@@ -284,6 +290,10 @@ struct Dev {
     send_times: VecDeque<(u64, usize)>,
     /// When each sender last caused a desktop notification (bounded), so one chatty sender cannot hide another.
     notified_at: HashMap<String, u64>,
+    /// Conversations whose older-history request is out, and when it left.
+    older_inflight: HashMap<ThreadId, u64>,
+    /// Conversations asked for while [`OLDER_IN_FLIGHT`] requests were out, oldest ask first.
+    older_waiting: VecDeque<ThreadId>,
 }
 
 const CONTACTS: usize = 0;
@@ -343,6 +353,35 @@ impl Dev {
             send_reasons: HashMap::new(),
             send_times: VecDeque::new(),
             notified_at: HashMap::new(),
+            older_inflight: HashMap::new(),
+            older_waiting: VecDeque::new(),
+        }
+    }
+
+    /// Sends the waiting history requests while fewer than [`OLDER_IN_FLIGHT`] are out; requests nobody answered
+    /// stop holding a slot. Each request starts from the oldest message held at the moment it is sent.
+    fn pump_older(&mut self, now: u64) {
+        self.older_inflight
+            .retain(|_, at| now.saturating_sub(*at) <= OLDER_STALE_MS);
+        while self.older_inflight.len() < OLDER_IN_FLIGHT {
+            let Some(tid) = self.older_waiting.pop_front() else {
+                break;
+            };
+            let Some(th) = self.threads.get_mut(&tid) else {
+                continue;
+            };
+            if th.exhausted {
+                continue;
+            }
+            let start = th.conv.oldest_date_ms();
+            th.asked_older = true;
+            let body = sms::request_conversation_body(tid, start, sms::PAGE_SIZE);
+            if self.send(sms::REQUEST_CONVERSATION, body) {
+                self.older_inflight.insert(tid, now);
+            } else {
+                self.older_waiting.push_front(tid);
+                break;
+            }
         }
     }
 
@@ -732,6 +771,14 @@ impl Dev {
         }
         self.correlate(&fresh, now);
         self.sms_listed = true;
+        // A page answered its conversation (or ended it): free the slot and send the next waiting request.
+        if packet_threads.is_empty() {
+            self.older_inflight.clear();
+        } else {
+            self.older_inflight
+                .retain(|t, _| !packet_threads.contains(t));
+        }
+        self.pump_older(now);
         let notify = self.pick_notifications(notify, now);
         (Disposition::Accepted, notify)
     }
@@ -1222,12 +1269,16 @@ impl PhoneData {
                 if th.exhausted {
                     return Ok(());
                 }
-                let start = th.conv.oldest_date_ms();
-                th.asked_older = true;
-                let body = sms::request_conversation_body(tid, start, sms::PAGE_SIZE);
-                if !d.send(sms::REQUEST_CONVERSATION, body) {
+                if d.older_waiting.len() >= MAX_THREADS {
                     return Err(err(ErrorCode::Busy, "the link is busy, try again"));
                 }
+                if d.older_inflight.remove(&tid).is_some() {
+                    // Asked again while the answer is out: ask again at once (a lost answer is re-asked this way).
+                    d.older_waiting.push_front(tid);
+                } else if !d.older_waiting.contains(&tid) {
+                    d.older_waiting.push_back(tid);
+                }
+                d.pump_older(now);
             }
         }
         Ok(())
@@ -1587,6 +1638,7 @@ impl PhoneData {
         for d in g.devices.values_mut() {
             d.retry_stalled_vcards(now);
             d.retry_unanswered_asks(now);
+            d.pump_older(now);
             if d.connected() {
                 if now.saturating_sub(d.contacts_asked_ms) > REFRESH_AFTER_MS {
                     d.ask_contacts(now);

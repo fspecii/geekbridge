@@ -457,8 +457,9 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         val q = Bundle().apply {
             if (selection != null) putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
             if (args != null) putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(Telephony.Sms.DATE, Telephony.Sms._ID))
-            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+            // Not QUERY_ARG_SORT_COLUMNS + SORT_DIRECTION: the framework turns two columns into "date, _id DESC", i.e. the
+            // direction only reaches the last column and the date comes oldest first.
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, newestFirstSql(Telephony.Sms.DATE, Telephony.Sms._ID))
             putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
         }
         val signal = CancellationSignal()
@@ -521,8 +522,9 @@ class AndroidSmsPort(context: Context, private val cancel: QueryCancel = QueryCa
         val q = Bundle().apply {
             if (selection != null) putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
             if (args != null) putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
-            putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf(Telephony.Mms.DATE, Telephony.Mms._ID))
-            putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+            // Not QUERY_ARG_SORT_COLUMNS + SORT_DIRECTION: the framework turns two columns into "date, _id DESC", i.e. the
+            // direction only reaches the last column and the date comes oldest first.
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, newestFirstSql(Telephony.Mms.DATE, Telephony.Mms._ID))
             putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
         }
         val signal = CancellationSignal()
@@ -1238,3 +1240,10 @@ object PhoneDataRuntime {
     /** Calendars for the picker (needs READ_CALENDAR). Off the main thread. */
     fun calendars(): List<CalendarInfo> = app?.let { AndroidCalendarPort(it).calendars() }.orEmpty()
 }
+
+/**
+ * The SQL sort for "newest first" on (date, id). `QUERY_ARG_SORT_COLUMNS` with one `SORT_DIRECTION` is not equivalent: the
+ * framework writes it as "date, _id DESC", so the date came oldest first and a phone with more rows than one scan page
+ * listed the OLDEST text of each thread (and answered a thread's history with just that one).
+ */
+internal fun newestFirstSql(dateColumn: String, idColumn: String): String = "$dateColumn DESC, $idColumn DESC"
