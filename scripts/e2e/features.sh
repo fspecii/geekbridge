@@ -184,9 +184,30 @@ phone_declared_battery() { # true|false, the last link start the phone logged
 }
 # What the phone holds and what the computer sees, for a failed battery step (the log has the phone side).
 batt_diag() {
-  { echo "== battery diag $(date +%T): desktop sees $(batt)"
+  { echo "== battery diag $(date +%T): desktop sees $(batt); battery consent on the computer: $(batt_consent)"
     $ADB shell "run-as $PKG sh -c 'cat shared_prefs/geekbridge_phonedata.xml shared_prefs/geekbridge_grants.xml'" 2>&1 | tr -d '\r' | head -30
+    echo "-- the phone's own battery lines (a request that reached the app and what the core did with the reply):"
+    $ADB logcat -d -s GB:I 2>/dev/null | tr -d '\r' | grep -E ' battery: |declared at link start' | tail -12
     ctl status 2>&1 | head -c 1500; echo; } >>"$LOGS/e2e-features-notes.txt"
+}
+batt_consent() { # true|false: the computer-side consent the status shows for this phone
+  ctl status | jget "[c['enabled'] for p in d['paired'] if p['device_id'] == '$PHONE_ID' for c in p['consents'] if c['feature'] == 'battery']"
+}
+# Consent changes of the computer. The control API drops an exchange that takes over 8 s ("service closed the connection"),
+# and the steps below only look at the reading, so a consent that did not change read as a phone that stays silent. A
+# refusal or timeout is written to the notes, and the change is asked again until the status shows it.
+consent() { # feature on|off
+  local out try want=false; [[ "$2" == on ]] && want=true
+  for try in 1 2 3; do
+    out="$(ctl consent "$PHONE_ID" "$1" "$2" 2>&1)" && return 0
+    echo "consent $1 $2 failed (try $try) at $(date +%T): ${out:0:200}" >>"$LOGS/e2e-features-notes.txt"
+    sleep 3
+    [[ "$(feature_consent "$1")" == "$want" ]] && return 0
+  done
+  return 1
+}
+feature_consent() { # feature -> True|False|empty, as the status shows it for this phone
+  ctl status | jget "[c['enabled'] for p in d['paired'] if p['device_id'] == '$PHONE_ID' for c in p['consents'] if c['feature'] == '$1']" | tr -d "[]" | tr 'TF' 'tf'
 }
 
 # What the computer's link and the phone's own log say, for a step that got no data although the link looks up (runs
@@ -203,8 +224,8 @@ link_diag() { # why
 phone_again() { # feature the step is about (consent name)
   link_diag "no data from the phone, starting it afresh with: ${LAST_CFG[*]}"
   PHONE_CONFIG_RETRY=0 phone_config "${LAST_CFG[@]}" || true
-  ctl consent "$PHONE_ID" "$1" off >/dev/null; sleep 1
-  ctl consent "$PHONE_ID" "$1" on >/dev/null
+  consent "$1" off; sleep 1
+  consent "$1" on
 }
 
 stage_pair() {
@@ -263,21 +284,21 @@ stage_battery() {
   link_up 120 || { rec feat_battery FAIL "no link to the phone"; return 1; }
   $ADB shell dumpsys battery unplug >/dev/null; $ADB shell dumpsys battery set level 42 >/dev/null
   # 1. Desktop consent on, but the phone shares nothing with this computer (master switch off, no grant).
-  ctl consent "$PHONE_ID" battery on >/dev/null
+  consent battery on
   if stay_none 15; then rec feat_battery_default_off PASS "computer consent on, phone grants nothing: no reading after 15 s"
   else rec feat_battery_default_off FAIL "a reading appeared without the phone allowing it: $(batt)"; batt_diag; fi
   # 2. The phone's master switch on but no per-computer allow: still nothing.
   phone_config "calls" true false false
-  ctl consent "$PHONE_ID" battery on >/dev/null
+  consent battery on
   if stay_none 15; then rec feat_battery_needs_allow PASS "phone switch on but this computer not allowed: no reading after 15 s"
   else rec feat_battery_needs_allow FAIL "a reading appeared without the per-computer allow: $(batt)"; batt_diag; fi
   # 3. Allowed on the phone, computer consent off: nothing is shown on the computer.
-  ctl consent "$PHONE_ID" battery off >/dev/null
+  consent battery off
   phone_config "calls battery" true false false
   if stay_none 10; then rec feat_battery_needs_consent PASS "phone allows, computer consent off: nothing shown"
   else rec feat_battery_needs_consent FAIL "reading shown with the computer's consent off: $(batt)"; batt_diag; fi
   # 4. Both on: level and charging state arrive.
-  ctl consent "$PHONE_ID" battery on >/dev/null
+  consent battery on
   if wait_batt 40 batt_is 42 False; then rec feat_battery_level PASS "both ends allow: desktop status shows 42% not charging (emulator level 42, unplugged)"
   elif batt_diag; phone_again battery; wait_batt 40 batt_is 42 False; then
     rec feat_battery_level PASS "both ends allow: desktop status shows 42% not charging (emulator level 42, unplugged); only after the phone app was started afresh once (notes: e2e-features-notes.txt)"
@@ -295,19 +316,19 @@ stage_battery() {
   if wait_batt 90 batt_is 77 False; then rec feat_battery_follows PASS "level 77: desktop follows the emulator battery (rate-limited sends allow up to 60 s)"
   else rec feat_battery_follows FAIL "desktop still shows $(batt) after level 77"; batt_diag; fi
   # 8. Withdrawing the computer's consent erases the reading now.
-  ctl consent "$PHONE_ID" battery off >/dev/null
+  consent battery off
   if wait_batt 10 batt_none; then rec feat_battery_withdraw_desktop PASS "consent off on the computer: reading erased"
   else rec feat_battery_withdraw_desktop FAIL "reading still shown: $(batt)"; batt_diag; fi
   # ... and back on: the phone answers the request again.
-  ctl consent "$PHONE_ID" battery on >/dev/null
+  consent battery on
   if wait_batt 30 batt_is 77 False; then rec feat_battery_reallow PASS "consent on again: the reading is back"
   else rec feat_battery_reallow FAIL "no reading after re-allowing: $(batt)"; batt_diag; fi
   # 9. Withdrawing on the phone: drop the grant, the link comes back without it, the reading is gone and stays gone.
   phone_config "calls" true false false
-  ctl consent "$PHONE_ID" battery on >/dev/null
+  consent battery on
   if stay_none 20; then rec feat_battery_withdraw_phone PASS "grant removed on the phone: reading erased after reconnect and not re-sent in 20 s"
   else rec feat_battery_withdraw_phone FAIL "reading still shown after the phone withdrew the grant: $(batt)"; batt_diag; fi
-  ctl consent "$PHONE_ID" battery off >/dev/null
+  consent battery off
   $ADB shell dumpsys battery reset >/dev/null
 }
 

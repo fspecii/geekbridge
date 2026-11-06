@@ -40,6 +40,8 @@ class BatteryReporter(
     /** Runs [action] once after [delayMs] on some other thread. */
     private val later: (delayMs: Long, action: () -> Unit) -> Unit,
     private val gapMs: Long = 60_000,
+    /** One short line per send or refusal (no level, no names): a reading that never arrives is told apart from one that was never sent. */
+    private val note: (String) -> Unit = {},
 ) {
     private var last: BatteryReading? = null
     private var lastAt = Long.MIN_VALUE / 2
@@ -73,13 +75,21 @@ class BatteryReporter(
     /** A computer asked for the state (or was just allowed): answer it now, whatever was sent before. */
     @Synchronized
     fun sendNow(connectionId: Long? = null) {
-        if (!enabled()) return
-        val r = read() ?: return
+        if (!enabled()) { note("asked for the battery, not sent: sharing is off or the link is not running"); return }
+        val r = read() ?: run { note("asked for the battery, not sent: the system gave no level"); return }
         push(r, connectionId)
     }
 
     private fun push(r: BatteryReading, connectionId: Long?) {
         val o = core(PhoneDataProtocol.sendRequest(BatteryRules.KIND, r.body(), connectionId))
+        note(
+            "${if (connectionId == null) "sent to all allowed computers" else "reply on connection $connectionId"}: " +
+                when (o) {
+                    is CoreOutcome.Ok -> "queued"
+                    is CoreOutcome.Rejected -> "refused (${o.code})"
+                    else -> "core unavailable"
+                },
+        )
         if (o is CoreOutcome.Ok) {
             // A reply to one computer says nothing about the others: only a broadcast updates the memory.
             if (connectionId == null) {

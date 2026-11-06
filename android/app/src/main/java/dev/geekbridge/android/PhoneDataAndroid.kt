@@ -826,7 +826,7 @@ object PhoneDataRuntime {
     private var smsPort: AndroidSmsPort? = null
     private var waiter: Thread? = null
     private var observer: ContentObserver? = null
-    private var linkRunning = false
+    @Volatile private var linkRunning = false // written on the main thread, read by the data threads
     private var retryScheduled = false
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "geekbridge-data-send").apply { isDaemon = true } }
 
@@ -862,6 +862,7 @@ object PhoneDataRuntime {
             core = { core.dataAction(it) },
             enabled = { active().battery && linkRunning },
             later = { ms, action -> main.postDelayed({ worker.execute(action) }, ms) },
+            note = { GbLog.i("battery", it) },
         )
         battery = reporter
         val cancel = QueryCancel()

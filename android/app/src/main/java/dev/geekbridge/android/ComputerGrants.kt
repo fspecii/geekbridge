@@ -105,6 +105,19 @@ object GrantText {
     }
 }
 
+/**
+ * What follows a change of the grants, in this order: the core gets the new permits, then a computer that was just
+ * allowed the battery is sent the current state. The send goes through the core's permit check, so one made before the
+ * core knew the new permit is refused as "not connected" and the computer, which already asked or has its consent on,
+ * waits for a change that an idle phone never has.
+ */
+object GrantsPublish {
+    fun run(g: ComputerGrants, batteryChanged: Boolean, applyPermits: (String) -> Unit, pushBattery: () -> Unit) {
+        applyPermits(g.permitsRequest())
+        if (batteryChanged) pushBattery()
+    }
+}
+
 /** The grants the native start/permits requests are built from. Closed (nobody) until the runtime loads them. */
 object GrantsHolder {
     @Volatile var current: ComputerGrants = ComputerGrants()
@@ -137,9 +150,10 @@ object ComputerGrantsRuntime {
         val before = GrantsHolder.current.devicesFor(GrantFeature.Battery)
         GrantsHolder.current = g
         blob?.write(g.toJson())
-        worker.execute { core.transportAction(g.permitsRequest()) }
-        // A computer just allowed to see the battery gets the current state without waiting for the next change.
-        if (g.devicesFor(GrantFeature.Battery) != before) PhoneDataRuntime.onBatteryGrantsChanged()
+        val batteryChanged = g.devicesFor(GrantFeature.Battery) != before
+        worker.execute {
+            GrantsPublish.run(g, batteryChanged, { core.transportAction(it) }, { PhoneDataRuntime.onBatteryGrantsChanged() })
+        }
     }
 
     fun allow(device: String, f: GrantFeature, on: Boolean) = update { it.set(device, f, on) }
