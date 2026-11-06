@@ -516,18 +516,7 @@ impl CallAudioService {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(tmp, path)
+    bridge_calls::private_file::replace(path, bytes)
 }
 
 #[cfg(test)]

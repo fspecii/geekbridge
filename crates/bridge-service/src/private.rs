@@ -305,6 +305,8 @@ impl PrivateState {
     pub fn open(dir: &Path) -> Result<Self, (Unavailable, KdeError)> {
         let fail = |e: KdeError| (Unavailable::from_kde(&e), e);
         fsutil::ensure_private_dir(dir).map_err(fail)?;
+        // Temporary files of writers that were killed mid-save.
+        fsutil::sweep_dead_temps(dir);
         let (credentials, _created) = DeviceCredentials::load_or_create(dir).map_err(fail)?;
         let store = FileTrustStore::open(dir).map_err(fail)?;
         let consents = ConsentStore::open(dir).map_err(fail)?;

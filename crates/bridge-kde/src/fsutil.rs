@@ -58,6 +58,64 @@ mod imp {
 
 pub use imp::{FileLock, atomic_write_private, ensure_private_dir, read_private_file};
 
+/// Whether no process with this id exists any more. Only Unix can say (`kill(pid, 0)`); elsewhere the answer is
+/// always "not sure", so nothing is removed on that basis.
+pub fn process_is_gone(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 || pid as u32 == std::process::id() {
+            return false;
+        }
+        // SAFETY: signal 0 only checks that the process exists; nothing is delivered.
+        let r = unsafe { libc::kill(pid, 0) };
+        r == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// The writer's process id in a temporary file name of this crate or of [`bridge_core::statefile`]:
+/// `.<name>.tmp.<pid>` or `.<name>.tmp.<pid>.<random>`.
+fn temp_owner(file_name: &str) -> Option<u32> {
+    let rest = file_name.strip_prefix('.')?;
+    let (_, after) = rest.rsplit_once(".tmp.")?;
+    let pid = after.split('.').next()?;
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Remove the temporary files that writers killed between "create temp file" and "rename" left in `dir`
+/// (a crash, `kill -9`, power loss). Called when the service opens its state folder. A file goes only when
+/// the process named in its name no longer exists, so a concurrent writer (the control tool, a second
+/// instance) never loses its file. Returns how many were removed.
+pub fn sweep_dead_temps(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) = temp_owner(&name) else {
+            continue;
+        };
+        if e.file_type().is_ok_and(|t| t.is_file())
+            && process_is_gone(pid)
+            && std::fs::remove_file(e.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Take an exclusive, cross-process lock on the private lock file `path`
 /// (created if absent; its directory must satisfy [`ensure_private_dir`]),
 /// waiting up to [`LOCK_TIMEOUT`]. The lock is released when the guard drops
@@ -169,6 +227,44 @@ mod tests {
             read_private_file(&link),
             Err(KdeError::InsecurePermissions { .. })
         ));
+    }
+
+    /// A process id that certainly belongs to nobody: a child that has exited and been reaped.
+    fn dead_pid() -> u32 {
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let pid = c.id();
+        c.wait().unwrap();
+        pid
+    }
+
+    #[test]
+    fn temp_files_of_dead_writers_are_swept_and_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let dead = dead_pid();
+        let me = std::process::id();
+        let gone = [
+            format!(".trusted_peers.json.tmp.{dead}.12345"),
+            format!(".update-state.json.tmp.{dead}"),
+        ];
+        let kept = [
+            format!(".trusted_peers.json.tmp.{me}.1"), // this process: a live writer
+            ".trusted_peers.json.tmp.notapid".to_string(), // not ours
+            "trusted_peers.json".to_string(),
+            format!("trusted_peers.json.tmp.{dead}"), // no leading dot
+            ".identity.pem.lock".to_string(),
+        ];
+        for n in gone.iter().chain(kept.iter()) {
+            fs::write(dir.join(n), b"x").unwrap();
+        }
+        assert_eq!(sweep_dead_temps(dir), gone.len());
+        for n in &gone {
+            assert!(!dir.join(n).exists(), "{n} should be gone");
+        }
+        for n in &kept {
+            assert!(dir.join(n).exists(), "{n} must stay");
+        }
+        assert_eq!(sweep_dead_temps(dir), 0);
     }
 
     #[test]

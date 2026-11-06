@@ -25,7 +25,7 @@ pub mod guard;
 pub mod hear;
 pub mod hfp_audio;
 pub mod model;
-mod private_file;
+pub mod private_file;
 pub mod probe;
 pub mod readiness;
 mod session;

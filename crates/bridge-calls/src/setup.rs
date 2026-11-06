@@ -130,13 +130,10 @@ pub fn load_remembered(dir: &std::path::Path) -> Option<Remembered> {
 }
 
 pub fn save_remembered(dir: &std::path::Path, r: &Remembered) -> std::io::Result<()> {
-    let path = dir.join(REMEMBERED_FILE);
-    let tmp = path.with_extension("json.tmp");
-    crate::private_file::write(
-        &tmp,
+    crate::private_file::replace(
+        &dir.join(REMEMBERED_FILE),
         &serde_json::to_vec_pretty(r).map_err(std::io::Error::other)?,
-    )?;
-    std::fs::rename(tmp, path)
+    )
 }
 
 fn get_str(i: &HashMap<String, OwnedValue>, k: &str) -> Option<String> {

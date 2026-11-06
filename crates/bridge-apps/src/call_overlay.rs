@@ -138,10 +138,17 @@ pub struct Card {
     picking: bool,
     /// When a successful poll first reported no call while one was going on.
     no_live_since: Option<Instant>,
+    /// Since when the service has not answered (a card for a call in progress only).
+    unreachable_since: Option<Instant>,
 }
 
 /// A call going on ends only after successful polls have reported none for this long (two polls).
 const LIVE_END_GRACE: Duration = Duration::from_millis(1800);
+
+/// A card for a call in progress waits this long for a service that does not answer (a restart, an update) before it
+/// closes. Without a limit, a service that was killed or crashed for good would leave the call timer on the screen
+/// forever, for a call that is long over.
+const SERVICE_GONE_GRACE: Duration = Duration::from_secs(180);
 
 /// Title (name, else number, else "Unknown caller") and, when allowed and different, the number.
 pub fn caller_lines(row: &CallRow, reveal: Reveal) -> (String, Option<String>) {
@@ -170,6 +177,7 @@ impl Card {
             live_secs: 0,
             picking: false,
             no_live_since: None,
+            unreachable_since: None,
         }
     }
 
@@ -351,6 +359,7 @@ impl Card {
                 self.outcome = None;
                 self.pending = None;
                 self.no_live_since = None;
+                self.unreachable_since = None;
                 self.seen_ringing = true;
                 self.idle_since = now;
                 self.key = Some(row.key.clone());
@@ -367,9 +376,16 @@ impl Card {
                     let unsure = match view {
                         None => {
                             self.no_live_since = None;
+                            let gone = *self.unreachable_since.get_or_insert(now);
+                            if self.outcome.is_none()
+                                && now.saturating_duration_since(gone) >= SERVICE_GONE_GRACE
+                            {
+                                return Verdict::Close;
+                            }
                             true
                         }
                         Some(_) => {
+                            self.unreachable_since = None;
                             let t = *self.no_live_since.get_or_insert(now);
                             now.saturating_duration_since(t) < LIVE_END_GRACE
                         }
@@ -1639,6 +1655,30 @@ mod tests {
             panic!("an in-call card")
         };
         assert_eq!(header, "IN CALL 02:13");
+    }
+
+    #[test]
+    fn a_card_for_a_call_in_progress_closes_when_the_service_stays_gone_for_good() {
+        let t = Instant::now();
+        let mut c = Card::new(Reveal::Full, t);
+        let live = state_of(PhoneState::OffHook, true, Some("Ada"), None);
+        c.update(&live, t);
+        let down = FeedState {
+            status: None,
+            problem: Some("unreachable".into()),
+        };
+        assert_eq!(c.update(&down, t + Duration::from_secs(10)), Verdict::Keep);
+        assert_eq!(c.update(&down, t + Duration::from_secs(150)), Verdict::Keep);
+        assert_eq!(
+            c.update(&down, t + Duration::from_secs(191)),
+            Verdict::Close
+        );
+        // A short outage earlier does not count against a later one.
+        let mut c = Card::new(Reveal::Full, t);
+        c.update(&live, t);
+        c.update(&down, t + Duration::from_secs(10));
+        c.update(&live, t + Duration::from_secs(100));
+        assert_eq!(c.update(&down, t + Duration::from_secs(250)), Verdict::Keep);
     }
 
     #[test]

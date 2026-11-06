@@ -1312,6 +1312,7 @@ fn doctor_command(port: u16, state_dir: &std::path::Path) -> Result<(), String> 
             )
             .any(|d| d.join("geekbridge-service.service").exists()),
     });
+    checks.extend(doctor::state_folder_check(state_dir));
     let (ok, line) = bridge_service::call_overlay::doctor_line(state_dir);
     checks.push(doctor::Check {
         level: if ok {

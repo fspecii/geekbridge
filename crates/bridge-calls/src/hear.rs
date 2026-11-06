@@ -542,7 +542,12 @@ pub fn write_wp_dropin(config_home: &Path, cfg: &WpConfig) -> std::io::Result<Op
     let tmp = path.with_extension("conf.tmp");
     // A planted link at the temporary name is replaced, never written through to whatever it points at.
     remove_if_present(&tmp)?;
-    std::fs::write(&tmp, &text)?;
+    {
+        // Flushed before the rename: a power cut must not leave an empty fragment under the real name.
+        let mut f = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut f, text.as_bytes())?;
+        f.sync_all()?;
+    }
     if let Some(Err(e)) = spa_json_dump(&tmp) {
         let _ = std::fs::remove_file(&tmp);
         return Err(std::io::Error::new(

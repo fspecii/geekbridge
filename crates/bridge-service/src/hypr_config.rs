@@ -466,7 +466,13 @@ pub fn apply(path: &Path, new: &str, stamp: &str) -> Result<PathBuf, String> {
     std::fs::copy(&real, &backup).map_err(|e| format!("cannot back up {}: {e}", real.display()))?;
     let tmp = real.with_file_name(format!(".{name}.geekbridge.tmp"));
     let result = (|| -> std::io::Result<()> {
-        std::fs::write(&tmp, new)?;
+        {
+            // Flushed before the rename: after a power cut the user's config is the old file or the new one,
+            // never an empty file under its real name.
+            let mut f = std::fs::File::create(&tmp)?;
+            std::io::Write::write_all(&mut f, new.as_ref())?;
+            f.sync_all()?;
+        }
         std::fs::set_permissions(&tmp, std::fs::metadata(&real)?.permissions())?;
         std::fs::rename(&tmp, &real)
     })();

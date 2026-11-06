@@ -1228,3 +1228,175 @@ fn a_fifo_is_not_an_archive() {
     let r = install(&sb.request(&(fifo, "0".repeat(64), 10), "v0.2.0", "0.1.0", &st));
     assert!(matches!(r, Err(Error::Archive(_))), "{r:?}");
 }
+
+// ---- the installer process killed at random moments --------------------------------------------------
+//
+// The test above stops the install between its steps. A real crash (kill -9, power loss, the OOM killer) can also
+// land in the middle of a step: while the archive is copied and hashed, while a file is written, between two
+// renames. Here the installer runs in a child process (this test binary again) that the parent kills with SIGKILL
+// at a random moment of an install, then the same checks as above.
+
+/// A release archive whose executables are scripts padded to `pad` bytes, so that the copy, the hash and the
+/// unpacking take long enough for a kill to land inside them.
+fn padded_tar(version: &str, pad: usize) -> Vec<u8> {
+    let mut t = entry(&format!("{TOP}/"), b'5', 0o755, &[], "");
+    for n in BINARIES {
+        let mut body = fake_bin(n, version);
+        body.extend(b"exit 0\n# ");
+        body.resize(body.len() + pad, b'x');
+        body.push(b'\n');
+        t.extend(entry(&format!("{TOP}/{n}"), b'0', 0o755, &body, ""));
+    }
+    t.extend(entry(
+        &format!("{TOP}/README.md"),
+        b'0',
+        0o644,
+        b"readme\n",
+        "",
+    ));
+    finish(t)
+}
+
+const KILL_ENV: &str = "GB_INSTALL_KILL_CHILD";
+
+/// The child half: runs one install as described by the environment and says when it starts and when it is done.
+#[test]
+fn kill_child() {
+    let Ok(spec) = std::env::var(KILL_ENV) else {
+        return; // an ordinary run of the test suite
+    };
+    let f: Vec<&str> = spec.split('|').collect();
+    let (prefix, archive, sha, size, tag, current, state) = (
+        PathBuf::from(f[0]),
+        PathBuf::from(f[1]),
+        f[2],
+        f[3].parse::<u64>().unwrap(),
+        f[4],
+        f[5],
+        PathBuf::from(f[6]),
+    );
+    println!("GO");
+    let r = install(&Request {
+        prefix: &prefix,
+        archive: &archive,
+        sha256: sha,
+        size,
+        tag,
+        current_version: current,
+        dry_run: false,
+        state_file: Some(&state),
+        strict_binaries: false,
+    });
+    println!("DONE {}", r.is_ok());
+}
+
+#[test]
+fn killing_the_installer_process_at_random_moments_never_breaks_the_install() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let rounds: usize = std::env::var("GB_CHAOS_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(12);
+    let me = std::env::current_exe().unwrap();
+    let test_name = format!("{}::kill_child", module_path!().split_once("::").unwrap().1);
+    // How long one install takes here, so the kill times cover all of it.
+    let took = {
+        let sb = Sandbox::new("0.1.0");
+        let a = sb.archive(&padded_tar("0.2.0", 1 << 20));
+        let st = sb.state();
+        let t = std::time::Instant::now();
+        install(&sb.request(&a, "v0.2.0", "0.1.0", &st)).unwrap();
+        t.elapsed()
+    };
+    let (mut landed_mid, mut killed) = (0, 0);
+    for round in 0..rounds {
+        // Odd rounds update a prefix that already went through a self-update (the versioned layout); even
+        // rounds interrupt the first one, which also converts install.sh's plain files.
+        let sb = Sandbox::new("0.1.0");
+        let (cur, new) = if round % 2 == 1 {
+            sb.install(&padded_tar("0.2.0", 1 << 10), "v0.2.0", "0.1.0")
+                .unwrap();
+            ("0.2.0", "0.3.0")
+        } else {
+            ("0.1.0", "0.2.0")
+        };
+        let tag = format!("v{new}");
+        let a = sb.archive(&padded_tar(new, 1 << 20));
+        let st = sb.state();
+        let spec = format!(
+            "{}|{}|{}|{}|{tag}|{cur}|{}",
+            sb.prefix.display(),
+            a.0.display(),
+            a.1,
+            a.2,
+            st.display()
+        );
+        let mut child = Command::new(&me)
+            .args(["--exact", &test_name, "--nocapture", "--test-threads=1"])
+            .env(KILL_ENV, spec)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut out = BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        while !line.contains("GO") {
+            line.clear();
+            assert!(out.read_line(&mut line).unwrap() > 0, "child did not start");
+        }
+        let mut b = [0u8; 4];
+        getrandom::fill(&mut b).unwrap();
+        let wait = took.mul_f64(1.3 * f64::from(u32::from_le_bytes(b)) / f64::from(u32::MAX));
+        std::thread::sleep(wait);
+        let _ = child.kill();
+        let mut rest = String::new();
+        let _ = out.read_line(&mut rest);
+        child.wait().unwrap();
+        let finished = rest.contains("DONE true");
+        killed += 1;
+        if !finished {
+            landed_mid += 1;
+        }
+        let label = format!("round {round} (killed after {wait:?}, finished: {finished})");
+        // Every executable resolves and runs, old version or new.
+        for n in BINARIES {
+            let o = std::process::Command::new(sb.prefix.join("bin").join(n))
+                .output()
+                .unwrap();
+            let text = String::from_utf8(o.stdout).unwrap();
+            assert!(
+                text.contains(cur) || text.contains(new),
+                "{label}: {n}: {text:?} {:?}",
+                sb.listing()
+            );
+        }
+        // The next start recovers: no debris, a consistent layout.
+        recover(&sb.prefix, Some(&st));
+        sb.no_debris();
+        let running = sb.running();
+        assert!(
+            running.ends_with(cur) || running.ends_with(new),
+            "{label}: {running}"
+        );
+        if let Some(c) = sb.link_name("current") {
+            assert!(
+                sb.prefix
+                    .join("lib/geekbridge/versions")
+                    .join(&c)
+                    .join("bin/geekbridge-service")
+                    .is_file(),
+                "{label}"
+            );
+            assert!(running.ends_with(&c), "{label}: {running} vs {c}");
+        }
+        // Running the update again finishes the job.
+        let again = sb
+            .install(&padded_tar(new, 1 << 10), &tag, cur)
+            .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert_eq!(again.version, new, "{label}");
+        assert_eq!(sb.running(), format!("geekbridge-service {new}"), "{label}");
+        sb.no_debris();
+    }
+    eprintln!("installer killed {killed} times, {landed_mid} before it finished");
+}

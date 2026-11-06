@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use crate::cert::{hex, random_bytes, unix_now};
+use crate::cert::{hex, random_bytes};
 use crate::error::Result;
 use crate::identity::DeviceId;
 
@@ -203,8 +203,49 @@ pub fn token_shape_ok(s: &str) -> bool {
     s.len() == TOKEN_HEX_LEN && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Milliseconds for [`TokenBook`] deadlines. It starts at the wall clock but never goes back when the wall
+/// clock is set back (NTP step, a hand-set date, a battery-less board waking with a wrong date): a one-time
+/// token must not live longer than its two minutes because of that. Time that passes counts when either the
+/// monotonic clock or the wall clock shows it, so a clock stepped forward, or a suspend that only the wall
+/// clock sees, expires tokens early (which only asks the user to scan again).
 pub fn now_ms() -> u64 {
-    unix_now().max(0) as u64 * 1000
+    static CLOCK: std::sync::Mutex<Option<GuardedClock>> = std::sync::Mutex::new(None);
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let mut guard = CLOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let next = GuardedClock::step(guard.as_ref(), wall, std::time::Instant::now());
+    let out = next.reported;
+    *guard = Some(next);
+    out
+}
+
+#[derive(Clone, Copy)]
+struct GuardedClock {
+    reported: u64,
+    wall: u64,
+    mono: std::time::Instant,
+}
+
+impl GuardedClock {
+    fn step(prev: Option<&Self>, wall: u64, mono: std::time::Instant) -> Self {
+        match prev {
+            None => Self {
+                reported: wall,
+                wall,
+                mono,
+            },
+            Some(p) => {
+                let by_mono = mono.saturating_duration_since(p.mono).as_millis() as u64;
+                let by_wall = wall.saturating_sub(p.wall);
+                Self {
+                    reported: p.reported.saturating_add(by_mono.max(by_wall)),
+                    wall,
+                    mono,
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -551,5 +592,44 @@ mod tests {
     fn newer_unknown_keys_are_ignored() {
         let text = format!("{}&z=future", payload().encode());
         assert_eq!(QrPayload::parse(&text), Ok(payload()));
+    }
+
+    #[test]
+    fn the_token_clock_ignores_a_wall_clock_set_back_and_counts_a_jump_forward() {
+        use std::time::{Duration as D, Instant};
+        let t0 = Instant::now();
+        let a = GuardedClock::step(None, 1_800_000_000_000, t0);
+        // A day back on the wall clock while 30 s pass on the monotonic one: time moved 30 s, not minus a day.
+        let b = GuardedClock::step(
+            Some(&a),
+            1_800_000_000_000 - 86_400_000,
+            t0 + D::from_secs(30),
+        );
+        assert_eq!(b.reported, 1_800_000_030_000);
+        // Steady running.
+        let c = GuardedClock::step(Some(&b), b.wall + 10_000, t0 + D::from_secs(40));
+        assert_eq!(c.reported, 1_800_000_040_000);
+        // A jump forward of an hour (or a suspend only the wall clock saw) counts in full.
+        let d = GuardedClock::step(Some(&c), c.wall + 3_600_000, t0 + D::from_secs(41));
+        assert_eq!(d.reported, 1_800_000_040_000 + 3_600_000);
+    }
+
+    #[test]
+    fn a_token_does_not_outlive_its_ttl_when_the_wall_clock_goes_back() {
+        use std::time::{Duration as D, Instant};
+        let t0 = Instant::now();
+        let mut clock = GuardedClock::step(None, 1_800_000_000_000, t0);
+        let mut book = TokenBook::new();
+        book.issue_with(TOKEN, clock.reported, TTL);
+        // Two and a half minutes pass on the monotonic clock, the wall clock was stepped back a day meanwhile.
+        clock = GuardedClock::step(
+            Some(&clock),
+            1_800_000_000_000 - 86_400_000,
+            t0 + D::from_secs(150),
+        );
+        assert_eq!(
+            book.redeem(TOKEN, clock.reported),
+            Err(RedeemError::Expired)
+        );
     }
 }

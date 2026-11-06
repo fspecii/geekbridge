@@ -328,7 +328,15 @@ pub fn sweep_partials(dir: &Path, min_idle: std::time::Duration) -> usize {
             .ok()
             .and_then(|m| m.elapsed().ok())
             .unwrap_or_default();
-        if !meta.is_file() || idle < min_idle {
+        // `.gb-<pid in hex>-...`: a writer that no longer exists left it, however recently; waiting out
+        // `min_idle` would keep up to a whole file's worth of disk (and an empty file with the real name
+        // in the user's folder) until some later start.
+        let writer_gone = rest
+            .split('-')
+            .next()
+            .and_then(|p| u32::from_str_radix(p, 16).ok())
+            .is_some_and(crate::fsutil::process_is_gone);
+        if !meta.is_file() || (idle < min_idle && !writer_gone) {
             continue;
         }
         if std::fs::remove_file(entry.path()).is_ok() {
@@ -377,9 +385,16 @@ pub async fn receive_file(
         if let Some(t) = offer.last_modified_ms.and_then(sane_mtime) {
             let _ = std_file.set_modified(t);
         }
+        // The bytes reach the disk before the name does: after a power cut the file under its final name
+        // is either whole or absent (the reservation), never a long file of zeros.
+        std_file.sync_all()?;
         drop(std_file);
         // Replaces our own empty reservation atomically.
         std::fs::rename(&tmp, &reserved.path)?;
+        #[cfg(unix)]
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
         Ok::<(), PayloadError>(())
     }
     .await;
@@ -527,6 +542,30 @@ mod tests {
         assert_eq!(sweep_partials(dir.path(), std::time::Duration::ZERO), 2);
         assert!(!part.exists() && !reserved.path.exists() && !other.exists());
         assert_eq!(std::fs::read(&keep_real).unwrap(), b"data");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_partial_whose_writer_is_gone_is_swept_at_once_a_live_ones_is_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let dead = c.id();
+        c.wait().unwrap();
+        // What a killed service leaves: the empty reservation and its fresh, half-written temp file.
+        let reserved = dir.path().join("movie.mkv");
+        std::fs::write(&reserved, b"").unwrap();
+        let dead_part = dir.path().join(format!(".gb-{dead:x}-0-1-movie.mkv.part"));
+        std::fs::write(&dead_part, vec![7u8; 4096]).unwrap();
+        // Another live process (pid 1 always exists) is mid-download: left alone.
+        let live_part = dir.path().join(".gb-1-0-1-other.bin.part");
+        std::fs::write(&live_part, b"x").unwrap();
+        assert_eq!(
+            sweep_partials(dir.path(), std::time::Duration::from_secs(600)),
+            1
+        );
+        assert!(!dead_part.exists(), "dead writer's partial");
+        assert!(!reserved.exists(), "its empty reservation");
+        assert!(live_part.exists(), "a live writer's partial");
     }
 
     #[test]

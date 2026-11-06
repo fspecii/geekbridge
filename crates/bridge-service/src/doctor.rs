@@ -527,6 +527,61 @@ pub fn messages_check(d: &DataDevice, name: &str) -> Check {
     }
 }
 
+/// Can the state folder (pairings, trust, choices) still be written? `None` when it can. A folder that is
+/// read-only or full does not stop the service: it keeps running and answers, but every change is refused with
+/// "could not be saved", and this line says why and what to do.
+pub fn state_folder_check(dir: &std::path::Path) -> Option<Check> {
+    use std::io::{ErrorKind, Write};
+    let shown = dir.display();
+    let probe = dir.join(format!(".doctor-probe.tmp.{}", std::process::id()));
+    let wrote = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|mut f| f.write_all(b"x").and_then(|()| f.sync_all()));
+    let _ = std::fs::remove_file(&probe);
+    match wrote {
+        Ok(()) => None,
+        // The folder does not exist yet: nothing has been saved, nothing is wrong.
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) if e.kind() == ErrorKind::StorageFull || e.raw_os_error() == Some(122) => {
+            Some(check(
+                Level::Fail,
+                "State folder",
+                format!(
+                    "{shown} is full: new pairings, consents and choices cannot be saved (the old ones are untouched)."
+                ),
+                Some(
+                    "free disk space (df -h; geekbridge-ctl will save again by itself), then run doctor again",
+                ),
+            ))
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            Some(check(
+                Level::Fail,
+                "State folder",
+                format!(
+                    "{shown} is not writable ({e}): new pairings, consents and choices cannot be saved (the old ones are untouched)."
+                ),
+                Some(
+                    "make it writable for your user (chmod u+w on the folder; a read-only mount: remount it read-write), or start the service with another --state-dir",
+                ),
+            ))
+        }
+        Err(e) => Some(check(
+            Level::Warn,
+            "State folder",
+            format!("a test file could not be written in {shown}: {e}."),
+            Some("check the disk and the folder permissions"),
+        )),
+    }
+}
+
 pub fn run(i: &Inputs) -> Vec<Check> {
     let mut out = Vec::new();
     match &i.status {
@@ -1890,5 +1945,28 @@ mod tests {
         );
         assert!(fix.contains("Allow"));
         assert!(native_firewall_check(&Firewall::default(), "/x").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn state_folder_check_is_silent_when_writable_and_names_a_read_only_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        assert!(state_folder_check(d.path()).is_none());
+        assert!(state_folder_check(&d.path().join("not-yet")).is_none());
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let c = state_folder_check(d.path());
+        std::fs::set_permissions(d.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Running as root nothing is read-only to the process.
+        if let Some(c) = c {
+            assert_eq!(c.level, Level::Fail);
+            assert!(c.detail.contains("not writable"), "{}", c.detail);
+            assert!(c.fix.unwrap().contains("chmod u+w"));
+        }
+        assert_eq!(
+            std::fs::read_dir(d.path()).unwrap().count(),
+            0,
+            "probe file removed"
+        );
     }
 }

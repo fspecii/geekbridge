@@ -236,7 +236,8 @@ fn record(state_dir: &Path, result: &Result<(), Cannot>) {
         if result.is_err() {
             eprintln!("incoming-call overlay: {line}");
         }
-        let _ = std::fs::write(&path, format!("{line}\n"));
+        // Replaced whole and owner-only like the other state files: a kill mid-write cannot leave half a word.
+        let _ = bridge_kde::fsutil::atomic_write_private(&path, format!("{line}\n").as_bytes());
     }
 }
 
@@ -670,14 +671,27 @@ mod tests {
     #[test]
     fn the_last_outcome_is_kept_for_doctor_and_only_rewritten_on_change() {
         let d = tempfile::tempdir().unwrap();
-        record(d.path(), &Err(Cannot::NoDisplay));
-        let text = std::fs::read_to_string(d.path().join(STATUS_FILE)).unwrap();
+        let state = d.path().join("state");
+        bridge_kde::fsutil::ensure_private_dir(&state).unwrap();
+        record(&state, &Err(Cannot::NoDisplay));
+        let text = std::fs::read_to_string(state.join(STATUS_FILE)).unwrap();
         assert_eq!(text, "cannot: no-display\n");
-        record(d.path(), &Ok(()));
+        record(&state, &Ok(()));
         assert_eq!(
-            std::fs::read_to_string(d.path().join(STATUS_FILE)).unwrap(),
+            std::fs::read_to_string(state.join(STATUS_FILE)).unwrap(),
             "ok\n"
         );
+        // Replaced whole, owner-only, no temporary file left.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(state.join(STATUS_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+        assert_eq!(std::fs::read_dir(&state).unwrap().count(), 1);
     }
 
     use std::sync::Arc;

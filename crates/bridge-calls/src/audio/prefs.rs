@@ -98,9 +98,7 @@ impl Paths {
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("json.tmp");
-    crate::private_file::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
+    crate::private_file::replace(path, bytes)
 }
 
 /// A missing or damaged file is the default pick.

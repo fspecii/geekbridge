@@ -24,6 +24,27 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     f.sync_all()
 }
 
+/// Replace `path` with `bytes` so that a crash or power cut leaves either the old file or the new one: a private
+/// temporary file next to it (made as in [`write`]), flushed to disk, renamed over `path`, and the directory flushed.
+pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad file name"))?;
+    let tmp = path.with_file_name(format!(".{name}.tmp.{}", std::process::id()));
+    if let Err(e) = write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    #[cfg(unix)]
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty())
+        && let Ok(d) = std::fs::File::open(dir)
+    {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -45,5 +66,21 @@ mod tests {
             std::fs::metadata(&target).unwrap().permissions().mode() & 0o077,
             0
         );
+    }
+
+    #[test]
+    fn replace_swaps_the_file_leaves_no_temp_and_keeps_the_old_one_on_failure() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("choice.json");
+        replace(&f, b"one").unwrap();
+        replace(&f, b"two").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+        // The destination is a directory: the rename fails, the temp file goes, nothing else is touched.
+        let dir_target = d.path().join("sub");
+        std::fs::create_dir(&dir_target).unwrap();
+        assert!(replace(&dir_target, b"x").is_err());
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 2);
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
     }
 }
