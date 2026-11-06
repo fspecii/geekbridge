@@ -41,6 +41,11 @@ Send back: the plain-hex signer SHA-256 (it is public: it goes into the release 
 the files or the password. I then run `scripts/release-local.sh v0.1.0 --dry-run --notes-file docs/release-notes-v0.1.0.md`
 with them. Background: [builds.md](builds.md#first-release-android-signing-key), [release-local.md](release-local.md).
 
+Rehearsed on 2026-11-06 with a throwaway key in a scratch `HOME`: these exact commands worked, and the only manual extras are
+that `scripts/android-env.sh` must be sourced in the subshell (as above) and that `scripts/release-local.sh` needs `unzip` and
+`strings` (binutils) besides the tools it already checked. Timings of the full dry run on this machine: checks 10 min, desktop
+build 11, Arch package 15, Android 4, about 45 min in total; 4 GB of scratch under `$GB_RELEASE_DIR`.
+
 ## 2. Security contact and the release-notes placeholder
 
 Unblocks: the release notes (the script publishes whatever is in the file, placeholder included) and `SECURITY.md`.
@@ -50,7 +55,7 @@ Edit two places (or tell me the address and I do it):
 
 * `SECURITY.md` line 8: replace the sentence and the comment with the address, for example
   `- If that is unavailable, write to <security-address>.` (or delete the whole bullet to rely on the private report form only).
-* `docs/release-notes-v0.1.0.md`, the `Security contact:` line near the end (line 141): replace `**[OWNER: add the monitored security contact here before publishing]**`
+* `docs/release-notes-v0.1.0.md`, the `Security contact:` line near the end (line 147): replace `**[OWNER: add the monitored security contact here before publishing]**`
   with `<security-address>` (or "the repository's *Security* tab only").
 
 Send back: the address, or "form only".

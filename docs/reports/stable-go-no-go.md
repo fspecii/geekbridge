@@ -23,6 +23,35 @@ What still blocks a tag:
   newest emulator run (342454172, still in progress when this was written) has `call-ui` failed (cause not readable until the run
   ends: UNVERIFIED). The run before it was green for `call-ui`, so this may be the flake the e2e fixes have been chasing, or a regression.
 
+## Dry-run rehearsal (2026-11-06)
+
+Full `scripts/release-local.sh v0.1.0 --dry-run --notes-file docs/release-notes-v0.1.0.md` (with fmt, clippy and tests), run in a
+scratch `git clone` of `origin/main` 19881b568 with a THROWAWAY keystore and pin created by `scripts/make-keystore.sh` in a
+scratch `HOME` (no real key was read or written; nothing was tagged, pushed or published; `gh` was the printing stub).
+
+Passed: keystore creation and the printed pin; the pin check; fmt, clippy and the whole workspace test suite; the Linux build and
+tarball; installer tarball and `.deb` (version, nine binaries); the Arch package; the CycloneDX SBOM (1.5, version, listed in
+`SHA256SUMS`); both Android APKs (zipalign, v1+v2+v3 signing, signer equals the pin, `versionCode` 10099 / `versionName` 0.1.0,
+minSdk 26); `SHA256SUMS` matches; release notes generated with the signer line; the tag and publish commands printed only.
+The real desktop updater (`crates/bridge-update/tests/release_assets.rs`, new) accepted the produced assets from a mock release:
+every `SHA256SUMS` line equals the file digest, the Linux archive is chosen over the installer tarball, `.deb`, Arch package, APKs
+and SBOM, the API `digest` cross-check agrees, the download re-hashes, rc.1 is offered the release and 0.1.0 is not offered itself.
+The Android updater compares the downloaded APK's signer with the installed app's: both produced APKs carry the throwaway signer
+that equals the pin, so a phone with this key installed accepts them (the `SignerCheck` code itself was not run: no emulator here).
+
+Found and fixed (same day):
+
+* `check-release-isolation.sh` was not called by anything. `release-local.sh` now runs it on both signed APKs (and needs `unzip`, `strings`).
+* A release-notes file still holding the `[OWNER: ...]` placeholder was published verbatim. `release-local.sh` now refuses (a warning in a dry run).
+* A long `GB_RELEASE_DIR` makes the D-Bus based tests fail ("unexpected dbus-daemon address line", unix socket path limit); the script now warns.
+* `release-owner-steps.md` named line 141 for the notes placeholder; it is line 147.
+* On 19881b568 the `i18n_catalogue` test failed (a literal in `tray/model.rs`); already fixed upstream in 7b35acff9.
+
+Observed, not fixed: `calls_api::ctl_calls_trace_shows_the_states_without_numbers_prints_json_and_clears` failed once in the
+full-workspace run (the trace still held its events after `--clear`) and passed 5 of 5 alone and on the rerun: a flake under load, cause not found.
+Manual steps that remain: the owner's real key, the `[OWNER]` notes placeholder, the date under `## [0.1.0]`, and a fresh clone needs `.tools`
+(`scripts/bootstrap-android.sh`) before any Android step. A dry run in a dirty tree reports it as a warning, as designed.
+
 ## Ordered blockers
 
 ### Needs the owner
@@ -106,7 +135,7 @@ GREEN = evidence seen, AMBER = acceptable with a stated gap, RED = blocks, OPEN-
 | 14 | CHANGELOG matches the release | GREEN (this refresh) | New call features folded into `[0.1.0]`; `[Unreleased]` empty; `gen-whats-new.sh --check` passes; date still 2026-11-03. |
 | 15 | Licence, notices | GREEN | GPL-3.0-or-later; supply-chain job (cargo-deny, notices) green on 788543220. |
 | 16 | SBOM | AMBER | Not generated; substitutes are `THIRD_PARTY_NOTICES.md`, `Cargo.lock`, Gradle verification metadata ([sbom-reproducibility](sbom-reproducibility.md)). Owner decides. |
-| 17 | Release script plumbing | GREEN, rehearsal stale | [release-scripts-review](release-scripts-review.md) fixes applied (ac6fab587). Full dry run needs the key. Android CI and local builds now use the same native profile and an ELF 16 KiB alignment check. |
+| 17 | Release script plumbing | GREEN, rehearsed 2026-11-06 with a throwaway key (see above) | [release-scripts-review](release-scripts-review.md) fixes applied (ac6fab587). Full dry run needs the key. Android CI and local builds now use the same native profile and an ELF 16 KiB alignment check. |
 | 18 | Repository visibility, private reporting | GREEN | PUBLIC; private vulnerability reporting enabled; no open Dependabot alert. `SECURITY.md` contact still a placeholder. |
 | 19 | Windows / macOS stance, name, support channel | OPEN-OWNER | Unticked in [release-checklist](../release-checklist.md). |
 
