@@ -93,7 +93,7 @@
     <string name="dev_row_phone">Phone</string>
     <string name="dev_row_android">Android</string>
     <string name="dev_android_value">%1$s (API %2$d)</string>
-    <string name="dev_row_paired">Paired computers</string>
+    <string name="dev_row_paired">Linked computers</string>
     <string name="dev_paired_unknown">start the link to read</string>
     <string name="dev_core_checking">Native core: checking…</string>
     <string name="dev_core_available">Native core: available</string>
@@ -164,7 +164,7 @@
     <string name="dev_msg_row_share">Share texts with your computer</string>
     <string name="dev_msg_on">on</string>
     <string name="dev_msg_off_optional">off · optional</string>
-    <string name="dev_msg_intro">Checks a draft against the shared message rules in the native core; nothing is sent from this box. Reading and sending texts for a paired computer is optional and set up in Setup > Share with computer. It needs the SMS permissions, which Android restricts: stores generally allow them only for the default SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". A denial at the runtime prompt is final until you change it in app settings. Nothing is ever sent automatically.</string>
+    <string name="dev_msg_intro">Checks a draft against the shared message rules in the native core; nothing is sent from this box. Reading and sending texts for a linked computer is optional and set up in Setup > Share with computer. It needs the SMS permissions, which Android restricts: stores generally allow them only for the default SMS app, and sideloaded installs on Android 13+ may need \"Allow restricted settings\". A denial at the runtime prompt is final until you change it in app settings. Nothing is ever sent automatically.</string>
     <string name="dev_msg_recipient">Recipient number</string>
     <string name="dev_msg_message">Message</string>
     <string name="dev_msg_subscription">SIM subscription id (optional)</string>
@@ -212,7 +212,7 @@
     <string name="dev_preview_empty">Access allowed, but there is nothing to show.</string>
 
     <string name="dev_privacy_title">Privacy</string>
-    <string name="dev_privacy_body">The network is used to talk to the computers you paired (encrypted, certificate-pinned) and by update checks, which only read GitHub\'s public release list when the app opens (at most every 12 hours, can be switched off) or when you tap Check for updates. A small background service keeps the phone reachable only while \"Stay connected\" is on, and only for computers you paired. Updates are installed only after a SHA-256 check and your confirmation in Android\'s installer. The app never asks for accessibility, root or ADB access. Contacts, calendar, clipboard and message text are shared only with a paired computer you allowed, are not logged or saved here, and previews are cleared when you leave the app.</string>
+    <string name="dev_privacy_body">The network is used to talk to the computers you linked (encrypted, certificate-pinned) and by update checks, which only read GitHub\'s public release list when the app opens (at most every 12 hours, can be switched off) or when you tap Check for updates. A small background service keeps the phone reachable only while \"Stay connected\" is on, and only for computers you linked. Updates are installed only after a SHA-256 check and your confirmation in Android\'s installer. The app never asks for accessibility, root or ADB access. Contacts, calendar, clipboard and message text are shared only with a linked computer you allowed, are not logged or saved here, and previews are cleared when you leave the app.</string>
 
     <!-- Computer link card (LinkSection) -->
     <string name="link_title">Computer link</string>
@@ -239,7 +239,7 @@
     <string name="link_connect">Connect</string>
     <string name="link_sec_discovered">Found on this network</string>
     <string name="link_sec_connections">Connections</string>
-    <string name="link_sec_paired">Paired computers</string>
+    <string name="link_sec_paired">Linked computers</string>
     <string name="link_sec_events">Recent events</string>
     <string name="link_port_range">Listen port must be a number from 0 to 65535.</string>
     <string name="link_enter_connect">Enter an IP address, a port and the computer’s device id.</string>
@@ -261,15 +261,15 @@
     <string name="link_notice_with_ignored">%1$s A pairing request could not be shown exactly and was ignored.</string>
     <string name="link_disc_intro">Heard on the network, not verified. Connecting only opens an encrypted channel; it does not pair.</string>
     <string name="link_no_name">(no name)</string>
-    <string name="link_disc_paired_before">%1$s · paired before</string>
+    <string name="link_disc_paired_before">%1$s · linked before</string>
     <string name="link_this_computer">this computer</string>
     <string name="link_this_device">this device</string>
     <string name="link_a_device">A device</string>
     <string name="link_connect_to">Connect to %1$s</string>
-    <string name="link_phase_trusted">Paired and trusted · pings received: %1$d</string>
-    <string name="link_phase_parked">Connected over TLS. Not paired.</string>
-    <string name="link_phase_pairing_request">Pairing request sent — waiting for the other device.</string>
-    <string name="link_phase_pairing_await">Waiting for the other device to ask to pair (this phone cannot ask on an incoming connection).</string>
+    <string name="link_phase_trusted">Linked and trusted · pings received: %1$d</string>
+    <string name="link_phase_parked">Connected over TLS. Not linked.</string>
+    <string name="link_phase_pairing_request">Link request sent — waiting for the other device.</string>
+    <string name="link_phase_pairing_await">Waiting for the other device to ask to link (this phone cannot ask on an incoming connection).</string>
     <string name="link_phase_other">State: %1$s</string>
     <string name="link_conn_head">%1$s · %2$s · %3$s</string>
     <string name="link_their_cert">Their certificate (SHA-256):</string>

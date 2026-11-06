@@ -27,7 +27,7 @@
     </plurals>
     <string name="setup_detail_none_paired">No computer linked yet</string>
     <string name="setup_detail_notif_na">Not needed on this Android version</string>
-    <string name="setup_detail_sms">Optional · battery, notifications, contacts, calendar and texts for your computer, off until you switch them on</string>
+    <string name="setup_detail_sms">Optional · everything is off until you switch it on</string>
     <string name="setup_detail_allowed">Allowed</string>
     <string name="setup_detail_not_allowed">Not allowed yet</string>
     <string name="setup_detail_denied">Denied · you can allow it again</string>
@@ -76,10 +76,10 @@
     <string name="signer_not_newer">The downloaded file is version code %1$d, not newer than the installed %2$d, so it was not offered.</string>
     <string name="signer_mismatch">The update is signed with a different key (%1$s) than the installed app (%2$s). Android would refuse it, so it was not offered. Uninstall and reinstall the release APK to switch keys; app data is lost.</string>
     <!-- QR pairing errors -->
-    <string name="qr_err_not_geekbridge">That is not a GeekBridge QR code.</string>
-    <string name="qr_err_version">That QR code is from a different GeekBridge version. Update both apps.</string>
-    <string name="qr_err_malformed">That QR code is damaged. Show a new one on the computer and try again.</string>
-    <string name="qr_err_unreadable">The QR code could not be read.</string>
+    <string name="qr_err_not_geekbridge">That is not a GeekBridge link.</string>
+    <string name="qr_err_version">That link is from a different GeekBridge version. Update both apps.</string>
+    <string name="qr_err_malformed">That link is damaged. Show a new QR code on the computer and try again.</string>
+    <string name="qr_err_unreadable">The link could not be read.</string>
     <string name="qr_err_core_missing">GeekBridge\'s network core is not available on this phone.</string>
     <string name="whatsnew_fallback">See the release notes</string>
 

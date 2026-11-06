@@ -60,6 +60,9 @@ data class SetupInputs(
 )
 
 object SetupModel {
+    /** Android's battery dialog gives no result: after a request, "still optimised" means the answer was no. */
+    fun batteryDenied(asked: Boolean, state: BatteryState) = asked && state == BatteryState.Optimised
+
     fun steps(s: Strings, i: SetupInputs): List<StepInfo> {
         val out = ArrayList<StepInfo>()
         out += StepInfo(

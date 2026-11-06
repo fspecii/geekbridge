@@ -28,6 +28,7 @@ class SetupActivity : Activity() {
     private var anchor = -1
     private var anchorTarget = SetupModel.BACK_FINISH
     private val oem = OemDetector.detect(Build.MANUFACTURER, Build.BRAND)
+    private var batteryAsked = false
     private var pairPanel: PairPanel? = null
     private var pairBox: LinearLayout? = null
 
@@ -344,8 +345,9 @@ class SetupActivity : Activity() {
         val state = PowerChecks.batteryState(this)
         when (state) {
             BatteryState.Optimised -> {
-                panel.addView(kit.text(getString(R.string.setup_battery_optimised), 14f, Tone.Muted))
-                kit.button(panel, getString(R.string.setup_battery_allow), BtnStyle.Primary) { PowerChecks.requestUnrestricted(this) }
+                val denied = SetupModel.batteryDenied(batteryAsked, state)
+                panel.addView(if (denied) kit.text(getString(R.string.setup_battery_denied), 14f, Tone.Warn) else kit.text(getString(R.string.setup_battery_optimised), 14f, Tone.Muted))
+                kit.button(panel, getString(if (denied) R.string.setup_battery_retry else R.string.setup_battery_allow), BtnStyle.Primary) { batteryAsked = true; PowerChecks.requestUnrestricted(this) }
             }
             BatteryState.BackgroundRestricted -> {
                 panel.addView(kit.text(getString(R.string.setup_battery_restricted), 14f, Tone.Muted))
@@ -374,7 +376,8 @@ class SetupActivity : Activity() {
                 panel.addView(kit.text(getString(R.string.setup_oem_marked), 13f, Tone.Muted).apply { setPadding(0, kit.dp(10), 0, 0) })
                 kit.button(panel, getString(R.string.setup_oem_undo), BtnStyle.Plain) { AppState.oemAcknowledged = false; render() }
             }
-        } else if (state != BatteryState.Unrestricted) {
+        }
+        if (state != BatteryState.Unrestricted && (oem == Oem.Other || SetupModel.batteryDenied(batteryAsked, state))) {
             kit.button(panel, getString(R.string.setup_open_app_settings), BtnStyle.Plain) { PowerChecks.openAppSettings(this) }
         }
     }

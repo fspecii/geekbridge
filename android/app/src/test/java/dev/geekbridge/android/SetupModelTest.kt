@@ -24,6 +24,13 @@ class SetupModelTest {
 
     private fun status(i: SetupInputs, id: StepId) = SetupModel.steps(TestStrings, i).first { it.id == id }.status
 
+    @Test fun batteryAnswerNoIsShownOnlyAfterAskingWhileStillOptimised() {
+        assertTrue(SetupModel.batteryDenied(true, BatteryState.Optimised))
+        assertTrue(!SetupModel.batteryDenied(false, BatteryState.Optimised))
+        assertTrue(!SetupModel.batteryDenied(true, BatteryState.Unrestricted))
+        assertTrue(!SetupModel.batteryDenied(true, BatteryState.BackgroundRestricted))
+    }
+
     @Test fun permissionStatusFromAndroidSignals() {
         assertEquals(PermissionStatus.Granted, PermissionStatusLogic.compute(true, true, false))
         assertEquals(PermissionStatus.NotAsked, PermissionStatusLogic.compute(false, false, false))

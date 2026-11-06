@@ -40,6 +40,6 @@
     <string name="pair_scan_qr">Scan QR code from my computer</string>
     <string name="pair_test_connection">Test connection</string>
     <string name="qr_dlg_title">Link with %1$s?</string>
-    <string name="qr_dlg_body">This is the computer you scanned: its identity matches the QR code, so there is no code to compare. Link only if you started this on your own computer.</string>
+    <string name="qr_dlg_body">This is the computer the link points to: its identity matches the link, so there is no code to compare. Link only if you started this on your own computer.</string>
     <string name="qr_dlg_cert">Computer identity</string>
 </resources>

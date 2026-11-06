@@ -106,6 +106,8 @@
     <string name="setup_ca_status_needs_permission">Not checked yet. Allow the Bluetooth check to see it.</string>
     <string name="setup_ca_status_unknown">Android did not answer. Try again in a moment.</string>
     <string name="setup_battery_optimised">Tap below and choose “Allow”. GeekBridge uses almost no power while idle; this only stops Android from pausing it.</string>
+    <string name="setup_battery_denied">You chose not to allow this, so Android may still pause GeekBridge with the screen off. You can try again, or change it in the app\u2019s settings.</string>
+    <string name="setup_battery_retry">Try again</string>
     <string name="setup_battery_allow">Allow unrestricted battery</string>
     <string name="setup_battery_restricted">Background use is restricted for GeekBridge, so the connection to your computer will not stay up with the screen off. Open the battery settings below and choose “Unrestricted” (or “Allow background usage”).</string>
     <string name="setup_open_battery_settings">Open battery settings</string>
@@ -144,7 +146,7 @@
     <string name="setup_why_caller">Shows who is calling on your computer. Android gives an app a caller\'s number only with the “Call logs” permission, so GeekBridge asks for it; the call log itself is never read or sent. Allow Contacts too to see the name. Without it, or for a hidden number, the computer says “Unknown caller”.</string>
     <string name="home_caller_shown">Your computer shows the caller\'s number when Android provides it.</string>
     <string name="home_caller_hidden">Your computer can\'t show who is calling, only that a call is ringing. Allow Call logs to show the number.</string>
-    <string name="setup_why_sms">Optionally share your battery level, phone notifications, contacts, calendar and text messages with a linked computer. Everything is off until you switch it on here, and each part needs its own Android permission. Text messages are limited by Android and Google Play; the notes below explain how.</string>
+    <string name="setup_why_sms">Optionally share your battery level, phone notifications, contacts, calendar and text messages with a linked computer. Each part needs its own Android permission. Text messages are limited by Android and Google Play; the notes below explain how.</string>
     <string name="setup_why_battery">Keeps the connection to your computer alive when the screen is off. Without this, Android may pause GeekBridge and files or clipboard may arrive late.</string>
 
     <!-- Pairing panel and prompt -->

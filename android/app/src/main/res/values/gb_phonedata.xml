@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="pd_intro">Optional, off by default. Each switch lets a computer you linked and allowed on its side ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
+    <string name="pd_intro">Each switch lets your linked computer ask this phone for that data while the link is up. Switching it off stops sharing at once.</string>
     <string name="pd_contacts">Share contacts</string>
     <string name="pd_contacts_sub">Read-only: names, numbers, emails for the Contacts app on your computer. Photos are never sent.</string>
     <string name="pd_calendar">Share calendar</string>
