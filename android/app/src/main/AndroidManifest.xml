@@ -263,6 +263,17 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".LinkTileService"
+            android:label="@string/tile_link_label"
+            android:icon="@drawable/ic_computer"
+            android:exported="true"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <!-- Serves the one image a computer sent to the clipboard, from the core's private spool. -->
         <provider
             android:name=".ClipImageProvider"

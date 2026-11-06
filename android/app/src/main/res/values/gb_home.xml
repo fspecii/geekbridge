@@ -38,6 +38,8 @@
     <string name="setup_label">Setup</string>
     <string name="diagnostics_label">Diagnostics</string>
     <string name="channel_link">Background connection</string>
+    <string name="channel_reconnect">Reconnect reminder</string>
+    <string name="notif_reconnect">Android stopped the background connection. Tap to reconnect.</string>
     <string name="channel_link_desc">Quiet notice shown while GeekBridge stays reachable from your linked computers.</string>
     <plurals name="notif_ready">
         <item quantity="one">Ready for your computer · %1$d linked</item>

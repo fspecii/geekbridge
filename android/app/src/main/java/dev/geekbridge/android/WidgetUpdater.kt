@@ -120,6 +120,9 @@ object WidgetUpdater {
     private fun connectionState(): ConnectionState =
         WidgetModel.connection(AppState.pairedCount, AppState.pairedNames, connected, ringing)
 
+    /** The connection as the widgets and the Quick Settings tile show it (reads in-memory state only). */
+    fun connectionNow(): ConnectionState = connectionState()
+
     private fun push(mgr: AppWidgetManager, ctx: Context, cls: Class<*>, views: () -> android.widget.RemoteViews) {
         val ids = mgr.getAppWidgetIds(ComponentName(ctx, cls))
         if (ids.isNotEmpty()) mgr.updateAppWidget(ids, views())

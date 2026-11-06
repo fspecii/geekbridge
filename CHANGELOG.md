@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 
 ## [Unreleased]
 
+### Added
+- Android: a **Computer link** Quick Settings tile that shows whether the phone is connected to your computer (and its
+  name), and opens the app or the pairing step on a tap.
+- Android: when Android refuses to restart the background connection after a reboot or an update, a quiet **Tap to
+  reconnect** notification appears instead of silence, and goes away once the connection is back.
+
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android

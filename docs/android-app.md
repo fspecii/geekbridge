@@ -130,6 +130,20 @@ What changed and how it was checked (screenshots: `dist/screenshots/android/poli
   (`MainActivity`, `LinkSection`, `UpdateSection`, clipboard settings). Moving those needs the models to return
   string ids and is a separate change. Lint's `SetTextI18n` still flags `MainActivity.kt:275` for that reason.
 
+## Quick Settings tile and reconnect reminder
+
+**Computer link tile** (`LinkTileService`, `LinkTileModel`). A Quick Settings tile showing the same states as the
+Connection widget: lit with "Connected · name" while a computer is connected (also while the phone rings), off with
+"Offline" or "Not linked" otherwise. A tap opens the app, or the pairing step when no computer is linked. It reads
+in-memory state only when the shade is open; nothing runs in the background for it and nothing is sent anywhere.
+
+**Reconnect reminder** (`ReconnectNotice`, `ReconnectPolicy`). When Android refuses to restart the background connection
+(after a reboot or an update, or under a restricted battery mode) the phone shows one quiet notification, "Android stopped
+the background connection. Tap to reconnect.", on its own low-importance channel. Tapping opens the app, which can start the
+connection because it is then in the foreground; the notice is removed as soon as the connection starts. It is shown only
+when a computer is paired, the connection is wanted and notifications are allowed; its text is fixed and carries no personal
+data. Both are covered by `LinkTileAndReconnectTest`.
+
 ## Home-screen widgets
 
 Three small widgets, platform `RemoteViews` only (no AndroidX, no Compose), in the same Nothing-style tokens as the app

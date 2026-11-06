@@ -100,6 +100,7 @@ class LinkService : Service() {
         // A sticky restart from the background can be refused on Android 12+; stop quietly rather than crash.
         if (!ServicePolicy.promoteOrStop(::promote, ::stopSelf)) {
             AppState.serviceError = "startForeground refused"
+            ReconnectNotice.show(this)
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_STOP) {
@@ -324,9 +325,11 @@ class LinkService : Service() {
                 try {
                     app.startForegroundService(intent)
                     AppState.serviceError = null
+                    ReconnectNotice.clear(app)
                 } catch (e: RuntimeException) {
                     // Android refused a background start (e.g. app in a restricted bucket). The next visit retries.
                     AppState.serviceError = e.javaClass.simpleName
+                    ReconnectNotice.show(app)
                 }
             } else if (isRunning) {
                 app.stopService(intent)
