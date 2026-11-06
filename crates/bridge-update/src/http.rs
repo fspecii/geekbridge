@@ -4,12 +4,21 @@
 //! Only what the updater needs: GET, `Connection: close`, identity encoding, Content-Length or
 //! chunked bodies, bounded redirects, a hard body cap and an overall deadline. Plain `http://` is
 //! accepted only for loopback hosts, which is how the tests talk to a local mock server.
+//!
+//! Connecting: all resolved addresses are raced happy-eyeballs style (RFC 8305: families
+//! interleaved, a new attempt every 250 ms or as soon as one fails, first success wins), so a
+//! black-holed IPv6 address no longer delays IPv4 by the connect timeout. `HTTPS_PROXY` (or
+//! `https_proxy`, then `ALL_PROXY`) of the form `http://host:port` is honoured through `CONNECT`
+//! for the https hosts the policy allows, minus `NO_PROXY`; TLS still runs end to end against the
+//! bundled roots, so the proxy only sees the host name and port. Credentials in the proxy URL,
+//! `https://` and SOCKS proxies are not supported and mean "no proxy" (direct connection).
+//! Loopback test origins are never proxied. `HTTP_PROXY` is not read: plain http is loopback only.
 
 use crate::Error;
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
-    net::{IpAddr, TcpStream, ToSocketAddrs},
-    sync::Arc,
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs},
+    sync::{Arc, mpsc},
     time::{Duration, Instant},
 };
 
@@ -162,6 +171,7 @@ pub struct Client {
     pub policy: Policy,
     pub io_timeout: Duration,
     token: Option<String>,
+    proxy: Option<Proxy>,
 }
 
 trait Stream: Read + Write {}
@@ -196,6 +206,7 @@ impl Client {
             policy,
             io_timeout,
             token,
+            proxy: Proxy::from_env(),
         })
     }
 
@@ -316,38 +327,217 @@ impl Client {
         url: &Url,
         deadline: Instant,
     ) -> Result<(BufReader<Box<dyn Stream>>, TcpStream), Error> {
-        let addrs: Vec<_> = (url.host.as_str(), url.port)
+        let proxy = self
+            .proxy
+            .as_ref()
+            .filter(|p| url.https && !url.is_loopback() && !p.bypasses(&url.host));
+        let (host, port) =
+            proxy.map_or((url.host.as_str(), url.port), |p| (p.host.as_str(), p.port));
+        let addrs: Vec<_> = (host, port)
             .to_socket_addrs()
-            .map_err(|e| unreachable_err(&url.host, e))?
+            .map_err(|e| unreachable_err(host, e))?
             .collect();
-        let mut last = Error::Io("no address".into());
-        for addr in addrs {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .ok_or(Error::Timeout)?;
-            match TcpStream::connect_timeout(&addr, remaining.min(self.io_timeout)) {
-                Ok(sock) => {
-                    // Set on the original handle too: a clone's options are not relied upon.
-                    let t = remaining.min(self.io_timeout).max(Duration::from_millis(1));
-                    let _ = sock.set_read_timeout(Some(t));
-                    let _ = sock.set_write_timeout(Some(t));
-                    let ctl = sock.try_clone().map_err(io_err)?;
-                    let _ = sock.set_nodelay(true);
-                    let stream: Box<dyn Stream> = if url.https {
-                        let name = rustls::pki_types::ServerName::try_from(url.host.clone())
-                            .map_err(|_| Error::Url("bad host name".into()))?;
-                        let conn = rustls::ClientConnection::new(self.tls.clone(), name)
-                            .map_err(|e| Error::Tls(e.to_string()))?;
-                        Box::new(rustls::StreamOwned::new(conn, sock))
-                    } else {
-                        Box::new(sock)
-                    };
-                    return Ok((BufReader::with_capacity(16 * 1024, stream), ctl));
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(Error::Timeout)?;
+        let per_attempt = remaining.min(self.io_timeout);
+        let connected = race_connect(
+            &addrs,
+            CONNECT_STAGGER,
+            Arc::new(move |a| TcpStream::connect_timeout(a, per_attempt)),
+        )
+        .and_then(|sock| {
+            let t = per_attempt.max(Duration::from_millis(1));
+            let _ = sock.set_read_timeout(Some(t));
+            let _ = sock.set_write_timeout(Some(t));
+            match proxy {
+                Some(_) => proxy_tunnel(sock, &url.host, url.port, deadline),
+                None => Ok(sock),
+            }
+        });
+        let sock = connected.map_err(|e| unreachable_err(&url.host, e))?;
+        let remaining = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or(Error::Timeout)?;
+        // Set on the original handle too: a clone's options are not relied upon.
+        let t = remaining.min(self.io_timeout).max(Duration::from_millis(1));
+        let _ = sock.set_read_timeout(Some(t));
+        let _ = sock.set_write_timeout(Some(t));
+        let ctl = sock.try_clone().map_err(io_err)?;
+        let _ = sock.set_nodelay(true);
+        let stream: Box<dyn Stream> = if url.https {
+            let name = rustls::pki_types::ServerName::try_from(url.host.clone())
+                .map_err(|_| Error::Url("bad host name".into()))?;
+            let conn = rustls::ClientConnection::new(self.tls.clone(), name)
+                .map_err(|e| Error::Tls(e.to_string()))?;
+            Box::new(rustls::StreamOwned::new(conn, sock))
+        } else {
+            Box::new(sock)
+        };
+        Ok((BufReader::with_capacity(16 * 1024, stream), ctl))
+    }
+}
+
+/// Delay before the next address is tried while earlier attempts are still pending (RFC 8305: 250 ms).
+const CONNECT_STAGGER: Duration = Duration::from_millis(250);
+/// More addresses than this are ignored; each attempt is a short-lived thread.
+const MAX_ATTEMPTS: usize = 6;
+
+/// Alternate address families, starting with the family of the first (resolver-preferred) address.
+fn interleave(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let first_v6 = addrs.first().is_some_and(SocketAddr::is_ipv6);
+    let (mut a, mut b): (Vec<_>, Vec<_>) =
+        addrs.iter().copied().partition(|x| x.is_ipv6() == first_v6);
+    a.reverse();
+    b.reverse();
+    let mut out = Vec::new();
+    while !a.is_empty() || !b.is_empty() {
+        out.extend(a.pop());
+        out.extend(b.pop());
+    }
+    out.truncate(MAX_ATTEMPTS);
+    out
+}
+
+type Connector = Arc<dyn Fn(&SocketAddr) -> io::Result<TcpStream> + Send + Sync>;
+
+/// Happy-eyeballs connect (losing attempts are not waited for): start an attempt per address, the next one after `stagger` or at once
+/// when the previous failed; the first success wins and late winners are dropped (closed). Every
+/// attempt is bounded by `connect` itself, so the threads end on their own.
+fn race_connect(
+    addrs: &[SocketAddr],
+    stagger: Duration,
+    connect: Connector,
+) -> io::Result<TcpStream> {
+    let addrs = interleave(addrs);
+    match addrs.as_slice() {
+        [] => return Err(io::Error::other("no address")),
+        [one] => return connect(one),
+        _ => {}
+    }
+    {
+        let (tx, rx) = mpsc::channel();
+        let (mut next, mut pending) = (0, 0);
+        loop {
+            if next < addrs.len() {
+                let (tx, addr, connect) = (tx.clone(), addrs[next], connect.clone());
+                std::thread::spawn(move || {
+                    let _ = tx.send(connect(&addr));
+                });
+                next += 1;
+                pending += 1;
+            }
+            let wait = if next < addrs.len() {
+                stagger
+            } else {
+                Duration::from_secs(3600)
+            };
+            match rx.recv_timeout(wait) {
+                Ok(Ok(sock)) => return Ok(sock),
+                Ok(Err(e)) => {
+                    pending -= 1;
+                    if pending == 0 && next >= addrs.len() {
+                        return Err(e);
+                    }
                 }
-                Err(e) => last = unreachable_err(&url.host, e),
+                Err(_) => {}
             }
         }
-        Err(last)
+    }
+}
+
+/// An `http://host:port` forward proxy used through `CONNECT` for https targets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Proxy {
+    host: String,
+    port: u16,
+    no_proxy: Vec<String>,
+}
+
+impl Proxy {
+    fn from_env() -> Option<Proxy> {
+        let var = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
+        Proxy::parse(
+            &var("HTTPS_PROXY")
+                .or_else(|| var("https_proxy"))
+                .or_else(|| var("ALL_PROXY"))
+                .or_else(|| var("all_proxy"))?,
+            &var("NO_PROXY")
+                .or_else(|| var("no_proxy"))
+                .unwrap_or_default(),
+        )
+    }
+
+    fn parse(proxy: &str, no_proxy: &str) -> Option<Proxy> {
+        let text = proxy.trim();
+        let rest = text.strip_prefix("http://").unwrap_or(text);
+        if rest.contains("://") {
+            return None;
+        }
+        // Reuse the URL parser (rejects credentials, bad ports and control bytes); loopback is fine.
+        let u = Url::parse(&format!("http://{}", rest.trim_end_matches('/'))).ok()?;
+        (u.path == "/").then(|| Proxy {
+            host: u.host,
+            port: if rest.contains(':') && !rest.ends_with(']') {
+                u.port
+            } else {
+                3128
+            },
+            no_proxy: no_proxy
+                .split(',')
+                .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect(),
+        })
+    }
+
+    fn bypasses(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.no_proxy
+            .iter()
+            .any(|e| e == "*" || host == *e || host.ends_with(&format!(".{e}")))
+    }
+}
+
+/// Ask the proxy for a tunnel to `host:port`. Reads the reply byte by byte so nothing of the
+/// TLS stream that follows is consumed; any status but 2xx fails.
+fn proxy_tunnel(
+    mut sock: TcpStream,
+    host: &str,
+    port: u16,
+    deadline: Instant,
+) -> io::Result<TcpStream> {
+    let authority = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    write!(
+        sock,
+        "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n"
+    )?;
+    let mut head = Vec::new();
+    let mut byte = [0_u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        if head.len() >= 8192 || Instant::now() >= deadline {
+            return Err(io::Error::other(
+                "the proxy's reply is too long or too slow",
+            ));
+        }
+        if sock.read(&mut byte)? == 0 {
+            return Err(io::Error::other("the proxy closed the connection"));
+        }
+        head.push(byte[0]);
+    }
+    let line =
+        String::from_utf8_lossy(head.split(|&b| b == b'\r').next().unwrap_or(b"")).into_owned();
+    let mut parts = line.split(' ');
+    match (parts.next(), parts.next()) {
+        (Some(v), Some(code)) if v.starts_with("HTTP/1.") && code.starts_with('2') => Ok(sock),
+        _ => Err(io::Error::other(format!(
+            "the proxy refused the tunnel ({})",
+            line.chars().take(60).collect::<String>()
+        ))),
     }
 }
 
@@ -636,6 +826,7 @@ fn read_chunked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn the_token_is_for_the_api_host_over_tls_only() {
@@ -746,5 +937,219 @@ mod tests {
         );
         assert!(head(403, &[("retry-after", "60")]).summary().rate_limited);
         assert!(head(429, &[]).summary().rate_limited);
+    }
+
+    fn sa(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn address_families_alternate_starting_with_the_resolvers_first() {
+        let order = interleave(&[
+            sa("[2001:db8::1]:443"),
+            sa("[2001:db8::2]:443"),
+            sa("192.0.2.1:443"),
+            sa("192.0.2.2:443"),
+        ]);
+        let want = [
+            "[2001:db8::1]:443",
+            "192.0.2.1:443",
+            "[2001:db8::2]:443",
+            "192.0.2.2:443",
+        ];
+        assert_eq!(order, want.map(sa));
+        let v4_first = interleave(&[sa("192.0.2.1:1"), sa("192.0.2.2:1"), sa("[::1]:1")]);
+        assert_eq!(v4_first, ["192.0.2.1:1", "[::1]:1", "192.0.2.2:1"].map(sa));
+        assert!(interleave(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_stalled_first_address_does_not_delay_the_second() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = listener.local_addr().unwrap();
+        let stalled = sa("[2001:db8::1]:443");
+        let started = Instant::now();
+        let sock = race_connect(
+            &[stalled, live],
+            Duration::from_millis(50),
+            Arc::new(move |a| {
+                if *a == stalled {
+                    std::thread::sleep(Duration::from_secs(5)); // a black hole
+                    Err(io::Error::from(io::ErrorKind::TimedOut))
+                } else {
+                    TcpStream::connect(a)
+                }
+            }),
+        )
+        .unwrap();
+        assert_eq!(sock.peer_addr().unwrap(), live);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_refused_first_address_falls_through_at_once_and_all_failing_reports_an_error() {
+        let dead = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap() // closed again: connection refused
+        };
+        let live = TcpListener::bind("[::1]:0")
+            .or_else(|_| TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let connect =
+            Arc::new(|a: &SocketAddr| TcpStream::connect_timeout(a, Duration::from_secs(2)));
+        let started = Instant::now();
+        // A long stagger: success must come from the failure, not the timer.
+        let sock = race_connect(
+            &[dead, live.local_addr().unwrap()],
+            Duration::from_secs(30),
+            connect.clone(),
+        )
+        .unwrap();
+        assert_eq!(sock.peer_addr().unwrap(), live.local_addr().unwrap());
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let err = race_connect(&[dead, dead], Duration::from_millis(10), connect).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+        assert!(
+            race_connect(&[], Duration::from_millis(10), Arc::new(|_| unreachable!())).is_err()
+        );
+    }
+
+    #[test]
+    fn proxy_settings_parse_and_honour_no_proxy() {
+        let p = Proxy::parse(
+            "http://proxy.example:8080/",
+            "localhost, .Internal.example,10.0.0.1",
+        )
+        .unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("proxy.example", 8080));
+        assert!(
+            p.bypasses("localhost") && p.bypasses("a.internal.example") && p.bypasses("10.0.0.1")
+        );
+        assert!(!p.bypasses("api.github.com") && !p.bypasses("notinternal.example"));
+        assert!(
+            Proxy::parse("proxy:3128", "*")
+                .unwrap()
+                .bypasses("github.com")
+        );
+        assert_eq!(Proxy::parse("http://p", "").unwrap().port, 3128);
+        assert_eq!(Proxy::parse("http://[::1]:99", "").unwrap().host, "::1");
+        for bad in [
+            "https://p:1",
+            "socks5://p:1",
+            "http://user:pw@p:1",
+            "http://p:1/x",
+            "",
+            "http://p:0",
+        ] {
+            assert!(Proxy::parse(bad, "").is_none(), "{bad}");
+        }
+    }
+
+    /// A one-shot proxy on a local socket: answers the CONNECT with `reply`, then echoes what
+    /// follows. Returns its address and the CONNECT head it saw.
+    fn fake_proxy(reply: &'static str) -> (SocketAddr, std::thread::JoinHandle<String>) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut head = Vec::new();
+            let mut b = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut b).unwrap();
+                head.push(b[0]);
+            }
+            s.write_all(reply.as_bytes()).unwrap();
+            let mut rest = [0_u8; 4];
+            if s.read_exact(&mut rest).is_ok() {
+                let _ = s.write_all(&rest);
+            }
+            String::from_utf8(head).unwrap()
+        });
+        (addr, h)
+    }
+
+    #[test]
+    fn connect_tunnel_succeeds_on_2xx_and_leaves_the_stream_untouched() {
+        let (addr, seen) = fake_proxy("HTTP/1.1 200 Connection established\r\nVia: x\r\n\r\n");
+        let sock = TcpStream::connect(addr).unwrap();
+        let mut sock = proxy_tunnel(
+            sock,
+            "api.github.com",
+            443,
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+        sock.write_all(b"ping").unwrap();
+        let mut echo = [0_u8; 4];
+        sock.read_exact(&mut echo).unwrap();
+        assert_eq!(&echo, b"ping");
+        let head = seen.join().unwrap();
+        assert!(
+            head.starts_with("CONNECT api.github.com:443 HTTP/1.1\r\n"),
+            "{head}"
+        );
+    }
+
+    #[test]
+    fn connect_tunnel_refusal_is_an_error_naming_the_proxy() {
+        for reply in [
+            "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n",
+            "garbage\r\n\r\n",
+        ] {
+            let (addr, seen) = fake_proxy(reply);
+            let sock = TcpStream::connect(addr).unwrap();
+            let err = proxy_tunnel(
+                sock,
+                "api.github.com",
+                443,
+                Instant::now() + Duration::from_secs(5),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("proxy"), "{err}");
+            let _ = seen.join();
+        }
+    }
+
+    #[test]
+    fn the_client_reaches_a_loopback_origin_directly_even_with_a_proxy_set() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let mut client = Client::new(
+            "t",
+            Policy {
+                loopback_origin: Some(("127.0.0.1".into(), port)),
+            },
+            Duration::from_secs(2),
+            None,
+        )
+        .unwrap();
+        client.proxy = Proxy::parse("http://127.0.0.1:9", "");
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = [0_u8; 512];
+            let _ = s.read(&mut buf);
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let mut body = Vec::new();
+        let got = client
+            .get(
+                &format!("http://127.0.0.1:{port}/x"),
+                &[],
+                100,
+                Duration::from_secs(5),
+                &mut |c| {
+                    body.extend_from_slice(c);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(got.status, 200);
+        assert_eq!(body, b"ok");
+        h.join().unwrap();
     }
 }
