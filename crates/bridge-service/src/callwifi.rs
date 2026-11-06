@@ -494,6 +494,18 @@ impl CallWifi {
         at != 0 && now_ms < at + ECHO_HANGOVER_MS
     }
 
+    /// The playout thread calls this with every rendered far-party frame: loud enough stamps `far_talk_at`.
+    fn note_far_audio(&self, pcm: &[i16], now_ms: u64) {
+        if frame_rms(pcm) >= FAR_TALK_RMS {
+            self.far_talk_at.store(now_ms + 1, Ordering::Relaxed);
+        }
+    }
+
+    /// The microphone thread asks this before every frame: is it closed (zeroed) now?
+    fn mic_held(&self, now_ms: u64) -> bool {
+        self.guard_on() && self.far_talking(now_ms)
+    }
+
     pub fn set_echo(&self, mode: EchoMode) {
         let v = match mode {
             EchoMode::Auto => 0,
@@ -1022,9 +1034,7 @@ impl CallWifi {
                 break;
             };
             let pcm = d.render(&slot);
-            if frame_rms(pcm) >= FAR_TALK_RMS {
-                self.far_talk_at.store(self.now_ms() + 1, Ordering::Relaxed);
-            }
+            self.note_far_audio(pcm, self.now_ms());
             if p.write(pcm).is_err() {
                 let mut g = self.lock();
                 if let Some(id) = g
@@ -1106,7 +1116,7 @@ impl CallWifi {
                 break;
             }
             // The echo guard: silence (still sent, so the phone's stream keeps its timing) while the far party talks.
-            let held = self.guard_on() && self.far_talking(self.now_ms());
+            let held = self.mic_held(self.now_ms());
             if held {
                 pcm.fill(0);
             }
@@ -1801,6 +1811,44 @@ mod tests {
                 on: true,
             },
         );
+    }
+
+    #[test]
+    fn decoded_far_audio_stamps_the_guard_only_when_loud_and_the_microphone_is_held_for_the_hangover()
+     {
+        let r = rig();
+        let h = &r.hub;
+        let tone = |amp: i16| -> Vec<i16> {
+            (0..FRAME_SAMPLES)
+                .map(|i| if i % 2 == 0 { amp } else { -amp })
+                .collect()
+        };
+        // Silence and a level just under the threshold never stamp.
+        h.note_far_audio(&vec![0; FRAME_SAMPLES], 500);
+        h.note_far_audio(&tone(300), 500);
+        assert_eq!(h.far_talk_at.load(Ordering::Relaxed), 0);
+        assert!(!h.mic_held(500));
+        // The threshold itself stamps (now + 1), and a quieter frame later does not move it.
+        h.note_far_audio(&tone(330), 1_000);
+        assert_eq!(h.far_talk_at.load(Ordering::Relaxed), 1_001);
+        h.note_far_audio(&tone(100), 1_100);
+        assert_eq!(h.far_talk_at.load(Ordering::Relaxed), 1_001);
+        // Auto with the guard decided on: held through the hangover, open after it.
+        h.echo_auto.store(true, Ordering::Relaxed);
+        assert!(h.mic_held(1_001));
+        assert!(h.mic_held(1_001 + ECHO_HANGOVER_MS - 1));
+        assert!(!h.mic_held(1_001 + ECHO_HANGOVER_MS));
+        // Louder far audio extends it.
+        h.note_far_audio(&tone(5_000), 1_200);
+        assert!(h.mic_held(1_200 + ECHO_HANGOVER_MS));
+        // The guard decided off, or the user's off, never holds.
+        h.echo_auto.store(false, Ordering::Relaxed);
+        assert!(!h.mic_held(1_200));
+        h.set_echo(EchoMode::On);
+        assert!(h.mic_held(1_200));
+        h.set_echo(EchoMode::Off);
+        h.echo_auto.store(true, Ordering::Relaxed);
+        assert!(!h.mic_held(1_200));
     }
 
     #[test]
