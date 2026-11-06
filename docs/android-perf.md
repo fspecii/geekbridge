@@ -113,6 +113,23 @@ first. Already checked and exhausted: R8 and `shrinkResources` are on, `DebugNet
 the release dex, the library is stripped with a single ABI copy each, and the 112 kB `resources.arsc` plus 60 kB of widget PNGs are the only
 resources of note. The APK is 86 % native library by size, so the dex budget is the one that binds.
 
+### Dex savings 2026-11-06: Kotlin null-check intrinsics stripped from the release dex
+
+`classes.dex` 594 196 B -> 567 180 B (-27 016 B, 4.5 %), headroom 5 804 -> 32 820 B; the budget stays 600 000. About 1 500 call sites of
+`Intrinsics.checkNotNullParameter` / `checkNotNullExpressionValue` (a string constant plus an invoke each, and the parameter-name strings) were
+the largest single item. `proguard-rules.pro` now has an `-assumenosideeffects` rule for those four methods (release only: debug builds and
+unit tests keep the checks; `!!` and `lateinit` checks are not touched). Behaviour: they fire only when Java or the framework passes null into
+a non-null Kotlin parameter, and without them the same null throws a little later at the first use.
+
+Analysed and left alone: the dex is 340 kB of code in 2 260 methods (all app code; Kotlin stdlib is 28 kB), 65 kB of strings, 28 kB method ids;
+debug-only code (`DebugNetHold`, call audio) is already absent; `-Xlambdas=class -Xsam-conversions=class` made the dex 2.7 kB larger and
+`-Xstring-concat=inline` 0.1 kB larger; only two keep rules exist (`NativeBridge` natives, `*Action.INSTANCE`) and neither is broad. Checked with
+the CI recipe (universal and arm64-only release; `scripts/android-size-check.sh` dex row ok, the APK rows only differ from CI because the local
+native libraries are not the CI profile), `testDebugUnitTest`, `lintDebug`, and a smoke of an R8-minified, debuggable, debug-signed build of the
+same rules on a private API 36 clone: install, first-run wizard, Home render, no app crash in logcat. The pairing e2e stages could not be used
+as a check (the stale `scripts/e2e-android.sh` wizard navigation fails on the current first-run screens), so link/SMS/calls/share/update-check
+are covered by the unchanged keep rules (the new rule only removes null-check calls), not by a run.
+
 ## Re-measurement 2026-11-06 (0af48d0ae, release, R8)
 
 Same recipe as the audit (`scripts/android-perf.sh size`, CI profile native libraries, R8, throwaway-signed), on a private AVD clone
