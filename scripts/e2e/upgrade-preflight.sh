@@ -176,7 +176,12 @@ uchk app-restarts-by-itself $([[ -n "$pid0" ]]; echo $?) "no tap on the icon: MY
 debuggable && files_after="$(phone_files)" || files_after=""
 if ((OLD_DEBUGGABLE)); then
   # the files may only differ in the app's own bookkeeping (versions file, updates.xml, gb_state.xml, caches)
-  diffs="$(diff <(echo "$files_before") <(echo "$files_after") | grep '^[<>]' | grep -v -E 'updates\.xml|gb_state\.xml|WebView|app_|cache' | head -8)"
+  # geekbridge_whatsnew.xml is the "last seen version" for the What's new card: it is meant to move on an upgrade.
+  pf_diffs() { diff <(echo "$files_before") <(echo "$files_after") | grep '^[<>]' | grep -v -E 'updates\.xml|gb_state\.xml|geekbridge_whatsnew\.xml|WebView|app_|cache' | head -8; }
+  diffs="$(pf_diffs)"
+  # the restarted app may be writing a preference file right now (write to .bak, rename): look once more before judging
+  if [[ -n "$diffs" ]]; then sleep 6; files_after="$(phone_files)"; diffs="$(pf_diffs)"; fi
+  urec phone-bookkeeping-changed INFO "$(diff <(echo "$files_before") <(echo "$files_after") | grep '^>' | awk '{print $3}' | tr '\n' ' ')"
   uchk phone-private-files-intact $([[ -z "$diffs" ]]; echo $?) "${diffs:-no private file changed apart from bookkeeping}"
   uchk phone-trust-record-kept $([[ -n "$(echo "$files_after" | grep 'files/kde/trusted_peers.json')" ]]; echo $?) "files/kde/trusted_peers.json present after the upgrade"
   g="$(phone_pref geekbridge_grants)"; uchk phone-grants-kept $([[ "$g" == *"$DESK_ID"* && "$g" == *sms* ]]; echo $?) "per-computer opt-ins for the desktop still in geekbridge_grants"
