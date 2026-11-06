@@ -1189,6 +1189,14 @@ mod tests {
         let addr = l.local_addr().unwrap();
         let h = std::thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
+            // Read the CONNECT request first: closing with it unread makes Windows reset the connection and
+            // discard the reply bytes, so the client would see a reset instead of the cap.
+            let mut head = Vec::new();
+            let mut b = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                s.read_exact(&mut b).unwrap();
+                head.push(b[0]);
+            }
             let _ = s.write_all(&vec![b'a'; 100_000]);
         });
         let sock = TcpStream::connect(addr).unwrap();

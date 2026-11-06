@@ -968,7 +968,11 @@ mod dial_tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&e, KdeError::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused),
+            // Windows retries a refused connect for about two seconds and may then report a timeout.
+            matches!(&e, KdeError::Io(io) if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+            )),
             "{e:?}"
         );
     }
