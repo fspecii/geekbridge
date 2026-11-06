@@ -12,11 +12,17 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
 - Android: when Android refuses to restart the background connection after a reboot or an update, a quiet **Tap to
   reconnect** notification appears instead of silence, and goes away once the connection is back.
 - Android: each linked computer now appears by name at the top of the Share sheet, so one tap on "Send to <computer>" sends the file or text straight there (Android 10 and later; the entry holds only the computer's name and goes away when you unlink it)
+- Desktop: after the phone app is reinstalled, the new link is shown with a note that a phone with that name is already
+  linked, and the old entry is marked so it can be unlinked. Nothing is merged: the new certificate still needs the typed
+  code, and the new link starts with every sharing option off.
 
 ### Changed
 - `geekbridge-ctl`: every command has its own `--help` (usage, what it does, flags, one example); a mistake prints one error and that command's usage only. `clipboard image-limit` takes whole MiB or KiB.
 - The idle desktop service now settles at about 2.6-2.8 MB resident (CI-measured; it was about 8 MB): idle pages of the binary and read-only libraries are handed back after start. The first version of this could, in a rare case, advise on a library that had just been unloaded; it now touches only the loader's read-only segments under the loader's lock, with a test.
 - Android: Back in the setup wizard from a step opened from Home, a widget or an overview row now returns there instead of walking through every earlier step; shorter wording for Caller number and Contacts.
+- Android: the battery step says "You chose not to allow this" after a No in Android's dialog, with Try again and Open app
+  settings; the Diagnostics and developer link card say "linked" instead of "paired"; pasted or opened links no longer
+  say "you scanned" or "QR code"; the Share with computer step has one intro instead of three.
 
 ### Fixed
 - Calls: a computer allowed on the phone while a call is already ringing or live is now told the call state at once (it used to see nothing until the next call event).
