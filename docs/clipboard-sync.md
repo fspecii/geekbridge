@@ -95,7 +95,7 @@ or `ClipboardSettings` over the control API. It must include a modifier.
 ### `geekbridge-ctl clipboard …`
 
 `status`, `paste-from-phone [DEVICE_ID] [--notify]`, `push-to-phone [DEVICE_ID]`, `window SECONDS`,
-`hotkey [COMBO]`, `image-limit MIB`. Over the control API: `ClipboardStatus`, `ClipboardPull`, `ClipboardPush`,
+`hotkey [COMBO]`, `image-limit SIZE` (whole MiB, or KiB as `1536KiB`). Over the control API: `ClipboardStatus`, `ClipboardPull`, `ClipboardPush`,
 `ClipboardSettings` (`docs/service-integration.md`).
 
 ## Wire protocol

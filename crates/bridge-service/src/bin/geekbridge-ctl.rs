@@ -24,7 +24,7 @@ Commands:
                                       the desktop apps draw it as a QR code the phone scans
   test-connection [DEVICE_ID|IP PORT] check why a phone and this computer can't talk, in plain words
   approve CHALLENGE_ID CODE           approve; CODE is the verification key shown on the phone
-  deny CHALLENGE_ID
+  deny CHALLENGE_ID                   refuse a pending pairing
   disconnect DEVICE_ID                close the link, keep the pairing
   unpair DEVICE_ID                    forget the device
   rename NAME                         set this computer's name (shown on phones from their next connection)
@@ -99,7 +99,7 @@ Commands:
   clipboard push-to-phone [DEVICE_ID] send this computer's clipboard (image/HTML/URL/text) to a phone
   clipboard window SECONDS            how recently a phone item must have been copied (5-600)
   clipboard hotkey [COMBO]            show or set the paste-from-phone hotkey (default Ctrl+Shift+V)
-  clipboard image-limit MIB           largest image accepted or sent (1-32)
+  clipboard image-limit SIZE          largest image accepted or sent, as whole MiB (2) or KiB (1536KiB); 1-32 MiB
   update [status|check|download|skip VERSION|channel stable|dev|enable|disable]
                                       look for a newer GitHub release, download and SHA-256-verify
                                       it; default: status
@@ -187,10 +187,111 @@ fn about_command(port: u16, state_dir: &std::path::Path, version_flag: bool) {
     }
 }
 
+const EXAMPLES: &[(&str, &str)] = &[
+    ("about", "about"),
+    ("status", "status --waybar"),
+    ("events", "events 120"),
+    ("connect", "connect PHONE_ID 192.168.1.20 1716"),
+    ("pair", "pair PHONE_ID await"),
+    ("pair-qr", "pair-qr"),
+    ("test-connection", "test-connection 192.168.1.20 1716"),
+    ("approve", "approve CHALLENGE_ID 4F7K2"),
+    ("deny", "deny CHALLENGE_ID"),
+    ("disconnect", "disconnect PHONE_ID"),
+    ("unpair", "unpair PHONE_ID"),
+    ("rename", "rename \"Desk\""),
+    ("consent", "consent PHONE_ID clipboard on"),
+    ("notifications", "notifications PHONE_ID --json"),
+    ("photos", "photos thumb PHONE_ID PHOTO_ID /tmp/p.jpg"),
+    ("phone-log", "phone-log PHONE_ID -n 50"),
+    ("phone-state", "phone-state PHONE_ID"),
+    ("ping", "ping PHONE_ID"),
+    ("agenda", "agenda Ann 2026-11-06 3"),
+    (
+        "calendar-add",
+        "calendar-add PHONE_ID CAL_ID Lunch 1793000000000 45 Cafe",
+    ),
+    (
+        "calendar-update",
+        "calendar-update PHONE_ID EVENT_ID Lunch 1793000000000 60",
+    ),
+    ("calendar-delete", "calendar-delete PHONE_ID EVENT_ID"),
+    ("calendar-retry", "calendar-retry PHONE_ID OP_ID"),
+    ("agenda-refresh", "agenda-refresh PHONE_ID"),
+    ("messages", "messages PHONE_ID THREAD_ID"),
+    ("messages-refresh", "messages-refresh PHONE_ID"),
+    (
+        "messages-send",
+        "messages-send PHONE_ID +15551234567 \"on my way\"",
+    ),
+    ("messages-resend", "messages-resend PHONE_ID SEND_ID"),
+    ("messages-read", "messages-read PHONE_ID THREAD_ID"),
+    ("privacy", "privacy set message_text on"),
+    ("calling", "calling"),
+    ("call-audio", "call-audio use --output NAME"),
+    ("callwifi", "callwifi status --json"),
+    ("calls", "calls --reveal"),
+    ("call", "call dial +15551234567 --yes"),
+    ("hotkey", "hotkey status"),
+    ("clipboard", "clipboard image-limit 1536KiB"),
+    ("update", "update check"),
+    ("whats-new", "whats-new"),
+    ("send-file", "send-file PHONE_ID ./photo.jpg"),
+    ("send-text", "send-text PHONE_ID \"hello\""),
+    ("send-url", "send-url PHONE_ID https://example.org"),
+    ("share", "share allow PHONE_ID on"),
+    ("call-overlay-test", "call-overlay-test"),
+    ("doctor", "doctor"),
+    ("diagnose", "diagnose"),
+    ("report", "report --preview"),
+    ("autostart", "autostart enable"),
+    ("tray", "tray status"),
+    ("firewall", "firewall"),
+    ("token-path", "token-path"),
+];
+
+thread_local!(static COMMAND: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) });
+
+/// The lines of `list` (the command list layout: entries at two spaces, continuations deeper) of `cmd`.
+fn help_lines(list: &str, cmd: &str, out: &mut String) {
+    let mut on = false;
+    for line in list.lines() {
+        if line.starts_with("  ") && !line[2..].starts_with(' ') {
+            on = line[2..].split(' ').next() == Some(cmd);
+        } else if !line.starts_with("  ") {
+            on = false;
+        }
+        if on {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+}
+
+/// Usage of one command, cut from the global list, or None when there is no such command.
+fn help_text(cmd: &str) -> Option<String> {
+    let mut out = String::new();
+    // The calls family has its own, fuller list.
+    let list = match cmd {
+        "calls" | "call" => bridge_service::call_cli::USAGE,
+        _ => USAGE,
+    };
+    help_lines(list, cmd, &mut out);
+    let example = EXAMPLES.iter().find(|e| e.0 == cmd)?.1;
+    (!out.is_empty()).then(|| format!("{out}Example: geekbridge-ctl {example}"))
+}
+
+/// What a misuse error appends: the failing command's usage, or the whole list before one is known.
+fn usage_hint() -> String {
+    COMMAND
+        .with_borrow(|c| help_text(c))
+        .unwrap_or_else(|| USAGE.to_owned())
+}
+
 fn text(arg: Option<&OsString>, what: &str) -> Result<String, String> {
     arg.and_then(|a| a.to_str())
         .map(str::to_owned)
-        .ok_or_else(|| format!("missing {what}\n\n{USAGE}"))
+        .ok_or_else(|| format!("missing {what}\n\n{}", usage_hint()))
 }
 
 fn run(mut args: Vec<OsString>) -> Result<(), String> {
@@ -226,6 +327,28 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
         }
     }
     let command = text(args.first(), "command")?;
+    COMMAND.with_borrow_mut(|c| c.clone_from(&command));
+    let sub = |i: usize| args.get(i).and_then(|a| a.to_str());
+    if command == "help" {
+        return match sub(1) {
+            None => {
+                println!("{USAGE}");
+                Ok(())
+            }
+            Some(c) => help_text(c)
+                .map(|h| println!("{h}"))
+                .ok_or_else(|| format!("unknown command: {c}\n\n{USAGE}")),
+        };
+    }
+    if command != "hotkey"
+        && [sub(1), sub(2)]
+            .iter()
+            .any(|a| matches!(a, Some("-h" | "--help")))
+        && let Some(h) = help_text(&command)
+    {
+        println!("{h}");
+        return Ok(());
+    }
     let state_dir = state_dir
         .or_else(ipc::default_state_dir)
         .ok_or("cannot determine the state directory; pass --state-dir")?;
@@ -576,7 +699,7 @@ fn run(mut args: Vec<OsString>) -> Result<(), String> {
                 .parse()
                 .map_err(|_| "THREAD_ID must be a number")?,
         },
-        other => return Err(format!("unknown command: {other}\n\n{USAGE}")),
+        other => return Err(format!("unknown command: {other}\n\n{}", usage_hint())),
     };
     let token = load_token(&state_dir)?;
     let (response, body) = ipc::call_with_body(port, &token, &request).map_err(|e| match e {
@@ -752,7 +875,8 @@ fn privacy_command(
         }
         _ => {
             return Err(format!(
-                "usage: geekbridge-ctl privacy [show|set KEY on|off]\n\n{USAGE}"
+                "usage: geekbridge-ctl privacy [show|set KEY on|off]\n\n{}",
+                usage_hint()
             ));
         }
     };
@@ -917,16 +1041,22 @@ fn clipboard_command(
             Ok(())
         }
         "image-limit" => {
-            let mib: u64 = word(1, "MIB")?
-                .parse()
-                .map_err(|_| "MIB must be a number")?;
+            let size = word(1, "SIZE")?;
+            let (num, unit) = match size.strip_suffix("KiB") {
+                Some(n) => (n, 1024),
+                None => (size.strip_suffix("MiB").unwrap_or(&size), 1 << 20),
+            };
+            let bytes = num
+                .parse::<u64>()
+                .map_err(|_| "SIZE must be a whole number of MiB (2) or KiB (1536KiB)")?
+                .saturating_mul(unit);
             clipboard_call(
                 port,
                 &token,
                 &Request::ClipboardSettings {
                     window_ms: None,
                     hotkey: None,
-                    max_image_bytes: Some(mib.saturating_mul(1024 * 1024)),
+                    max_image_bytes: Some(bytes),
                 },
             )?;
             println!("ok (clamped to 1-32 MiB)");
@@ -953,7 +1083,10 @@ fn clipboard_command(
             }
             Ok(())
         }
-        other => Err(format!("unknown clipboard command: {other}\n\n{USAGE}")),
+        other => Err(format!(
+            "unknown clipboard command: {other}\n\n{}",
+            usage_hint()
+        )),
     }
 }
 
@@ -965,7 +1098,7 @@ fn tray_command(args: &[OsString], state_dir: &std::path::Path) -> Result<(), St
             tray::set_enabled(state_dir, on == "enable")
                 .map_err(|e| format!("cannot change the tray setting: {e}"))?;
         }
-        Some(other) => return Err(format!("unknown tray command: {other}\n\n{USAGE}")),
+        Some(other) => return Err(format!("unknown tray command: {other}\n\n{}", usage_hint())),
     }
     println!(
         "tray icon: {} (a running service picks the change up at its next start)",
@@ -984,7 +1117,12 @@ fn autostart_command(args: &[OsString]) -> Result<(), String> {
         None | Some("status") => Action::Status,
         Some("enable") => Action::Enable,
         Some("disable") => Action::Disable,
-        Some(other) => return Err(format!("unknown autostart command: {other}\n\n{USAGE}")),
+        Some(other) => {
+            return Err(format!(
+                "unknown autostart command: {other}\n\n{}",
+                usage_hint()
+            ));
+        }
     };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let service = exe.with_file_name(autostart::service_file_name());
@@ -1495,7 +1633,7 @@ fn phone_log_command(args: &[OsString], state_dir: &std::path::Path) -> Result<(
                     .and_then(|v| v.parse().ok())
                     .ok_or("-n expects a number of lines")?;
             }
-            _ => return Err(format!("unexpected argument\n\n{USAGE}")),
+            _ => return Err(format!("unexpected argument\n\n{}", usage_hint())),
         }
     }
     let path = bridge_service::phone_debug::log_dir(state_dir).join(format!("{id}.log"));
@@ -1921,7 +2059,12 @@ fn update_command(args: &[OsString], port: u16, state_dir: &std::path::Path) -> 
         ),
         "enable" => (Request::UpdateSetEnabled { enabled: true }, None),
         "disable" => (Request::UpdateSetEnabled { enabled: false }, None),
-        other => return Err(format!("unknown update command: {other}\n\n{USAGE}")),
+        other => {
+            return Err(format!(
+                "unknown update command: {other}\n\n{}",
+                usage_hint()
+            ));
+        }
     };
     let mut status = update_call(port, &token, &request)?;
     if let Some(busy) = wait_for {
@@ -2021,7 +2164,7 @@ fn share_command(
         "send-file" => {
             let device_id = arg(0, "DEVICE_ID")?;
             if args.len() < 2 {
-                return Err(format!("missing PATH\n\n{USAGE}"));
+                return Err(format!("missing PATH\n\n{}", usage_hint()));
             }
             let mut failed = 0;
             for path in &args[1..] {
@@ -2111,7 +2254,12 @@ fn share_command(
                     receive: None,
                     auto_accept: Some(onoff(args.get(2))?),
                 },
-                other => return Err(format!("unknown share command: {other}\n\n{USAGE}")),
+                other => {
+                    return Err(format!(
+                        "unknown share command: {other}\n\n{}",
+                        usage_hint()
+                    ));
+                }
             };
             match share_call(port, &token, &request)? {
                 Response::Share(s) => describe_share(&s),
@@ -2185,5 +2333,84 @@ mod usage_tests {
                 "geekbridge-ctl --help does not list the consent feature {name}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+
+    fn commands() -> Vec<&'static str> {
+        let mut v: Vec<&str> = USAGE
+            .lines()
+            .filter(|l| l.starts_with("  ") && !l[2..].starts_with(' '))
+            .filter_map(|l| l[2..].split(' ').next())
+            .collect();
+        v.dedup();
+        v
+    }
+
+    #[test]
+    fn every_listed_command_has_help_and_an_example() {
+        let all = commands();
+        assert!(all.len() > 40, "{all:?}");
+        for c in &all {
+            let h = help_text(c).unwrap_or_else(|| panic!("no help for {c}"));
+            assert!(h.starts_with(&format!("  {c}")), "{c}: {h}");
+            assert!(h.contains("\nExample: geekbridge-ctl "), "{c}");
+        }
+        for (c, _) in EXAMPLES {
+            assert!(all.contains(c), "example for unlisted command {c}");
+        }
+    }
+
+    #[test]
+    fn help_mentions_only_flags_the_code_knows() {
+        let code = [
+            include_str!("geekbridge-ctl.rs"),
+            include_str!("../call_cli.rs"),
+            include_str!("../call_audio_cli.rs"),
+            include_str!("../callwifi_cli.rs"),
+            include_str!("../callwifi_setup.rs"),
+            include_str!("../hotkey_cli.rs"),
+            include_str!("../update_cli.rs"),
+        ];
+        for c in commands() {
+            for flag in help_text(c)
+                .unwrap()
+                .split(|ch: char| !(ch == '-' || ch.is_ascii_alphanumeric()))
+                .filter(|w| w.starts_with("--") && w.len() > 2)
+            {
+                let quoted = format!("\"{flag}\"");
+                assert!(
+                    code.iter().any(|s| s.contains(&quoted)),
+                    "{c}: help names {flag}, which no code parses"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_help_succeeds_and_misuse_names_only_its_command() {
+        let dir = std::env::temp_dir();
+        let run_with = |words: &[&str]| {
+            let mut a: Vec<OsString> = vec!["--state-dir".into(), dir.clone().into()];
+            a.extend(words.iter().map(OsString::from));
+            run(a)
+        };
+        for words in [
+            &["ping", "--help"][..],
+            &["help", "ping"],
+            &["clipboard", "image-limit", "-h"],
+        ] {
+            assert!(run_with(words).is_ok(), "{words:?}");
+        }
+        let err = run_with(&["ping"]).unwrap_err();
+        assert!(
+            err.starts_with("missing DEVICE_ID\n\n  ping DEVICE_ID"),
+            "{err}"
+        );
+        assert!(!err.contains("token-path"), "{err}");
+        assert!(run_with(&["help", "nope"]).is_err());
     }
 }
