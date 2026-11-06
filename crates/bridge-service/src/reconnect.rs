@@ -33,6 +33,18 @@ pub async fn pause(span: Duration) {
     }
 }
 
+/// How long an idle pass may wait. Phones the book remembers (used-up budget, pause) are forgotten once they have
+/// been silent for `ttl_ms`; `remembered` is `(age of the last announcement in ms)` for each of them. The wait ends
+/// just after the first of them turns that old, so a phone that comes back right after the silence finds its history
+/// gone (a fresh budget, a pause lifted), as it did when the pass ran every 2 s, instead of up to a wait later.
+pub fn idle_wait(remembered: &[u64], ttl_ms: u64) -> Duration {
+    remembered
+        .iter()
+        .filter(|age| **age < ttl_ms)
+        .map(|age| Duration::from_millis(ttl_ms - age + 100))
+        .fold(IDLE_EVERY, Duration::min)
+}
+
 #[derive(Debug)]
 struct Entry {
     tries: u32,
@@ -133,6 +145,11 @@ impl Book {
                 e.tries < MAX_TRIES
             }
         })
+    }
+
+    /// Phones this book remembers something about (a used-up budget, a pause).
+    pub fn ids(&self) -> Vec<String> {
+        self.entries.keys().cloned().collect()
     }
 
     /// Redial attempts made for this phone since its link dropped, and whether the user paused it.
@@ -256,6 +273,26 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(t.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_idle_wait_ends_when_a_remembered_phone_has_been_silent_long_enough() {
+        let ttl = 90_000;
+        assert_eq!(idle_wait(&[], ttl), IDLE_EVERY);
+        assert_eq!(
+            idle_wait(&[1_000], ttl),
+            IDLE_EVERY,
+            "89 s left: the plain wait is shorter"
+        );
+        assert_eq!(
+            idle_wait(&[70_000, 10_000], ttl),
+            Duration::from_millis(20_100)
+        );
+        assert_eq!(
+            idle_wait(&[95_000], ttl),
+            IDLE_EVERY,
+            "already forgotten by this pass"
+        );
     }
 
     #[test]
