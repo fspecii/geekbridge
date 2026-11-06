@@ -9,7 +9,7 @@ emulators or `android/app/build`).
 
 ## Budgets
 
-> Re-measured 2026-11-05 at 6a4122922: APK 7.10 MB / arm64-only 3.55 MB / dex 0.58 MB are over the budgets below, cold start median 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
+> Re-measured 2026-11-06 at 0af48d0ae (see "Re-measurement 2026-11-06" below): universal APK 7.13 MB unsigned, arm64-only 3.56 MB, dex 0.59 MB, all inside the budgets; cold start unchanged against 6a4122922 on the same AVD (A/B); idle PSS 26.7 MB, 32-33 threads, no alarm, job or wake lock of its own. Earlier: 6a4122922 measured 7.10 / 3.55 / 0.58 MB, cold start 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
 
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
@@ -86,6 +86,52 @@ while an Agenda widget is on the home screen; the worker thread exits 10 s after
 * **Foreground service with nothing paired:** after the phone's own "Unpair" (Diagnostics) the service is gone while
   the screen is open and after closing the app, no service notification remains, and a simulated
   `MY_PACKAGE_REPLACED` does not restart it.
+
+## Re-measurement 2026-11-06 (0af48d0ae, release, R8)
+
+Same recipe as the audit (`scripts/android-perf.sh size`, CI profile native libraries, R8, throwaway-signed), on a private AVD clone
+(API 36 google_apis x86_64, 2 GB RAM, own console/adb/service ports). New since 6a4122922: Update-available chip and 12 h check, first-run
+changes, accessibility labels, SMS observer and receiver set, `GeekBridgeInCallService`, share parallel prefetch (`DebugNetHold` is debug-only and
+not in the release dex).
+
+| Metric | Budget | 6a4122922 | 0af48d0ae | Status |
+| --- | --- | --- | --- | --- |
+| Release APK, both ABIs, unsigned | <= 7.25 MB | 7 102 616 B | 7 131 300 B (+28.7 kB; 7 142 047 B aligned + signed) | ok |
+| Release APK, arm64 only, unsigned | <= 3.6 MB | 3 545 623 B | 3 560 987 B (+15.4 kB) | ok, 39 kB left |
+| `classes.dex` | <= 0.6 MB | 576 680 B | 590 644 B (590 884 B with the lazy SMS thread below) | ok, 9 kB left |
+| `libgeekbridge_android.so` arm64 / x86_64 | | 3 058 896 / 3 552 000 B | 3 073 184 / 3 563 224 B | |
+| `resources.arsc` | | 111 kB | 112 kB | |
+| Cold start `am start -W` | <= 1000 ms (old AVD, load 25-40) | 877 ms median (load 15-97) | **1577 ms, same as 6a4122922's 1593 ms on this AVD** (A/B below) | no regression; this AVD is slower |
+| Idle PSS, paired + connected, app closed, screen off | <= 35 MB | 22.8-26.5 MB (30 min) | 24.4 MB at start, 26.7 MB after 1 to 10 min, flat (26 658 to 26 682 kB, minute 1 to 9) | ok |
+| Threads, same state | <= 32 | 26-27 closed, 31 after 30 min | 33 (32 with the lazy SMS thread), 115 fds, 10 sockets | 33 was 1 over; 32 with the lazy SMS thread is at the budget |
+| Alarms / jobs / wake locks owned while idle | 0 | 0 / 0 / 0 | 0 / 0 / 0 | ok |
+| Foreground service, nothing paired | not running | not running | not running after the computer unpairs (0 `LinkService` records, no listener on 1716) | ok |
+
+* **Cold start, measured against the old build on the same AVD.** This fresh AVD is about 1.6x slower than the one behind the 877 ms figure (a system app, Settings,
+  cold-starts in 905-1249 ms here, and the guest swaps), so the absolute number is not comparable. Interleaved, same AVD, `--no-incremental` installs, 3 rounds
+  of 8 cold starts each: 6a4122922 median 1593 ms (1425-1720), 0af48d0ae median 1577 ms (1425-1832). The new Application.onCreate work (What's new check, update
+  state) is on the same worker or a few preference reads; nothing measurable on the main thread. The old APK rebuilt from 6a4122922 is byte-identical in size
+  to the audit's (7 102 616 B), so the A/B is of the audited build.
+* **Idle, 10 min, screen off, unplugged** (`idle` stage, `IDLE_MIN=10`): PSS sampled every minute 26 658-26 682 kB (Java 3.6 MB, native 5.5 MB), RSS 132 MB, 33 threads,
+  115 fds. CPU 36 ticks (0.36 s) over the 10 min, 270 voluntary context switches. A second 5 min run on the build with the lazy SMS thread: PSS 25.1 -> 27.3 MB,
+  32 threads, 6 ticks.
+* **Alarms, jobs, wake locks, battery stats:** `dumpsys alarm` and `dumpsys jobscheduler` mention the package only in the standby-bucket and exemption tables (the
+  `idle.alarms` / `idle.jobs` / `idle.wakelocks` counts the script prints are line counts of those tables and of `dumpsys power`'s acquire/release history, not live
+  objects: `Wake Locks: size=4` held nothing of ours). `dumpsys batterystats`: no wake lock, no alarm, no job for the uid; `Foreground services: 10m 24s`, CPU 437 ms
+  (user 358 ms, system 79 ms) over 10 min, mobile traffic of the whole device 2.5 kB in. The Update-available notice has no timer of its own: `UpdateNotice.maybeCheck` runs when Home opens and when the link service starts, gated to once a day (`UpdateNoticePolicy`, 7 days on a metered network), so it adds no alarm or job (none was seen in the 10 min). The only `AlarmManager`/timer code remains the Agenda widget tick.
+* **Messages sync, 2 000 messages in the provider (100 threads x 20, written into `mmssms.db`):** the conversation list (100 threads) reaches the computer within 3 s
+  of the link coming up. Phone PSS 32.8 MB before (just after starting the app, 9.0 MB Java) -> 33.3 MB right after the list -> 32.2 MB with the app open and 10
+  threads refreshed -> 31.8 MB after closing the app and a GC; back to 27.3 MB after the history refresh burst and a GC. High-water mark unchanged (137 MB
+  VmHWM, shared mappings). The 2 000 rows are not held in memory afterwards. The desktop's per-thread history paging
+  (`messages-refresh DEVICE THREAD`) still showed one message per thread after 10 s in this run, so the full 2 000 never crossed the link here; that path is not
+  measured.
+* **Threads by name (idle, closed, paired):** 7 binder, 3 `geekbridge-call*`, 2 `geekbridge-data*`, 2 `gb-transport`, 1 each of `geekbridge-sms-status`, `geekbridge-link`,
+  `geekbridge-transport`, plus ART and UI-toolkit threads. The one that was not needed at idle was the `geekbridge-sms-status` `HandlerThread`: `AndroidSmsSender`
+  is built whenever the link starts, but only a send uses the thread. It is now created lazily (`IdleThreadsTest`). The rest are single-thread executors that start on
+  first use, or link workers.
+* **Not re-measured:** the 50-reconnect and large-transfer runs (no code under them changed), real phones. The paired/connected release build here has no
+  `DebugNetHold`, so the emulator's redirected link can drop and redial about every 2 s (`reports/e2e-link-drops.md`); the idle numbers are of a link that was up at the
+  start and at the end.
 
 ## Large transfers (`scripts/android-perf.sh bigxfer`, release build, 2026-11-01)
 

@@ -680,9 +680,10 @@ class AndroidSmsSender(context: Context) : SmsSender {
     private val app = context.applicationContext
     // Status callbacks run here, never on the main thread: the listener takes the engine lock, which the
     // worker holds during provider reads.
-    private val callbacks = Handler(
-        android.os.HandlerThread("geekbridge-sms-status").apply { start() }.looper,
-    )
+    // Lazy: the sender is built whenever the link starts, but the thread is only needed once a text is sent.
+    private val callbacks by lazy {
+        Handler(android.os.HandlerThread("geekbridge-sms-status").apply { start() }.looper)
+    }
     private val requestCodes = java.security.SecureRandom()
 
     // SmsManager is a system service by class only from API 31; before that getSystemService returns null.
