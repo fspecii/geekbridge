@@ -13,6 +13,16 @@ versions follow [Semantic Versioning](https://semver.org/). `scripts/release.sh 
   reconnect** notification appears instead of silence, and goes away once the connection is back.
 - Android: each linked computer now appears by name at the top of the Share sheet, so one tap on "Send to <computer>" sends the file or text straight there (Android 10 and later; the entry holds only the computer's name and goes away when you unlink it)
 
+### Changed
+- `geekbridge-ctl`: every command has its own `--help` (usage, what it does, flags, one example); a mistake prints one error and that command's usage only. `clipboard image-limit` takes whole MiB or KiB.
+- The idle desktop service now settles at about 2.6-2.8 MB resident (CI-measured; it was about 8 MB): idle pages of the binary and read-only libraries are handed back after start. The first version of this could, in a rare case, advise on a library that had just been unloaded; it now touches only the loader's read-only segments under the loader's lock, with a test.
+- Android: Back in the setup wizard from a step opened from Home, a widget or an overview row now returns there instead of walking through every earlier step; shorter wording for Caller number and Contacts.
+
+### Fixed
+- Calls: a computer allowed on the phone while a call is already ringing or live is now told the call state at once (it used to see nothing until the next call event).
+- Battery: a computer allowed on the phone now receives the battery level (it was sent before the phone knew the permission).
+- Privacy: a computer you unlink no longer stays in a backup copy of the share settings (`share.json.bak`), and repeated or forged discovery announcements no longer keep waking the reconnect pass.
+
 ## [0.1.0] - 2026-11-03
 
 First version: a Rust phone bridge for Android and Windows, Linux and macOS desktops. Verified on Linux and an Android

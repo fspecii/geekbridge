@@ -29,7 +29,8 @@ test peers.
   Creating, editing and deleting one-off events from the computer is a separate opt-in.
 - **Clipboard.** Text, links, HTML and images. Computer to phone is automatic; phone to computer is on demand with a
   hotkey (default Ctrl+Shift+V), because Android only lets the app in front read the clipboard.
-- **Share.** Send files, links and text both ways: "Send to computer" in the Android Share sheet, drag and drop on the
+- **Share.** Send files, links and text both ways: "Send to computer" in the Android Share sheet (Android 10 and later: one
+  "Send to <computer name>" row per linked computer, which sends straight there), drag and drop on the
   computer, `geekbridge-ctl send-file`. Transfers are checksummed (up to 8 GiB). Receiving is off until you allow it.
 - **Notifications.** Mirror notifications from the phone apps you choose as desktop banners, with Dismiss and the
   phone's own buttons. Kept in memory only.
@@ -40,7 +41,11 @@ test peers.
   phones, clipboard, calls and Messages, and prints the fix for each problem. Every paired phone without a link gets a
   plain sentence and a suggested fix in Home, the tray and `status`.
 - **Auto-reconnect.** The phone's link service restarts at boot and reconnects with back-off; when you disconnect on
-  the computer on purpose, the phone stays away for a few minutes instead of redialing at once.
+  the computer on purpose, the phone stays away for a few minutes instead of redialing at once. A **Computer link** Quick
+  Settings tile shows whether the phone is connected, and a **Tap to reconnect** notice appears if Android refuses to
+  restart the connection in the background.
+- **Command line and memory.** Every `geekbridge-ctl` command has its own `--help` with usage and an example. The idle
+  desktop service now uses about 2.6-2.8 MB of memory (it was about 8 MB), measured in CI, not on a real PC.
 - **Updater.** The apps check GitHub for a newer release, download it and verify its SHA-256 against `SHA256SUMS`. Only
   final releases are offered, never prereleases. Nothing installs without your click. On Android a small "Update available"
   chip on Home opens the update card. On a Linux per-user install (`install.sh`) **Install update** (or `geekbridge-ctl update
