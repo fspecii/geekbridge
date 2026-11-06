@@ -548,11 +548,7 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<()> {
     let user = CurrentUser::load()?;
     let dir_guard = open_private_dir(dir, &user)?;
     let attrs = PrivateAttrs::new(&user, false)?;
-    let tmp: PathBuf = dir.join(format!(
-        ".{name}.tmp.{}.{}",
-        std::process::id(),
-        rand_suffix()
-    ));
+    let tmp: PathBuf = dir.join(bridge_core::statefile::unique_temp_name(name));
     let result = (|| -> Result<()> {
         // CREATE_NEW never opens an existing object (including a planted
         // link); share mode 0 keeps everyone else out until we are done.
@@ -614,15 +610,6 @@ fn move_replace(from: &Path, to: &Path) -> Result<()> {
         std::thread::sleep(nap);
         nap = (nap * 2).min(Duration::from_millis(100));
     }
-}
-
-fn rand_suffix() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    (t as u64) ^ (u64::from(std::process::id()) << 32)
 }
 
 /// Exclusive byte-range lock (`LockFileEx`) on byte 0 of a private lock file.

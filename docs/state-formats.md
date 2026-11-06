@@ -22,7 +22,7 @@ follows, and the tests that keep them true.
    understood, the store runs read-only/degraded (writes return a clear error such as
    `state_newer`, "written by a newer version … left untouched"), and a diagnostics line is
    printed. Updating again resumes normal operation; nothing was lost.
-5. **Writes are atomic and serialised.** Temp file in the same directory (`O_EXCL`, 0600), `fsync`,
+5. **Writes are atomic and serialised.** Temp file in the same directory (`O_EXCL`, 0600, named `.<file>.tmp.<pid>.<seq>` with a process-wide counter `<seq>`, so overlapping saves of one file in one process never share a temp path; `statefile::unique_temp_name`), `fsync`,
    `rename`, `fsync` of the directory, all under an exclusive cross-process lock
    (`<file>.lock`, `flock`/`LockFileEx`, released if the holder dies). Before replacing a good
    file it is copied to `<file>.bak` (one generation, same permissions). Temp files left by a

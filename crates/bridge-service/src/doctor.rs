@@ -533,7 +533,7 @@ pub fn messages_check(d: &DataDevice, name: &str) -> Check {
 pub fn state_folder_check(dir: &std::path::Path) -> Option<Check> {
     use std::io::{ErrorKind, Write};
     let shown = dir.display();
-    let probe = dir.join(format!(".doctor-probe.tmp.{}", std::process::id()));
+    let probe = dir.join(bridge_core::statefile::unique_temp_name("doctor-probe"));
     let wrote = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

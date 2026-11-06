@@ -178,6 +178,35 @@ impl From<bridge_core::statefile::Error<crate::error::KdeError>> for crate::erro
 
 #[cfg(all(test, unix))]
 mod tests {
+    #[test]
+    fn concurrent_private_writes_of_one_file_all_succeed_and_never_tear() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("state");
+        ensure_private_dir(&dir).unwrap();
+        let target = dir.join("name");
+        let contents: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 20_000]).collect();
+        for _ in 0..20 {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(contents.len()));
+            let hs: Vec<_> = contents
+                .iter()
+                .cloned()
+                .map(|c| {
+                    let (t, b) = (target.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        atomic_write_private(&t, &c)
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap().unwrap();
+            }
+            let got = std::fs::read(&target).unwrap();
+            assert!(contents.contains(&got), "torn or mixed content");
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        }
+    }
+
     use super::*;
     use crate::error::KdeError;
     use std::fs;

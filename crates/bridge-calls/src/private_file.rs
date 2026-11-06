@@ -31,8 +31,10 @@ pub fn replace(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "bad file name"))?;
-    let tmp = path.with_file_name(format!(".{name}.tmp.{}", std::process::id()));
-    if let Err(e) = write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+    let tmp = path.with_file_name(bridge_core::statefile::unique_temp_name(name));
+    if let Err(e) =
+        write(&tmp, bytes).and_then(|()| bridge_core::statefile::rename_replace(&tmp, path))
+    {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -81,5 +83,25 @@ mod tests {
         assert!(replace(&dir_target, b"x").is_err());
         assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 2);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "two");
+    }
+
+    #[test]
+    fn concurrent_replaces_all_succeed_and_leave_one_whole_file() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("choice.json");
+        for _ in 0..20 {
+            let hs: Vec<_> = (0..8u8)
+                .map(|i| {
+                    let f = f.clone();
+                    std::thread::spawn(move || replace(&f, &vec![b'a' + i; 10_000]))
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap().unwrap();
+            }
+            let got = std::fs::read(&f).unwrap();
+            assert!(got.len() == 10_000 && got.iter().all(|b| *b == got[0]));
+            assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1);
+        }
     }
 }

@@ -135,11 +135,7 @@ pub fn atomic_write_private(path: &Path, data: &[u8]) -> Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| KdeError::Store("bad file name".into()))?;
-    let tmp: PathBuf = dir.join(format!(
-        ".{name}.tmp.{}.{}",
-        std::process::id(),
-        rand_suffix()
-    ));
+    let tmp: PathBuf = dir.join(bridge_core::statefile::unique_temp_name(name));
     let result = (|| -> Result<()> {
         let mut f = fs::OpenOptions::new()
             .write(true)
@@ -183,15 +179,6 @@ fn sweep_stale_temps(dir: &Path, name: &str) {
             let _ = fs::remove_file(e.path());
         }
     }
-}
-
-fn rand_suffix() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    (t as u64) ^ (u64::from(std::process::id()) << 32)
 }
 
 /// Exclusive `flock(2)` on a private lock file. Released on drop or when the

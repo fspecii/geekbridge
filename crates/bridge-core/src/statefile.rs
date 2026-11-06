@@ -483,7 +483,7 @@ pub fn write_atomic_plain(path: &Path, data: &[u8]) -> io::Result<()> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "bad file name"))?;
-    let tmp = dir.join(format!(".{name}.tmp.{}", std::process::id()));
+    let tmp = dir.join(unique_temp_name(name));
     let result = (|| {
         // These files often sit next to owner-only secrets in the same private state directory
         // (identity, control token, trust store); the process umask alone must not decide whether
@@ -500,7 +500,7 @@ pub fn write_atomic_plain(path: &Path, data: &[u8]) -> io::Result<()> {
         f.sync_all()?;
         slow_disk_hook();
         failpoint("before_rename");
-        std::fs::rename(&tmp, path)?;
+        rename_replace(&tmp, path)?;
         #[cfg(unix)]
         std::fs::File::open(dir)?.sync_all()?;
         Ok(())
@@ -509,6 +509,46 @@ pub fn write_atomic_plain(path: &Path, data: &[u8]) -> io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     result
+}
+
+/// A temp-file name for a write of `name`: `.<name>.tmp.<pid>.<seq>`. The sequence number is a
+/// process-wide counter, so two overlapping saves of the same file (the blocking pool runs them in
+/// parallel) never share a temp path, whatever the clock resolution. The `<pid>` part is what the
+/// startup sweep (`bridge_kde::fsutil::sweep_dead_temps`) uses to tell a dead writer's leftover from a
+/// live writer's file.
+pub fn unique_temp_name(name: &str) -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!(".{name}.tmp.{}.{seq}", std::process::id())
+}
+
+/// `rename(from, to)` replacing `to`. On Windows an indexer or scanner can briefly hold the target
+/// open, which fails the rename with access denied or a sharing violation: retry up to 5 times over
+/// about 100 ms (see [`retry_transient`]).
+pub fn rename_replace(from: &Path, to: &Path) -> io::Result<()> {
+    retry_transient(|| std::fs::rename(from, to))
+}
+
+/// Run `op`; on Windows retry it (at most 5 tries, 5/10/20/40 ms naps) while it fails with a
+/// transient sharing error. Elsewhere it runs once.
+pub fn retry_transient<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    let mut nap = std::time::Duration::from_millis(5);
+    for attempt in 1.. {
+        match op() {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < 5 && is_transient_sharing_error(&e) => {
+                std::thread::sleep(nap);
+                nap *= 2;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!()
+}
+
+/// ERROR_ACCESS_DENIED (5), ERROR_SHARING_VIOLATION (32), ERROR_LOCK_VIOLATION (33).
+pub fn is_transient_sharing_error(e: &io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
 }
 
 /// Test hook: with `GB_FAILPOINT=<name>` set the process aborts at that point, simulating a crash.
@@ -727,5 +767,80 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.load().unwrap().body["a"], json!(2));
+    }
+
+    #[test]
+    fn concurrent_writers_of_one_file_all_succeed_and_never_tear() {
+        let d = tempfile::tempdir().unwrap();
+        let target = d.path().join("shared.json");
+        let contents: Vec<Vec<u8>> = (0..8u8).map(|i| vec![b'a' + i; 50_000]).collect();
+        for _round in 0..20 {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(contents.len()));
+            let hs: Vec<_> = contents
+                .iter()
+                .cloned()
+                .map(|c| {
+                    let (t, b) = (target.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        b.wait();
+                        write_atomic_plain(&t, &c)
+                    })
+                })
+                .collect();
+            for h in hs {
+                h.join().unwrap().unwrap();
+            }
+            let got = std::fs::read(&target).unwrap();
+            assert!(contents.contains(&got), "torn or mixed content");
+            let left: Vec<_> = std::fs::read_dir(d.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(left.len(), 1, "temp files left behind: {left:?}");
+        }
+    }
+
+    #[test]
+    fn temp_names_are_unique_per_call_and_keep_the_pid_the_sweep_reads() {
+        let a = unique_temp_name("x.json");
+        let b = unique_temp_name("x.json");
+        assert_ne!(a, b);
+        let prefix = format!(".x.json.tmp.{}.", std::process::id());
+        assert!(a.starts_with(&prefix) && b.starts_with(&prefix));
+    }
+
+    #[test]
+    fn transient_retry_is_bounded_and_only_for_sharing_errors() {
+        // A non-transient error is returned at once.
+        let mut n = 0;
+        let r: io::Result<()> = retry_transient(|| {
+            n += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        });
+        assert!(r.is_err());
+        assert_eq!(n, 1);
+        // A simulated sharing violation: on Windows 5 tries then the error; elsewhere once.
+        let mut n = 0;
+        let r: io::Result<()> = retry_transient(|| {
+            n += 1;
+            Err(io::Error::from_raw_os_error(32))
+        });
+        assert!(r.is_err());
+        assert_eq!(n, if cfg!(windows) { 5 } else { 1 });
+        // Recovery after two transient failures (Windows) succeeds.
+        let mut n = 0;
+        let r = retry_transient(|| {
+            n += 1;
+            if n < 3 {
+                Err(io::Error::from_raw_os_error(5))
+            } else {
+                Ok(n)
+            }
+        });
+        if cfg!(windows) {
+            assert_eq!(r.unwrap(), 3);
+        } else {
+            assert!(r.is_err());
+        }
     }
 }
