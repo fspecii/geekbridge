@@ -12,8 +12,8 @@ emulators or `android/app/build`).
 > Re-measured 2026-11-06 at 0af48d0ae (see "Re-measurement 2026-11-06" below): universal APK 7.13 MB unsigned, arm64-only 3.56 MB, dex 0.59 MB, all inside the budgets; cold start unchanged against 6a4122922 on the same AVD (A/B); idle PSS 26.7 MB, 32-33 threads, no alarm, job or wake lock of its own. Earlier: 6a4122922 measured 7.10 / 3.55 / 0.58 MB, cold start 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
 
 **Enforced in CI.** The budgets for the first three rows live in one file, `scripts/android-budgets.env`, in exact decimal bytes
-(**MB here is 10^6 B, not MiB**: 3 560 987 B is quoted as 3.56 MB, which only works as bytes / 10^6): universal APK 7 250 000 B, arm64-only
-APK 3 600 000 B, `classes.dex` 600 000 B. `scripts/android-size-check.sh` reads it, prints a table (bytes, budget, headroom) and exits 1 on
+(**MB here is 10^6 B, not MiB**: 3 560 987 B is quoted as 3.56 MB, which only works as bytes / 10^6): universal APK 7 215 000 B, arm64-only
+APK 3 580 000 B, `classes.dex` 592 000 B (tightened 2026-11-06 from 7 250 000 / 3 600 000 / 600 000 B: CI at 3e81e823a measured 7 114 124 / 3 539 267 / 567 180 B, so headroom is now 100 876 / 40 733 / 24 820 B). `scripts/android-size-check.sh` reads it, prints a table (bytes, budget, headroom) and exits 1 on
 overflow; it runs in the CI job "Android / unit tests, lint, debug APK" (step "Release APK size budgets", also written to the job summary)
 and, for the universal APK, at the end of `scripts/android-perf.sh size`. CI builds the **release** variant (R8 and resource shrinking on, unsigned,
 same CI-profile native libraries as the debug APK there) twice: universal, then `-Pgb.abis=arm64-v8a`. Only packaging and the final steps rerun
@@ -23,9 +23,9 @@ raise in "Size" below in the same commit.
 
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
-| Release APK, phone + emulator ABIs | <= 7.25 MB (was 6.5) | 7.10 MB (7 102 616 B, CI profile, 2026-11-05) | ok |
-| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.6 MB (was 3.5) | 3.55 MB (3 549 719 B) | ok |
-| `classes.dex` (release) | <= 0.6 MB (was 0.5) | 0.58 MB (576 680 B; 2.8 MB unshrunk) | ok |
+| Release APK, phone + emulator ABIs | <= 7.215 MB (was 7.25, 6.5) | 7.10 MB (7 102 616 B, CI profile, 2026-11-05) | ok |
+| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.58 MB (was 3.6, 3.5) | 3.55 MB (3 549 719 B) | ok |
+| `classes.dex` (release) | <= 0.592 MB (was 0.6, 0.5) | 0.58 MB (576 680 B; 2.8 MB unshrunk) | ok |
 | Cold start `am start -W` (HomeActivity) | <= 1000 ms (emulator) | 765 ms median of 7 (750-814, first 1107 once) | ok |
 | Idle PSS, app closed, link service paired + connected | <= 35 MB | 22.8-23.4 MB just after closing; 26.5 MB after 30 min | ok |
 | Threads, same state | <= 32 | 26-27 after closing, 31 after 30 min | ok |

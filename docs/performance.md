@@ -50,7 +50,7 @@ comparisons). Both are loops that opt-level "z" neither inlines nor unrolls. Ins
 the 256 kB) the two loops were rewritten: a first-letter scan that compares the rest only at a candidate, and one sorted list per thread with a
 binary search per hit (the `newer` counts are identical; a test compares the scan with the old window comparison). Measured on the same machine, same
 15 runs: 2.42 ms (before the "z" round) -> 3.49 ms ("z") -> **2.08 ms** (fixed, still "z"); through the control API 3.98 -> 4.89 -> 3.95 ms round trip,
-service CPU 2.02 -> 2.49 -> 1.94 ms per request. The service grew +8.3 kB for it (7 314 200 B in the scratch tree, budget 7 560 000 B).
+service CPU 2.02 -> 2.49 -> 1.94 ms per request. The service grew +8.3 kB for it (7 314 200 B in the scratch tree, budget then 7 560 000 B, 7 380 000 B since the 2026-11-06 recalibration).
 
 **What did not regress.** Nothing else moved by more than the run-to-run spread (the table's "noise" rows: the 200 MB share and the pairing
 latency vary 3-4x between runs of the same binary under this load, in both directions, and favour neither tree). No user-visible latency is above 50 ms
@@ -123,7 +123,7 @@ numbers taken in the same environment.
 | UI wakeups (`--ui`) | ~4-6/s | ~2/s (window unfocused, poll back-off) | 12/s |
 
 On CI (`GB_CI=1`, set by the performance job) the load-dependent rows get slack because shared runners differ in CPU count,
-neighbours and kernel: RSS 8500 kB (raised from 8000 on 2026-11-04: CI settled-minimum readings were 7860 and 8128 kB on the same code size class while a local run of the same head settles at 3.8 MB, so the CI runner does not reach the trimmed state; threads, fds and wakeups unchanged), threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
+neighbours and kernel: RSS 4500 kB (tightened 2026-11-06 from 8500: CI settled minimums after the opt-level z work are 2664, 2708, 2752 and 2924 kB; peak samples 3032-3308 kB are printed and not budgeted; 1.5 MB over the highest settled value; earlier raised from 8000 on 2026-11-04: CI settled-minimum readings were 7860 and 8128 kB on the same code size class while a local run of the same head settles at 3.8 MB, so the CI runner does not reach the trimmed state; threads, fds and wakeups unchanged), threads 10, fds 24, wakeups 6/s, CPU 6 ticks, startup 1000 ms. The CI runs measured
 8060-8188 kB, 5-6 threads, 20 fds, 1-4 wakeups/s (the 3/s budget was exceeded once), 0 ticks, 12 ms. Binary sizes stay strict on CI. Any `BUDGET_*` variable still overrides.
 
 Size budgets were raised on 2026-11-02 (service 5.0 -> 5.3 MB, ctl 0.8 -> 1.2 MB) after trimming was
@@ -277,10 +277,10 @@ raw numbers: [reports/final-footprint.md](reports/final-footprint.md).
 
 | Metric | Prior (date, source) | 2026-11-04 | Budget |
 | --- | --- | --- | --- |
-| Service idle RSS, settled (min of samples every 5 s) | 3.4-3.6 MB (11-03, round 3) | 3.7-3.8 MB (peak sample 4.4-5.3 MB) | 6000 kB |
+| Service idle RSS, settled (min of samples every 5 s) | 3.4-3.6 MB (11-03, round 3) | 3.7-3.8 MB (peak sample 4.4-5.3 MB) | 6000 kB (4000 locally and 4500 on CI since 2026-11-06) |
 | Service threads / fds / wakeups per s / CPU | 5 / 12-20 / 2-3 / 0 | 4-5 (tray 5) / 18-19 / 2-3 / 0-1 ticks | 8 / 20 / 3 / 2 |
 | Service startup to discovery line | 7-14 ms | 10-11 ms | 300 ms |
-| `geekbridge-service` / `geekbridge-ctl` | 5 846 328 B / 1 249 056 B (11-03) | 6 600 376 B / 1 455 512 B | 7 560 000 B / 1 745 000 B |
+| `geekbridge-service` / `geekbridge-ctl` | 5 846 328 B / 1 249 056 B (11-03) | 6 600 376 B / 1 455 512 B | 7 560 000 B / 1 745 000 B (7 380 000 B / 1 738 000 B since 2026-11-06: CI 7 338 960 B / 1 708 760 B, local 7 316 376 B / 1 712 488 B at 3e81e823a; the CI-minus-local offset is +22.6 kB for the service, -3.7 kB for the ctl) |
 | GUI binaries (home, calls, messages, agenda, contacts) | messages 7 868 672 B (11-03) | 8.26, 8.08, 8.00, 8.03, 7.92 MB | not budgeted |
 | GUI idle RSS under Xvfb + llvmpipe (home / calls / messages / agenda / contacts) | 66.3 / 64.1 MB (round 3) | 66.2 / 62.3 / 64.5 / 65.5 / 63.2 MB (anon 33-35 MB, 58-59 threads) | `--ui` messages 75 MB: 64.7 MB, 3 wakeups/s (budget 12) |
 | Android release APK, arm64 only (unsigned, R8) | 3 194 339 B (11-03) | 3 498 723 B (+304 384 B) | none |
@@ -355,7 +355,7 @@ update client on demand (none of them holds memory at idle: the heap is the runt
 the TLS config). CI figure for this change (b512861c1, same runner image, job
 "Performance budget"): settled minimum **2 624 kB** (was 7 988-8 036), peak sample 3 200 kB (was 8 436-8 484), text 4 956 -> 1 248 kB,
 `r--p` 1 000 -> 216 kB, heap 660 -> 436 kB, anonymous 1 136 -> 920 kB, 7 threads, 21 fds, 1 wakeup/s, service 7 530 064 -> 7 530 320 B. The
-budgets (8 500 kB on CI, 6 000 kB locally) were left as they are.
+budgets (8 500 kB on CI, 6 000 kB locally at the time) were left as they are; tightened to 4 500 / 4 000 kB on 2026-11-06.
 
 **Review of the drop (2026-11-06): one real bug fixed, cost measured and small, beat kept.**
 
