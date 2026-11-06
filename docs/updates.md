@@ -181,8 +181,10 @@ Single version source: see [builds.md](builds.md#releases-and-versioning).
   On success the file is made read-only and the app offers **Show file**. Downloading alone executes nothing and replaces
   nothing. Installing is a separate, explicit step ([below](#installing-with-install-update-linux-per-user-install)),
   available only for the Linux per-user install; no privileges are ever requested.
-* TLS is rustls with the bundled Mozilla root set (`webpki-roots`); the operating system trust store and proxy
-  settings are not used.
+* TLS is rustls with the bundled Mozilla root set (`webpki-roots`); the operating system trust store is not used,
+  so a TLS-inspecting proxy is not supported. On desktop, `HTTPS_PROXY`/`ALL_PROXY` (plain `http://host:port`, no credentials, no SOCKS)
+  and `NO_PROXY` are honoured through `CONNECT`; addresses are raced IPv6/IPv4 so a dead family does not stall a check. Details:
+  [updater-real-network](reports/updater-real-network.md).
 
 ### Installing with "Install update" (Linux per-user install)
 

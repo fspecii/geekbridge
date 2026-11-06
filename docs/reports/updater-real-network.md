@@ -38,7 +38,7 @@ How it was run:
 | Partial/resumable | There is no resume (no `Range`): a failed download is deleted and a retry starts at byte 0. By design (hash is computed while writing). |
 | Sandbox ctl | `update status` before any check: "unknown (no check has completed)". `check`: up to date; a second `check` within 30 s did not hit the network (cooldown). `update download`: refused, "no newer release is known". `update install --dry-run` on a non-install copy: "Download only". `channel dev` / `channel stable` switch and drop the other channel's cache. |
 | Offline (`unshare -rn`) | Clean, instant: "Couldn't reach api.github.com (Network is unreachable (os error 101)). Check your internet connection." State stays "not checked", not "up to date". |
-| Dead `HTTPS_PROXY`, `ALL_PROXY` | **Ignored**: the check succeeds directly. See "Proxies". |
+| Dead `HTTPS_PROXY`, `ALL_PROXY` | Measured before proxy support existed (they were ignored and the check went direct). Now they are honoured: a dead plain-http proxy fails with the "Couldn't reach ..." message. See "Proxies and trust". |
 | Clock +10 minutes | Works (certificates are valid for months). |
 | Clock +2 years / -2 years | TLS refused: certificate expired / not valid yet. Before this change the message was rustls' raw `invalid peer certificate: certificate expired: verification time ...`. Now: "The secure connection was refused because this computer's date or time looks wrong. Check the clock." |
 
@@ -72,15 +72,29 @@ null `body`/`html_url`/`digest`/name. The existing suites already covered oversi
 * The stable offer/download path of the updater itself (needs a non-pre-release); the same functions (`attach_installer`,
   `download_verified`) were driven with the real rc.1 data.
 * The dev-channel offer (no dev release exists).
-* IPv6-only networks, from code reading only (`netns` has no upstream connectivity): the resolver result is tried in order, one
-  address at a time, each with the 15 s connect timeout, inside the 30 s check deadline. A host with IPv6 addresses that black-holes (no RST/ICMP)
-  waits up to 15 s before the IPv4 address is tried; IPv6-only works because the first address is used. No happy-eyeballs; left as is.
 
-## Proxies and trust (documented behaviour, not changed)
+## IPv6 and slow addresses (fixed)
 
-* `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` are **not read**. The client connects directly. On a network that only allows egress through a proxy,
-  the check fails with the "Couldn't reach api.github.com ... Check your internet connection." message. Updates are optional (`update disable`, or download the release by hand).
-  Adding `CONNECT` support is a small change but it would need a policy for credentials and a size budget decision, so it was left out.
+Originally the resolver result was tried one address at a time with the 15 s connect timeout, so a host with a black-holed IPv6 address
+delayed IPv4 by up to 15 s. Now all addresses are raced happy-eyeballs style (RFC 8305): families interleaved starting with the resolver's
+first, a new attempt every 250 ms or at once when one fails, first success wins, at most 6 attempts, and the race ends at the overall
+deadline. Losing attempts finish on their own (each is bounded by the connect timeout) and a late winner is closed. IPv6-only networks work
+(only IPv6 addresses are tried). Covered by unit tests on local sockets (stalled first address, refused first address, all failing,
+deadline with hanging attempts); not exercised on a real IPv6-only network (no upstream connectivity in the test sandbox).
+
+## Proxies and trust
+
+* Supported: `HTTPS_PROXY` (then `https_proxy`, `ALL_PROXY`, `all_proxy`) of the form `http://host:port` (scheme case-insensitive, port defaults
+  to 3128, IPv6 literals as `[::1]:3128`), used through `CONNECT` for the allow-listed GitHub hosts. TLS runs end to end inside the tunnel against the
+  bundled roots; the proxy sees only host and port. The `CONNECT` reply must be a clean `HTTP/1.x 2xx`, is read byte by byte, capped at 8 KiB and bounded by the
+  overall deadline and the socket timeout. Redirects are re-checked against the allow list before each hop, with or without a proxy.
+* `NO_PROXY` / `no_proxy` is honoured: comma or space separated; `example.com`, `.example.com` and `*.example.com` match the host and its subdomains;
+  `host:port` only that port; bracketed or bare IPv6 literals; `*` matches everything. CIDR ranges are not understood (they never match).
+  Loopback test origins are never proxied.
+* Limits: **plain `http://` proxies only**; **no credentials** (a proxy URL with `user:pass@` is treated as no proxy, so nothing secret is ever read, logged
+  or put in an error; a 407 is a failure); **no SOCKS** and no `https://` proxy (all of these mean "no proxy", a direct attempt); `HTTP_PROXY` is not read (plain http is
+  loopback-only); no PAC/WPAD or system proxy settings on desktop. A **TLS-inspecting proxy is still unsupported** (see below). Errors name the target host, not the proxy URL.
+* Updates are optional (`update disable`, or download the release by hand).
 * TLS roots: `webpki-roots` (the Mozilla bundle compiled in), not the system store and not `rustls-native-certs`. Consequences: no dependence on the machine's CA package, but a
   TLS-inspecting corporate proxy or a locally trusted private CA is **not** trusted (fails with `invalid peer certificate: UnknownIssuer`). That is consistent with the
   allow-list design. The bundle ages with the build: a build older than a root rotation would need an update, which the updater cannot fetch; that is why the downloads page is the fallback.

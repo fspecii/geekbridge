@@ -330,7 +330,7 @@ impl Client {
         let proxy = self
             .proxy
             .as_ref()
-            .filter(|p| url.https && !url.is_loopback() && !p.bypasses(&url.host));
+            .filter(|p| url.https && !url.is_loopback() && !p.bypasses(&url.host, url.port));
         let (host, port) =
             proxy.map_or((url.host.as_str(), url.port), |p| (p.host.as_str(), p.port));
         let addrs: Vec<_> = (host, port)
@@ -344,6 +344,7 @@ impl Client {
         let connected = race_connect(
             &addrs,
             CONNECT_STAGGER,
+            deadline,
             Arc::new(move |a| TcpStream::connect_timeout(a, per_attempt)),
         )
         .and_then(|sock| {
@@ -403,10 +404,12 @@ type Connector = Arc<dyn Fn(&SocketAddr) -> io::Result<TcpStream> + Send + Sync>
 
 /// Happy-eyeballs connect (losing attempts are not waited for): start an attempt per address, the next one after `stagger` or at once
 /// when the previous failed; the first success wins and late winners are dropped (closed). Every
-/// attempt is bounded by `connect` itself, so the threads end on their own.
+/// attempt is bounded by `connect` itself, so the threads end on their own; the race as a whole
+/// gives up at `deadline`.
 fn race_connect(
     addrs: &[SocketAddr],
     stagger: Duration,
+    deadline: Instant,
     connect: Connector,
 ) -> io::Result<TcpStream> {
     let addrs = interleave(addrs);
@@ -421,16 +424,26 @@ fn race_connect(
         loop {
             if next < addrs.len() {
                 let (tx, addr, connect) = (tx.clone(), addrs[next], connect.clone());
-                std::thread::spawn(move || {
-                    let _ = tx.send(connect(&addr));
-                });
+                let spawned = std::thread::Builder::new()
+                    .name("update-connect".into())
+                    .spawn(move || {
+                        let _ = tx.send(connect(&addr));
+                    });
                 next += 1;
-                pending += 1;
+                match spawned {
+                    Ok(_) => pending += 1,
+                    Err(e) if pending == 0 && next >= addrs.len() => return Err(e),
+                    Err(_) => {}
+                }
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
             }
             let wait = if next < addrs.len() {
-                stagger
+                stagger.min(left)
             } else {
-                Duration::from_secs(3600)
+                left
             };
             match rx.recv_timeout(wait) {
                 Ok(Ok(sock)) => return Ok(sock),
@@ -451,7 +464,8 @@ fn race_connect(
 struct Proxy {
     host: String,
     port: u16,
-    no_proxy: Vec<String>,
+    /// Lowercase host or domain suffix (`*` for everything) with an optional port.
+    no_proxy: Vec<(String, Option<u16>)>,
 }
 
 impl Proxy {
@@ -470,7 +484,10 @@ impl Proxy {
 
     fn parse(proxy: &str, no_proxy: &str) -> Option<Proxy> {
         let text = proxy.trim();
-        let rest = text.strip_prefix("http://").unwrap_or(text);
+        let rest = match text.get(..7) {
+            Some(scheme) if scheme.eq_ignore_ascii_case("http://") => &text[7..],
+            _ => text,
+        };
         if rest.contains("://") {
             return None;
         }
@@ -484,19 +501,46 @@ impl Proxy {
                 3128
             },
             no_proxy: no_proxy
-                .split(',')
-                .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
-                .filter(|e| !e.is_empty())
+                .split([',', ' '])
+                .filter_map(no_proxy_entry)
                 .collect(),
         })
     }
 
-    fn bypasses(&self, host: &str) -> bool {
+    /// `NO_PROXY` semantics: an entry matches the host itself and its subdomains (`.example.com`,
+    /// `*.example.com` and `example.com` alike); `host:port` only that port; `*` everything.
+    /// CIDR ranges are not understood (they never match).
+    fn bypasses(&self, host: &str, port: u16) -> bool {
         let host = host.to_ascii_lowercase();
-        self.no_proxy
-            .iter()
-            .any(|e| e == "*" || host == *e || host.ends_with(&format!(".{e}")))
+        self.no_proxy.iter().any(|(e, p)| {
+            p.is_none_or(|p| p == port)
+                && (e == "*" || host == *e || host.ends_with(&format!(".{e}")))
+        })
     }
+}
+
+fn no_proxy_entry(entry: &str) -> Option<(String, Option<u16>)> {
+    let entry = entry.trim().to_ascii_lowercase();
+    let (host, port) = if let Some(v6) = entry.strip_prefix('[') {
+        let (addr, after) = v6.split_once(']')?;
+        (addr, after.strip_prefix(':'))
+    } else {
+        match entry.split_once(':') {
+            // Exactly one colon: host:port. More: a bare IPv6 address.
+            Some((h, p)) if !p.contains(':') => (h, Some(p)),
+            _ => (entry.as_str(), None),
+        }
+    };
+    let port = match port {
+        None => None,
+        Some(p) => Some(p.parse::<u16>().ok()?),
+    };
+    let host = if host == "*" {
+        host
+    } else {
+        host.trim_start_matches('*').trim_start_matches('.')
+    };
+    (!host.is_empty()).then(|| (host.to_owned(), port))
 }
 
 /// Ask the proxy for a tunnel to `host:port`. Reads the reply byte by byte so nothing of the
@@ -533,7 +577,11 @@ fn proxy_tunnel(
         String::from_utf8_lossy(head.split(|&b| b == b'\r').next().unwrap_or(b"")).into_owned();
     let mut parts = line.split(' ');
     match (parts.next(), parts.next()) {
-        (Some(v), Some(code)) if v.starts_with("HTTP/1.") && code.starts_with('2') => Ok(sock),
+        (Some(v), Some(code))
+            if v.starts_with("HTTP/1.") && code.len() == 3 && code.starts_with('2') =>
+        {
+            Ok(sock)
+        }
         _ => Err(io::Error::other(format!(
             "the proxy refused the tunnel ({})",
             line.chars().take(60).collect::<String>()
@@ -939,6 +987,27 @@ mod tests {
         assert!(head(429, &[]).summary().rate_limited);
     }
 
+    fn far() -> Instant {
+        Instant::now() + Duration::from_secs(10)
+    }
+
+    #[test]
+    fn the_race_gives_up_at_the_deadline_even_if_attempts_hang() {
+        let started = Instant::now();
+        let err = race_connect(
+            &[sa("[2001:db8::1]:443"), sa("192.0.2.1:443")],
+            Duration::from_millis(50),
+            Instant::now() + Duration::from_millis(300),
+            Arc::new(|_| {
+                std::thread::sleep(Duration::from_secs(3));
+                Err(io::Error::from(io::ErrorKind::TimedOut))
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
     fn sa(s: &str) -> SocketAddr {
         s.parse().unwrap()
     }
@@ -972,6 +1041,7 @@ mod tests {
         let sock = race_connect(
             &[stalled, live],
             Duration::from_millis(50),
+            Instant::now() + Duration::from_secs(10),
             Arc::new(move |a| {
                 if *a == stalled {
                     std::thread::sleep(Duration::from_secs(5)); // a black hole
@@ -1006,15 +1076,23 @@ mod tests {
         let sock = race_connect(
             &[dead, live.local_addr().unwrap()],
             Duration::from_secs(30),
+            far(),
             connect.clone(),
         )
         .unwrap();
         assert_eq!(sock.peer_addr().unwrap(), live.local_addr().unwrap());
         assert!(started.elapsed() < Duration::from_secs(5));
-        let err = race_connect(&[dead, dead], Duration::from_millis(10), connect).unwrap_err();
+        let err =
+            race_connect(&[dead, dead], Duration::from_millis(10), far(), connect).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
         assert!(
-            race_connect(&[], Duration::from_millis(10), Arc::new(|_| unreachable!())).is_err()
+            race_connect(
+                &[],
+                Duration::from_millis(10),
+                far(),
+                Arc::new(|_| unreachable!())
+            )
+            .is_err()
         );
     }
 
@@ -1027,13 +1105,15 @@ mod tests {
         .unwrap();
         assert_eq!((p.host.as_str(), p.port), ("proxy.example", 8080));
         assert!(
-            p.bypasses("localhost") && p.bypasses("a.internal.example") && p.bypasses("10.0.0.1")
+            p.bypasses("localhost", 443)
+                && p.bypasses("a.internal.example", 443)
+                && p.bypasses("10.0.0.1", 443)
         );
-        assert!(!p.bypasses("api.github.com") && !p.bypasses("notinternal.example"));
+        assert!(!p.bypasses("api.github.com", 443) && !p.bypasses("notinternal.example", 443));
         assert!(
             Proxy::parse("proxy:3128", "*")
                 .unwrap()
-                .bypasses("github.com")
+                .bypasses("github.com", 443)
         );
         assert_eq!(Proxy::parse("http://p", "").unwrap().port, 3128);
         assert_eq!(Proxy::parse("http://[::1]:99", "").unwrap().host, "::1");
@@ -1047,6 +1127,84 @@ mod tests {
         ] {
             assert!(Proxy::parse(bad, "").is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn proxy_env_edge_cases() {
+        // Scheme case, trailing slash, whitespace, IPv6 literal with and without a port.
+        let p = Proxy::parse("  HTTP://Proxy.Example:8080/ ", "").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("proxy.example", 8080));
+        let p = Proxy::parse("http://[2001:db8::1]", "").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("2001:db8::1", 3128));
+        let p = Proxy::parse("[2001:db8::1]:81", "").unwrap();
+        assert_eq!((p.host.as_str(), p.port), ("2001:db8::1", 81));
+        for bad in ["HTTPS://p:1", "   ", "http://", "http://p:", "http://[::1"] {
+            assert!(Proxy::parse(bad, "").is_none(), "{bad:?}");
+        }
+
+        let p = Proxy::parse(
+            "p:1",
+            "example.com:8443, *.Wild.test ,[2001:db8::5], 2001:db8::6 ,:80,,bad:port, .dot.test",
+        )
+        .unwrap();
+        // host:port entries only match that port, subdomains included.
+        assert!(p.bypasses("example.com", 8443) && p.bypasses("a.example.com", 8443));
+        assert!(!p.bypasses("example.com", 443));
+        // Wildcard and leading-dot forms match the domain and its subdomains.
+        assert!(p.bypasses("x.wild.test", 443) && p.bypasses("WILD.test", 443));
+        assert!(p.bypasses("x.dot.test", 443) && !p.bypasses("notwild.test", 443));
+        // IPv6 literals, bracketed or bare.
+        assert!(p.bypasses("2001:db8::5", 443) && p.bypasses("2001:db8::6", 443));
+        assert!(!p.bypasses("2001:db8::7", 443));
+        // A port-qualified wildcard and an empty-host entry are not a match-all.
+        let q = Proxy::parse("p:1", "*:8080, :80").unwrap();
+        assert!(q.bypasses("github.com", 8080) && !q.bypasses("github.com", 443));
+    }
+
+    #[test]
+    fn a_proxy_reply_that_is_not_a_clean_2xx_is_refused() {
+        for reply in [
+            "HTTP/1.1 2 OK\r\n\r\n",
+            "HTTP/1.1 2000 OK\r\n\r\n",
+            "ICY 200 OK\r\n\r\n",
+        ] {
+            let (addr, h) = fake_proxy(reply);
+            let sock = TcpStream::connect(addr).unwrap();
+            assert!(proxy_tunnel(sock, "h", 443, far()).is_err(), "{reply:?}");
+            let _ = h.join();
+        }
+    }
+
+    #[test]
+    fn connect_reply_limits_hold_for_endless_and_silent_proxies() {
+        // Endless header bytes with no terminator: refused at the cap, not buffered forever.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let h = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let _ = s.write_all(&vec![b'a'; 100_000]);
+        });
+        let sock = TcpStream::connect(addr).unwrap();
+        let err = proxy_tunnel(sock, "h", 443, far()).unwrap_err();
+        assert!(err.to_string().contains("too long"), "{err}");
+        let _ = h.join();
+
+        // A proxy that accepts and says nothing: the read timeout / deadline ends it.
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let (done, wait) = mpsc::channel::<()>();
+        let h = std::thread::spawn(move || {
+            let (_s, _) = l.accept().unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        });
+        let sock = TcpStream::connect(addr).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let started = Instant::now();
+        assert!(proxy_tunnel(sock, "h", 443, far()).is_err());
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(done);
+        let _ = h.join();
     }
 
     /// A one-shot proxy on a local socket: answers the CONNECT with `reply`, then echoes what
