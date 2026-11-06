@@ -50,8 +50,32 @@ type Managed = HashMap<OwnedObjectPath, Ifaces>;
 #[derive(Clone, Debug, Default)]
 pub struct Bus(pub Option<String>);
 
+/// Is the machine's own (system-bus) Bluetooth off limits to this process? True when
+/// `GEEKBRIDGE_NO_SYSTEM_BLUETOOTH` is set (and not `0`), and also whenever the process runs
+/// sandboxed (`GEEKBRIDGE_STATE_DIR` or `GEEKBRIDGE_CONTROL_PORT` overridden), because a sandbox
+/// still sees the real BlueZ on the system bus. `GEEKBRIDGE_ALLOW_SYSTEM_BLUETOOTH=1` lifts the
+/// sandbox rule on purpose (not the explicit `NO_SYSTEM_BLUETOOTH`).
+pub fn system_bluetooth_blocked_with(get: impl Fn(&str) -> Option<String>) -> bool {
+    let set = |k: &str| get(k).is_some_and(|v| !v.is_empty() && v != "0");
+    if set("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH") {
+        return true;
+    }
+    let sandboxed = get("GEEKBRIDGE_STATE_DIR").is_some_and(|v| !v.is_empty())
+        || get("GEEKBRIDGE_CONTROL_PORT").is_some_and(|v| !v.is_empty());
+    sandboxed && get("GEEKBRIDGE_ALLOW_SYSTEM_BLUETOOTH").as_deref() != Some("1")
+}
+
+pub fn system_bluetooth_blocked() -> bool {
+    system_bluetooth_blocked_with(|k| std::env::var(k).ok())
+}
+
+const BLOCKED: &str = "this process is a sandbox or test (GEEKBRIDGE_NO_SYSTEM_BLUETOOTH, GEEKBRIDGE_STATE_DIR or GEEKBRIDGE_CONTROL_PORT is set), so it does not touch the computer's real Bluetooth adapter; set GEEKBRIDGE_ALLOW_SYSTEM_BLUETOOTH=1 to allow it on purpose";
+
 impl Bus {
     fn builder(&self) -> Result<zbus::blocking::connection::Builder<'static>, String> {
+        if self.0.is_none() && system_bluetooth_blocked() {
+            return Err(BLOCKED.into());
+        }
         match &self.0 {
             Some(a) => {
                 zbus::blocking::connection::Builder::address(a.as_str()).map_err(|e| e.to_string())
@@ -614,6 +638,16 @@ pub fn run(
         bz.set(&adapter, ADAPTER, "Powered", Value::from(true))
             .map_err(|e| format!("could not turn Bluetooth on ({e}); try: rfkill unblock bluetooth; bluetoothctl power on"))?;
     }
+    // Whatever way this function ends (an error, a panic), the adapter gets its old modes back.
+    let mut guard = AdapterGuard {
+        bz: &bz,
+        adapter: adapter.clone(),
+        discoverable: ad.discoverable,
+        timeout: ad.discoverable_timeout,
+        pairable: ad.pairable,
+        power_off: !ad.powered,
+        done: false,
+    };
     // If any of the three changes is refused, put back what was already changed: the computer's Bluetooth
     // settings must not stay altered by a setup that never got going.
     let make_visible = || -> Result<(), String> {
@@ -921,12 +955,45 @@ pub fn run(
     events(Event::Step(
         "Connecting the phone's calls (hands-free) profile".into(),
     ));
+    guard.done = true;
     connect_hfp(&bz, &device.path)?;
     Ok(Remembered {
         address: device.address,
         name: device.name,
         geekbridge_name: opts.phone_name.clone(),
     })
+}
+
+/// Puts the adapter's Discoverable/DiscoverableTimeout/Pairable (read before the setup changed
+/// them) back when dropped, and Powered off again if the setup turned it on and did not get as
+/// far as pairing. Setting a value that is already there is harmless.
+struct AdapterGuard<'a> {
+    bz: &'a Bluez,
+    adapter: String,
+    discoverable: bool,
+    timeout: u32,
+    pairable: bool,
+    power_off: bool,
+    /// Set once the phone is paired: Bluetooth stays on then.
+    done: bool,
+}
+
+impl Drop for AdapterGuard<'_> {
+    fn drop(&mut self) {
+        let a = &self.adapter;
+        let _ = self
+            .bz
+            .set(a, ADAPTER, "Discoverable", Value::from(self.discoverable));
+        let _ = self
+            .bz
+            .set(a, ADAPTER, "DiscoverableTimeout", Value::from(self.timeout));
+        let _ = self
+            .bz
+            .set(a, ADAPTER, "Pairable", Value::from(self.pairable));
+        if self.power_off && !self.done {
+            let _ = self.bz.set(a, ADAPTER, "Powered", Value::from(false));
+        }
+    }
 }
 
 /// Connect the phone's hands-free profile only (not every profile: `Connect()` would also pull
@@ -1264,5 +1331,43 @@ mod tests {
         clear_remembered(d.path()).unwrap();
         assert_eq!(load_remembered(d.path()), None);
         clear_remembered(d.path()).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod sandbox_guard_tests {
+    use super::system_bluetooth_blocked_with as blocked;
+
+    fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    #[test]
+    fn a_plain_run_may_use_the_system_bluetooth() {
+        assert!(!blocked(env(&[])));
+        assert!(!blocked(env(&[("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH", "0")])));
+        assert!(!blocked(env(&[("GEEKBRIDGE_STATE_DIR", "")])));
+    }
+
+    #[test]
+    fn a_sandbox_or_the_explicit_switch_blocks_it() {
+        assert!(blocked(env(&[("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH", "1")])));
+        assert!(blocked(env(&[("GEEKBRIDGE_STATE_DIR", "/tmp/x")])));
+        assert!(blocked(env(&[("GEEKBRIDGE_CONTROL_PORT", "9")])));
+    }
+
+    #[test]
+    fn allow_lifts_only_the_sandbox_rule() {
+        let allow = ("GEEKBRIDGE_ALLOW_SYSTEM_BLUETOOTH", "1");
+        assert!(!blocked(env(&[("GEEKBRIDGE_STATE_DIR", "/tmp/x"), allow])));
+        assert!(blocked(env(&[
+            ("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH", "1"),
+            allow
+        ])));
     }
 }

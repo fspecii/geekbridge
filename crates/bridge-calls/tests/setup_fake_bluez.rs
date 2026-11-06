@@ -405,3 +405,79 @@ fn a_phone_already_connected_under_another_name_is_not_taken_for_the_wanted_one(
     let r = r.unwrap_or_else(|e| panic!("setup failed: {e}; {seen:#?}"));
     assert_eq!(r.address, "AA:BB:CC:00:33:44");
 }
+
+#[test]
+fn a_setup_that_finds_no_phone_leaves_the_adapters_modes_as_it_found_them() {
+    // The adapter starts unpowered, not discoverable, not pairable, with a 77 s timeout. The
+    // setup changes all of them, finds nobody, and must put every one back.
+    let Some(f) = Fake::start(&[("FAKE_ADAPTER_PAIRABLE", "0")]) else {
+        return;
+    };
+    let before_timeout: u32 = f.adapter("DiscoverableTimeout");
+    let before_pairable: bool = f.adapter("Pairable");
+    let cancel = AtomicBool::new(false);
+    let (r, _) = run_setup(&f.options(Some("no such phone"), 3), Some(true), &cancel);
+    assert!(r.is_err());
+    assert!(!f.adapter::<bool>("Discoverable"));
+    assert_eq!(f.adapter::<u32>("DiscoverableTimeout"), before_timeout);
+    assert_eq!(f.adapter::<bool>("Pairable"), before_pairable);
+    let calls = f.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("Set Adapter1.Discoverable=1")),
+        "the setup did go visible: {calls:?}"
+    );
+}
+
+/// Child half of the next test: runs with the sandbox variable set and the fake's address as the
+/// *system* bus, which is what a sandboxed `geekbridge-ctl call setup` sees.
+#[test]
+fn sandboxed_child_probe() {
+    if std::env::var("GB_PROBE_CHILD").as_deref() != Ok("1") {
+        return;
+    }
+    let cancel = AtomicBool::new(false);
+    let r = setup::run(&Options::default(), |_| {}, &cancel);
+    let e = r.expect_err("a sandboxed process must not set up the real adapter");
+    assert!(e.contains("real Bluetooth adapter"), "{e}");
+    let e = setup::reconnect(&Bus::default(), "AA:BB:CC:00:11:22").unwrap_err();
+    assert!(e.contains("real Bluetooth adapter"), "{e}");
+    let e = setup::forget(&Bus::default(), "AA:BB:CC:00:11:22").unwrap_err();
+    assert!(e.contains("real Bluetooth adapter"), "{e}");
+}
+
+#[test]
+fn a_sandboxed_process_never_touches_the_system_buss_adapter() {
+    let Some(f) = Fake::start(&[]) else {
+        return;
+    };
+    for (k, v) in [
+        ("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH", "1"),
+        ("GEEKBRIDGE_STATE_DIR", "/tmp/gb-sandbox-state"),
+        ("GEEKBRIDGE_CONTROL_PORT", "40123"),
+    ] {
+        let out = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "sandboxed_child_probe", "--nocapture"])
+            .env("GB_PROBE_CHILD", "1")
+            .env("DBUS_SYSTEM_BUS_ADDRESS", &f.addr)
+            .env_remove("GEEKBRIDGE_NO_SYSTEM_BLUETOOTH")
+            .env_remove("GEEKBRIDGE_STATE_DIR")
+            .env_remove("GEEKBRIDGE_CONTROL_PORT")
+            .env_remove("GEEKBRIDGE_ALLOW_SYSTEM_BLUETOOTH")
+            .env(k, v)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{k}: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let calls = f.calls();
+        assert!(
+            calls.is_empty(),
+            "{k}: the fake adapter was touched: {calls:?}"
+        );
+    }
+}
