@@ -127,8 +127,30 @@ debug-only code (`DebugNetHold`, call audio) is already absent; `-Xlambdas=class
 the CI recipe (universal and arm64-only release; `scripts/android-size-check.sh` dex row ok, the APK rows only differ from CI because the local
 native libraries are not the CI profile), `testDebugUnitTest`, `lintDebug`, and a smoke of an R8-minified, debuggable, debug-signed build of the
 same rules on a private API 36 clone: install, first-run wizard, Home render, no app crash in logcat. The pairing e2e stages could not be used
-as a check (the stale `scripts/e2e-android.sh` wizard navigation fails on the current first-run screens), so link/SMS/calls/share/update-check
-are covered by the unchanged keep rules (the new rule only removes null-check calls), not by a run.
+as a check there; this was followed up the same day, see "Full smoke of the minified build" below.
+
+### Full smoke of the minified build (2026-11-06)
+
+The failure of `scripts/e2e-android.sh` on the minified build was the harness, not R8: after commit 0d4d03bf6 a No on the battery dialog shows
+"You chose not to allow this ..." with a **Try again** button, and `stage_battery` still looked for "Allow unrestricted battery" (fixed in
+4ff72908d). The first-run wizard itself opens as before. Because the suites need the debug hooks (`run-as`, the mock update server over http,
+`gb_hold_cellular`), a release APK cannot run all of them; two builds were used on private API 36 clones:
+
+* **Minified debug APK** (`scripts/build-android.sh --minified`, i.e. `-Pgb.minifyDebug=true`: debug sources and hooks, release R8 + resource
+  shrinking + `proguard-rules.pro`): `e2e-android.sh` all stages pass (wizard, battery Deny/Allow, pair, reconnect, restart, clipboard both
+  ways, file both ways, update check against the mock), `sms.sh` 14/14, `share.sh` 28/28 (both directions, cancels, 200 MiB), `features.sh`
+  battery, mirror and dial pass, `call-ui.sh` all but `callui_overlay_confirm`, which fails identically on the unminified debug APK (OCR of the
+  desktop card, not the phone).
+* **Real release APK** (R8, not debuggable, debug-signed): `e2e-android.sh` stages env, battery, pair, reconnect (+ app restart), clipboard,
+  file both ways pass; both Quick Settings tile services bind (`cmd statusbar add-tile`), the Direct Share shortcut `send:<computer>`
+  (category `SEND_TO_COMPUTER`) is published after pairing, uninstall + reinstall shows the first-run wizard, no `FATAL EXCEPTION`,
+  `NoSuchMethodError`, `ClassNotFoundException`, `UnsatisfiedLinkError` or ANR of the app in logcat. Dex 567 180 B (headroom 32 820 B).
+* Two one-off failures were host noise and passed on a rerun with the same APK: `features` mirror steps (the desktop control port closed
+  connections under load) and `share_pair` ("System UI isn't responding" dialog during pairing).
+* Unit tests and lint: `testDebugUnitTest`, `lintDebug` pass.
+
+Not run on a release APK: SMS, calls, update check (need the debug hooks); they ran on the minified debug APK. The nightly `Emulator e2e`
+workflow has a `minified-features` job (`features.sh` on the minified debug APK) so a keep-rule regression is caught automatically.
 
 ## Re-measurement 2026-11-06 (0af48d0ae, release, R8)
 

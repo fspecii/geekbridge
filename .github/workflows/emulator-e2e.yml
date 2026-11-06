@@ -48,9 +48,14 @@ jobs:
           CARGO_TARGET_DIR="$PWD/target/ci" cargo build --release --locked -p bridge-service -p bridge-apps --bins
       - name: Debug APK (native core for arm64-v8a and x86_64)
         run: scripts/build-android.sh --skip-tests --skip-lint --skip-host-tests
+      - name: Minified debug APK (the debug hooks through the release R8 rules)
+        # Same debug APK (run-as, mock update server, test hooks) but minified with android/app/proguard-rules.pro, so the
+        # minified-features suite checks what R8 and the null-check stripping do to the app code (docs/android-perf.md).
+        run: GB_ANDROID_DIST_DIR="$PWD/dist/android-min" scripts/build-android.sh --minified --skip-tests --skip-lint --skip-host-tests
       - name: Pack
         run: |
-          mkdir -p pack/target/release pack/scratch/dist
+          mkdir -p pack/target/release pack/scratch/dist pack/scratch-min/dist
+          cp dist/android-min/geekbridge-debug.apk pack/scratch-min/dist/
           find target/ci/release -maxdepth 1 -type f -name 'geekbridge*' ! -name '*.d' -perm -u+x -exec cp {} pack/target/release/ \;
           cp dist/android/geekbridge-debug.apk pack/scratch/dist/
           cp -r android/app/src/main/jniLibs pack/jniLibs
@@ -58,7 +63,7 @@ jobs:
           scripts/e2e/share-sender/build.sh "$PWD/pack/sender"
           find pack/jniLibs -name '*.so'
           ls -l pack/target/release pack/scratch/dist
-          tar -C pack -czf e2e-build.tar.gz target scratch jniLibs sender/share-sender.apk
+          tar -C pack -czf e2e-build.tar.gz target scratch scratch-min jniLibs sender/share-sender.apk
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-build
@@ -88,6 +93,8 @@ jobs:
         include:
           - { name: e2e-android, run: 'scripts/e2e-android.sh --no-build', adb_port: 16038, setup: light, experimental: true }
           - { name: features, run: 'scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: false }
+          # features.sh against the R8-minified debug APK (build.gradle.kts -Pgb.minifyDebug): link, battery, notification mirroring, dial.
+          - { name: minified-features, run: 'E2E_SCRATCH="$HOME/ci-e2e/scratch-min" scripts/e2e/features.sh', adb_port: 16090, setup: light, experimental: true }
           - { name: call-ui, run: 'scripts/e2e/call-ui.sh', adb_port: 16080, setup: light, experimental: false }
           - { name: battery-optimisation, run: 'scripts/e2e/battery-optimisation.sh --no-build', adb_port: 16130, setup: light, experimental: false }
           - { name: photos, run: 'scripts/e2e/photos.sh', adb_port: 16170, setup: light, experimental: true }

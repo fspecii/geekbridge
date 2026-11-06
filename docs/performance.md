@@ -5,6 +5,59 @@ numbers come from `/proc` (`scripts/perf-check.sh`); `perf`, `strace`, `valgrind
 not installed here, so there is no allocation profile. The machine was under heavy load from other
 builds (load average 23-32), which affects timings but not RSS, thread or voluntary-wakeup counts.
 
+## Size vs speed (2026-11-06)
+
+`82d1e02c0` put `bridge-service` (library and both binaries) at opt-level "z"; zbus, zvariant, bridge-core and the other cold crates
+were already there. "z" can be much slower on a hot path, so this round compares the tree before (`82d1e02c0^`, c5cdbd0e6-based) with the
+head (`4ff72908d`) on the same machine.
+
+**Method.** Two release trees built from git worktrees under `~/.cache/gb-optz` with their own `CARGO_TARGET_DIR`; each run starts a fresh REAL
+`geekbridge-service` of one tree in a private HOME/XDG/state dir on loopback ports 29000-29999 (`--control-port`, `--dev-loopback`,
+in-memory clipboard, no tray; never the live service and never ports 1716/17381/8000; the stand-in phone's payload sockets stay in 29900-29999),
+and drives it with the same stand-in phone binary (`cargo run --release -p bridge-phone-sim --example size_speed`, new in this round; one phone
+binary for both trees, so only the service differs). Runs of the two trees alternate. Machine: 24 cores, load average 5-11 while measuring (other
+agents' builds and soaks), so absolute figures carry load noise; 10-11 runs per tree, medians shown. CPU time is the sum of the service's threads'
+`/proc/PID/task/*/schedstat`. Idle, startup and wake-ups: `scripts/perf-check.sh` (copies with private ports), 5 runs per tree. The 20,000-message
+search is also timed in process (`cargo test --release -p bridge-service --lib searching_twenty --nocapture`, best of 5 inside each of 15 runs).
+
+| Path | Before ("s" service) | Head ("z" service) | Change |
+|---|---|---|---|
+| Service binary / ctl binary (stripped, built in the scratch tree) | 7 562 136 / 1 738 056 B | 7 305 880 / 1 712 488 B | -256 kB / -25.6 kB |
+| Sync 20,000 messages in 300 conversations (list + every thread's history pages): wall | 694 ms | 696 ms | +0.3 % |
+| same, service CPU | 159 ms | 160 ms | +0.7 % |
+| Conversation list alone (300 threads): wall / CPU | 19.5 ms / 3.9 ms | 18.0 ms / 3.4 ms | -8 % / -12 % |
+| 200 MB share, phone to computer (TLS, to disk): wall | 593 ms (392 MB/s) | 271 ms (737 MB/s) | within noise (225-950 ms spread in both trees) |
+| same, CPU per MB | 1.84 ms/MB | 1.54 ms/MB | -16 % (noise) |
+| TLS handshake, first connect (phone side / service-visible) | 1.78 / 1.99 ms | 1.61 / 1.83 ms | -9 % |
+| Pairing, Pair request to connected | 14.8 ms (2.9-90 ms) | 7.4 ms (2.9-12 ms) | noise (a fsync of the pairing file) |
+| Reconnect of a paired phone (10 per run) | 1.96 ms | 2.00 ms | +2 % |
+| Message search over 20,000 messages, in process | 2.42 ms | **3.49 ms** | **+44 %** (before the fix below) |
+| same, through the control API (200 hits, round trip / service CPU) | 3.98 ms / 2.02 ms | **4.89 ms / 2.49 ms** | **+23 % / +23 %** (before the fix below) |
+| Search with no hit (round trip) | 2.33 ms | 2.87 ms | +23 % (before the fix below) |
+| 2,000-message thread view (889 fit the byte budget): round trip / service CPU | 4.92 ms / 1.92 ms | 4.88 ms / 1.83 ms | -1 % / -5 % |
+| `geekbridge-ctl messages` (list, 39.8 kB of JSON) as a process, old ctl vs new ctl against the same service | 2.32 ms | 2.30 ms | equal |
+| `geekbridge-ctl messages DEVICE 100` (thread, 63.5 kB), same | 2.74 ms | 2.71 ms | equal |
+| Clipboard image pull (7.5 MB): request to delivered / service CPU | 14.2 ms / 13.5 ms | 14.1 ms / 13.2 ms | equal |
+| Photo list (8) / one thumbnail | 1.55 ms / 0.135 ms | 1.55 ms / 0.130 ms | equal |
+| Ring to visible in the call list (40 rings per run, 6 runs; poll loop, so +- 0.1 ms) | 0.70 ms (p90 1.5) | 0.74 ms (p90 1.05) | equal; was 0.4-0.9 ms |
+| Status round trip | 0.232 ms | 0.231 ms | equal |
+| Startup, exec to the "discovery API" line (perf-check) | 11 ms | 12 ms | +1 ms |
+| Idle RSS settled / wakeups / threads / fds / CPU ticks (perf-check, 20 s) | 2 604 kB / 3 per s / 7 / 17 / 0 | 2 592 kB / 2 per s / 7 / 17 / 0 | equal |
+
+**What regressed, and the fix.** Only the message search: `contains_folded` slid a window over every body and called
+`eq_ignore_ascii_case` per window, and `group_hits` counted newer messages with a scan of the whole thread for each of up to 200 hits (200 x 2,000
+comparisons). Both are loops that opt-level "z" neither inlines nor unrolls. Instead of raising the crate's opt-level (which would give back
+the 256 kB) the two loops were rewritten: a first-letter scan that compares the rest only at a candidate, and one sorted list per thread with a
+binary search per hit (the `newer` counts are identical; a test compares the scan with the old window comparison). Measured on the same machine, same
+15 runs: 2.42 ms (before the "z" round) -> 3.49 ms ("z") -> **2.08 ms** (fixed, still "z"); through the control API 3.98 -> 4.89 -> 3.95 ms round trip,
+service CPU 2.02 -> 2.49 -> 1.94 ms per request. The service grew +8.3 kB for it (7 314 200 B in the scratch tree, budget 7 560 000 B).
+
+**What did not regress.** Nothing else moved by more than the run-to-run spread (the table's "noise" rows: the 200 MB share and the pairing
+latency vary 3-4x between runs of the same binary under this load, in both directions, and favour neither tree). No user-visible latency is above 50 ms
+anywhere (the slowest figure is the 200-hit search at 4 ms). Not measured: computer-to-phone file sending, because the service listens
+in the standard payload range 1739-1764 first, which is outside the private port range this run was limited to; the TLS record path is the same code
+in both directions. No profile in `Cargo.toml` changed: the size cuts of `82d1e02c0` stay in full.
+
 ## Idle wakeups round (2026-11-06)
 
 `scripts/perf-check.sh` reported 4-6 wakeups/s on the current head against its budget of 3 (about 2/s in earlier rounds,

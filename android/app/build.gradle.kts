@@ -95,6 +95,14 @@ android {
             isPseudoLocalesEnabled = true
             // Which commit this debug APK was built from (shown in the debug state dump); never in release.
             buildConfigField("String", "GIT_COMMIT", "\"$gitCommit\"")
+            // -Pgb.minifyDebug=true: the debug APK (test hooks, run-as, mock update server) run through the release R8 + resource
+            // shrinking and the same proguard-rules.pro, so the e2e suites can exercise what R8 does to the app code
+            // (scripts/e2e/minified-smoke.sh). Off by default: ordinary debug builds stay unminified.
+            if (findProperty("gb.minifyDebug") == "true") {
+                isMinifyEnabled = true
+                isShrinkResources = true
+                proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            }
         }
         release {
             isPseudoLocalesEnabled = false

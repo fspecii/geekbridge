@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build the Android companion debug APK with the project-local toolchain.
 #
-#   scripts/build-android.sh [--skip-tests] [--skip-lint] [--skip-host-tests]
+#   scripts/build-android.sh [--skip-tests] [--skip-lint] [--skip-host-tests] [--minified]
 #
 # Steps:
 #   1. cargo build --profile android (opt-level z, fat LTO, stripped; see Cargo.toml) -p bridge-android for aarch64/x86_64-linux-android
@@ -10,6 +10,9 @@
 #   2. copy libgeekbridge_android.so to android/app/src/main/jniLibs/<abi>/
 #   3. gradle assembleDebug (+ testDebugUnitTest, lintDebug unless skipped)
 #   4. copy the APK to dist/android/geekbridge-debug.apk and verify it
+#
+# --minified: the same debug APK (test hooks, run-as, mock update server) but through the release R8 + resource shrinking and
+# proguard-rules.pro (-Pgb.minifyDebug=true), so the e2e suites can run against what R8 does to the app (scripts/e2e/minified-smoke.sh).
 #
 # Requires scripts/bootstrap-android.sh to have been run once.
 set -Eeuo pipefail
@@ -22,13 +25,14 @@ source "$HERE/android-env.sh"
 source "$HERE/lib/scratch.sh"
 gb_preflight "$GB_ROOT" || exit 1   # refuse a big build on a nearly full disk (GB_MIN_FREE_GB, default 15)
 
-RUN_TESTS=1 RUN_LINT=1 RUN_HOST_TESTS=1
+RUN_TESTS=1 RUN_LINT=1 RUN_HOST_TESTS=1 MINIFIED=0
 for arg in "$@"; do
     case "$arg" in
         --skip-tests) RUN_TESTS=0 ;;
         --skip-lint) RUN_LINT=0 ;;
         --skip-host-tests) RUN_HOST_TESTS=0 ;;
-        -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        --minified) MINIFIED=1 ;;
+        -h|--help) sed -n '3,17p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $arg" >&2; exit 2 ;;
     esac
 done
@@ -101,6 +105,7 @@ done
 printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$ANDROID_DIR/local.properties"
 
 GRADLE_TASKS=(assembleDebug)
+(( MINIFIED )) && GRADLE_TASKS=(-Pgb.minifyDebug=true assembleDebug)
 (( RUN_TESTS )) && GRADLE_TASKS+=(testDebugUnitTest)
 (( RUN_LINT )) && GRADLE_TASKS+=(lintDebug)
 log "gradle ${GRADLE_TASKS[*]}"

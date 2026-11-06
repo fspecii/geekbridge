@@ -38,6 +38,7 @@ Measured on the runs in [reports/emulator-ci.md](reports/emulator-ci.md).
 | Suite | Script | Time | Status |
 |---|---|---|---|
 | `features` | `scripts/e2e/features.sh` (battery sharing, notification mirroring, PC dial) | 10 min | blocking |
+| `minified-features` | `scripts/e2e/features.sh` on the R8-minified debug APK (`scripts/build-android.sh --minified`: same debug hooks, release `proguard-rules.pro`, so a keep-rule or null-check-stripping regression shows as a failing feature) | 10 min | **non-blocking** until a few nightly runs agree with `features` |
 | `battery-optimisation` | `scripts/e2e/battery-optimisation.sh` | 11 min | blocking |
 | `update-install` | `scripts/e2e/update-install.sh all` (desktop updater and Android upgrade, two extra APK builds) | 22 min | blocking |
 | `call-ui` | `scripts/e2e/call-ui.sh` (headless sway + mako, egui Calls window) | 6 min | blocking; the notification Answer/Decline stage is skipped on the runner, see below |

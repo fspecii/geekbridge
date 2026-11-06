@@ -1995,14 +1995,31 @@ fn parse_day(day: &str) -> Result<Date, ErrorBody> {
 /// anything else is lower-cased first, so non-ASCII letters fold too. No allocation for the common case.
 fn contains_folded(body: &str, needle: &str) -> bool {
     if body.is_ascii() && needle.is_ascii() {
-        let n = needle.as_bytes();
-        return n.is_empty()
-            || body
-                .as_bytes()
-                .windows(n.len())
-                .any(|w| w.eq_ignore_ascii_case(n));
+        return ascii_contains_folded(body.as_bytes(), needle.as_bytes());
     }
     body.to_lowercase().contains(needle)
+}
+
+/// ASCII-case-insensitive substring test. Looks for the needle's first letter (either case) byte by byte and compares
+/// the rest only there: the per-window `eq_ignore_ascii_case` call this replaces was the whole cost of a search over
+/// 20,000 messages once the crate was built for size (opt-level "z" does not inline or unroll that loop).
+fn ascii_contains_folded(hay: &[u8], n: &[u8]) -> bool {
+    let Some((&first, rest)) = n.split_first() else {
+        return true;
+    };
+    let (lo, up) = (first.to_ascii_lowercase(), first.to_ascii_uppercase());
+    let Some(last_start) = hay.len().checked_sub(n.len()) else {
+        return false;
+    };
+    let mut i = 0;
+    while i <= last_start {
+        let b = hay[i];
+        if (b == lo || b == up) && hay[i + 1..i + n.len()].eq_ignore_ascii_case(rest) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 /// The messages of one thread whose held text contains `needle` (a linear scan; bodies are held clipped).
@@ -2035,6 +2052,7 @@ fn group_hits(
     all.truncate(MAX_SEARCH_HITS);
     let mut groups: Vec<ThreadHits> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
+    let mut sorted_times: HashMap<usize, Vec<(u64, MessageKey)>> = HashMap::new();
     for (date_ms, key, i) in all {
         let (device_id, thread_id, title, conv, found) = &raw[i];
         let Some(m) = found.iter().find(|m| m.key == key) else {
@@ -2059,10 +2077,17 @@ fn group_hits(
             outgoing: m.direction() == Direction::Outgoing,
             date_ms,
             snippet: snippet(&m.body, needle, 70),
-            newer: conv
-                .iter()
-                .filter(|o| (o.date_ms, o.key) > (date_ms, key))
-                .count(),
+            // How many held messages of the thread are newer: one sorted list per thread with hits, then a binary
+            // search per hit (was a scan of the whole thread per hit, 200 x 2,000 comparisons in the worst case).
+            newer: {
+                let times = sorted_times.entry(i).or_insert_with(|| {
+                    let mut v: Vec<(u64, MessageKey)> =
+                        conv.iter().map(|o| (o.date_ms, o.key)).collect();
+                    v.sort_unstable();
+                    v
+                });
+                times.len() - times.partition_point(|t| *t <= (date_ms, key))
+            },
         });
     }
     groups
@@ -3528,6 +3553,31 @@ mod tests {
             search(&h, "tailword").hits.is_empty(),
             "the clipped tail is not held"
         );
+    }
+
+    #[test]
+    fn ascii_scan_matches_the_window_comparison_it_replaced() {
+        let hay = [
+            "",
+            "a",
+            "Parcel at the door",
+            "xxParCEL",
+            "parce",
+            "ppparcel",
+            "PARCELPARCEL",
+        ];
+        let needles = [
+            "", "p", "parcel", "l", "door", "xxparcel", "parcelx", "ar", "zz",
+        ];
+        for h in hay {
+            for n in needles {
+                let slow = n.is_empty()
+                    || h.as_bytes()
+                        .windows(n.len())
+                        .any(|w| w.eq_ignore_ascii_case(n.as_bytes()));
+                assert_eq!(contains_folded(h, n), slow, "{h:?} / {n:?}");
+            }
+        }
     }
 
     #[test]
