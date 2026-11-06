@@ -109,7 +109,7 @@ soft() {
 
 # ---------------------------------------------------------------- preflight
 log "Preflight for $TAG ($([[ $PRERELEASE == 1 ]] && echo prerelease || echo stable)$([[ $DRY == 1 ]] && echo ', DRY RUN'))"
-for c in git cargo tar gzip sha256sum awk sed ar xz; do command -v "$c" >/dev/null || die "missing tool: $c"; done
+for c in git cargo tar gzip sha256sum awk sed ar xz unzip strings; do command -v "$c" >/dev/null || die "missing tool: $c"; done
 (( WINDOWS )) && for c in zip unzip file objdump python3; do command -v "$c" >/dev/null || die "missing tool for the Windows zip: $c"; done
 (( ARCH )) && for c in makepkg rsvg-convert zstd; do command -v "$c" >/dev/null || die "missing tool for the Arch package: $c (or pass --skip-arch)"; done
 [[ -f "$ROOT/.tools/jdk/jdk-17.0.21+9/bin/java" || -n "$(command -v java || true)" ]] \
@@ -167,6 +167,10 @@ if [[ -z "${notes_body//[$' \t\n']/}" ]]; then
 fi
 fi
 if (( PRINT_NOTES )); then printf -- "----- release notes -----\n%s\n" "$notes_body"; exit 0; fi
+# A placeholder left in the notes would be published verbatim (docs/release-owner-steps.md, step 2).
+if grep -q '\[OWNER' <<<"$notes_body"; then
+    soft "the release notes still contain an [OWNER: ...] placeholder; fill it in (docs/release-owner-steps.md, step 2)"
+fi
 
 # Android toolchain (project-local; scripts/bootstrap-android.sh). Run commands inside it with with_android.
 with_android() { ( set +u; source "$ROOT/scripts/android-env.sh"; "$@" ); }
@@ -219,6 +223,9 @@ if [[ -d "$WORK" ]]; then
 fi
 mkdir -p "$OUT" "$LOGS" "$WORK/stage" "$WORK/tmp"
 export TMPDIR="$WORK/tmp"
+# The test suites bind unix sockets under TMPDIR (private D-Bus daemons); sun_path holds 107 bytes, so a long scratch
+# path makes every such test fail with "unexpected dbus-daemon address line".
+(( ! TESTS || ${#TMPDIR} <= 56 )) || warn "GB_RELEASE_DIR gives a long TMPDIR (${#TMPDIR} chars): the D-Bus based tests may fail on the unix socket path limit; use a shorter GB_RELEASE_DIR"
 
 if (( DRY )); then
     SRC="$WORK/src"
@@ -440,6 +447,8 @@ verify_apk() { # verify_apk file -> prints signer sha256 on stdout, checks name/
     grep -q "^package: name='dev.geekbridge.android' versionCode='$want_code' versionName='$VERSION'" <<<"$badge" \
         || die "$apk: versionCode/versionName is not $want_code/$VERSION: $(grep '^package:' <<<"$badge")"
     grep -q "^minSdkVersion:'26'" <<<"$badge" || die "$apk: minSdk is not 26"
+    # No debug receiver, cleartext traffic, debug permission or debug-only class in a release APK (needs unzip and strings).
+    iso="$(with_android "$SRC/scripts/check-release-isolation.sh" "$apk" 2>&1)" || die "$apk fails the release isolation check: $iso"
     printf '%s\n' "$signer"
 }
 for apk in geekbridge-android.apk geekbridge-android-arm64.apk; do

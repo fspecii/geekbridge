@@ -107,7 +107,19 @@ the first line of `geekbridge-ctl --version` must be exactly `geekbridge-ctl <ve
 control `Version` matches and all nine binaries are listed; the Arch package `.PKGINFO` `pkgver` matches and lists all
 nine binaries; both APKs pass `apksigner verify` with v2 and v3, the signer equals the pin, `aapt2 dump badging` shows
 the right `versionName` and the `versionCode` from `scripts/version-code.sh` (formula in
-[builds.md](builds.md#android-version-code)), minSdk 26. Any failure aborts before a tag is made or `gh` is called.
+[builds.md](builds.md#android-version-code)), minSdk 26, and `scripts/check-release-isolation.sh` (no debug receivers, cleartext, debug permissions or debug-only classes). Release notes that still contain an `[OWNER: ...]` placeholder are refused (a warning for `--dry-run`). Any failure aborts before a tag is made or `gh` is called.
+
+To check that the updater accepts what the script produced, run the real desktop updater against the finished assets
+(a local mock "GitHub", nothing leaves the machine; the test is skipped without the variable):
+
+```sh
+GB_RELEASE_OUT=~/.cache/gb-release/vX.Y.Z/out GB_RELEASE_TAG=vX.Y.Z cargo test -p bridge-update --test release_assets -- --nocapture
+```
+
+It checks every `SHA256SUMS` line against its file, the asset the updater picks for Linux (the plain archive, never the
+installer tarball, `.deb`, Arch package, APKs or SBOM), the API `digest` cross-check, the download and re-hash from an
+rc.1 install, and "nothing newer" from the same version. Keep `GB_RELEASE_DIR` short (under about 25 characters): the
+test suites bind unix sockets below it and the path limit is 107 bytes.
 
 ### Tag rules
 
