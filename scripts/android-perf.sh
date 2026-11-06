@@ -132,6 +132,8 @@ stage_size() {
     local f="$P/geekbridge-$v.apk"
     rec "size.apk.$v" "$(stat -c %s "$f")" "bytes; $(unzip -lv "$f" | awk '/classes[0-9]*\.dex/ {s+=$3; c+=$1} END{printf "dex %d B stored %d B", c, s}')"
   done
+  # Budgets (scripts/android-budgets.env, the same file CI checks): informational here, the exit status is CI's job.
+  scripts/android-size-check.sh --universal "$B/release/app-release-unsigned.apk" >&2 || log "size budget exceeded (see table above)"
   rec size.lib.arm64 "$(stat -c %s "$S/app/src/main/jniLibs/arm64-v8a/libgeekbridge_android.so")" bytes
   rec size.lib.x86_64 "$(stat -c %s "$S/app/src/main/jniLibs/x86_64/libgeekbridge_android.so")" bytes
   rec size.res "$(unzip -lv "$P/geekbridge-release.apk" | awk '/resources.arsc|res\//{s+=$1} END{print s}')" "bytes uncompressed (resources.arsc + res/)"

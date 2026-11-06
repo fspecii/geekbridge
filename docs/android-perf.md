@@ -11,6 +11,16 @@ emulators or `android/app/build`).
 
 > Re-measured 2026-11-06 at 0af48d0ae (see "Re-measurement 2026-11-06" below): universal APK 7.13 MB unsigned, arm64-only 3.56 MB, dex 0.59 MB, all inside the budgets; cold start unchanged against 6a4122922 on the same AVD (A/B); idle PSS 26.7 MB, 32-33 threads, no alarm, job or wake lock of its own. Earlier: 6a4122922 measured 7.10 / 3.55 / 0.58 MB, cold start 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
 
+**Enforced in CI.** The budgets for the first three rows live in one file, `scripts/android-budgets.env`, in exact decimal bytes
+(**MB here is 10^6 B, not MiB**: 3 560 987 B is quoted as 3.56 MB, which only works as bytes / 10^6): universal APK 7 250 000 B, arm64-only
+APK 3 600 000 B, `classes.dex` 600 000 B. `scripts/android-size-check.sh` reads it, prints a table (bytes, budget, headroom) and exits 1 on
+overflow; it runs in the CI job "Android / unit tests, lint, debug APK" (step "Release APK size budgets", also written to the job summary)
+and, for the universal APK, at the end of `scripts/android-perf.sh size`. CI builds the **release** variant (R8 and resource shrinking on, unsigned,
+same CI-profile native libraries as the debug APK there) twice: universal, then `-Pgb.abis=arm64-v8a`. Only packaging and the final steps rerun
+the second time (7 s locally), and Gradle caches and wrapper are cached by `actions/cache`. Measured values are unsigned (zipalign + signing adds
+about 10 kB); `classes.dex` is the sum of the uncompressed `classes*.dex` entries. Raising a budget means editing the env file and explaining the
+raise in "Size" below in the same commit.
+
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
 | Release APK, phone + emulator ABIs | <= 7.25 MB (was 6.5) | 7.10 MB (7 102 616 B, CI profile, 2026-11-05) | ok |
@@ -86,6 +96,22 @@ while an Agenda widget is on the home screen; the worker thread exits 10 s after
 * **Foreground service with nothing paired:** after the phone's own "Unpair" (Diagnostics) the service is gone while
   the screen is open and after closing the app, no service notification remains, and a simulated
   `MY_PACKAGE_REPLACED` does not restart it.
+
+## Budget check at 803dda57d (2026-11-06)
+
+First measurement through `scripts/android-size-check.sh` (scratch worktree, own Cargo target dir, CI recipe, release R8, unsigned): all three inside
+the budgets, nothing to cut and no budget raise.
+
+| Metric | Budget (B) | 803dda57d (B) | Headroom (B) |
+| --- | --- | --- | --- |
+| Release APK, universal | 7 250 000 | 7 133 956 | 116 044 |
+| Release APK, arm64-v8a only | 3 600 000 | 3 563 443 | 36 557 |
+| `classes.dex` | 600 000 | 595 236 | 4 764 |
+
+`classes.dex` has the least room (0.8 %): the next Kotlin feature will probably trip it, and the CI failure is the prompt to look for savings
+first. Already checked and exhausted: R8 and `shrinkResources` are on, `DebugNetHold` and the call-audio code are debug-only and absent from
+the release dex, the library is stripped with a single ABI copy each, and the 112 kB `resources.arsc` plus 60 kB of widget PNGs are the only
+resources of note. The APK is 86 % native library by size, so the dex budget is the one that binds.
 
 ## Re-measurement 2026-11-06 (0af48d0ae, release, R8)
 

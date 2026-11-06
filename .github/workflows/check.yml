@@ -216,6 +216,13 @@ jobs:
           for so in android/app/src/main/jniLibs/*/libgeekbridge_android.so; do
             "$bin/llvm-readelf" -lW "$so" | awk -v f="$so" '$1=="LOAD" && strtonum($NF) < 16384 { print f ": LOAD alignment " $NF " < 16 KiB"; bad=1 } END { exit bad }'
           done
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
       - name: Toolchain versions (JDK 17; Gradle 8.13 comes from the checksum-pinned wrapper)
         run: |
           java -version 2>&1 | head -1 | grep -q '"17\.' || { java -version; exit 1; }
@@ -225,6 +232,18 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > android/local.properties
           cd android
           ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+      # Release (R8 + resource shrinking) universal and arm64-only APKs, unsigned, from the native libraries built above (the CI
+      # profile that docs/android-perf.md measures). Sizes are compared to scripts/android-budgets.env; the job fails on overflow.
+      - name: Release APK size budgets (universal, arm64-only, classes.dex)
+        run: |
+          set -euo pipefail
+          cd android
+          ./gradlew --no-daemon :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/universal.apk"
+          ./gradlew --no-daemon -Pgb.abis=arm64-v8a :app:assembleRelease
+          cp app/build/outputs/apk/release/app-release-unsigned.apk "$RUNNER_TEMP/arm64.apk"
+          cd ..
+          scripts/android-size-check.sh --universal "$RUNNER_TEMP/universal.apk" --arm64 "$RUNNER_TEMP/arm64.apk"
       - name: versionCode matches the formula
         run: |
           set -euo pipefail
