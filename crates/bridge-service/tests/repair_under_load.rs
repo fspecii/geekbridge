@@ -1104,6 +1104,8 @@ async fn late_delete_of_the_old_record_after_a_fresh_pairing() {
         bridge_core::statefile::set_write_delay_ms(between(rng, 0, 150) as u32);
         lab.inbound_proxy
             .update(|f| f.handshake_delay = ms(between(rng, 0, 100)));
+        let old_connection =
+            link_of(&lab.rig.status().await, &sim.id()).and_then(|l| l.connection_id);
         sim.send(Cmd::Unpair);
         // Gone from the phone's side (its record deleted, the unpair sent) ...
         while sim.live.load(Relaxed) != 0 {
@@ -1121,7 +1123,7 @@ async fn late_delete_of_the_old_record_after_a_fresh_pairing() {
         );
         // From the phone's side unpairing and pairing again is one user action: both ends end up paired. Whether the
         // old consent survives depends on whether the service's session saw the unpair, either is accepted.
-        let seen = repair_either(lab, sim, &label("late-delete", i)).await;
+        let seen = repair_either(lab, sim, &label("late-delete", i), old_connection).await;
         redial.abort();
         seen
     })
@@ -1130,8 +1132,23 @@ async fn late_delete_of_the_old_record_after_a_fresh_pairing() {
 
 /// The phone-initiated paths end in a pairing made by the phone's own request (the approver task is the user);
 /// if only a record without a link is left, the soak driver's service-side connect finishes it.
-async fn repair_either(lab: &Lab, sim: &Arc<Sim>, what: &str) -> Consent {
+async fn repair_either(
+    lab: &Lab,
+    sim: &Arc<Sim>,
+    what: &str,
+    old_connection: Option<u64>,
+) -> Consent {
     let id = sim.id();
+    // The service has noticed the unpair: the old link is gone or replaced. (Its consent, share and privacy files
+    // are still being written after the delete, with nothing in the event log or the store to show it, so
+    // "quiet for a while" alone is not enough on a slow runner.)
+    assert!(
+        lab.until(Duration::from_secs(40), |s| {
+            link_of(s, &id).and_then(|l| l.connection_id) != old_connection
+        })
+        .await,
+        "[{what}] the service never noticed the phone's unpair"
+    );
     lab.settle().await;
     let linked = lab
         .until(Duration::from_secs(8), |s| {
