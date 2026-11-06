@@ -131,6 +131,8 @@ const MAX_SEARCH_CHARS: usize = 64;
 const MAX_PENDING_VCARDS: usize = 5000;
 const VCARD_RETRY_MS: u64 = 15_000;
 const REFRESH_AFTER_MS: u64 = 5 * 60 * 1000;
+/// A first contacts / calendar request nobody answered is asked again when the window is read after this long.
+const ASK_RETRY_MS: u64 = 30_000;
 const ACK_TIMEOUT_MS: u64 = 60_000;
 const SENDS_PER_MINUTE: usize = 10;
 /// SMS parts per minute (a long or emoji text is several, each billed by the carrier).
@@ -476,6 +478,28 @@ impl Dev {
                 self.pending.push_front(uid);
             }
             self.next_vcard_batch();
+        }
+    }
+
+    /// A first request the phone never answered (it was not listening yet, or the answer was lost) is asked again
+    /// instead of waiting for the five-minute refresh.
+    fn retry_unanswered_asks(&mut self, now: u64) {
+        if !self.connected() {
+            return;
+        }
+        if self.contacts_requested
+            && self.contacts_synced.is_none()
+            && self.pending.is_empty()
+            && self.inflight.is_empty()
+            && now.saturating_sub(self.contacts_asked_ms) > ASK_RETRY_MS
+        {
+            self.ask_contacts(now);
+        }
+        if self.calendar_requested
+            && self.cal_synced.is_none()
+            && now.saturating_sub(self.cal_asked_ms) > ASK_RETRY_MS
+        {
+            self.ask_calendar(now, false);
         }
     }
 
@@ -1562,6 +1586,7 @@ impl PhoneData {
         // Opening the window refreshes at most every five minutes; no background timer exists.
         for d in g.devices.values_mut() {
             d.retry_stalled_vcards(now);
+            d.retry_unanswered_asks(now);
             if d.connected() {
                 if now.saturating_sub(d.contacts_asked_ms) > REFRESH_AFTER_MS {
                     d.ask_contacts(now);
@@ -2457,6 +2482,44 @@ mod tests {
         let again = rx.try_recv().expect("batch asked again");
         assert_eq!(again.kind, wire::CONTACTS_REQUEST_VCARDS);
         assert_eq!(again.body["uids"], json!(["a", "b"]));
+    }
+
+    #[test]
+    fn an_unanswered_first_request_is_asked_again_after_thirty_seconds() {
+        let h = PhoneData::new();
+        let mut rx = up(&h, (true, true, false));
+        assert_eq!(
+            drain(&mut rx),
+            vec![wire::CONTACTS_REQUEST_UIDS, wire::CALENDAR_REQUEST]
+        );
+        let ago = |ms: u64| {
+            let mut g = h.lock();
+            let d = g.devices.get_mut(ID).unwrap();
+            d.contacts_asked_ms = now_ms() - ms;
+            d.cal_asked_ms = now_ms() - ms;
+        };
+        // Recently asked: reading the window sends nothing.
+        ago(ASK_RETRY_MS / 2);
+        h.agenda_view("", "2026-11-01", 0).unwrap();
+        assert!(drain(&mut rx).is_empty());
+        // Nothing came back for longer than that: both are asked again, once.
+        ago(ASK_RETRY_MS + 1_000);
+        h.agenda_view("", "2026-11-01", 0).unwrap();
+        assert_eq!(
+            drain(&mut rx),
+            vec![wire::CONTACTS_REQUEST_UIDS, wire::CALENDAR_REQUEST]
+        );
+        h.agenda_view("", "2026-11-01", 0).unwrap();
+        assert!(drain(&mut rx).is_empty());
+        // An answered calendar is not asked again by this path.
+        let full = obj(
+            json!({"version": 1, "full": true, "base": null, "token": "t:1",
+            "calendars": [{"id": "1", "name": "Work"}], "events": [], "deleted": []}),
+        );
+        h.on_packet(ID, wire::CALENDAR_SYNC, &full);
+        ago(ASK_RETRY_MS + 1_000);
+        h.agenda_view("", "2026-11-01", 0).unwrap();
+        assert_eq!(drain(&mut rx), vec![wire::CONTACTS_REQUEST_UIDS]);
     }
 
     #[test]

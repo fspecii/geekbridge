@@ -231,10 +231,14 @@ XML
   desk_dial; wait_for 30 is_connected || { rec cases FAIL "link did not come up"; return 1; }
   sleep 8; for _ in 1 2 3; do is_connected && break; desk_dial; wait_for 30 is_connected; sleep 5; done
   for f in contacts calendar calendar_edit; do ctl consent "$PHONE_ID" $f on >/dev/null; done
-  local n=0
-  for _ in $(seq 60); do n="$(count_of 'd["devices"][0]["events_count"]')"; [[ "${n:-0}" -ge 10 ]] 2>/dev/null && break; sleep 1; done
-  rec cases_sync "$([[ "${n:-0}" -ge 10 ]] && echo PASS || echo FAIL)" "events on desktop: $n"
-  for _ in $(seq 60); do c="$(count_of 'd["devices"][0]["contacts_count"]')"; [[ "${c:-0}" -ge 5 ]] 2>/dev/null && break; sleep 1; done
+  # Wait for the data itself, not a delay: the desktop re-asks a request the phone left unanswered (30 s), and reading the
+  # agenda every second is what triggers that. 150 s covers one lost request plus the sync; the states go in the detail.
+  local n=0 c=0
+  for _ in $(seq 150); do
+    n="$(count_of 'd["devices"][0]["events_count"]')"; c="$(count_of 'd["devices"][0]["contacts_count"]')"
+    [[ "${n:-0}" -ge 10 && "${c:-0}" -ge 5 ]] 2>/dev/null && break; sleep 1
+  done
+  rec cases_sync "$([[ "${n:-0}" -ge 10 ]] && echo PASS || echo FAIL)" "events on desktop: $n, contacts: $c (calendar $(count_of 'd["devices"][0]["calendar"]'), contacts $(count_of 'd["devices"][0]["contacts"]'), link $(link_phases))"
 
   local ms; ms() { python3 -c "import datetime as D,zoneinfo as Z,sys;y,m,d,h,tz=sys.argv[1:6];print(int(D.datetime(int(y),int(m),int(d),int(h),tzinfo=Z.ZoneInfo(tz)).timestamp()*1000))" "$@"; }
   agenda_to "" 2027-03-14 28 "$CASES_OUT/mar.json"
