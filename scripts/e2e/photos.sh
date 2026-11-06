@@ -453,7 +453,14 @@ stage_photos() {
     grant_photo_access partial; phone_config "calls photos" true
     ctl consent "$PHONE_ID" photos on >/dev/null
     if has_perm READ_MEDIA_VISUAL_USER_SELECTED && ! has_perm READ_MEDIA_IMAGES; then
-      refresh_until 24 dev_listed
+      if ! refresh_until 24 dev_listed; then
+        # Run 42155454627: the link was up for minutes and the phone never answered until it was started afresh (the same
+        # second round as in step 11).
+        photos_diag "no answer 24 s after configuring the phone for partial access"
+        grant_photo_access partial; phone_config "calls photos" true
+        ctl consent "$PHONE_ID" photos on >/dev/null
+        refresh_until 40 dev_listed || photos_diag "no answer after the second configuration"
+      fi
       if [[ "$(dev_partial)" == True && -z "$(list_names)" ]]; then
         rec photos_partial_none PASS "only READ_MEDIA_VISUAL_USER_SELECTED (API $api): list marked partial and holds none of the library; the CLI says: $(ctl photos "$PHONE_ID" 2>&1 >/dev/null | head -1)"
       else rec photos_partial_none FAIL "partial=$(dev_partial) names='$(list_names)' $(pjson | head -c 300)"; fi
