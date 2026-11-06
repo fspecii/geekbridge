@@ -223,7 +223,7 @@ impl Settings {
 
     #[cfg(all(test, unix))]
     fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
-        self.writer().persist(next)
+        self.writer().persist(next, false)
     }
 }
 
@@ -233,7 +233,9 @@ struct SettingsWriter {
 }
 
 impl SettingsWriter {
-    fn persist(&self, next: &BTreeMap<String, Perm>) -> Result<(), String> {
+    /// `refresh_backup`: also make `share.json.bak` the new file. A forgotten phone must not come back (with its
+    /// "receive" and "auto accept" choices) from the one-generation backup if the file is ever damaged.
+    fn persist(&self, next: &BTreeMap<String, Perm>, refresh_backup: bool) -> Result<(), String> {
         let Some(file) = &self.file else {
             return Ok(());
         };
@@ -261,7 +263,12 @@ impl SettingsWriter {
             devices.insert(id.clone(), serde_json::Value::Object(entry));
         }
         body.insert("devices".into(), serde_json::Value::Object(devices));
-        locked.save(&body).map_err(|e| e.to_string())
+        if refresh_backup {
+            locked.save_and_refresh_backup(&body)
+        } else {
+            locked.save(&body)
+        }
+        .map_err(|e| e.to_string())
     }
 }
 
@@ -640,7 +647,7 @@ impl ShareManager {
         if next.len() > MAX_SETTINGS_DEVICES {
             return Err(err(ErrorCode::TooMany, "too many devices"));
         }
-        io.persist(&next)
+        io.persist(&next, false)
             .map_err(|_| err(ErrorCode::Failed, "settings could not be saved"))?;
         self.settings().devices = next;
         if receive == Some(false) {
@@ -665,7 +672,7 @@ impl ShareManager {
         };
         if known {
             next.remove(device_id);
-            if io.persist(&next).is_ok() {
+            if io.persist(&next, true).is_ok() {
                 self.settings().devices = next;
             }
         }
@@ -2008,6 +2015,34 @@ mod tests {
         let _ = std::fs::remove_file(path.with_extension("json.bak"));
         put(b"{ torn");
         assert!(Settings::open(Some(path)).devices.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_forgotten_phone_is_not_kept_in_the_settings_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("s");
+        fsutil::ensure_private_dir(&state).unwrap();
+        let path = state.join(SETTINGS_FILE);
+        let s = Settings::open(Some(path.clone()));
+        let (keep, gone) = ("a1".repeat(16), "b2".repeat(16));
+        let perm = Perm {
+            receive: true,
+            auto_accept: true,
+        };
+        let mut next = BTreeMap::from([(keep.clone(), perm), (gone.clone(), perm)]);
+        s.writer().persist(&next, false).unwrap();
+        next.remove(&gone);
+        s.writer().persist(&next, false).unwrap();
+        let bak = bridge_core::statefile::backup_path(&path);
+        assert!(
+            std::fs::read_to_string(&bak).unwrap().contains(&gone),
+            "an ordinary save keeps the old generation"
+        );
+        // Forgetting rewrites the backup too.
+        s.writer().persist(&next, true).unwrap();
+        let bak = std::fs::read_to_string(&bak).unwrap();
+        assert!(!bak.contains(&gone) && bak.contains(&keep), "{bak}");
     }
 
     #[test]

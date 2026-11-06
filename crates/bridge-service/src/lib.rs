@@ -76,6 +76,8 @@ use tokio::{
 
 pub type SharedState = Arc<RwLock<Snapshot>>;
 pub const DEVICE_TTL_MS: u64 = 90_000;
+/// A repeat announcement from a known phone at the same address wakes the redial pass only after this long.
+const WAKE_MIN_GAP_MS: u64 = 5_000;
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -83,13 +85,30 @@ pub fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// Is a repeat announcement worth a redial pass: the phone moved, or it was last heard a while ago.
+fn announcement_is_news(old: &bridge_core::Device, new: &bridge_core::Device) -> bool {
+    old.address != new.address
+        || old.tcp_port != new.tcp_port
+        || new.last_seen_unix_ms.saturating_sub(old.last_seen_unix_ms) >= WAKE_MIN_GAP_MS
+}
+
 pub fn record_device(state: &mut Snapshot, device: bridge_core::Device) {
-    if let Some(existing) = state.devices.iter_mut().find(|d| d.id == device.id) {
+    // An announcement is what the redial pass is waiting for, so it wakes the pass: but only a phone that is new, has
+    // moved, or was last heard a while ago (a real phone announces every 30 s). Repeats from one id, and ids that do
+    // not fit the full list, cannot keep an idle service awake (announcements are unauthenticated UDP).
+    let wake = if let Some(existing) = state.devices.iter_mut().find(|d| d.id == device.id) {
+        let news = announcement_is_news(existing, &device);
         *existing = device;
+        news
     } else if state.devices.len() < MAX_DEVICES {
         state.devices.push(device);
+        true
+    } else {
+        false
+    };
+    if wake {
+        reconnect::wake();
     }
-    reconnect::wake(); // an announcement is what the redial pass is waiting for
     state
         .devices
         .sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
@@ -733,6 +752,43 @@ pub async fn run(config: config::Config) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repeat_announcements_do_not_wake_the_redial_pass_every_time() {
+        let dev = |ip: [u8; 4], port: u16, at: u64| bridge_core::Device {
+            id: "a".repeat(32),
+            name: "p".into(),
+            device_type: "phone".into(),
+            address: std::net::IpAddr::from(ip),
+            tcp_port: port,
+            protocol_version: 8,
+            incoming_capabilities: vec![],
+            outgoing_capabilities: vec![],
+            state: bridge_core::ConnectionState::Discovered,
+            last_seen_unix_ms: at,
+        };
+        let old = dev([10, 0, 0, 2], 1716, 100_000);
+        assert!(!announcement_is_news(
+            &old,
+            &dev([10, 0, 0, 2], 1716, 100_000)
+        ));
+        assert!(!announcement_is_news(
+            &old,
+            &dev([10, 0, 0, 2], 1716, 100_000 + WAKE_MIN_GAP_MS - 1)
+        ));
+        assert!(announcement_is_news(
+            &old,
+            &dev([10, 0, 0, 2], 1716, 100_000 + WAKE_MIN_GAP_MS)
+        ));
+        assert!(
+            announcement_is_news(&old, &dev([10, 0, 0, 3], 1716, 100_001)),
+            "moved"
+        );
+        assert!(
+            announcement_is_news(&old, &dev([10, 0, 0, 2], 1717, 100_001)),
+            "other port"
+        );
+    }
+
     use super::*;
 
     #[tokio::test]
