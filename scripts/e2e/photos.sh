@@ -290,7 +290,7 @@ stays_empty() { # seconds
     is_connected || { desk_dial >/dev/null 2>&1; link_up 40; } || { echo "link down" >>"$LOGS/e2e-photos-notes.txt"; return 1; }
     ctl photos refresh "$PHONE_ID" >/dev/null 2>&1; sleep 4
     [[ "$(list_count)" == 0 ]] || return 1
-    dev_listed && return 1
+    if dev_listed; then return 1; fi
   done
 }
 # What the computer and the phone hold when a list does not come (the whole logcat is in logcat-full.txt).
