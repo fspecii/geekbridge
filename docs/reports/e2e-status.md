@@ -34,6 +34,8 @@ Red jobs per run. Runs marked success can list a red experimental job (those job
 | 42194747065 | f64dac41c | failure | call-ui, features |
 | 42198230749 | 3c73287ef | failure | battery-optimisation |
 | 42207429247 (schedule) | 84392e594 | success | - (all 11 jobs green) |
+| 42226426174 | c5cdbd0e6 | failure | battery-optimisation, e2e-android, contacts-calendar-cases (battery stage: harness still looked for the old button after 0d4d03bf6 changed the denied-state wording) |
+| 42234854200 | 4ff72908d | success | - (all 11 jobs green, after the harness fix 4ff72908d) |
 
 ## Flake causes found so far
 
