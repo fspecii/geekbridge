@@ -316,10 +316,24 @@ pub fn sweep_partials(dir: &Path, min_idle: std::time::Duration) -> usize {
     let mut removed = 0;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
+        // Exactly `.gb-<pid>-<seq>-<nanos>-<reserved name>.part` with the three numbers in hex: anything else in the
+        // folder (a file of the user's, a lookalike) is not ours to remove.
         let Some(rest) = name
             .strip_prefix(".gb-")
             .and_then(|r| r.strip_suffix(".part"))
         else {
+            continue;
+        };
+        let mut fields = rest.splitn(4, '-');
+        fn hex(f: Option<&str>) -> Option<&str> {
+            f.filter(|f| !f.is_empty() && f.bytes().all(|b| b.is_ascii_hexdigit()))
+        }
+        let (Some(pid), Some(_), Some(_), Some(reserved)) = (
+            hex(fields.next()),
+            hex(fields.next()),
+            hex(fields.next()),
+            fields.next().filter(|r| !r.is_empty()),
+        ) else {
             continue;
         };
         let Ok(meta) = entry.metadata() else { continue };
@@ -331,22 +345,18 @@ pub fn sweep_partials(dir: &Path, min_idle: std::time::Duration) -> usize {
         // `.gb-<pid in hex>-...`: a writer that no longer exists left it, however recently; waiting out
         // `min_idle` would keep up to a whole file's worth of disk (and an empty file with the real name
         // in the user's folder) until some later start.
-        let writer_gone = rest
-            .split('-')
-            .next()
-            .and_then(|p| u32::from_str_radix(p, 16).ok())
+        let writer_gone = u32::from_str_radix(pid, 16)
+            .ok()
             .is_some_and(crate::fsutil::process_is_gone);
         if !meta.is_file() || (idle < min_idle && !writer_gone) {
             continue;
         }
         if std::fs::remove_file(entry.path()).is_ok() {
             removed += 1;
-            // `.gb-<pid>-<seq>-<nanos>-<reserved name>.part`: the reserved name is what is left.
-            if let Some(reserved) = rest.splitn(4, '-').nth(3) {
-                let path = dir.join(reserved);
-                if std::fs::metadata(&path).is_ok_and(|m| m.is_file() && m.len() == 0) {
-                    let _ = std::fs::remove_file(path);
-                }
+            // The reserved name is what is left: an empty regular file only (a link is not looked through).
+            let path = dir.join(reserved);
+            if std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file() && m.len() == 0) {
+                let _ = std::fs::remove_file(path);
             }
         }
     }
@@ -566,6 +576,46 @@ mod tests {
         assert!(!dead_part.exists(), "dead writer's partial");
         assert!(!reserved.exists(), "its empty reservation");
         assert!(live_part.exists(), "a live writer's partial");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_partial_sweep_touches_exact_names_regular_files_and_no_link_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let mut c = std::process::Command::new("true").spawn().unwrap();
+        let dead = c.id();
+        c.wait().unwrap();
+        // Lookalikes of a dead writer's partial: non-hex fields, a missing field, an empty reserved name, no suffix.
+        let lookalikes = [
+            format!(".gb-{dead:x}-zz-1-a.bin.part"),
+            format!(".gb-{dead:x}-0-a.bin.part"),
+            format!(".gb-{dead:x}-0-1-.part"),
+            format!(".gb-{dead:x}-0-1-a.bin"),
+            format!("gb-{dead:x}-0-1-a.bin.part"),
+        ];
+        for n in &lookalikes {
+            std::fs::write(dir.path().join(n), b"x").unwrap();
+        }
+        // A directory and a link with an exact name: neither is a partial file.
+        let as_dir = dir.path().join(format!(".gb-{dead:x}-0-1-d.part"));
+        std::fs::create_dir(&as_dir).unwrap();
+        let precious = out.path().join("precious");
+        std::fs::write(&precious, b"").unwrap();
+        let link = dir.path().join(format!(".gb-{dead:x}-0-2-x.part"));
+        std::os::unix::fs::symlink(&precious, &link).unwrap();
+        // An exact partial whose reserved name is a link to an empty file elsewhere: the partial goes, the target stays.
+        let part = dir.path().join(format!(".gb-{dead:x}-0-3-l.bin.part"));
+        std::fs::write(&part, b"x").unwrap();
+        std::os::unix::fs::symlink(&precious, dir.path().join("l.bin")).unwrap();
+        assert_eq!(sweep_partials(dir.path(), std::time::Duration::ZERO), 1);
+        assert!(!part.exists());
+        for n in &lookalikes {
+            assert!(dir.path().join(n).exists(), "{n} must stay");
+        }
+        assert!(as_dir.is_dir() && link.symlink_metadata().is_ok());
+        assert!(precious.exists());
+        assert!(dir.path().join("l.bin").symlink_metadata().is_ok());
     }
 
     #[test]

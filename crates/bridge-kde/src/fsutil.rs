@@ -268,6 +268,25 @@ mod tests {
     }
 
     #[test]
+    fn the_temp_sweep_neither_follows_links_nor_removes_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let dead = dead_pid();
+        let target = out.path().join("elsewhere");
+        fs::write(&target, b"keep").unwrap();
+        let link = dir.join(format!(".state.json.tmp.{dead}"));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let folder = dir.join(format!(".folder.tmp.{dead}"));
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("inner"), b"keep").unwrap();
+        assert_eq!(sweep_dead_temps(dir), 0);
+        assert_eq!(fs::read(&target).unwrap(), b"keep");
+        assert!(link.symlink_metadata().is_ok());
+        assert!(folder.join("inner").exists());
+    }
+
+    #[test]
     fn missing_file_is_none() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
