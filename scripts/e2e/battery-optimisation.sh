@@ -165,9 +165,10 @@ stage_doze() {
 bo_env() { # as pl_env, but the AVD clone may carry a newer build of the app: uninstall first
   [[ -x "$SVC" && -f "$APK" ]] || { BUILD=yes; stage_env || return 1; BUILD=auto; }
   start_xvfb; start_emulator || return 1
+  wait_for 120 adb_ready || { $ADB reconnect offline >/dev/null 2>&1; wait_for 60 adb_ready; }  # transport can flap after boot (run 42198230749)
   $ADB shell svc power stayon true; $ADB shell settings put global hide_error_dialogs 1; wake
   $ADB uninstall $PKG >/dev/null 2>&1
-  $ADB install -r "$APK" 2>&1 | tail -1 | grep -q Success || return 1
+  adb_install_retry "$APK" || { rec env FAIL "adb install failed: $GB_INSTALL_ERR"; return 1; }
   start_desktop; desk_id
 }
 main_bo() {
