@@ -234,6 +234,34 @@ impl Shell {
     }
 }
 
+#[cfg(test)]
+impl Shell {
+    /// Tests: block until every background worker has delivered its first answer, so the window's
+    /// content no longer changes on its own. Panics when one never answers.
+    pub(crate) fn settle_background(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut discovery = false;
+        loop {
+            if let Some(model) = self.poller.latest() {
+                self.model = model;
+                discovery = true;
+            }
+            self.connections.update();
+            let control =
+                self.connections.state.status.is_some() || self.connections.state.error.is_some();
+            let updates = self.updates.answered();
+            if discovery && control && updates {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background workers did not answer: discovery {discovery}, control {control}, updates {updates}", // i18n-ok
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+}
+
 impl eframe::App for Shell {
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         crate::memtrim::cap_atlas(raw_input);

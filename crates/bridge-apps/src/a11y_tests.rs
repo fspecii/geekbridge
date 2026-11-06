@@ -535,6 +535,11 @@ fn every_tab_stop_draws_a_focus_indicator_in_both_themes() {
             ctx.set_theme(theme_choice);
             let mut shell = Shell::new(app, 1, ctx.clone(), apps::view_for(app));
             shell.details_open = true;
+            // The window's background workers (discovery, control status, update status, update support)
+            // each answer once, at a moment that depends on the machine (a refused connect is slow on
+            // Windows). Wait for all of them first, or a button appears or goes away between the frame that
+            // moves focus and the frame that is checked, and the test measures timing instead of the UI.
+            shell.settle_background();
             let mut seen: Vec<egui::Id> = Vec::new();
             for step in 0..200 {
                 let mut events = Vec::new();

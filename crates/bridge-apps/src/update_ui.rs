@@ -138,12 +138,19 @@ impl Updates {
             .spawn(move || {
                 let mut previous: Published = None;
                 let mut busy = false;
+                // The first status is asked for at once: waiting a full interval left the banner and the
+                // Updates section unanswered for seconds after the window opened (and made them appear
+                // at a machine-dependent moment).
+                let mut first = true;
                 while !quitting.load(Ordering::Acquire) {
-                    let next = match rx.recv_timeout(if busy {
+                    let wait = if std::mem::take(&mut first) {
+                        Duration::ZERO
+                    } else if busy {
                         Duration::from_millis(700)
                     } else {
                         crate::pace::scaled(Duration::from_millis(4000))
-                    }) {
+                    };
+                    let next = match rx.recv_timeout(wait) {
                         Ok(Command::Check) => call(&Request::UpdateCheck),
                         Ok(Command::Download) => call(&Request::UpdateDownload),
                         Ok(Command::Skip(version)) => call(&Request::UpdateSkip { version }),
@@ -178,6 +185,13 @@ impl Updates {
             problem: None,
             dismissed: None,
         }
+    }
+
+    /// Tests: the status worker and the install-support probe have both answered.
+    #[cfg(test)]
+    pub(crate) fn answered(&mut self) -> bool {
+        self.poll();
+        (self.status.is_some() || self.problem.is_some()) && self.support().is_some()
     }
 
     fn poll(&mut self) {
@@ -639,6 +653,20 @@ fn reveal(path: &str) {
 mod tests {
     use super::*;
     use bridge_core::ipc::UpdateRelease;
+
+    #[test]
+    fn the_first_status_is_asked_for_at_once_not_after_a_poll_interval() {
+        let mut updates = Updates::spawn(|_| Err("service not running".into()), || {});
+        let deadline = std::time::Instant::now() + Duration::from_millis(2500);
+        while updates.problem.is_none() {
+            updates.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no status within 2.5 s (the poll interval is 4 s)"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     fn status(newer: bool, skipped: bool) -> UpdateStatus {
         UpdateStatus {
