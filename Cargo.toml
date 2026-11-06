@@ -81,3 +81,13 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 debug = false
+
+# The service library and both binaries at "z" as well (CLI text, doctor, call/callwifi setup, pairing and update
+# glue, the daemon's I/O-bound loops; the Opus codec and TLS/crypto stay in their own crates at "s"). Measured on
+# 2026-11-06, x86_64 Linux, from c5cdbd0e6: ctl 1 737 144 -> 1 710 488 B (-26.7 kB), service 7 531 032 ->
+# 7 274 648 B (-256 kB); idle RSS, startup, wakeups and CPU ticks under scripts/perf-check.sh unchanged. `strip`
+# must be repeated here: a package override that names the binary's own package replaces the profile's strip
+# setting for the final link, and the binaries came out unstripped (2.1 MB / 9.7 MB) without it.
+[profile.release.package.bridge-service]
+opt-level = "z"
+strip = "symbols"
