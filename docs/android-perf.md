@@ -12,8 +12,8 @@ emulators or `android/app/build`).
 > Re-measured 2026-11-06 at 0af48d0ae (see "Re-measurement 2026-11-06" below): universal APK 7.13 MB unsigned, arm64-only 3.56 MB, dex 0.59 MB, all inside the budgets; cold start unchanged against 6a4122922 on the same AVD (A/B); idle PSS 26.7 MB, 32-33 threads, no alarm, job or wake lock of its own. Earlier: 6a4122922 measured 7.10 / 3.55 / 0.58 MB, cold start 877 ms, idle PSS 21 MB. See [reports/android-release-audit.md](reports/android-release-audit.md).
 
 **Enforced in CI.** The budgets for the first three rows live in one file, `scripts/android-budgets.env`, in exact decimal bytes
-(**MB here is 10^6 B, not MiB**: 3 560 987 B is quoted as 3.56 MB, which only works as bytes / 10^6): universal APK 7 215 000 B, arm64-only
-APK 3 580 000 B, `classes.dex` 592 000 B (tightened 2026-11-06 from 7 250 000 / 3 600 000 / 600 000 B: CI at 3e81e823a measured 7 114 124 / 3 539 267 / 567 180 B, so headroom is now 100 876 / 40 733 / 24 820 B). `scripts/android-size-check.sh` reads it, prints a table (bytes, budget, headroom) and exits 1 on
+(**MB here is 10^6 B, not MiB**: 3 560 987 B is quoted as 3.56 MB, which only works as bytes / 10^6): universal APK 6 710 000 B, arm64-only
+APK 3 395 000 B, `classes.dex` 592 000 B (tightened 2026-11-07 from 7 215 000 / 3 580 000 B to the first two after the native-library cuts below: measured 6 647 648 / 3 362 863 B, headroom 62 352 / 32 137 B; 2026-11-06 from 7 250 000 / 3 600 000 / 600 000 B: CI at 3e81e823a measured 7 114 124 / 3 539 267 / 567 180 B, so headroom is now 100 876 / 40 733 / 24 820 B). `scripts/android-size-check.sh` reads it, prints a table (bytes, budget, headroom) and exits 1 on
 overflow; it runs in the CI job "Android / unit tests, lint, debug APK" (step "Release APK size budgets", also written to the job summary)
 and, for the universal APK, at the end of `scripts/android-perf.sh size`. CI builds the **release** variant (R8 and resource shrinking on, unsigned,
 same CI-profile native libraries as the debug APK there) twice: universal, then `-Pgb.abis=arm64-v8a`. Only packaging and the final steps rerun
@@ -23,8 +23,8 @@ raise in "Size" below in the same commit.
 
 | Metric | Budget | Measured (release, R8) | Status |
 | --- | --- | --- | --- |
-| Release APK, phone + emulator ABIs | <= 7.215 MB (was 7.25, 6.5) | 7.10 MB (7 102 616 B, CI profile, 2026-11-05) | ok |
-| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.58 MB (was 3.6, 3.5) | 3.55 MB (3 549 719 B) | ok |
+| Release APK, phone + emulator ABIs | <= 6.71 MB (was 7.215, 7.25, 6.5) | 6.65 MB (6 647 648 B, CI profile, 2026-11-07) | ok |
+| Release APK, phone only (`-Pgb.abis=arm64-v8a`) | <= 3.395 MB (was 3.58, 3.6, 3.5) | 3.36 MB (3 362 863 B) | ok |
 | `classes.dex` (release) | <= 0.592 MB (was 0.6, 0.5) | 0.58 MB (576 680 B; 2.8 MB unshrunk) | ok |
 | Cold start `am start -W` (HomeActivity) | <= 1000 ms (emulator) | 765 ms median of 7 (750-814, first 1107 once) | ok |
 | Idle PSS, app closed, link service paired + connected | <= 35 MB | 22.8-23.4 MB just after closing; 26.5 MB after 30 min | ok |
@@ -45,6 +45,22 @@ bad request kill the app process instead of becoming an error reply, so it stays
 `-allowaccessmodification` in R8 saved 1 kB of dex; `clap` in `bridge-kde` is only used by a bin and is not linked into the library. Dropping
 x86_64 from the published APK is not done: the release docs publish the universal APK (which the updater reads) next to the phone-only one, and
 the universal one is the emulator-capable build; `-Pgb.abis=arm64-v8a` (`geekbridge-android-arm64.apk`) is the phone-only artifact.
+
+Native library cuts, 2026-11-07 (the .so is stored uncompressed in the APK, so raw bytes count). The arm64 release APK had grown to 3 576 431 B
+against a 3 580 000 B budget; measured with the CI recipe, `libgeekbridge_android.so` arm64 3 075 096 -> 2 862 096 B (x86_64 3 569 680 -> 3 434 536 B
+before the second cut), APKs 3 576 431 -> 3 334 459 B and 7 188 944 -> 6 581 652 B on the same sources, then 3 362 863 / 6 647 648 B on current main:
+* `rqrr` GF(256) arithmetic: the published crate builds its fields with the `g2p` macro, which embeds a 64 KiB multiplication table (`GF256_mod::MUL_TABLE`,
+  incompressible) in every library. `third_party/rqrr` is a patched copy (`[patch.crates-io]` in `Cargo.toml`) whose `src/gf.rs` uses 0.5 kB of
+  log/antilog tables built at compile time; the results were checked against g2p for all inputs of both fields (add, sub, mul, div, pow). -131 kB per library
+  (arm64 and x86_64). The only source change is `decode.rs` (field types) plus the new `gf.rs`; licences travel with the copy.
+* lld packed relocations: `-Wl,--pack-dyn-relocs=android` (APS2 format, understood by the dynamic linker since API 23; minSdk is 26) shrinks `.rela.dyn`
+  (97 kB on arm64) to about 15 kB: -82 kB arm64. Added next to `--icf=all` in `scripts/android-env.sh` and the three workflows (`GB_ANDROID_PACKREL=0` turns it off).
+  Not `+relr`: that needs API 28/30.
+Checked and not applicable: `ecp_nistz256_precomputed` (151 kB, P-256 for the certificates), RSA in ring (KDE Connect peers use RSA certificates), TLS 1.2 (used),
+the `std` backtrace symbolizer (~80 kB, only removable with `-Zbuild-std`); the `[profile.release.package.*]` opt-level "z" overrides are inherited by the
+`android` profile, which is "z" for every package anyway. The desktop service and ctl do not depend on `rqrr` and are unchanged (7 357 048 / 1 712 296 B in
+`target/release`, budgets 7 380 000 / 1 738 000). Smoke on a private API 36 emulator clone with the R8-minified debug APK (`scripts/e2e-android.sh`):
+env, battery, pair, reconnect, clipboard both ways and the 30 s / locked rules, file desktop->phone and Share sheet->desktop all PASS; Android unit tests (787) and lint pass.
 
 | | Before | After |
 | --- | --- | --- |

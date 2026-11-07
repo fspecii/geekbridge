@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/bridge-callwifi", "crates/bridge-core", "crates/bridge-service", "crates/bridge-apps", "crates/bridge-i18n", "crates/bridge-kde", "crates/bridge-calls", "crates/bridge-android", "crates/bridge-calls-windows", "crates/bridge-calls-macos", "crates/bridge-phone-sim", "crates/bridge-update", "crates/bridge-chaos", "crates/bridge-fuzz"]
+# third_party/rqrr is a patched copy of a published crate (see [patch.crates-io] below), not a workspace member.
+exclude = ["third_party/rqrr"]
 resolver = "2"
 
 [workspace.package]
@@ -91,3 +93,9 @@ debug = false
 [profile.release.package.bridge-service]
 opt-level = "z"
 strip = "symbols"
+
+# rqrr 0.11.0 with its GF(256) arithmetic rewritten (third_party/rqrr/src/gf.rs): upstream's g2p macro embeds a 64 KiB
+# multiplication table that does not compress, about 65 kB of every Android APK ABI; log/antilog tables are 0.5 kB.
+# Same results (exhaustively checked against g2p), no other change. Licences travel with the copy.
+[patch.crates-io]
+rqrr = { path = "third_party/rqrr" }

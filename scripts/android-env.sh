@@ -55,6 +55,9 @@ export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$GB_NDK_BIN/x86_64-linux-androi
 # lld identical code folding (docs/reports/android-icf-validation.md): about -100 kB per library. GB_ANDROID_ICF=0
 # turns it off (measuring a baseline, or bisecting a suspected address-identity bug).
 [[ "${GB_ANDROID_ICF:-1}" == 0 ]] || _gb_flags="$_gb_flags -C link-arg=-Wl,--icf=all"
+# Android packed relocations (APS2, understood by the dynamic linker since API 23; minSdk is 26): the 97 kB .rela.dyn of the
+# arm64 library becomes about 15 kB. Not +relr: that needs API 28/30. GB_ANDROID_PACKREL=0 turns it off.
+[[ "${GB_ANDROID_PACKREL:-1}" == 0 ]] || _gb_flags="$_gb_flags -C link-arg=-Wl,--pack-dyn-relocs=android"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$_gb_flags"
 export CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS="$_gb_flags"
 unset _gb_flags
