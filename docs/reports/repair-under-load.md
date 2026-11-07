@@ -65,14 +65,52 @@ condition under study but not what the injected delays are for.
    is `Trusted`, which surfaces as `PeerRequestedRePair`; the app shows a prompt, but the soak's stand-in
    (`soak_real.rs`) ignored the event, so the request timed out after 30 s every time. Reproduced (scenario 2, iteration 5,
    before the stand-in change). `soak_real.rs` now accepts the request as the user would, which turns "stuck until the next
-   round" into a normal re-pair. Not changed in the service: the phone's accept precedes the computer's write by protocol, and
-   making the persist survive an abort of the session is a larger change; the residual window (abort during the retries of
-   a failing write) leaves an orphaned phone that needs one tap in the app.
+   round" into a normal re-pair. Closed by the follow-up below: the service tells the phone.
 4. **Consent on a phone-initiated unpair + re-pair (scenario 6) is not deterministic**: 9 of 100 forgot the consent, 91 kept
    it, depending on whether the old session or the new connection won the race. Same device id, so "kept" is the allowed
    outcome; "forgotten" is the safe one. Both leave the records consistent. Left as is.
 5. Residual risk: the real file store holds its lock across the slow write and times out on contention, which the wrapper
    only models with injected `timed out` failures; the retry (3 attempts) is exercised, not the lock itself.
+
+## Abandoned pairings: the phone is told (follow-up)
+
+The phone's accept precedes the computer's trust write by protocol, so a computer that then gives up leaves a phone that
+trusts a computer without a record (the next request of the computer shows a prompt and needs one tap). Now:
+
+1. **The phone is told, best effort, once.** `PendingLink::pair` (bridge-kde) sends `kdeconnect.pair` with `pair=false`
+   (the standard unpair; the phone forgets the computer at once) when it gives up after the peer accepted:
+   * the trust write fails (already the case) or outlasts `PairingConfig::persist_timeout` (45 s, below the phone's 60 s
+     wait after approving; the write keeps running as a task and may still land, see below);
+   * the pairing future is cancelled (disconnect, link replaced, service stopping): a drop guard (`Abandon`) takes the
+     link into one detached send bounded by the connection's write timeout. If the trust write is in flight at that
+     moment the guard waits for it (at most `persist_timeout`) and sends nothing when it lands: record and phone then
+     agree and only the connection is lost (scenario 2 relies on this; sending unconditionally broke it);
+   * the service stopping: `goodbye_all` marks the pairing config `stopping` and ends links still pairing; the guard then
+     sends at once without waiting for the write (the process may be gone before it lands or fails);
+   * no retry loop anywhere. Without a runtime (the process already exiting) nothing is sent.
+   A write that lands after the timeout leaves a record the phone no longer matches. That direction is safe: the
+   phone's request is an ordinary prompt and nothing is trusted on its word (below).
+2. **A phone that still presents as paired is never trusted on its word.** The service decides from its own record.
+   Without one, such a phone is a pending link: any packet but a pair request gets the single `pair=false` hint (the
+   phone forgets), a pair request is the normal prompt with the verification key, and nothing is stored until the user
+   approves. Tested with auto-approval switched off.
+3. **Android**: an unpair received within 90 s of this phone accepting a pairing is reported as `peer_unpaired` with code
+   `link_unfinished` and worded "The computer did not finish linking - try again." (calm tone) instead of "The other
+   device removed the link"; the core had already dropped the trust record and the connection, so the pairing list no
+   longer shows a link. The mid-pairing case where the phone is the requester and waits for the computer's accept still
+   surfaces the computer's `pair=false` as "declined", because the protocol cannot tell a decline from a failure there.
+
+Tests (`repair_under_load.rs`): `a_trust_write_past_the_deadline_makes_the_phone_forget_the_service` (600 ms deadline,
+write 2.5 s: the phone has no record within 1.8 s of accepting), `a_failing_trust_write_makes_the_phone_forget_the_service`,
+`cancelling_a_pairing_during_a_trust_write_that_fails_tells_the_phone`, `..._that_lands_keeps_the_pairing`,
+`stopping_the_service_during_a_trust_write_tells_the_phone`,
+`a_phone_that_still_thinks_it_is_paired_gets_the_normal_prompt`; Android: `peer_unpairing_removes_trust_on_the_phone`
+(code) and `TransportParserAbuseTest` (wording). Sizes: service 7,342,872 B (budget 7,380,000), ctl 1,712,568 B
+(budget 1,738,000); Kotlin change is one condition and one string.
+
+Open: scenario 4 (`old_teardown_after_the_new_accept`) fails sporadically at 100-300 iterations with "no link" after the
+redial (iterations 11, 24, 33, 76 on different runs). It fails the same way on the tree without this change (3 of 3 runs at
+300 iterations), and involves no pairing, so it is not caused by the abandon handling; not investigated here.
 
 ## Running
 

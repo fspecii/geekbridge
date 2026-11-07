@@ -30,7 +30,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, AtomicUsize, Ordering::Relaxed},
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed},
     },
     time::{Duration, Instant},
 };
@@ -170,6 +170,8 @@ struct Sim {
     /// Answer a re-pair request like the app (the user accepts); the soak's old stand-in ignored it.
     reaccept: bool,
     live: Arc<AtomicUsize>,
+    /// Trusted links this phone ever ended up holding (it accepted a pairing).
+    held: Arc<AtomicUsize>,
     accepted: Arc<AtomicUsize>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -231,6 +233,7 @@ impl Sim {
             cmds,
             reaccept: std::env::var_os("GB_REPAIR_IGNORE_REPAIR").is_none(),
             live: Arc::default(),
+            held: Arc::default(),
             accepted: Arc::default(),
             tasks: Mutex::default(),
         });
@@ -313,6 +316,7 @@ impl Sim {
             }
         }
         self.live.fetch_add(1, Relaxed);
+        self.held.fetch_add(1, Relaxed);
         let _count = Count(self.live.clone());
         let mut cmds = self.cmds.subscribe();
         loop {
@@ -383,11 +387,17 @@ struct Lab {
     slow: Arc<Slow>,
     service_id: String,
     inbound_proxy: FaultProxy,
+    approving: Arc<AtomicBool>,
     _approver: JoinHandle<()>,
 }
 
 impl Lab {
     async fn start() -> Self {
+        Self::start_with(Duration::from_secs(45)).await
+    }
+
+    /// `persist_timeout`: the service's deadline for the trust write.
+    async fn start_with(persist_timeout: Duration) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let state_dir = tmp.path().join("state");
         let discovery: SharedState =
@@ -397,6 +407,7 @@ impl Lab {
         let store = Arc::new(SlowStore(state.store.clone(), slow.clone()));
         let mut options = DaemonOptions::new("Test Desktop", Arc::new(NoProbe));
         options.dev_loopback = true;
+        options.transport.pairing.persist_timeout = persist_timeout;
         options.privacy_dir = Some(state_dir.clone());
         options.share.settings_path = Some(state_dir.join("share-settings.json"));
         options.share.save_dir = tmp.path().join("dl");
@@ -437,9 +448,11 @@ impl Lab {
             tasks,
         };
         let inbound_proxy = FaultProxy::start_with(inbound, Faults::default(), 11).await;
-        // The user: approves every link request that appears.
+        // The user: approves every link request that appears (unless `approving` is switched off).
+        let approving = Arc::new(AtomicBool::new(true));
         let approver = {
             let (port, token) = (rig.control_port, rig.token.clone());
+            let on = approving.clone();
             tokio::spawn(async move {
                 loop {
                     let (t, tk) = (token.clone(), token.clone());
@@ -447,7 +460,8 @@ impl Lab {
                         .await
                         .ok()
                         .and_then(Result::ok);
-                    for c in st.map(|s| s.challenges).unwrap_or_default() {
+                    let challenges = st.map(|s| s.challenges).unwrap_or_default();
+                    for c in challenges.into_iter().filter(|_| on.load(Relaxed)) {
                         let tk = tk.clone();
                         let _ = tokio::task::spawn_blocking(move || {
                             ipc::call(
@@ -469,8 +483,49 @@ impl Lab {
             slow,
             service_id,
             inbound_proxy,
+            approving,
             _approver: approver,
         }
+    }
+
+    /// Connect to the phone and ask it to pair, without waiting for the outcome.
+    async fn begin_pairing(&self, sim: &Sim) {
+        let id = sim.id();
+        self.rig
+            .call(Request::Connect {
+                device_id: id.clone(),
+                endpoint: Some(sim.endpoint_for_service()),
+            })
+            .await
+            .expect("connect");
+        assert!(
+            self.until(Duration::from_secs(10), |s| link_of(s, &id)
+                .is_some_and(|l| l.phase == LinkPhase::Unpaired))
+                .await,
+            "never reached the pairing step"
+        );
+        self.rig
+            .call(Request::Pair {
+                device_id: id,
+                mode: PairMode::Request,
+            })
+            .await
+            .expect("pair");
+    }
+
+    /// Wait until the phone accepted and the service's trust write is running, then disconnect.
+    async fn cancel_during_the_write(&self, sim: &Sim) {
+        let end = Instant::now() + Duration::from_secs(15);
+        while sim.held.load(Relaxed) == 0 || self.slow.active.load(Relaxed) == 0 {
+            assert!(Instant::now() < end, "the write never started");
+            sleep(ms(5)).await;
+        }
+        self.rig
+            .call(Request::Disconnect {
+                device_id: sim.id(),
+            })
+            .await
+            .ok();
     }
 
     async fn until(&self, within: Duration, cond: impl Fn(&Status) -> bool) -> bool {
@@ -1264,4 +1319,195 @@ async fn an_inbound_dial_during_an_unpair_is_turned_away() {
         st.links
     );
     let _ = sim;
+}
+
+// ------------------------------------------------------------------------ abandoning a pairing
+
+impl Sim {
+    fn knows_service(&self, lab: &Lab) -> bool {
+        self.store
+            .get(&kde::DeviceId::parse(&lab.service_id).unwrap())
+            .unwrap()
+            .is_some()
+    }
+
+    /// The phone accepted (it held a trusted link) and was then told to forget the service, within `within`.
+    async fn forgot_after_accepting(&self, lab: &Lab, within: Duration) {
+        let end = Instant::now() + Duration::from_secs(15);
+        while self.held.load(Relaxed) == 0 {
+            assert!(Instant::now() < end, "the phone never accepted");
+            sleep(ms(5)).await;
+        }
+        let t = Instant::now();
+        while self.live.load(Relaxed) != 0 || self.knows_service(lab) {
+            assert!(
+                t.elapsed() < within,
+                "the phone still trusts the service {:?} after accepting",
+                t.elapsed()
+            );
+            sleep(ms(5)).await;
+        }
+    }
+}
+
+/// The service's trust write outlasts its deadline (the disk is stalled): it gives up and tells the phone,
+/// which had accepted first, to forget it. Before, the phone kept trusting a service with no record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trust_write_past_the_deadline_makes_the_phone_forget_the_service() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start_with(ms(600)).await;
+    let sim = Sim::new().await;
+    lab.slow.insert_ms.store(2500, Relaxed);
+    let t = Instant::now();
+    lab.begin_pairing(&sim).await;
+    // Told at the deadline, long before the slow write ends.
+    sim.forgot_after_accepting(&lab, ms(1800)).await;
+    assert!(t.elapsed() < ms(2400), "{:?}", t.elapsed());
+    lab.quiesce().await;
+    lab.settle().await;
+    assert!(
+        !sim.knows_service(&lab),
+        "the phone trusts the service again"
+    );
+    let st = lab.rig.status().await;
+    assert!(
+        st.links.iter().all(|l| l.phase != LinkPhase::Connected),
+        "{:?}",
+        st.links
+    );
+}
+
+/// The write fails on every attempt (lock timeouts): the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failing_trust_write_makes_the_phone_forget_the_service() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start().await;
+    let sim = Sim::new().await;
+    lab.slow.fail_inserts.store(3, Relaxed);
+    lab.begin_pairing(&sim).await;
+    sim.forgot_after_accepting(&lab, Duration::from_secs(5))
+        .await;
+    lab.settle().await;
+    assert_eq!(lab.rig.trust_len(), 0, "no record on the service");
+    assert!(!sim.knows_service(&lab));
+}
+
+/// The pairing is cancelled while the write is still running (a disconnect, or the service stopping) and the
+/// write then fails: the phone is told on the way out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_pairing_during_a_trust_write_that_fails_tells_the_phone() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start().await;
+    let sim = Sim::new().await;
+    lab.slow.insert_ms.store(800, Relaxed);
+    lab.slow.fail_inserts.store(3, Relaxed);
+    lab.begin_pairing(&sim).await;
+    lab.cancel_during_the_write(&sim).await;
+    sim.forgot_after_accepting(&lab, Duration::from_secs(8))
+        .await;
+    lab.quiesce().await;
+    assert_eq!(lab.rig.trust_len(), 0);
+}
+
+/// The service stops while a pairing's write is still running (it may not live to see the write end): the
+/// phone is told at once, without waiting for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_the_service_during_a_trust_write_tells_the_phone() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start().await;
+    let sim = Sim::new().await;
+    lab.slow.insert_ms.store(4000, Relaxed);
+    lab.begin_pairing(&sim).await;
+    let end = Instant::now() + Duration::from_secs(15);
+    while sim.held.load(Relaxed) == 0 || lab.slow.active.load(Relaxed) == 0 {
+        assert!(Instant::now() < end, "the write never started");
+        sleep(ms(5)).await;
+    }
+    lab.rig.daemon.goodbye_all().await;
+    sim.forgot_after_accepting(&lab, ms(1500)).await;
+    lab.quiesce().await;
+}
+
+/// Cancelled during a write that lands: nothing to undo, record and phone agree (the connection is gone).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_pairing_during_a_trust_write_that_lands_keeps_the_pairing() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start().await;
+    let sim = Sim::new().await;
+    lab.slow.insert_ms.store(800, Relaxed);
+    lab.begin_pairing(&sim).await;
+    lab.cancel_during_the_write(&sim).await;
+    lab.quiesce().await;
+    sleep(ms(500)).await;
+    assert_eq!(lab.rig.trust_len(), 1);
+    assert!(sim.knows_service(&lab));
+}
+
+/// A phone that still presents as paired to a service that has no record of it is never trusted on its
+/// word: its request is a normal prompt, and nothing is stored until the user approves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_phone_that_still_thinks_it_is_paired_gets_the_normal_prompt() {
+    let _one = ONE.lock().await;
+    bridge_core::statefile::set_write_delay_ms(0);
+    let lab = Lab::start().await;
+    let sim = Sim::new().await;
+    lab.pair_fresh(&sim).await;
+    let id = sim.id();
+    // The service forgets the phone without telling it (the abandoned-pairing leftover, seen from the other side).
+    sim.send(Cmd::Close);
+    assert!(
+        lab.until(Duration::from_secs(10), |s| s.links.is_empty())
+            .await
+    );
+    lab.rig
+        .call(Request::Unpair {
+            device_id: id.clone(),
+        })
+        .await
+        .ok();
+    assert_eq!(lab.rig.trust_len(), 0);
+    assert!(
+        sim.knows_service(&lab),
+        "the phone still trusts the service"
+    );
+    lab.approving.store(false, Relaxed);
+    sim.dial_in(lab.inbound_proxy.addr(), &lab.service_id, PairMode::Await);
+    // Trusted on the phone's side, unknown on ours.
+    assert!(
+        lab.until(Duration::from_secs(10), |s| link_of(s, &id)
+            .is_some_and(|l| l.phase == LinkPhase::Pairing))
+            .await
+    );
+    // It talks as if paired: the service answers with the standard "not paired" and the phone forgets.
+    sim.send(Cmd::Send(ringing()));
+    sim.forgot_after_accepting(&lab, Duration::from_secs(5))
+        .await;
+    assert_eq!(lab.rig.trust_len(), 0, "a stranger's packets made a record");
+    // It then asks to pair afresh: an ordinary prompt.
+    sim.dial_in(lab.inbound_proxy.addr(), &lab.service_id, PairMode::Request);
+    assert!(
+        lab.until(Duration::from_secs(10), |s| s
+            .challenges
+            .iter()
+            .any(|c| c.device_id == id))
+            .await,
+        "no prompt"
+    );
+    sleep(ms(500)).await;
+    assert_eq!(lab.rig.trust_len(), 0, "trusted before the user approved");
+    let st = lab.rig.status().await;
+    assert!(link_of(&st, &id).is_some_and(|l| l.phase != LinkPhase::Connected));
+    // The user approves.
+    lab.approving.store(true, Relaxed);
+    assert!(
+        lab.until(Duration::from_secs(15), |s| link_of(s, &id)
+            .is_some_and(|l| l.phase == LinkPhase::Connected))
+            .await
+    );
+    assert_eq!(lab.rig.trust_len(), 1);
 }

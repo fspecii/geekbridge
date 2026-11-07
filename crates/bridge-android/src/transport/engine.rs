@@ -98,6 +98,8 @@ const MAX_WRONG_ATTEMPTS: u8 = 3;
 pub(super) const MAX_PACKET_LINE: usize = 64 * 1024;
 /// Whole-handshake ceiling on top of `bridge-kde`'s per-stage timeouts.
 const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(20);
+/// An unpair this soon after the phone accepted a pairing is the computer giving up on it (`link_unfinished`).
+const UNFINISHED_LINK_WINDOW: Duration = Duration::from_secs(90);
 /// How long an outbound unpaired connection waits for `transport_pair_request`.
 const PARK_TTL: Duration = Duration::from_secs(60);
 const CTL_DEPTH: usize = 8;
@@ -1137,7 +1139,7 @@ async fn drive(
         Handshake::Trusted(link) => {
             core.lock_redial()
                 .connected(&device, peer_ip, dialed, info.peer.geekbridge_port);
-            run_trusted(core, id, link, ctl_rx, close, bound).await
+            run_trusted(core, id, link, ctl_rx, close, bound, false).await
         }
         Handshake::Pending(link) => run_pending(core, id, link, origin, ctl_rx, close).await,
     }
@@ -1198,7 +1200,7 @@ async fn run_pending(
                     trusted.info().peer.geekbridge_port,
                 );
             }
-            run_trusted(core, id, trusted, ctl_rx, close, None).await;
+            run_trusted(core, id, trusted, ctl_rx, close, None, true).await;
         }
         Some(Err(e)) => {
             let code = kde_code(&e);
@@ -1246,6 +1248,7 @@ async fn run_trusted(
     mut ctl_rx: mpsc::Receiver<Ctl>,
     close: Arc<Notify>,
     bound: Option<Ipv4Addr>,
+    just_paired: bool,
 ) {
     let started = std::time::Instant::now();
     // A computer that connects while a call is already ringing must hear about it.
@@ -1362,7 +1365,9 @@ async fn run_trusted(
                     if let Some(device) = device {
                         core.cancel_transfers_of(device.as_str());
                     }
-                    break Some(("peer_unpaired", None));
+                    // Right after this phone accepted, an unpair means the computer could not finish saving the link.
+                    let unfinished = just_paired && started.elapsed() < UNFINISHED_LINK_WINDOW;
+                    break Some(("peer_unpaired", unfinished.then_some("link_unfinished")));
                 }
                 Ok(LinkEvent::PeerRequestedRePair { .. }) => {
                     {

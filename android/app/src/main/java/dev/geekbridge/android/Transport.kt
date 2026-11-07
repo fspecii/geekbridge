@@ -352,7 +352,7 @@ object TransportText {
             else -> s.get(R.string.event_connect_failed_code, e.code)
         }
         "link_closed" -> e.code?.let { s.get(R.string.event_link_closed_code, it) } ?: s.get(R.string.event_link_closed)
-        "peer_unpaired" -> s.get(R.string.event_peer_unpaired)
+        "peer_unpaired" -> s.get(if (e.code == "link_unfinished") R.string.event_link_unfinished else R.string.event_peer_unpaired)
         "peer_requested_repair" -> s.get(R.string.event_peer_requested_repair)
         "unpaired" -> s.get(R.string.event_unpaired)
         else -> s.get(R.string.event_unknown, e.kind)

@@ -22,6 +22,8 @@
 //! * Pairing state dies with the connection.
 
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -71,6 +73,13 @@ pub struct PairingConfig {
     /// One-time QR token to put in our own pair request ([`crate::qrpair`]). The caller has
     /// already checked that the peer's certificate is the one the QR code pinned.
     pub token: Option<String>,
+    /// How long the trust record may take to be written once both sides agreed. Past it the pairing is
+    /// abandoned and the peer is told (it must not keep trusting a computer without a record). Stays under
+    /// the peer's own wait after approving ([`PEER_SAVE_GRACE`]).
+    pub persist_timeout: Duration,
+    /// Set when the process is leaving: a pairing cancelled after that tells the peer without waiting for
+    /// its trust write (the process may be gone before the write lands or fails).
+    pub stopping: Arc<AtomicBool>,
 }
 
 impl Default for PairingConfig {
@@ -83,6 +92,8 @@ impl Default for PairingConfig {
             max_unexpected: 8,
             clock: unix_now,
             token: None,
+            persist_timeout: Duration::from_secs(45),
+            stopping: Arc::default(),
         }
     }
 }
@@ -274,6 +285,17 @@ impl Machine {
             | State::RequestedByPeer { deadline, .. } => Some(deadline),
             State::Finished => None,
         }
+    }
+
+    /// The peer has accepted our request and we have not finished: it already trusts us.
+    pub(crate) fn peer_accepted(&self) -> bool {
+        matches!(
+            self.state,
+            State::Requested {
+                peer_accepted: true,
+                ..
+            }
+        )
     }
 
     fn key(&self, ts: i64) -> String {
@@ -540,11 +562,25 @@ impl PendingLink {
     /// Run one pairing attempt on this link. Consumes the link: on failure the
     /// connection is dropped and nothing is stored; on success the returned
     /// [`TrustedLink`] is bound to the same connection and certificate.
-    pub async fn pair<A: Approver>(
-        mut self,
+    pub async fn pair<A: Approver>(self, mode: PairMode, approver: &mut A) -> Result<TrustedLink> {
+        let mut guard = Abandon {
+            link: Some(self),
+            watch: Watch::default(),
+        };
+        let link = guard.link.as_mut().expect("just set");
+        let result = link.run(mode, approver, &mut guard.watch).await;
+        // Every normal ending has told the peer what it needed to hear; only a cancelled future is left to the guard.
+        guard.watch.armed = false;
+        result?;
+        Ok(guard.link.take().expect("still set").into_trusted())
+    }
+
+    async fn run<A: Approver>(
+        &mut self,
         mode: PairMode,
         approver: &mut A,
-    ) -> Result<TrustedLink> {
+        watch: &mut Watch,
+    ) -> Result<()> {
         let clock = self.pairing.clock;
         let conn_id = self.conn.info.connection_id;
         let bound_fp = self.conn.info.peer_cert.fingerprint();
@@ -575,12 +611,13 @@ impl PendingLink {
             // Our accept and the completion come in one batch: the trust record must be durable and
             // visible before the accept goes out, or the peer can finish first and observe us unpaired.
             let completing = batch.iter().any(|a| matches!(a, Action::Complete));
+            watch.armed = completing || machine.peer_accepted();
             let mut stored = false;
             for action in batch {
                 match action {
                     Action::Send { pair, timestamp } => {
                         if completing && pair && timestamp.is_none() && !stored {
-                            self.persist(conn_id, bound_fp, clock).await?;
+                            self.persist(conn_id, bound_fp, clock, watch).await?;
                             stored = true;
                         }
                         let mut packet = pair_packet(pair, timestamp);
@@ -619,9 +656,9 @@ impl PendingLink {
                     Action::Fail(f) => return Err(f.into()),
                     Action::Complete => {
                         if !stored {
-                            self.persist(conn_id, bound_fp, clock).await?;
+                            self.persist(conn_id, bound_fp, clock, watch).await?;
                         }
-                        return Ok(self.into_trusted());
+                        return Ok(());
                     }
                 }
             }
@@ -664,6 +701,7 @@ impl PendingLink {
         conn_id: crate::link::ConnectionId,
         fp: [u8; 32],
         clock: fn() -> i64,
+        watch: &mut Watch,
     ) -> Result<()> {
         // The certificate we verified and showed to the user must be the one on
         // this connection, and it is the one we pin.
@@ -683,16 +721,36 @@ impl PendingLink {
         // The write is durable before the accept goes out (a crash must never leave the phone paired
         // with us and us not with it). A lock held by another process for longer than the lock
         // timeout (a stalled disk) is retried: the handshake is over and the peer is still waiting.
-        let mut stored = Err(KdeError::Store("trust store write interrupted".into()));
-        for _ in 0..PERSIST_ATTEMPTS {
-            let (store, peer) = (self.store.clone(), peer.clone());
-            stored = tokio::task::spawn_blocking(move || store.insert(peer))
-                .await
-                .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into())));
-            if !matches!(&stored, Err(KdeError::Store(m)) if m.starts_with("timed out")) {
-                break;
+        // The write runs as its own task: if this future is cancelled meanwhile it still ends, and `Abandon`
+        // learns how (a write that lands leaves peer and record agreeing, one that fails does not).
+        let store = self.store.clone();
+        watch.write = Some(tokio::spawn(async move {
+            let mut stored = Err(KdeError::Store("trust store write interrupted".into()));
+            for _ in 0..PERSIST_ATTEMPTS {
+                let (store, peer) = (store.clone(), peer.clone());
+                stored = tokio::task::spawn_blocking(move || store.insert(peer))
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(KdeError::Store("trust store write interrupted".into()))
+                    });
+                if !matches!(&stored, Err(KdeError::Store(m)) if m.starts_with("timed out")) {
+                    break;
+                }
             }
-        }
+            stored
+        }));
+        // A write that outlasts the deadline is abandoned (it may still land: a record the peer does not
+        // match is healed by the normal prompt, a peer trusting a computer without one is not).
+        let waited = match watch.write.as_mut() {
+            Some(task) => tokio::time::timeout(self.pairing.persist_timeout, task).await,
+            None => unreachable!("just set"),
+        };
+        watch.write = None;
+        let stored = match waited {
+            Ok(joined) => joined
+                .unwrap_or_else(|_| Err(KdeError::Store("trust store write interrupted".into()))),
+            Err(_) => Err(KdeError::Store("saving the link took too long".into())),
+        };
         if let Err(e) = stored {
             // The peer may already consider us paired; tell it we are not.
             let _ = self.conn.send(&pair_packet(false, None)).await;
@@ -703,6 +761,45 @@ impl PendingLink {
 
     fn into_trusted(self) -> TrustedLink {
         TrustedLink::new(self.conn, self.store, self.own_cert, self.pairing)
+    }
+}
+
+/// What a cancelled pairing leaves behind.
+#[derive(Default)]
+struct Watch {
+    /// The peer has accepted (or is about to be told we did) and we have not finished.
+    armed: bool,
+    /// The trust write, while it runs.
+    write: Option<tokio::task::JoinHandle<Result<()>>>,
+}
+
+/// Holds the link while a pairing runs. If the attempt is cancelled (the link is taken down, replaced or
+/// the service stops) after the peer accepted, the peer still trusts us: unless the trust record is (still
+/// being) written successfully, say so before the connection goes. One bounded send, no retry.
+struct Abandon {
+    link: Option<PendingLink>,
+    watch: Watch,
+}
+
+impl Drop for Abandon {
+    fn drop(&mut self) {
+        let (Some(mut link), true) = (self.link.take(), self.watch.armed) else {
+            return;
+        };
+        // Without a runtime there is nothing to do.
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let (write, wait) = (self.watch.write.take(), link.pairing.persist_timeout);
+        let write = write.filter(|_| !link.pairing.stopping.load(Ordering::Relaxed));
+        rt.spawn(async move {
+            if let Some(write) = write
+                && matches!(tokio::time::timeout(wait, write).await, Ok(Ok(Ok(()))))
+            {
+                return;
+            }
+            let _ = link.conn.send(&pair_packet(false, None)).await;
+        });
     }
 }
 

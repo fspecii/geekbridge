@@ -46,6 +46,7 @@
     <string name="event_connect_failed_code">Connection failed (%1$s).</string>
     <string name="event_link_closed">A connection closed.</string>
     <string name="event_link_closed_code">A connection closed (%1$s).</string>
+    <string name="event_link_unfinished">The computer did not finish linking — try again.</string>
     <string name="event_peer_unpaired">The other device removed the link; it is gone from this phone too.</string>
     <string name="event_peer_requested_repair">The other device forgot this phone and asks to link again. Compare the code on both screens and accept only if you started this.</string>
     <string name="event_unpaired">Unlinked on this phone.</string>

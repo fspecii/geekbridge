@@ -171,6 +171,10 @@ class TransportParserAbuseTest {
         )
         val texts = kinds.map { TransportText.event(strings, ev(it)).substringBefore('|') }
         assertEquals("each kind has its own wording", kinds.size, texts.toSet().size)
+        // An unpair right after this phone accepted is the computer giving up, said calmly.
+        assertNotEquals(TransportText.event(strings, ev("peer_unpaired")), TransportText.event(strings, ev("peer_unpaired", "link_unfinished")))
+        assertTrue(TransportText.event(strings, ev("peer_unpaired", "link_unfinished")).startsWith("${R.string.event_link_unfinished}"))
+        assertEquals(Tone.Muted, TransportText.eventTone(ev("peer_unpaired", "link_unfinished")))
         val unknown = TransportText.event(strings, ev("brand_new_kind"))
         assertTrue(unknown.startsWith("${R.string.event_unknown}|brand_new_kind"))
         for (code in listOf("pairing_rejected_locally", "pairing_rejected_by_peer", "pairing_timeout", "clock_skew", "pairing_binding_changed", "link_closed", "tls_failed", "other", null)) {

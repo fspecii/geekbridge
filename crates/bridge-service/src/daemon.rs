@@ -1911,6 +1911,27 @@ impl Daemon {
                 self.say_goodbye(id, bridge_core::goodbye::Reason::Shutdown)
                     .await;
             }
+            // Links still pairing: ending them tells a phone that already accepted to forget us (a pairing
+            // cancelled while stopping does not wait for its trust write).
+            self.options
+                .transport
+                .pairing
+                .stopping
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            let mut pairing = false;
+            for id in &ids {
+                let mid = self
+                    .core()
+                    .links
+                    .get(id)
+                    .is_some_and(|l| l.status.phase == LinkPhase::Pairing);
+                if mid && self.take_down(id).await {
+                    pairing = true;
+                }
+            }
+            if pairing {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
         })
         .await;
     }

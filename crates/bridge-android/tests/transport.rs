@@ -1234,6 +1234,11 @@ fn peer_unpairing_removes_trust_on_the_phone() {
     });
     assert!(Phone::array(&s, "connections").is_empty());
     assert!(Phone::array(&s, "paired").is_empty());
+    // Straight after this phone accepted: the computer gave up on the pairing, which the app words calmly.
+    assert_eq!(
+        Phone::events(&s, "peer_unpaired")[0]["code"],
+        "link_unfinished"
+    );
 }
 
 /// With the app closed nothing polls the status, so a `{pair:false}` must wake `transport_wait`: that is
