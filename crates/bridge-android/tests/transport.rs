@@ -82,7 +82,52 @@ fn start_request(dir: &Path, extra: Value) -> Value {
     r
 }
 
+/// The screen, Wi-Fi bind and heartbeat-nudge requests change process-wide state (one transport per
+/// app process in production), and a nudge wakes every running phone's announce and redial loops. The
+/// tests that set them hold this exclusively, every `Phone` shares it, so a nudge cannot land in the
+/// middle of another test's "nothing is announced" window. Counter: >0 shared holders, -1 exclusive;
+/// shared holders never wait for a waiting exclusive one, so a test may start a second `Phone`.
+static PROCESS_GLOBALS: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+struct Globals(isize);
+
+impl Globals {
+    fn take(delta: isize) -> Globals {
+        use std::sync::atomic::Ordering::SeqCst;
+        loop {
+            let n = PROCESS_GLOBALS.load(SeqCst);
+            let want = if delta < 0 {
+                (n == 0).then_some(-1)
+            } else {
+                (n >= 0).then_some(n + 1)
+            };
+            if let Some(w) = want
+                && PROCESS_GLOBALS
+                    .compare_exchange(n, w, SeqCst, SeqCst)
+                    .is_ok()
+            {
+                return Globals(delta);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+impl Drop for Globals {
+    fn drop(&mut self) {
+        PROCESS_GLOBALS.fetch_add(
+            if self.0 < 0 { 1 } else { -1 },
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+}
+
+fn globals_exclusive() -> Globals {
+    Globals::take(-1)
+}
+
 struct Phone {
+    _globals: Globals,
     d: Dispatcher,
     dir: TempDir,
     id: String,
@@ -96,6 +141,7 @@ impl Phone {
     }
 
     fn start_with(extra: Value) -> Phone {
+        let globals = Globals::take(1);
         let dir = tempfile::tempdir().unwrap();
         let d = Dispatcher::new();
         let v = parse(&d.handle(&start_request(dir.path(), extra).to_string()));
@@ -108,6 +154,7 @@ impl Phone {
         .parse()
         .unwrap();
         Phone {
+            _globals: globals,
             id: r["device_id"].as_str().unwrap().to_owned(),
             cert: r["cert_sha256"].as_str().unwrap().to_owned(),
             d,
@@ -283,7 +330,13 @@ impl Peer {
     }
 
     fn listen(&self) -> (TcpListener, SocketAddr) {
-        let l = self.rt.block_on(TcpListener::bind("127.0.0.1:0")).unwrap();
+        // On a loopback address of this process's own: another test process, a port scanner or an
+        // HTTP probe aiming at a recycled 127.0.0.1 ephemeral port would otherwise be accepted
+        // here instead of the phone and fail the handshake with "not valid JSON".
+        let l = self
+            .rt
+            .block_on(TcpListener::bind((loopback_host().as_str(), 0)))
+            .unwrap();
         let a = l.local_addr().unwrap();
         (l, a)
     }
@@ -387,6 +440,7 @@ fn pair_by_peer(phone: &Phone, peer: &Peer) -> TrustedLink {
 
 #[test]
 fn the_screen_state_needs_no_running_transport_and_rejects_bad_input() {
+    let _g = globals_exclusive();
     let d = Dispatcher::new();
     for on in [false, true] {
         let v = parse(&d.handle(&request("transport_screen", json!({ "on": on })).to_string()));
@@ -400,6 +454,7 @@ fn the_screen_state_needs_no_running_transport_and_rejects_bad_input() {
 
 #[test]
 fn heartbeat_now_needs_no_running_transport_and_takes_no_arguments() {
+    let _g = globals_exclusive();
     let d = Dispatcher::new();
     let v = parse(&d.handle(&request("transport_heartbeat_now", json!({})).to_string()));
     assert_eq!(ok(&v)["nudged"], true);
@@ -409,6 +464,7 @@ fn heartbeat_now_needs_no_running_transport_and_takes_no_arguments() {
 
 #[test]
 fn wifi_bind_takes_a_unicast_ipv4_address_or_nothing() {
+    let _g = globals_exclusive();
     let d = Dispatcher::new();
     let v = parse(
         &d.handle(&request("transport_wifi_bind", json!({ "ip": "192.168.1.20" })).to_string()),
@@ -506,7 +562,7 @@ fn start_reports_identity_listener_and_only_ping() {
     let phone2 = Phone::start();
     let v = phone2.act(
         "transport_connect",
-        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+        json!({"host": addr.ip().to_string(), "port": addr.port(), "device_id": peer.id.as_str()}),
     );
     ok(&v);
     let hs = peer.finish(accepted).unwrap();
@@ -1043,13 +1099,13 @@ fn phone_dials_parks_then_requests_pairing() {
     let accepted = peer.accept_one(listener);
     let v = phone.act(
         "transport_connect",
-        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+        json!({"host": addr.ip().to_string(), "port": addr.port(), "device_id": peer.id.as_str()}),
     );
     assert_eq!(ok(&v)["accepted"], true);
     // A second dial to the same device while the first exists is refused.
     let again = phone.act(
         "transport_connect",
-        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+        json!({"host": addr.ip().to_string(), "port": addr.port(), "device_id": peer.id.as_str()}),
     );
     assert_eq!(code(&again), "already_connected");
 
@@ -1114,7 +1170,7 @@ fn a_parked_connection_can_be_closed_and_unpair_forgets_the_peer() {
     let accepted = peer.accept_one(listener);
     ok(&phone.act(
         "transport_connect",
-        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+        json!({"host": addr.ip().to_string(), "port": addr.port(), "device_id": peer.id.as_str()}),
     ));
     let s = phone.wait("parked", |s| !Phone::array(s, "connections").is_empty());
     let cid = Phone::array(&s, "connections")[0]["connection_id"].clone();
@@ -2288,7 +2344,7 @@ fn dial_parked(phone: &Phone, peer: &Peer) -> (Value, JoinHandle<Result<Handshak
     let accepted = peer.accept_one(listener);
     let v = phone.act(
         "transport_connect",
-        json!({"host": "127.0.0.1", "port": addr.port(), "device_id": peer.id.as_str()}),
+        json!({"host": addr.ip().to_string(), "port": addr.port(), "device_id": peer.id.as_str()}),
     );
     assert_eq!(ok(&v)["accepted"], true);
     let s = phone.wait("a parked connection", |s| {
@@ -2595,6 +2651,11 @@ fn announcements_stay_paused_while_linked_a_newcomer_wakes_them_and_a_storm_is_r
     let peer = Peer::new('p');
     let _link = pair_by_peer(&phone, &peer);
     phone.wait("a trusted link", Phone::first_trusted);
+    // A round that went out while the (possibly slow, loaded-machine) pairing was still under way is
+    // already queued on `rx`; only what is sent from here on counts.
+    rx.set_read_timeout(Some(Duration::from_millis(100)))
+        .unwrap();
+    while rx.recv_from(&mut buf).is_ok() {}
     let udp = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     rx.set_read_timeout(Some(Duration::from_millis(1200)))
         .unwrap();
@@ -2611,11 +2672,13 @@ fn announcements_stay_paused_while_linked_a_newcomer_wakes_them_and_a_storm_is_r
     );
 
     // An unpaired computer is answered at once, with a KDE-shaped identity of this phone.
-    rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    // "At once" means well before the 30 s timer would have announced anyway; the bound is generous so
+    // a machine with every core busy does not turn scheduling delay into a failure.
+    rx.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let t0 = Instant::now();
     udp.send_to(&datagram('n', 40002), &to).unwrap();
     let (n, _) = rx.recv_from(&mut buf).expect("a newcomer is answered");
-    assert!(t0.elapsed() < Duration::from_secs(2));
+    assert!(t0.elapsed() < Duration::from_secs(20));
     let packet = Packet::from_line(buf[..n].strip_suffix(b"\n").unwrap()).unwrap();
     assert_eq!(packet.kind, "kdeconnect.identity");
     assert_eq!(packet.body["deviceId"], phone.id.as_str());

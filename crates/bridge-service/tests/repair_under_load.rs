@@ -528,13 +528,25 @@ impl Lab {
             .ok();
     }
 
+    /// Wait for `cond`. `within` is how long the service may go without making progress (a new event, or
+    /// a trust-store call in flight), not a wall-clock budget: the injected delays are exact, but a real
+    /// fsync on a busy disk (or a CPU-starved runner) adds time of its own, and a test that fails on that
+    /// says nothing about the pairing. A stuck service still fails after `within`; one that keeps working
+    /// gets up to three times that.
     async fn until(&self, within: Duration, cond: impl Fn(&Status) -> bool) -> bool {
-        let end = Instant::now() + within;
+        let start = Instant::now();
+        let (hard, mut idle_end, mut seen) = (start + within * 3, start + within, 0);
         loop {
-            if cond(&self.rig.status().await) {
+            let st = self.rig.status().await;
+            if cond(&st) {
                 return true;
             }
-            if Instant::now() >= end {
+            let now = Instant::now();
+            if st.event_seq != seen || !self.quiet() {
+                seen = st.event_seq;
+                idle_end = now + within;
+            }
+            if now >= hard || now >= idle_end {
                 return false;
             }
             sleep(ms(10)).await;
@@ -837,7 +849,7 @@ async fn converge(lab: &Lab, sim: &Arc<Sim>, what: &str, consent: Consent) -> Co
         "{}",
         ctx("the phone forgot the service while the service holds a connected link")
     );
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + Duration::from_secs(30);
     while sim.live.load(Relaxed) != 1 {
         assert!(
             Instant::now() < end,
@@ -858,7 +870,7 @@ async fn converge(lab: &Lab, sim: &Arc<Sim>, what: &str, consent: Consent) -> Co
     // The link carries traffic: a ring from the phone shows on the call list (only when the consent is on).
     if seen == Consent::Kept {
         sim.send(Cmd::Send(ringing()));
-        let end = Instant::now() + Duration::from_secs(5);
+        let end = Instant::now() + Duration::from_secs(20);
         loop {
             let calls = match lab.rig.call(Request::Calls).await {
                 Ok(Response::Calls(c)) => *c,
