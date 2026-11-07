@@ -20,7 +20,7 @@ thiserror = "2"
 # The D-Bus adapter is Linux-only. Windows/macOS build the explicit unavailable backend and
 # never link a D-Bus stack or spawn Linux commands.
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = "5"
+zbus = "6"
 zbus_xml = "5"
 async-io = "2"
 futures-lite = "2"
