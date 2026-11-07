@@ -19,7 +19,7 @@
 
 /// The `(start, length)` of every private, executable, file-backed mapping in `/proc/PID/maps` or
 /// `/proc/PID/smaps` text that is safe to drop. A mapping is left alone when it
-/// - is not a plain file path (`[vdso]`, anonymous JIT memory, `/memfd:` or `/dev/` objects, SysV
+/// - is not a plain file path (`[vdso]`, anonymous JIT memory, `/memfd:` or `/dev/` device objects, SysV
 ///   shared memory): the bytes behind those can be the only copy, and
 /// - has any anonymous page (`Anonymous:` above zero in smaps): a private page that was written
 ///   once (a debugger's breakpoint, a text relocation, a hot patch) is a copy-on-write page that
@@ -35,7 +35,8 @@ fn code_ranges(maps: &str) -> Vec<(usize, usize)> {
     fn plain_file(path: &str) -> bool {
         path.starts_with('/')
             && !path.starts_with("/memfd:")
-            && !path.starts_with("/dev/")
+            // A file on tmpfs (`/dev/shm/app`) is an ordinary file; the other `/dev/` paths are devices.
+            && (!path.starts_with("/dev/") || path.starts_with("/dev/shm/"))
             && !path.starts_with("/SYSV")
             && !path.starts_with("/proc/")
             && !path.starts_with("/run/user/")
@@ -251,7 +252,7 @@ Anonymous:             0 kB
 Anonymous:             0 kB
 7f0000400000-7f0000500000 r-xp 00000000 08:01 300 /usr/lib/libpatched.so
 Anonymous:             4 kB
-7f0000600000-7f0000700000 r-xp 00000000 00:05 6 /dev/shm/code
+7f0000600000-7f0000700000 r-xp 00000000 00:05 6 /dev/dri/card0
 Anonymous:             0 kB
 7f0000800000-7f0000900000 r-xp 00000000 08:01 400 /usr/lib/libjustbuilt.so
 Anonymous:             0 kB
@@ -261,13 +262,18 @@ Shared_Dirty:        512 kB
 Anonymous:            16 kB
 7f0000c00000-7f0000d00000 r--p 00000000 08:01 501 /usr/lib/librodata.so
 Anonymous:             0 kB
+7f0000e00000-7f0000f00000 r-xp 00000000 00:05 7 /dev/shm/gb/svc
+Anonymous:             0 kB
+7f0001000000-7f0001100000 r-xp 00000000 00:01 8 /dev/shm/gb/patched
+Anonymous:             4 kB
 ";
         assert_eq!(
             code_ranges(smaps),
             vec![
                 (0x7f0000000000, 0x100000),
                 (0x7f0000800000, 0x100000),
-                (0x7f0000c00000, 0x100000)
+                (0x7f0000c00000, 0x100000),
+                (0x7f0000e00000, 0x100000)
             ]
         );
     }

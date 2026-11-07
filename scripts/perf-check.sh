@@ -187,6 +187,11 @@ row "cpu ticks in window" "$((t1 - t0))" "$BUDGET_CPU_TICKS" "x10ms"
 row "geekbridge-service size" "$(stat -c %s "$BIN_DIR/geekbridge-service")" "$BUDGET_SERVICE_BYTES" B
 [[ -f "$BIN_DIR/geekbridge-ctl" ]] && row "geekbridge-ctl size" "$(stat -c %s "$BIN_DIR/geekbridge-ctl")" "$BUDGET_CTL_BYTES" B
 rss_breakdown
+if ((rss > BUDGET_RSS_KIB)); then
+    # Seen 2026-11-07: a binary copied with big writes (cp --reflink=never, dd bs=1M) sits in 256 kB page-cache folios on a
+    # 7.x kernel and every fault maps a whole one (4.5-4.8 MB settled instead of 2.4-2.7); docs/performance.md.
+    echo "hint: the code of $BIN_DIR/geekbridge-service stays resident in whole page-cache folios when the file was written with large writes; compare with: sync -d BIN; dd if=BIN iflag=nocache count=0; then run again" >&2
+fi
 
 if ((UI)); then
     if [[ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" || ! -x "$BIN_DIR/geekbridge-messages" ]]; then

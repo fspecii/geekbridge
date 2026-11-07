@@ -390,6 +390,50 @@ budgets (8 500 kB on CI, 6 000 kB locally at the time) were left as they are; ti
 * **Budgets not tightened yet.** Only one CI run so far measures the beat (2aac58d27: settled 2 300 kB, peak 2 876 kB, 1 wakeup/s, 0 ticks; kernel 7.0.0-1019-azure,
   glibc 2.43, THP madvise), the run on b512861c1 was cancelled. The CI budget (8 500 kB) is tightened once three runs agree.
 
+## Idle RSS 7.1 MB on one machine, 2.6 MB on the same binary elsewhere (2026-11-07)
+
+A local `scripts/perf-check.sh` read 7 100 kB (budget 4 000) while CI and earlier local runs read 2.3-2.9 MB. Host: kernel 7.2.8, glibc 2.44,
+THP `always`, `/home` btrfs with `compress=zstd:3`, `/tmp` tmpfs; release build of origin/main 8cd1e3ceb, 7 342 488 B. Sampled
+`smaps_rollup` and per-mapping `smaps` every 5 s for 300 s, the 0.2 s RSS series of perf-check, and `/proc/PID/pagemap` for which pages are present.
+
+| Where the binary was (service alone, no phone) | Settled min | Text `r-xp` | Why |
+| --- | --- | --- | --- |
+| `/home` btrfs, linked by cargo or reflink-copied | 2.4-2.7 MB (peaks 4.8-4.9 MB for one 4 s beat at an announcement) | 0.7-0.9 MB | normal |
+| `/home` btrfs with `chattr +C` (no compression, no COW) | 2.7 MB | same | compression and COW are not involved |
+| `/tmp` (tmpfs) | 2.3-2.4 MB | 0.6 MB | normal |
+| **`/dev/shm/...`** | **6.5 MB (7.1 MB with the tray, the reported figure)** | **4.5 MB, all of it** | `code_ranges` refused every `/dev/` path, so `drop_idle` skipped the executable and the libraries it loads |
+| `cp --reflink=never` on btrfs | 4.4-4.8 MB, flat | 2.5 MB | whole 256 kB page-cache folios mapped per fault (below) |
+| same, `PR_SET_THP_DISABLE` for the process | 3.9 MB | 2.0 MB | smaller, not gone |
+| same, stand-in phone linked (`perf-phone.sh --scenarios idle`, 100 s) | 4.6 MB flat (reflinked copy: 2.8 MB) | | a phone adds about 0.2 MB, nothing else |
+
+* **The 7.1 MB is the `/dev/` filter, not the host.** `plain_file` in `codepages.rs` excluded every path under `/dev/` (device nodes) so a
+  binary run from `/dev/shm` never had its code dropped: 7 100 kB settled (the figure reported, to the kB, so that is
+  almost certainly where that run's binary sat; the run itself was not available), text 4 520 of 4 520 kB resident. A regular file on tmpfs is an ordinary private file mapping; the real guard is `Anonymous: 0` and the
+  `dl_iterate_phdr` intersection, which are unchanged. `/dev/shm/` is now accepted (the other `/dev/` paths, `/memfd:`, SysV and `/proc` stay out):
+  the same binary in `/dev/shm` 7 100 -> 2 596 kB, service 7 342 488 -> 7 342 616 B. A user does not run the service from `/dev/shm`; this
+  only matters for harnesses and portable setups, and it made the local budget look broken.
+* **Large page-cache folios (kernel 7.x) hold 2 MB of text resident when the file was written with big writes.** Mapping granularity probe
+  (map the binary, `MADV_DONTNEED` it, touch one page, read the Rss growth): 256 kB per fault for a file written with `cp --reflink=never` or `dd bs=1M`
+  (btrfs creates 256 kB folios for such writes), 64 kB (the fault-around size) for `dd bs=4k/16k`, `install`, `tar x`, a reflink, the linker's
+  own output (relinked and probed within a second) and for any file that was evicted and read again. The kernel maps the whole folio on a fault, so a
+  dropped idle service re-maps one 256 kB piece for each distinct place its code runs: the settled text was 8 runs of 64-576 kB, 1.96 MB, instead of 0.7 MB.
+  The state lasted at least 110 s in the probes; in the service runs it ended on its own after about 60 s (page cache turnover, not pinned down).
+  No `madvise` changes it: `MADV_RANDOM`, `MADV_SEQUENTIAL`, `MADV_NOHUGEPAGE`, `MADV_HUGEPAGE` all still map 256 kB; `FilePmdMapped` stays 0 (the
+  folios are smaller than a PMD here). `MADV_PAGEOUT` does shrink it (the refault is read back in 64 kB pieces) but it evicts the pages: each
+  refault is a major fault of 2-3 ms through btrfs/zstd, 16 ms for six touches, and repeating it every 4 s would keep the disk busy; not used.
+  Not done either: a loop that trims until RSS is stable (the tail after the last `madvise` is the runtime parking, which touches the same folios again).
+  What works from outside: `sync -d BIN; dd if=BIN iflag=nocache count=0` (drops the clean unmapped page cache of the file) before the run: 4.8 -> 2.57 MB.
+  `perf-check.sh` prints that hint when the RSS row is over budget. For users: a binary installed by a writer that uses large writes (`cp` across file
+  systems) shows up to ~2 MB more of shared, reclaimable file pages in RSS (Pss equals Rss for a single process, but it is page cache, not private memory); `tar x` and `install`
+  do not (small writes); the self-update's write size was not checked. ext4/XFS were not measured (no loop mounts without root), nor THP `madvise`
+  against `always` on the file side (the setting cannot be changed without root; the per-process disable above is the only A/B).
+* **CI.** Kernel 7.0.0-1019-azure, glibc 2.43, THP `madvise`: its binary is linked in the job (small folios, as measured above for a linked file), and its
+  figures (2.3-2.9 MB) match the normal row. The earlier 5 of 5.2 MB text resident there came from the dirty-page skip fixed on 2026-11-06 (and possibly large folios).
+* **Beat timing.** 5 s samples of the no-tray service show the floor flat to within 0.1 MB and an excursion of +2.2 MB (to 4.8-4.9 MB) in one sample about every
+  30 s: the 15 s LAN announcement, trimmed again by the next 4 s beat; the 0.2 s series of perf-check shows +0.5-1.7 MB for at most one beat. The settled
+  minimum, which the budget uses, is unaffected. A phone linked, a tmpfs or `/home` binary: the same shape.
+* Latency: the change only decides which files `drop_idle` may take (a path test), so the ring-to-visible numbers above (0.4-0.9 ms) stand.
+
 ## Android responsiveness round (2026-11-03)
 
 Emulator (AVD clone, Android 16 x86_64, software GPU, host load average 3-13 from other jobs), release build with R8 signed with the
